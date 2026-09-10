@@ -44,7 +44,7 @@ import type { InlineKeyboard } from './telegram.js';
 import { enqueue } from './notify.js';
 import { subscriptionOnPanelForUser } from './owned.js';
 import { actionsFor, tierFor } from './serviceActions.js';
-import { deliverFromStock, type StockDelivery } from './stock.js';
+import { deliverFromStock, failingSinceMs, STOCK_GRACE_MS, type StockDelivery } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
 import { report } from './reports.js';
@@ -810,11 +810,51 @@ async function deliver(
       // customer gets the same screen. Whether their config came from stock is
       // ours to know and theirs not to be told.
       if (fromStock !== null) return stockedScreen(db, row, now, fromStock);
-      // Back to PAID so the next pass tries again. The customer is told nothing
-      // yet — a panel that is briefly down is not news, and saying "there was a
-      // problem" only to succeed a minute later is worse than silence.
+      // Back to PAID so the next pass tries again.
       await release(db, row.order_id);
       log.warn('provision.will_retry', { ref: row.order_public_id, reason: result.reason });
+      /*
+       * Silence is right for a blip and wrong for an outage, and nothing used
+       * to draw the line.
+       *
+       * Saying «there was a problem» and then succeeding a minute later is
+       * worse than saying nothing — that is why this path is quiet, and it
+       * stays quiet for the first ten minutes. What it had no answer for was
+       * the panel that does not come back: the customer has paid, has no
+       * config, and hears nothing at all, with no way to tell being queued from
+       * being forgotten. That is the worst thing this bot can do to somebody.
+       *
+       * Past the shelf's own grace, so it fires only when the shelf has ALSO
+       * had its chance and could not help — an empty shelf, or a kind it does
+       * not serve. `failingSinceMs` is the clock the shelf already keeps, and
+       * it is an upsert on `COALESCE`, so asking again costs nothing and
+       * returns the same first-failure moment.
+       *
+       * ONCE. The dedupe key is the order, so the sweep may run for a week and
+       * the customer is told a single time; the delivery message that follows
+       * carries its own key and is not blocked by this one.
+       *
+       * Best-effort by construction — a failure here must not stop the retry
+       * that is the actual remedy.
+       */
+      const failingSince = await failingSinceMs(db, row.order_id);
+      if (
+        row.telegram_id !== null &&
+        failingSince !== null &&
+        now - failingSince >= STOCK_GRACE_MS
+      ) {
+        await db
+          .withSession((tx) =>
+            enqueue(tx, {
+              dedupeKey: `provision:${row.order_public_id}:waiting`,
+              chatId: row.telegram_id!,
+              text: menu.serviceStillWorking(row.order_public_id),
+            }),
+          )
+          .catch((err: unknown) => {
+            log.warn('provision.waiting_note_unsent', { ref: row.order_public_id }, err);
+          });
+      }
       return null;
     }
     const refunded = await fail(db, row.order_id, result.reason);

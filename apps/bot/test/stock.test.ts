@@ -186,6 +186,42 @@ describe('selling from the shelf', () => {
     expect(notes.some((n) => n.chatId === order.telegramId)).toBe(false);
   });
 
+  it('tells a waiting customer once, when the shelf could not save them either', async () => {
+    /*
+     * The worst thing this bot can do to somebody: they paid, they have no
+     * config, and they hear nothing at all.
+     *
+     * Silence is right for a blip — «there was a problem» followed by success a
+     * minute later is worse than saying nothing — and the test above pins that.
+     * What had no answer was the panel that does not come back. With an EMPTY
+     * shelf the retry loop can run for days and the customer cannot tell being
+     * queued from being forgotten.
+     *
+     * Past the shelf's own grace, so it fires only once the shelf has had its
+     * chance and could not help. And exactly once: the dedupe key is the order,
+     * so a sweep running every twenty-five seconds for a week still says it one
+     * time.
+     */
+    const order = await paidOrder();
+    // No shelve() — an empty shelf is the state this exists for.
+
+    // Early: still silent.
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    expect(
+      (await pendingNotifications()).some((n) => n.chatId === order.telegramId),
+    ).toBe(false);
+
+    // Past the grace: told, once.
+    await provisionPaidOrders(db, deadPanel, afterGrace());
+    await provisionPaidOrders(db, deadPanel, afterGrace() + 60_000);
+
+    const mine = (await pendingNotifications()).filter((n) => n.chatId === order.telegramId);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.text).toContain(order.publicId);
+    // Still retryable — the notice is not a verdict on the order.
+    expect(await orderStatus(order.orderId)).toBe('PAID');
+  });
+
   it('finishes the order from the shelf once the panel has been down long enough', async () => {
     const order = await paidOrder();
     const stock = await shelve(order.planId, 'stock-sold');

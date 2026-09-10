@@ -1536,6 +1536,32 @@ export function serviceReadyCard(service: ServiceView, now: number): string {
 }
 
 /**
+ * Paid, and still not delivered — said ONCE, long after the silence stopped
+ * being reasonable.
+ *
+ * The provisioning sweep says nothing on a retryable failure, and it is right
+ * not to: a panel that is briefly down is not news, and «there was a problem»
+ * followed by success a minute later is worse than silence. What it had no
+ * answer for was the panel that stays down. The customer has paid, has no
+ * config, and hears nothing at all — for hours, with no way to tell being
+ * queued from being forgotten.
+ *
+ * Deliberately says nothing about a panel, a reason, or a time. None of that
+ * is the customer's to carry, and a promised time we then miss is worse than
+ * no time at all.
+ */
+export function serviceStillWorking(publicId: string): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('SERVICE_STILL_WORKING_TITLE'),
+    '',
+    t.render('SERVICE_MANUAL_TRACKING_ID', { id: publicId }),
+    '',
+    t.raw('SERVICE_STILL_WORKING_BODY'),
+  ].join('\n');
+}
+
+/**
  * Sold, paid, and waiting on a person — a manual product, or a kind whose
  * adapter is not written yet. Distinct from the failure message on purpose:
  * nothing is wrong, it is simply not instant.

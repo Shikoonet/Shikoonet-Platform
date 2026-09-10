@@ -686,6 +686,19 @@ export const TEXTS = {
     screen: 'delivery',
     hint: 'گذرواژهٔ اکانت، وقتی تحویل اکانت است نه لینک',
   },
+  SERVICE_STILL_WORKING_TITLE: {
+    default: '⏳ سفارش شما هنوز در حال آماده‌سازی است.',
+    placeholders: [],
+    screen: 'delivery',
+    hint: 'وقتی تحویل بیش از چند دقیقه طول کشیده — یک بار، نه هر بار',
+  },
+  SERVICE_STILL_WORKING_BODY: {
+    default:
+      'پرداخت شما ثبت شده و جای نگرانی نیست. به‌محض آماده شدن، همین‌جا برایتان می‌فرستیم.',
+    placeholders: [],
+    screen: 'delivery',
+    hint: 'زیر پیام «هنوز در حال آماده‌سازی»',
+  },
   SERVICE_MANUAL_TITLE: {
     default: '✅ پرداخت شما تایید شد و سفارش ثبت شد.',
     placeholders: [],
