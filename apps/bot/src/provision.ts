@@ -837,7 +837,29 @@ async function deliver(
        * Best-effort by construction — a failure here must not stop the retry
        * that is the actual remedy.
        */
-      const failingSince = await failingSinceMs(db, row.order_id);
+      /*
+       * NEW_PURCHASE only, and the kind check comes FIRST so a trial is not
+       * even stamped.
+       *
+       * Routing leaves exactly two kinds on this branch: a purchase and a
+       * TRIAL. Every non-automated kind exits `ok` before it through the manual
+       * adapter, and renewals and add-ons are sent to `renew()` earlier. A
+       * trial customer paid nothing, and this message says «پرداخت شما ثبت
+       * شده» — so sending it to them states something false about money, which
+       * is the one thing this bot must never do.
+       *
+       * Reassuring a waiting trial customer would need its own line that
+       * promises nothing about payment. Not built: a free account arriving late
+       * is a different and much smaller problem than a paid one, and inventing
+       * a second message for it is more than the problem needs.
+       *
+       * The kind check also keeps `failingSinceMs` — an UPDATE — off the trial
+       * path entirely. `deliverFromStock` bails for a trial before stamping, so
+       * calling it here unconditionally would have started writing a column
+       * nothing else on that path reads.
+       */
+      const failingSince =
+        row.order_kind === 'NEW_PURCHASE' ? await failingSinceMs(db, row.order_id) : null;
       if (
         row.telegram_id !== null &&
         failingSince !== null &&

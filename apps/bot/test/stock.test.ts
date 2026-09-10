@@ -208,18 +208,100 @@ describe('selling from the shelf', () => {
     // Early: still silent.
     await provisionPaidOrders(db, deadPanel, Date.now());
     expect(
-      (await pendingNotifications()).some((n) => n.chatId === order.telegramId),
+      (await pendingNotifications()).some(
+        (n) => n.dedupeKey === `provision:${order.publicId}:waiting`,
+      ),
     ).toBe(false);
 
     // Past the grace: told, once.
     await provisionPaidOrders(db, deadPanel, afterGrace());
     await provisionPaidOrders(db, deadPanel, afterGrace() + 60_000);
 
-    const mine = (await pendingNotifications()).filter((n) => n.chatId === order.telegramId);
+    // Identified by its own dedupe key, so this cannot pass on somebody else's
+    // message to the same chat — a delivery note or a failure carries a
+    // different key and would satisfy a `chatId` filter just as well.
+    const mine = (await pendingNotifications()).filter(
+      (n) => n.dedupeKey === `provision:${order.publicId}:waiting`,
+    );
     expect(mine).toHaveLength(1);
     expect(mine[0]!.text).toContain(order.publicId);
     // Still retryable — the notice is not a verdict on the order.
     expect(await orderStatus(order.orderId)).toBe('PAID');
+  });
+
+  it('says nothing to a free trial, because that message talks about money', async () => {
+    /*
+     * Routing leaves exactly two kinds on the retryable branch: a purchase and
+     * a TRIAL. A trial customer paid nothing, and the waiting notice says
+     * «پرداخت شما ثبت شده» — so sending it to them states something false
+     * about money, which is the one thing this bot must never do.
+     *
+     * `orders_trial_is_free` requires a zero total and a named panel, so the
+     * fixture is the real shape a trial has rather than an approximation.
+     */
+    const { telegramId, publicId } = nextIds();
+    const userId = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+    // The plan's own panel, derived rather than named — `PROVIDER_CODE` in this
+    // file is an environment-variable key, not a provider row.
+    const panelRow = await db
+      .prepare(
+        `SELECT p.provider_id FROM products p
+           JOIN product_plans pl ON pl.product_id = p.id WHERE pl.id = ?1`,
+      )
+      .bind(plan)
+      .first<{ provider_id: number }>();
+    // The panel must actually OFFER a trial, or `deliver()` refuses it before
+    // the retryable branch and this test would pass without the fix — which is
+    // exactly what a first draft of it did.
+    await db
+      .prepare(
+        `UPDATE provisioning_providers
+            SET config = coalesce(config, '{}'::jsonb) || ?2::jsonb WHERE id = ?1`,
+      )
+      .bind(panelRow!.provider_id, JSON.stringify({ trial_enabled: true, trial_volume_gb: 1, trial_duration_hours: 24 }))
+      .run();
+    const trial = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, provider_id, quantity,
+                             unit_price_irr, total_irr, status)
+         VALUES (?1, ?2, 'TRIAL', ?3, ?4, 1, 0, 0, 'PAID')
+         RETURNING id`,
+      )
+      .bind(publicId, userId, plan, panelRow!.provider_id)
+      .first<{ id: number }>();
+
+    await provisionPaidOrders(db, deadPanel, afterGrace());
+    await provisionPaidOrders(db, deadPanel, afterGrace() + 60_000);
+
+    // By KEY, not «any message to that chat». A trial on a dead panel is also
+    // refused by `trialFor` and told so, and asserting on the chat alone would
+    // have caught that unrelated message instead of this one.
+    const waiting = (await pendingNotifications()).filter(
+      (n) => n.dedupeKey === `provision:${publicId}:waiting`,
+    );
+    expect(waiting).toEqual([]);
+    // And the clock column is left alone — nothing on the trial path reads it,
+    // so stamping it would be an extra write per sweep for no reader.
+    const stamped = await db
+      .prepare(`SELECT status, provision_first_failed_at FROM orders WHERE id = ?1`)
+      .bind(trial!.id)
+      .first<{ status: string; provision_first_failed_at: string | null }>();
+    // Still retryable, so it really did reach the branch under test rather than
+    // being refused earlier — without this the assertions below pass for the
+    // wrong reason, which is what two drafts of this test did.
+    expect(stamped?.status).toBe('PAID');
+    expect(stamped?.provision_first_failed_at).toBeNull();
+
+    // The trial switch is shared state on a shared database — put it back.
+    await db
+      .prepare(
+        `UPDATE provisioning_providers
+            SET config = ((config - 'trial_enabled') - 'trial_volume_gb') - 'trial_duration_hours'
+          WHERE id = ?1`,
+      )
+      .bind(panelRow!.provider_id)
+      .run();
   });
 
   it('finishes the order from the shelf once the panel has been down long enough', async () => {
