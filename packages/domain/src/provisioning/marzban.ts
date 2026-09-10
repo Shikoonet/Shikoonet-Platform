@@ -183,10 +183,15 @@ function absoluteSubUrl(raw: unknown, baseUrl: string): string | null {
  * Leaving the timer armed keeps the signal live for the body read as well, so
  * the abort reaches the response stream and `res.json()` rejects.
  *
- * `unref()` so a pending deadline cannot hold a process open on its own. It
- * does not stop the timer firing — the poll loop or the in-flight fetch keeps
- * the event loop alive — it only stops this being the last thing keeping the
- * process from exiting.
+ * `AbortSignal.timeout` rather than a hand-rolled `AbortController` and
+ * `setTimeout`, because the platform one is already what this needs: its timer
+ * is unref'd, so a pending deadline cannot hold the process open on its own,
+ * and it aborts with a `TimeoutError` whose message says the operation timed
+ * out. That message reaches a human — the catch below renders «could not reach
+ * the panel: {reason}» — where the hand-rolled version could only say «This
+ * operation was aborted», which does not tell an operator whether the panel was
+ * slow or the process was shutting down. Five other places in this repo already
+ * use it.
  *
  * MANY paths return without reading the body at all — every `!res.ok` early
  * return, plus the `/reset` POST whose body nothing wants. Those leave an
@@ -212,9 +217,7 @@ export function withTimeout<T>(
   /** Overridable so a test can prove the deadline survives `run` resolving. */
   timeoutMs: number = TIMEOUT_MS,
 ): Promise<T> {
-  const controller = new AbortController();
-  setTimeout(() => controller.abort(), timeoutMs).unref();
-  return run(controller.signal);
+  return run(AbortSignal.timeout(timeoutMs));
 }
 
 /**

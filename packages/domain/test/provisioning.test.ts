@@ -18,11 +18,14 @@ import {
   remoteUsernameFor,
   renewAllowed,
   renewModeFor,
-  withTimeout,
   type ProviderContext,
   type ProvisionRequest,
   type RenewRequest,
 } from '../src/index.js';
+// From the module rather than the package surface: `withTimeout` is not part of
+// this package's API, and its contract — a deadline that deliberately outlives
+// the call — is a trap for a general-purpose caller.
+import { withTimeout } from '../src/provisioning/marzban.js';
 
 const NOW = Date.UTC(2026, 7, 13, 12, 0, 0);
 
@@ -1348,12 +1351,42 @@ describe('the adapter deadline', () => {
     expect(signal.aborted).toBe(true);
   });
 
-  it('does not wait when the call finishes inside it', async () => {
-    // The ordinary path must not be slowed by the deadline outliving it: the
-    // value comes back immediately and only the abort is deferred.
-    const started = Date.now();
-    await withTimeout(async () => 'done', 5_000);
-    expect(Date.now() - started).toBeLessThan(1_000);
+  it('hands back what the call returned', async () => {
+    // `withTimeout` is now a bare `return run(...)`, so the value passing
+    // through is the whole of its other job. The version this replaces asserted
+    // that an instantly-resolving call returns in under a second — which the
+    // shape it replaced also did, so it said nothing about the change.
+    expect(await withTimeout(async () => 'done', 5_000)).toBe('done');
+  });
+
+  it('carries the signal into the request the adapter actually sends', async () => {
+    /*
+     * The value of all of this lives in undici, which every fake in this file
+     * is too polite to exercise: they answer a `Response` and never look at
+     * `init.signal`. So `signal` could be dropped from all nineteen fetch calls
+     * in the adapter and the file would stay green.
+     *
+     * This does not fake an abort — that would be asserting a fake's behaviour.
+     * It asserts the one thing a fake CAN see honestly: the request carries a
+     * live deadline, so there is something for undici to act on.
+     */
+    const seen = new Map<string, AbortSignal | null | undefined>();
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      seen.set(url.includes('/api/groups') ? 'groups' : 'login', init?.signal);
+      return new Response(JSON.stringify({ access_token: 'tok', items: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    await marzbanAdapter.listGroups!(provider({ fetch: fetchImpl }));
+
+    // Keyed by request, not by call order, so this cannot pass on the login
+    // call's signal if the one that matters loses it.
+    expect(seen.get('groups')).toBeInstanceOf(AbortSignal);
+    expect(seen.get('groups')?.aborted).toBe(false);
+    expect(seen.get('login')).toBeInstanceOf(AbortSignal);
   });
 });
 
