@@ -1356,3 +1356,79 @@ describe('the adapter deadline', () => {
     expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
+
+/**
+ * The ordering rule the armed deadline creates, and the one call site that
+ * broke it.
+ *
+ * `withTimeout` no longer clears its timer when `fetch` resolves, which is what
+ * lets the abort reach the body read. The cost is a rule: nothing unrelated may
+ * be awaited between the fetch and its `res.json()`, because that wait spends
+ * the same budget the body read is relying on.
+ *
+ * `createGroup` broke it — it called `hostedTags`, itself budgeted the full
+ * timeout and silently swallowing its own failures, BEFORE reading a group the
+ * panel had already created. A merely slow `/api/hosts` therefore aborted the
+ * body of a write that had already been applied, and the caller reported
+ * «could not reach the panel» for a group that exists.
+ */
+describe('reading a response body before doing anything else', () => {
+  it('reads the created group before it goes looking for hosts', async () => {
+    /*
+     * Measured with a SLOW body, and the two earlier attempts at this are worth
+     * recording because both passed against the broken order.
+     *
+     * A `ReadableStream`'s `start` runs when the stream is constructed, and its
+     * `pull` runs on the next tick after the `Response` is built — both before
+     * anything reads it. So neither can say when `res.json()` was called.
+     *
+     * What does distinguish the two orders is a body that takes time to
+     * arrive. Reading it first delays the hosts request by that long; reading
+     * it second does not delay it at all.
+     */
+    const BODY_MS = 120;
+    let groupAt = 0;
+    let hostsAt = 0;
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/hosts')) {
+        hostsAt = Date.now();
+        return new Response('[]', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      groupAt = Date.now();
+      return new Response(
+        new ReadableStream({
+          pull(controller) {
+            return new Promise<void>((resolve) => {
+              setTimeout(() => {
+                controller.enqueue(new TextEncoder().encode(JSON.stringify({ id: 9, name: 'g' })));
+                controller.close();
+                resolve();
+              }, BODY_MS);
+            });
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const out = await marzbanAdapter.createGroup!(provider({ fetch: fetchImpl }), {
+      name: 'g',
+      inboundTags: [],
+    });
+
+    expect(out.ok).toBe(true);
+    // The hosts request waited for the group body. Half the body time is a
+    // generous floor that still separates «waited» from «did not».
+    expect(hostsAt - groupAt).toBeGreaterThanOrEqual(BODY_MS / 2);
+  });
+});

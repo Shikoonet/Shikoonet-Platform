@@ -188,10 +188,24 @@ function absoluteSubUrl(raw: unknown, baseUrl: string): string | null {
  * the event loop alive — it only stops this being the last thing keeping the
  * process from exiting.
  *
- * Three paths return without reading the body at all: a failed login, a 404
- * from `getUser`, and a 409 from `provision`. Those leave an undrained body
- * that the still-armed controller aborts later, which undici treats as
- * discarding a stream nobody was reading.
+ * MANY paths return without reading the body at all — every `!res.ok` early
+ * return, plus the `/reset` POST whose body nothing wants. Those leave an
+ * undrained body that the still-armed controller aborts later, which undici
+ * treats as discarding a stream nobody was reading.
+ *
+ * An earlier version of this comment said «three paths», and a review counted
+ * roughly twenty. The number was never the point and stating it wrongly made
+ * the paragraph read as a completed audit it was not — so it says what is
+ * true instead: this is the common case, not the exception.
+ *
+ * ## The one thing a caller must not do
+ *
+ * Do not `await` anything else between the fetch and its `res.json()`. The
+ * deadline now outlives the fetch, so an unrelated wait in between spends the
+ * same budget the body read is relying on — and `writeGroup` did exactly that,
+ * calling `hostedTags` (itself budgeted the full timeout) before reading a
+ * group the panel had already created. Read the body first, then do the other
+ * work; `listGroups` and `listInbounds` were already written that way.
  */
 export function withTimeout<T>(
   run: (signal: AbortSignal) => Promise<T>,
@@ -503,8 +517,25 @@ async function writeGroup(
       }
       return { ok: false, reason: `panel refused the group (HTTP ${res.status})${detail}` };
     }
+    /*
+     * The body FIRST, and only then the second round trip.
+     *
+     * This read the body after `hostedTags`, and that ordering became unsafe
+     * the moment the deadline stopped being cleared when `fetch` resolved. The
+     * group was already written at the panel; `hostedTags` is itself budgeted
+     * the full timeout and swallows its own failures, so a merely slow
+     * `/api/hosts` burns the whole budget — and by the time this line ran, the
+     * controller belonging to `res` had fired and cancelled a body that had
+     * nothing left to wait for. The caller then reported «could not reach the
+     * panel» for a group that exists.
+     *
+     * `listGroups` and `listInbounds` already read the body before calling
+     * `hostedTags`. This was the one call site of nineteen with an unrelated
+     * `await` in between, and now there are none.
+     */
+    const created: unknown = await res.json();
     const hosted = await hostedTags(provider, base, auth.token);
-    const group = toGroup(await res.json(), hosted);
+    const group = toGroup(created, hosted);
     if (group === null) return { ok: false, reason: 'the panel replied without a group id' };
     return { ok: true, group };
   } catch (error) {
