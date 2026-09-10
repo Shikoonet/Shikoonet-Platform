@@ -247,3 +247,61 @@ describe('rules for markup that no longer exists', () => {
     expect(dead).toEqual([]);
   });
 });
+
+/**
+ * One definition per token, and `:root` is where it lives.
+ *
+ * `.hub` restated nine of the panel's tokens with the same literal value —
+ * `--surface-1`, `--text-muted`, `--accent`, `--success`, `--warning`,
+ * `--danger`, and three more. Identical today, which is exactly what makes them
+ * dangerous: nothing goes wrong until somebody changes `:root`, and then the
+ * six finance screens keep the old colour and no test says so.
+ *
+ * That is not hypothetical here. `--text-dim` was raised on 2026-09-09 because
+ * it measured 3.26:1 on text an operator has to read; had `.hub` carried a copy
+ * of it, the finance screens would have kept the illegible one and
+ * `legibility.test.ts` — which reads `theme.css` — would still have been green.
+ *
+ * Aliases are a different thing and stay: `--gold: var(--accent)` is the hub's
+ * own name for a panel token, resolves through it, and cannot drift. What is
+ * refused is a second literal.
+ */
+describe('the two stylesheets define each token once', () => {
+  // `indexOf` and not a built regex: the selector is a literal here, and
+  // escaping one into a pattern is a step that can silently lose a backslash
+  // and leave the test throwing «no :root block» about a file that has one.
+  function tokensOf(css: string, selector: string): Map<string, string> {
+    const start = css.indexOf(selector);
+    const brace = start < 0 ? -1 : css.indexOf('{', start);
+    if (brace < 0) throw new Error(`no ${selector} block`);
+    let depth = 1;
+    let j = brace + 1;
+    while (depth > 0 && j < css.length) {
+      if (css[j] === '{') depth += 1;
+      else if (css[j] === '}') depth -= 1;
+      j += 1;
+    }
+    const out = new Map<string, string>();
+    for (const line of css.slice(brace + 1, j - 1).split(';')) {
+      const m = /^\s*(--[\w-]+)\s*:\s*([\s\S]+?)\s*$/.exec(line);
+      if (m) out.set(m[1]!, m[2]!.split(/\s+/).join(' '));
+    }
+    return out;
+  }
+
+  const strip = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  it('does not let .hub keep a second copy of a :root token', () => {
+    const root = tokensOf(strip(PANEL_CSS), ':root');
+    const hub = tokensOf(strip(CSS), '.hub');
+    const copies: string[] = [];
+    for (const [name, value] of hub) {
+      if (!root.has(name)) continue;
+      // An alias resolves through the panel's value and cannot drift; a literal
+      // is a second source of truth.
+      if (/^var\(/.test(value)) continue;
+      copies.push(`${name}: ${value} (root says ${root.get(name)})`);
+    }
+    expect(copies).toEqual([]);
+  });
+});

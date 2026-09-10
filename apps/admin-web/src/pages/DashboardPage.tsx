@@ -9,13 +9,13 @@
  */
 
 import { useEffect, useState } from 'react';
+import { Stat } from '../Stat.js';
 import { CustomerLink } from '../CustomerLink.js';
 import {
   ApiError,
   api,
   type Attention,
 } from '../api.js';
-import { Icon } from '../icons.js';
 import { count, dateTime, planDisplayName, toman, tomanCompact } from '../format.js';
 import type { PageId } from '../nav.js';
 
@@ -289,36 +289,5 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId, search?: string) =>
         </div>
       </div>
     </>
-  );
-}
-
-function Stat({
-  tone,
-  icon,
-  value,
-  label,
-  foot,
-}: {
-  tone: string;
-  icon: string;
-  value: string;
-  label: string;
-  foot?: string;
-}) {
-  return (
-    <div className={`stat-card ${tone}`}>
-      <div>
-        <div className="stat-card__value">{value}</div>
-        <div className="stat-card__label">{label}</div>
-        {foot && (
-          <div className="stat-card__label" style={{ fontSize: 11, opacity: 0.75 }}>
-            {foot}
-          </div>
-        )}
-      </div>
-      <span className="stat-card__icon">
-        <Icon name={icon} size={24} />
-      </span>
-    </div>
   );
 }

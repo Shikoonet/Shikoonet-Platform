@@ -2104,3 +2104,51 @@ td.money,
    panel — and a second copy would make it a class both stylesheets define,
    which `css-scope.test.ts` refuses. The chart's hidden value table uses that
    one. */
+
+/* The command palette.
+   `showModal()`, so the top layer, the backdrop and the keyboard trap belong to
+   the browser. The hand-rolled `.palette-backdrop` this used to need is gone
+   with it — it was there on the belief that happy-dom has no `showModal`, which
+   nobody had checked and which is false. */
+.palette::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.palette {
+  margin-block-start: 12vh;
+  margin-inline: auto;
+  padding: 10px;
+  width: min(560px, calc(100vw - 32px));
+  max-height: 62vh;
+  overflow: auto;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  background: var(--surface-overlay, #14161e);
+  color: var(--text-main);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.palette__box {
+  width: 100%;
+}
+.palette__empty {
+  margin: 12px 4px 4px;
+}
+.palette__rows {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.palette__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.palette__row--on {
+  background: var(--accent-soft);
+}
+.palette__kind {
+  font-size: 11px;
+}

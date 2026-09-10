@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { Stat } from '../Stat.js';
 import { formatJalali, jalaliToIsoDate, toJalali, type JalaliDate } from '@shikoo/contracts';
 import { CustomerLink } from '../CustomerLink.js';
 import { BarChart } from '../BarChart.js';
@@ -29,7 +30,6 @@ import {
   type ShopStatsResponse,
   type StatsRange,
 } from '../api.js';
-import { Icon } from '../icons.js';
 import {
   count,
   dateOnly,
@@ -575,37 +575,6 @@ function Section({
         </div>
       </div>
       <div className="card__body">{children}</div>
-    </div>
-  );
-}
-
-function Stat({
-  tone,
-  icon,
-  value,
-  label,
-  foot,
-}: {
-  tone: string;
-  icon: string;
-  value: string;
-  label: string;
-  foot?: string | undefined;
-}) {
-  return (
-    <div className={`stat-card ${tone}`}>
-      <div>
-        <div className="stat-card__value">{value}</div>
-        <div className="stat-card__label">{label}</div>
-        {foot && (
-          <div className="stat-card__label" style={{ fontSize: 11, opacity: 0.75 }}>
-            {foot}
-          </div>
-        )}
-      </div>
-      <span className="stat-card__icon">
-        <Icon name={icon} size={24} />
-      </span>
     </div>
   );
 }
