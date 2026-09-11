@@ -117,8 +117,18 @@ async function makeService(telegramId: number): Promise<void> {
   // another file's fixture is a test that passes by luck.
   await db
     .prepare(
+      // `secret_ref` beside the address, for the same self-containment reason
+      // the comment above gives. `actionsFor` now requires a credential as well
+      // as an address before it draws a paid button — an add-on sold on a panel
+      // that cannot log in is money taken for nothing — so a fixture with only
+      // half the pair would make these tests fail for a reason that has nothing
+      // to do with the switch under test. The variable it names does not have to
+      // exist: `actionsFor` asks whether a credential is NAMED, not whether it
+      // resolves, and nothing in this file calls a panel. `addon.test.ts` sets
+      // the same field on the same row.
       `UPDATE provisioning_providers
           SET base_url = coalesce(base_url, 'https://panel.test'),
+              secret_ref = coalesce(secret_ref, 'PANEL_SIM_VIP'),
               kind = 'pasarguard',
               config = coalesce(config, '{}'::jsonb) || ?2::jsonb
         WHERE id = ?1`,
@@ -224,6 +234,103 @@ describe('reading the shop settings', () => {
     const shop = await loadShopSettings(db);
     expect(shop.topupMinIrr).toBe(DEFAULT_SHOP_SETTINGS.topupMinIrr);
     expect(shop.topupMaxIrr).toBe(DEFAULT_SHOP_SETTINGS.topupMaxIrr);
+  });
+});
+
+describe('a panel that cannot log in', () => {
+  it('sells no add-on on it, rather than taking the money and failing', async () => {
+    /*
+     * The address was required before a paid button was drawn and the
+     * credential was not, which is half a question.
+     *
+     * `login()` refuses a panel with no secret and answers `retryable: false`,
+     * so an add-on bought on one is taken, fails, and — for a card-to-card
+     * payment — is not refunded automatically. The shop-side predicate cannot
+     * help here: «➕ حجم اضافه» sells against a service that already exists, so
+     * it never goes near `purchasablePlan`.
+     *
+     * Drawing no button is the right answer rather than failing at checkout.
+     * The customer never spends anything, and an operator who fixes the panel
+     * gets the buttons back on the next screen with nothing to unwind — which
+     * is the second half of what this asserts.
+     */
+    const telegramId = 855_900_009;
+    await makeService(telegramId);
+    const provider = await providerId('sim-vip');
+
+    const before = await db
+      .prepare(`SELECT secret_ref FROM provisioning_providers WHERE id = ?1`)
+      .bind(provider)
+      .first<{ secret_ref: string | null }>();
+    await db
+      .prepare(`UPDATE provisioning_providers SET secret_ref = NULL WHERE id = ?1`)
+      .bind(provider)
+      .run();
+    try {
+      const without = await serviceButtons(telegramId);
+      // Gone: everything that would have to log in to the panel.
+      expect(without.some((d) => d.startsWith('xv:'))).toBe(false);
+      expect(without.some((d) => d.startsWith('xt:'))).toBe(false);
+      // Revoking REPLACES the link at the panel, so it needs the credential too.
+      expect(without.some((d) => d.startsWith('rvk:'))).toBe(false);
+      expect(without.some((d) => d.startsWith('off:'))).toBe(false);
+      expect(without.some((d) => d.startsWith('on:'))).toBe(false);
+      /*
+       * Still there: «کانفیگ». It encodes `subscriptions.subscription_url`, a
+       * column we already hold, and never reaches a panel — so it works fine on
+       * one nobody can log into.
+       *
+       * This assertion is the one that matters. An earlier version of the guard
+       * returned null for the WHOLE actions object and took this button away
+       * too, and no assertion here could see it. That state is ordinary rather
+       * than exotic: `migrate.ts` lands every imported provider with an address
+       * and no secret, the dashboard counts `panels_without_secret` as a live
+       * condition, and a shelf delivery hands out a pre-made link without ever
+       * logging in. Taking a customer's own config away in all three cases
+       * would have been a worse bug than the one being fixed.
+       */
+      expect(without.some((d) => d.startsWith('qr:'))).toBe(true);
+      // Not stranded: the way back is still there.
+      expect(without).toContain('mine');
+      /*
+       * The sealed half, which nothing else in this package builds.
+       *
+       * `secret_ref` is still NULL here; the credential is a `provider_secrets`
+       * row, which is how a panel added from «مدیریت پنل‌ها» is wired. Without
+       * this the guard could be reduced to one of its two terms and the suite
+       * would stay green while every sealed panel in the shop lost its add-on
+       * buttons.
+       */
+      await db
+        .prepare(
+          `INSERT INTO provider_secrets (provider_id, sealed, key_id)
+           VALUES (?1, 'not-a-sealed-value', 'test')
+           ON CONFLICT (provider_id) DO UPDATE SET sealed = EXCLUDED.sealed`,
+        )
+        .bind(provider)
+        .run();
+      try {
+        const sealed = await serviceButtons(telegramId);
+        expect(sealed.some((d) => d.startsWith('xv:'))).toBe(true);
+      } finally {
+        await db
+          .prepare(`DELETE FROM provider_secrets WHERE provider_id = ?1`)
+          .bind(provider)
+          .run();
+      }
+    } finally {
+      // Restored to what it was, not to a literal. `addon.test.ts` writes a
+      // different value onto this same row, and putting back a guess is how a
+      // fixture leaves the shared database in a state nobody wrote.
+      await db
+        .prepare(`UPDATE provisioning_providers SET secret_ref = ?2 WHERE id = ?1`)
+        .bind(provider, before?.secret_ref ?? null)
+        .run();
+    }
+
+    // And the moment the panel has a credential again, so do the buttons.
+    const withCredential = await serviceButtons(telegramId);
+    expect(withCredential.some((d) => d.startsWith('xv:'))).toBe(true);
   });
 });
 

@@ -1896,7 +1896,12 @@ export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboa
         case 'qr':
           return actions != null && actions.showsConfig !== false;
         case 'rvk':
-          return actions != null;
+          // The credential too. Revoking REPLACES the link at the panel, so a
+          // panel nobody can log into cannot do it — and offering the button
+          // there is the «pressed it and nothing happened» this map exists to
+          // prevent. `!== false` so a caller that predates the field keeps the
+          // button, which is how `canSwitch` beside it behaves.
+          return actions != null && actions.canRevoke !== false;
         case 'off':
           return actions != null && actions.canSwitch !== false && !actions.disabled;
         case 'on':
@@ -1934,6 +1939,20 @@ export interface ServiceActions {
    * removing a working button.
    */
   canSwitch?: boolean;
+  /**
+   * Whether this panel can be asked to replace the subscription link.
+   *
+   * False when the panel has no credential wired. Separate from `canSwitch`
+   * because the shop's switch is a POLICY — an operator turned the feature off
+   * — while this is a CAPABILITY: the panel cannot be logged into, so the
+   * button could only ever fail.
+   *
+   * `showsConfig` deliberately does not carry it. That button encodes a column
+   * we already hold and never reaches a panel, so it keeps working on a panel
+   * nobody can log into — which is the ordinary state of every freshly imported
+   * provider and of every shelf-backed one.
+   */
+  canRevoke?: boolean;
   /**
    * Whether the shop hands the config over from this screen —
    * `shopSetting.configshow`. Optional for the same reason as `canSwitch`: a

@@ -24,6 +24,7 @@ import {
   TOPUP_MIN_IRR,
 } from '../src/wallet.js';
 import { handleUpdate } from '../src/handle.js';
+import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -398,6 +399,72 @@ describe('a deposit that is paid for', () => {
     // The shortfall, in the Toman the customer transfers.
     expect(out.replies[0]!.text).toContain('25,000');
     expect(await balanceFor(db, userId)).toBe(order!.total_irr - 250_000);
+  });
+
+  it('refuses the balance once the customer has said they sent bank money', async () => {
+    /*
+     * The reverse order of the test below, and it is the one that was open.
+     *
+     * No forging is needed. `screen()` edits only the message its press came
+     * from, and Telegram keeps every other one pressable — so opening the same
+     * plan twice leaves two live invoices for ONE order, because `place()`
+     * reuses the order and `checkoutFor` reuses the payment.
+     *
+     * Press «پرداخت کردم» on one and «پرداخت از کیف پول» on the other: the
+     * order is still AWAITING_PAYMENT, the lock passes, and the balance goes.
+     * The supersede cleanup cannot help — by then the card row is
+     * AWAITING_REVIEW and that statement closes PENDING only, deliberately,
+     * because closing a claim against money already sent is worse.
+     *
+     * What follows is worse than a double charge: the transfer lands, the
+     * matcher verifies the claim, and `settle.ts` tries to mark that payment
+     * PAID against an index the WALLET row already holds. 23505 every cycle,
+     * for ever, with no audit row.
+     */
+    const telegramId = 920_100_017;
+    const userId = await makeCustomer(telegramId);
+    await credit(userId, 9_000_000, `t:${userId}:a`);
+    const plan = await planId('sim-gold-10');
+
+    await handleUpdate(db, press(920_100_919, telegramId, `order:${plan}`));
+    const order = await db
+      .prepare(
+        `SELECT id, total_irr FROM orders
+          WHERE user_id = ?1 AND kind = 'NEW_PURCHASE' ORDER BY id DESC LIMIT 1`,
+      )
+      .bind(userId)
+      .first<{ id: number; total_irr: number }>();
+
+    // «پرداخت کردم» first: the card row becomes a claim.
+    await handleUpdate(db, press(920_100_920, telegramId, `paid:${order!.id}`));
+    const claimed = await db
+      .prepare(
+        `SELECT count(*)::int AS n, min(public_id) AS ref FROM payments
+          WHERE order_id = ?1 AND status = 'AWAITING_REVIEW'`,
+      )
+      .bind(order!.id)
+      .first<{ n: number; ref: string }>();
+    expect(claimed?.n).toBe(1);
+
+    // Then the other, still-live invoice.
+    const out = await handleUpdate(db, press(920_100_921, telegramId, `wpay:${order!.id}`));
+
+    // Not charged twice.
+    expect(await balanceFor(db, userId)).toBe(9_000_000);
+    // And no WALLET row to collide with the claim when it settles.
+    const wallet = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM payments WHERE order_id = ?1 AND method = 'WALLET'`,
+      )
+      .bind(order!.id)
+      .first<{ n: number }>();
+    expect(wallet?.n).toBe(0);
+    // Told what is actually true: we are waiting on the transfer they sent.
+    //
+    // Identity, against the message this branch is for. «پرداخت» on its own is
+    // in `WALLET_PAID_TITLE` too, so `toContain` held whether or not the guard
+    // fired — it could not tell the refusal from the double charge it prevents.
+    expect(out.replies[0]!.text).toBe(menu.paidAlready(claimed!.ref));
   });
 
   it('closes the card checkout it supersedes, so the order cannot be paid twice', async () => {

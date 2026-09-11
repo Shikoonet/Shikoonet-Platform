@@ -14,6 +14,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_CODE_LENGTH, normalizeCode } from '../src/discount.js';
+import { expireUnpaidOrders } from '../src/expire.js';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
@@ -195,6 +196,152 @@ describe('what counts as a code at all', () => {
     // The cap must not become a truncation bug: every code in production fits.
     expect(normalizeCode('  OFF15  ')).toBe('off15');
     expect(normalizeCode('sale-1404-nowruz')).toBe('sale-1404-nowruz');
+  });
+});
+
+describe('an invoice nobody paid', () => {
+  it('gives the use back, so one abandoned tap does not burn the code', async () => {
+    /*
+     * A use is spent when an order is placed and must be given BACK when that
+     * order dies without ever being paid for.
+     *
+     * Nothing gave it back: `expireUnpaidOrders` closes the order and leaves
+     * the redemption, and both ceilings are counted straight off
+     * `discount_redemptions`. So one tap on «ثبت سفارش» that the customer never
+     * paid burnt a `max_uses = 1` code for the WHOLE shop, permanently, with
+     * nothing an operator could look at to see why it had stopped working.
+     *
+     * The row is not deleted — `amount_irr` on it is a money record, and
+     * destroying it so a counter reads correctly would destroy the evidence of
+     * what was offered to whom. It stops counting instead.
+     *
+     * The clock is pinned in this file, so the expiry is driven by passing a
+     * later `now` to the sweep rather than by aging the row against a real
+     * clock the mock has frozen.
+     */
+    const first = ids();
+    const second = ids();
+    const buyer = await makeCustomer(first.telegramId);
+    const other = await makeCustomer(second.telegramId);
+    await makeCode('oneshot', { maxUses: 1 });
+
+    // Somebody takes the code, gets an invoice, and walks away.
+    await useCode(first.updateId, first.telegramId, VIP_PLAN, 'oneshot');
+    await handleUpdate(db, press(first.updateId + 2, first.telegramId, `order:${VIP_PLAN}`));
+    const abandoned = await lastOrder(buyer);
+    expect(abandoned?.discount_irr).toBeGreaterThan(0);
+
+    // The invoice runs out. Aged with an ABSOLUTE stamp tied to the pinned
+    // clock, not with `now() - interval`, because `Date.now` is mocked in this
+    // file and the database's clock is not — mixing the two is how a test ends
+    // up asserting against a moment neither side agrees on.
+    await db
+      .prepare(`UPDATE orders SET expires_at = to_timestamp(?2 / 1000.0) WHERE id = ?1`)
+      .bind(abandoned!.id, NOW_MS - 60_000)
+      .run();
+    await expireUnpaidOrders(db, NOW_MS);
+    const closed = await db
+      .prepare(`SELECT status FROM orders WHERE id = ?1`)
+      .bind(abandoned!.id)
+      .first<{ status: string }>();
+    expect(closed?.status).toBe('EXPIRED');
+
+    // The next customer can still use it, and is actually charged less.
+    const said = await useCode(second.updateId, second.telegramId, VIP_PLAN, 'oneshot');
+    expect(said).toContain('oneshot');
+    await handleUpdate(db, press(second.updateId + 2, second.telegramId, `order:${VIP_PLAN}`));
+    expect((await lastOrder(other))?.discount_irr).toBeGreaterThan(0);
+
+    // And the record of the abandoned use is still there. It stopped counting;
+    // it was not erased.
+    const kept = await db
+      .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE order_id = ?1`)
+      .bind(abandoned!.id)
+      .first<{ n: number }>();
+    expect(kept?.n).toBe(1);
+  });
+
+  it('gives a per-CUSTOMER use back to the customer who abandoned it', async () => {
+    /*
+     * The sibling of the test above, and the one that reaches the counts the
+     * other cannot.
+     *
+     * That test uses two different customers, so both per-user counts read zero
+     * with the filter or without it — three of the four call sites were green
+     * either way. This one is the SAME customer twice against
+     * `uses_per_user = 1`, which is the ceiling `checkCode` reads before
+     * offering the discount and `redeem` reads again before writing the row.
+     *
+     * The second assertion is the one that reaches `redeem`: `discount_irr` on
+     * the order is written by `placeOrder` from the held check, so it is set
+     * even when `redeem` refuses. A second redemption ROW is not.
+     */
+    const first = ids();
+    const buyer = await makeCustomer(first.telegramId);
+    const codeId = await makeCode('giveback1', { usesPerUser: 1, maxUses: null });
+
+    await useCode(first.updateId, first.telegramId, VIP_PLAN, 'giveback1');
+    await handleUpdate(db, press(first.updateId + 2, first.telegramId, `order:${VIP_PLAN}`));
+    const abandoned = await lastOrder(buyer);
+    expect(abandoned?.discount_irr).toBeGreaterThan(0);
+
+    await db
+      .prepare(`UPDATE orders SET expires_at = to_timestamp(?2 / 1000.0) WHERE id = ?1`)
+      .bind(abandoned!.id, NOW_MS - 60_000)
+      .run();
+    await expireUnpaidOrders(db, NOW_MS);
+
+    // The same person comes back.
+    const again = ids();
+    const said = await useCode(again.updateId, first.telegramId, VIP_PLAN, 'giveback1');
+    expect(said).toContain('giveback1');
+    await handleUpdate(db, press(again.updateId + 2, first.telegramId, `order:${VIP_PLAN}`));
+
+    const second = await lastOrder(buyer);
+    expect(second?.id).not.toBe(abandoned?.id);
+    expect(second?.discount_irr).toBeGreaterThan(0);
+    // Two rows: the abandoned one, kept as the money record it is, and the new
+    // one `redeem` was allowed to write.
+    const rows = await db
+      .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1`)
+      .bind(codeId)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(2);
+  });
+
+  it('gives the use back when the order was paid for and never delivered', async () => {
+    /*
+     * The other dead-order path, and it was missed on the first pass: `fail()`
+     * marks the order FAILED and refunds it in the same transaction, so the
+     * customer paid, got nothing, and has their money back — while the code
+     * stayed spent for the whole shop.
+     *
+     * The status is written here rather than by driving a panel outage, and
+     * that is the honest boundary of this test: what it proves is that a FAILED
+     * order stops counting. That `fail()` writes exactly this status is
+     * `provision.ts`'s `UPDATE orders SET status = 'FAILED' … WHERE id = ?1 AND
+     * status = 'PROVISIONING'`, one line above its `refundOrder`.
+     */
+    const first = ids();
+    const second = ids();
+    const buyer = await makeCustomer(first.telegramId);
+    const other = await makeCustomer(second.telegramId);
+    await makeCode('outage1', { maxUses: 1 });
+
+    await useCode(first.updateId, first.telegramId, VIP_PLAN, 'outage1');
+    await handleUpdate(db, press(first.updateId + 2, first.telegramId, `order:${VIP_PLAN}`));
+    const dead = await lastOrder(buyer);
+    expect(dead?.discount_irr).toBeGreaterThan(0);
+
+    await db
+      .prepare(`UPDATE orders SET status = 'FAILED' WHERE id = ?1`)
+      .bind(dead!.id)
+      .run();
+
+    const said = await useCode(second.updateId, second.telegramId, VIP_PLAN, 'outage1');
+    expect(said).toContain('outage1');
+    await handleUpdate(db, press(second.updateId + 2, second.telegramId, `order:${VIP_PLAN}`));
+    expect((await lastOrder(other))?.discount_irr).toBeGreaterThan(0);
   });
 });
 
