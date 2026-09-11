@@ -1165,7 +1165,13 @@ export const TEXTS = {
     default: '🛍 پلن تمدید را انتخاب کنید:',
     placeholders: [],
     screen: 'renew',
-    hint: 'خط آخر صفحهٔ تمدید',
+    hint: 'خط آخر صفحهٔ تمدید، وقتی همهٔ پلن‌ها فهرست می‌شوند',
+  },
+  RENEW_MATCHED_PLAN: {
+    default: '🎯 پلن متناسب با سرویس شما:',
+    placeholders: [],
+    screen: 'renew',
+    hint: 'وقتی پلنی که سرویس با آن خریده شده هنوز فروخته می‌شود — جزئیاتش زیر همین خط می‌آید',
   },
   SERVICE_RENEWED_TITLE: {
     default: '♻️ سرویس شما تمدید شد.',

@@ -53,6 +53,7 @@ import {
 import { loadBotContent } from './botContent.js';
 import { acceptRules, gateFor, type GateVerdict, type MembershipApi } from './gate.js';
 import * as menu from './menu.js';
+import { matchingRenewalPlan } from './renewMatch.js';
 import { IRR_PER_TOMAN, priceForUser, toAsciiDigits } from './money.js';
 import {
   newPublicId,
@@ -87,6 +88,7 @@ import {
   orderForUser,
   renewableForUser,
   renewableForUserById,
+  type RenewableSubscription,
   subscriptionOnPanelForUser,
   subscriptionsForUser,
 } from './owned.js';
@@ -1199,6 +1201,7 @@ function navigationParent(raw: string | undefined): string | null {
       return withId('sub');
     case 'rnw':
       return 'renew';
+    case 'rnwl':
     case 'dsr':
     case 'dxr':
       return withId('rnw');
@@ -1734,7 +1737,59 @@ async function heldRenewalCode(
   return null;
 }
 
-/** The code a renewal screen should show as held, if any. */
+/**
+ * The screen after a service is picked for renewal: the plan it was sold under
+ * when that is still on offer, or every plan on its panel.
+ *
+ * The plans come through the same visibility rule the shop uses. The plan a
+ * migrated service was sold under is gone for roughly half of them, so
+ * offering only that would tell most customers their service cannot be
+ * renewed — for those, and on «پلن‌های دیگر» (`all`), it is the whole list.
+ * `matchingRenewalPlan` says which; it never guesses.
+ */
+async function renewPlansScreen(
+  tx: D1DatabaseSession,
+  user: Caller,
+  service: RenewableSubscription,
+  all: boolean,
+  screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+): Promise<HandleOutcome> {
+  const plans = await plansOnPanel(tx, user.id, service.provider_id);
+  if (plans.length === 0) {
+    return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
+  }
+  const mode = renewModeFor(service.provider_config ?? {});
+  const now = Date.now();
+  const match = all ? null : matchingRenewalPlan(service, plans);
+  if (match === null) {
+    return screen(
+      menu.renewIntro(service, mode, now),
+      menu.renewPlanMenu(
+        service.id,
+        plans,
+        user.discount_percent,
+        await heldRenewalName(tx, user.id, service.id),
+      ),
+    );
+  }
+  // One plan is known, so — unlike the list, where the plan a code applies to
+  // is not known until one is chosen — the held code can be priced right here,
+  // the way the buy flow's plan screen prices it.
+  const price = priceForUser(match.priceIrr, user.discount_percent);
+  const held = await heldRenewalCode(tx, user, service.id, match, price.totalIrr);
+  const applied = held ? { code: held.code.code, discountIrr: held.discountIrr } : null;
+  return screen(
+    menu.renewMatched(service, mode, now, match, price, applied),
+    menu.renewPlanMenu(
+      service.id,
+      [match],
+      user.discount_percent,
+      await heldRenewalName(tx, user.id, service.id),
+      true,
+    ),
+  );
+}
+
 /**
  * Placing the order and drawing the invoice — extracted so there is ONE way in.
  *
@@ -2693,30 +2748,15 @@ async function handleCallback(
       );
     }
 
-    case 'rnw': {
+    case 'rnw':
+    case 'rnwl': {
       if (action.id === undefined) return IGNORED;
       const service = await renewableForUserById(tx, user.id, action.id);
       if (!service) return screen(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
       if (!renewAllowed(service.provider_config ?? {})) {
         return screen(menu.RENEWAL_CLOSED, menu.afterPaidMenu());
       }
-      // The plans on the panel this service already lives on, through the same
-      // visibility rule the shop uses. The plan it was originally sold under is
-      // gone for roughly half of the migrated services, so offering only that
-      // would tell most customers their service cannot be renewed.
-      const plans = await plansOnPanel(tx, user.id, service.provider_id);
-      if (plans.length === 0) {
-        return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
-      }
-      return screen(
-        menu.renewIntro(service, renewModeFor(service.provider_config ?? {}), Date.now()),
-        menu.renewPlanMenu(
-          service.id,
-          plans,
-          user.discount_percent,
-          await heldRenewalName(tx, user.id, service.id),
-        ),
-      );
+      return renewPlansScreen(tx, user, service, action.action === 'rnwl', screen);
     }
 
     case 'dsr': {
@@ -2733,10 +2773,8 @@ async function handleCallback(
       const service = await renewableForUserById(tx, user.id, action.id);
       if (!service) return screen(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
       await clearSession(tx, user.id);
-      const plans = await plansOnPanel(tx, user.id, service.provider_id);
-      return screen(
-        `${menu.DISCOUNT_TAKEN_OFF}\n\n${menu.renewIntro(service, renewModeFor(service.provider_config ?? {}), Date.now())}`,
-        menu.renewPlanMenu(service.id, plans, user.discount_percent),
+      return renewPlansScreen(tx, user, service, false, (text, keyboard) =>
+        screen(`${menu.DISCOUNT_TAKEN_OFF}\n\n${text}`, keyboard),
       );
     }
 

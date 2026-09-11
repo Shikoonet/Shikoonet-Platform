@@ -201,6 +201,12 @@ export interface RenewableSubscription {
   expires_at: string | null;
   volume_gb: number | null;
   used_bytes: number | null;
+  /**
+   * What the service remembers of its sale, for `matchingRenewalPlan`. NULL
+   * `plan_id` on every migrated row; `duration_days` survived the import.
+   */
+  plan_id: number | null;
+  duration_days: number | null;
   provider_id: number;
   provider_name: string;
   provider_kind: string;
@@ -229,7 +235,7 @@ const RENEWABLE = `
 
 const RENEWABLE_COLUMNS = `
   s.id, s.public_id, s.status, s.plan_name_at_sale, s.remote_username, s.expires_at,
-  s.volume_gb, s.used_bytes,
+  s.volume_gb, s.used_bytes, s.plan_id, s.duration_days,
   pv.id AS provider_id, pv.name AS provider_name, pv.kind AS provider_kind,
   pv.config AS provider_config
 `;
