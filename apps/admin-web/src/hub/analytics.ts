@@ -125,7 +125,7 @@ export interface CardAnalyticsResponse {
   ok: boolean;
   range: HistoryRange;
   entity: 'card_number';
-  metric: 'hub_auto_verified_purchases';
+  metric: 'hub_verified_purchases';
   note: string;
   /** Header order and labels, from the server, so the two cannot drift. */
   windows: readonly CardActivityWindow[];
