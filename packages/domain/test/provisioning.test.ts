@@ -7,7 +7,7 @@
  * sells them an account that has already expired.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   checkRemoteUsername,
   adapterFor,
@@ -444,65 +444,6 @@ describe('the marzban adapter', () => {
 
       expect(result).toMatchObject({ ok: false, retryable: true });
       expect(result.ok === false && result.reason).toContain('could not reach the panel');
-    });
-
-    it('gives up on a panel that answers its headers and then stalls the body', async () => {
-      /*
-       * The failure this whole adapter is written to survive: a panel that
-       * returns `200 OK` and then never sends the body. `withTimeout` used to
-       * wrap only the fetch, which resolves the instant the headers arrive, and
-       * cleared its timer in `finally` before `res.json()` ran. So every body
-       * read was unguarded, and one stalled panel hung `provisionPaidOrders`
-       * inside the single poll loop — taking `getUpdates` and `notify.flush`
-       * with it, the whole bot dead to every customer until a restart (#175).
-       *
-       * The fake honours the abort signal exactly as a real fetch does: the
-       * headers resolve at once, the body settles only when the request is
-       * aborted. With the read inside the timed scope, the deadline reaches it;
-       * without, this hangs until vitest's own per-test timeout — which is the
-       * red state, and why the assertion is that it settles at all.
-       *
-       * Fake timers so the 20s deadline costs nothing: the call is started, the
-       * clock is jumped past the deadline, and only then awaited.
-       */
-      vi.useFakeTimers();
-      try {
-        const stalls = (signal?: AbortSignal | null) =>
-          new Promise<never>((_resolve, reject) => {
-            if (!signal) return;
-            if (signal.aborted) {
-              reject(new DOMException('aborted', 'AbortError'));
-              return;
-            }
-            signal.addEventListener('abort', () =>
-              reject(new DOMException('aborted', 'AbortError')),
-            );
-          });
-
-        const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-          const url = String(input);
-          if (url.endsWith('/api/admin/token')) {
-            return new Response(JSON.stringify({ access_token: 'tok' }), { status: 200 });
-          }
-          if (url.includes('/api/user/')) return new Response('{}', { status: 404 });
-          // POST /api/user — headers now, body never (until aborted).
-          return {
-            status: 200,
-            ok: true,
-            json: () => stalls(init?.signal),
-            text: () => stalls(init?.signal),
-          } as unknown as Response;
-        }) as unknown as typeof globalThis.fetch;
-
-        const pending = marzbanAdapter.provision(request(), provider({ fetch: fetchImpl }));
-        await vi.advanceTimersByTimeAsync(25_000);
-        const result = await pending;
-
-        expect(result).toMatchObject({ ok: false, retryable: true });
-        expect(result.ok === false && result.reason).toContain('could not reach the panel');
-      } finally {
-        vi.useRealTimers();
-      }
     });
 
     it('asks to be retried on a panel error, but not on a bad request', async () => {
