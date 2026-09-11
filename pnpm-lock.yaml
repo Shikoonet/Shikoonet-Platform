@@ -124,7 +124,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^1.13.7
-        version: 1.19.17(hono@4.13.3)
+        version: 1.19.17(hono@4.13.7)
       '@shikoo/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -144,8 +144,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/sms-parser
       hono:
-        specifier: 4.13.3
-        version: 4.13.3
+        specifier: 4.13.7
+        version: 4.13.7
       tsx:
         specifier: ^4.23.7
         version: 4.23.12
@@ -173,7 +173,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^1.13.7
-        version: 1.19.17(hono@4.13.3)
+        version: 1.19.17(hono@4.13.7)
       '@shikoo/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -190,8 +190,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/sms-parser
       hono:
-        specifier: 4.13.3
-        version: 4.13.3
+        specifier: 4.13.7
+        version: 4.13.7
       tsx:
         specifier: ^4.23.7
         version: 4.23.12
@@ -1506,8 +1506,8 @@ packages:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
     engines: {node: '>=8'}
 
-  hono@4.13.3:
-    resolution: {integrity: sha512-r8AO2mYHoLxSHkgafNeC/BXyb2vWRxD3jem4Ts+ptav8oTG5FIRifAjuJEmZI4bSvvc2ns0GxmIYiZnHqN3mMw==}
+  hono@4.13.7:
+    resolution: {integrity: sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ==}
     engines: {node: '>=16.9.0'}
 
   html-escaper@2.0.2:
@@ -2486,9 +2486,9 @@ snapshots:
       '@eslint/core': 0.17.0
       levn: 0.4.1
 
-  '@hono/node-server@1.19.17(hono@4.13.3)':
+  '@hono/node-server@1.19.17(hono@4.13.7)':
     dependencies:
-      hono: 4.13.3
+      hono: 4.13.7
 
   '@humanfs/core@0.19.2':
     dependencies:
@@ -3242,7 +3242,7 @@ snapshots:
 
   has-flag@4.0.0: {}
 
-  hono@4.13.3: {}
+  hono@4.13.7: {}
 
   html-escaper@2.0.2: {}
 
