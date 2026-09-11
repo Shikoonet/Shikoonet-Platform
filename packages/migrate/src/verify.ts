@@ -130,6 +130,12 @@ const COUNT_PAIRS: [Domain, string, string, string, string?, string?][] = [
   //
   // The gate columns are in the key for the reason `migrateProducts` states:
   // a Location whose rows gate differently cannot be one service.
+  //
+  // `COALESCE(agent,'')` because `agent` is nullable and `isReseller` reads an
+  // absent value as an ordinary customer (`?? ''` → false). `NULL IN (…)` is
+  // NULL, which GROUP BY files as a third bucket beside true and false — so a
+  // NULL row next to an 'f' row would be two groups here and one service
+  // there, and this check would fail a migration that did the right thing.
   [
     'catalog',
     'products',
@@ -139,7 +145,7 @@ const COUNT_PAIRS: [Domain, string, string, string, string?, string?][] = [
                 WHERE TRIM(COALESCE(Location,'')) <> ''
                 GROUP BY TRIM(Location) COLLATE utf8mb4_bin,
                          one_buy_status = '1',
-                         TRIM(agent) COLLATE utf8mb4_bin IN ('n','n2')
+                         TRIM(COALESCE(agent,'')) COLLATE utf8mb4_bin IN ('n','n2')
              ) grouped)`,
     'SELECT COUNT(*) FROM products WHERE legacy_id IS NOT NULL',
   ],
