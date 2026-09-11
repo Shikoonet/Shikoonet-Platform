@@ -65,6 +65,8 @@ export async function placeOrder(
    * than discovering it from a customer whose service was renamed mid-month.
    */
   usernameText: string | null = null,
+  /** Gigabytes a volume code adds, frozen on the order — see 0062. */
+  bonusVolumeGb = 0,
 ): Promise<PlaceResult> {
   return place(
     tx,
@@ -75,6 +77,7 @@ export async function placeOrder(
     null,
     1,
     usernameText,
+    bonusVolumeGb,
   );
 }
 
@@ -107,6 +110,7 @@ export async function placeRenewalOrder(
   discountPercent: number,
   subscriptionId: number,
   codeDiscountIrr = 0,
+  bonusVolumeGb = 0,
 ): Promise<PlaceResult> {
   return place(
     tx,
@@ -115,6 +119,9 @@ export async function placeRenewalOrder(
     withCode(priceForUser(plan.priceIrr, discountPercent), codeDiscountIrr),
     'RENEWAL',
     subscriptionId,
+    1,
+    null,
+    bonusVolumeGb,
   );
 }
 
@@ -268,6 +275,13 @@ async function place(
   quantity = 1,
   /** See `placeOrder` — null for every other caller, deliberately. */
   usernameText: string | null = null,
+  /**
+   * What a volume code adds, in GB. Part of the open-order tuple below for the
+   * same reason the price is: a code changes the order, so the order placed
+   * before the code was typed stays what the customer saw, and a new one is
+   * written. Zero for every caller but a purchase or renewal with such a code.
+   */
+  bonusVolumeGb = 0,
 ): Promise<PlaceResult> {
   // An order that costs nothing is refused here, once, for all four callers.
   //
@@ -320,11 +334,12 @@ async function place(
           AND kind = ?4
           AND target_subscription_id IS NOT DISTINCT FROM ?5
           AND quantity = ?6
+          AND bonus_volume_gb = ?7
           AND status = 'AWAITING_PAYMENT'
         ORDER BY created_at DESC
         LIMIT 1`,
     )
-    .bind(userId, planId, price.totalIrr, kind, subscriptionId, quantity)
+    .bind(userId, planId, price.totalIrr, kind, subscriptionId, quantity, bonusVolumeGb)
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (open) {
     /*
@@ -366,9 +381,10 @@ async function place(
     .prepare(
       `INSERT INTO orders
          (public_id, user_id, kind, plan_id, target_subscription_id, quantity,
-          unit_price_irr, discount_irr, total_irr, status, expires_at, username_text)
+          unit_price_irr, discount_irr, total_irr, status, expires_at, username_text,
+          bonus_volume_gb)
        VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8, 'AWAITING_PAYMENT',
-               now() + make_interval(secs => ?10), ?11)
+               now() + make_interval(secs => ?10), ?11, ?12)
        RETURNING id, public_id, total_irr`,
     )
     .bind(
@@ -383,6 +399,7 @@ async function place(
       quantity,
       orderTtlHours * 3600,
       usernameText,
+      bonusVolumeGb,
     )
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (!row) throw new Error('order insert returned no row');

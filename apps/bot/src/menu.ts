@@ -1091,6 +1091,33 @@ export function soldAs(productName: string, planName: string): string {
 export interface AppliedCode {
   code: string;
   discountIrr: number;
+  /** For a volume code: what it adds, already worded — «+30 گیگ», «+20٪ حجم (60 گیگ)». */
+  bonus?: string | null;
+}
+
+/**
+ * How a volume code reads on a screen, or null for a money code.
+ *
+ * Latin digits, like `formatToman` and `PLAN_VOLUME`: the bot writes numbers
+ * one way. The percentage form names the total too, because «+20٪» on its own
+ * makes a customer do the sum this line exists to do for them.
+ */
+export function bonusLabel(
+  code: { kind: string; percent: number | null; bonus_gb: number | null },
+  planVolumeGb: number | null,
+): string | null {
+  if (planVolumeGb === null) return null;
+  if (code.kind === 'BONUS_GB') return `+${trimGb(Number(code.bonus_gb ?? 0))} گیگ`;
+  if (code.kind === 'BONUS_PERCENT') {
+    const pct = Number(code.percent ?? 0);
+    const total = Math.round((planVolumeGb * (1 + pct / 100)) * 1000) / 1000;
+    return `+${trimGb(pct)}٪ حجم (${trimGb(total)} گیگ)`;
+  }
+  return null;
+}
+
+function trimGb(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 1000) / 1000);
 }
 
 export function planDetail(plan: CatalogPlan, price: Price, applied?: AppliedCode | null): string {
@@ -1121,6 +1148,9 @@ export function planDetail(plan: CatalogPlan, price: Price, applied?: AppliedCod
     lines.push(
       t.render('PLAN_CODE_DISCOUNT', { code: applied.code, amount: formatToman(codeOff) }),
     );
+  }
+  if (applied?.bonus) {
+    lines.push(t.render('PLAN_CODE_BONUS', { code: applied.code, bonus: applied.bonus }));
   }
   // The floor is the same one `order.ts` applies, and for the same reason: two
   // discounts on one price must not add up to more than the price.
@@ -1326,7 +1356,8 @@ export function discountHeldForRenewal(code: string): string {
   return [t.render('DISCOUNT_HELD_TITLE', { code }), '', t.raw('DISCOUNT_HELD_BODY')].join('\n');
 }
 
-export function discountApplied(code: string, offIrr: number): string {
+export function discountApplied(code: string, offIrr: number, bonus?: string | null): string {
+  if (bonus) return TEXTS_NOW.render('DISCOUNT_APPLIED_BONUS', { code, bonus });
   return TEXTS_NOW.render('DISCOUNT_APPLIED', { code, amount: formatToman(offIrr) });
 }
 
@@ -1375,17 +1406,25 @@ export function checkout(
   totalIrr: number,
   cardDigits: string,
   cardHolder: string | null,
+  /** The held code, when it gives volume — an invoice that says what was bought. */
+  applied?: AppliedCode | null,
 ): string {
   const t = TEXTS_NOW;
-  return [
+  const lines = [
     t.raw('CHECKOUT_INTRO'),
     '',
     t.render('CHECKOUT_ORDER_ID', { id: publicId }),
     t.render('CHECKOUT_SERVICE', { product: soldAs(plan.productName, plan.planName) }),
+  ];
+  if (applied?.bonus) {
+    lines.push(t.render('CHECKOUT_CODE_BONUS', { code: applied.code, bonus: applied.bonus }));
+  }
+  lines.push(
     t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
     '',
     ...checkoutTail(cardDigits, cardHolder),
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 /**
@@ -2375,6 +2414,9 @@ export function renewCheckout(
         amount: formatToman(applied.discountIrr),
       }),
     );
+  }
+  if (applied?.bonus) {
+    lines.push(t.render('CHECKOUT_CODE_BONUS', { code: applied.code, bonus: applied.bonus }));
   }
   lines.push(
     t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),

@@ -45,7 +45,7 @@ function gift(code: string, extra: Record<string, unknown> = {}) {
 
 async function codeRow(id: number) {
   return baseEnv.DB.prepare(
-    `SELECT code, kind, amount_irr, percent, max_uses, applies_to, expires_at
+    `SELECT code, kind, amount_irr, percent, bonus_gb, max_uses, applies_to, expires_at
        FROM discount_codes WHERE id = ?1`,
   )
     .bind(id)
@@ -54,6 +54,7 @@ async function codeRow(id: number) {
       kind: string;
       amount_irr: number | null;
       percent: number | null;
+    bonus_gb: number | null;
       max_uses: number | null;
       applies_to: string;
       expires_at: string | null;
@@ -183,6 +184,39 @@ describe('creating a code', () => {
       (await create({ code: `${PREFIX}p4`, kind: 'PERCENT_OFF', percent: 10, amountIrr: 1000 }))
         .status,
     ).toBe(400);
+  });
+
+  /**
+   * The two volume kinds (0062): a code that adds gigabytes, or a share of the
+   * plan's volume, instead of taking money off. Each carries exactly the value
+   * its kind needs — the same rule as money codes, one arm wider.
+   */
+  it('stores a volume code and reports what it gives', async () => {
+    const gb = await create({ code: `${PREFIX}gb30`, kind: 'BONUS_GB', bonusGb: 30 });
+    expect(gb.status).toBe(201);
+    const gbBody = (await gb.json()) as { discount: { id: number; bonusGb: number | null; amountIrr: number | null } };
+    expect(gbBody.discount.bonusGb).toBe(30);
+    expect(gbBody.discount.amountIrr).toBeNull();
+    const row = (await codeRow(gbBody.discount.id))!;
+    expect([row.kind, Number(row.bonus_gb), row.amount_irr, row.percent]).toEqual(['BONUS_GB', 30, null, null]);
+
+    const pct = await create({ code: `${PREFIX}vol20`, kind: 'BONUS_PERCENT', percent: 20 });
+    expect(pct.status).toBe(201);
+    const pctBody = (await pct.json()) as { discount: { id: number; percent: number | null } };
+    expect(pctBody.discount.percent).toBe(20);
+    expect((await codeRow(pctBody.discount.id))!.kind).toBe('BONUS_PERCENT');
+  });
+
+  it('holds the value-per-kind rule for volume codes too', async () => {
+    // BONUS_GB without its gigabytes, or carrying money it cannot use
+    expect((await create({ code: `${PREFIX}v1`, kind: 'BONUS_GB' })).status).toBe(400);
+    expect((await create({ code: `${PREFIX}v2`, kind: 'BONUS_GB', bonusGb: 5, amountIrr: 1000 })).status).toBe(400);
+    // BONUS_PERCENT without a percent, or with gigabytes
+    expect((await create({ code: `${PREFIX}v3`, kind: 'BONUS_PERCENT', bonusGb: 5 })).status).toBe(400);
+    // A money code carrying gigabytes
+    expect((await create({ code: `${PREFIX}v4`, kind: 'PERCENT_OFF', percent: 10, bonusGb: 5 })).status).toBe(400);
+    // Nothing, or a negative
+    expect((await create({ code: `${PREFIX}v5`, kind: 'BONUS_GB', bonusGb: 0 })).status).toBe(400);
   });
 
   it('refuses a percent outside 0 to 100', async () => {

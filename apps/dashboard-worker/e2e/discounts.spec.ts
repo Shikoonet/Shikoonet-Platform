@@ -21,6 +21,7 @@ import { createPostgresD1 } from '@shikoo/db';
 const PCT = 'E2EPCT';
 const FIX = 'E2EFIX';
 const DATED = 'E2EDATE';
+const VOL = 'E2EVOL';
 const EXPIRES_ON = '2026-09-01';
 
 async function withDb<T>(fn: (d: ReturnType<typeof createPostgresD1>['db']) => Promise<T>) {
@@ -37,7 +38,7 @@ async function codeRow(code: string) {
     d
       .prepare(
         `SELECT kind, amount_irr::bigint AS amount_irr, percent::text AS percent,
-                max_uses, applies_to, expires_at
+                bonus_gb::text AS bonus_gb, max_uses, applies_to, expires_at
            FROM discount_codes WHERE lower(code) = lower(?1)`,
       )
       .bind(code)
@@ -45,6 +46,7 @@ async function codeRow(code: string) {
         kind: string;
         amount_irr: number | null;
         percent: string | null;
+        bonus_gb: string | null;
         max_uses: number | null;
         applies_to: string;
         expires_at: string | null;
@@ -55,8 +57,10 @@ async function codeRow(code: string) {
 const wipe = () =>
   withDb((d) =>
     d
-      .prepare(`DELETE FROM discount_codes WHERE lower(code) IN (lower(?1), lower(?2), lower(?3))`)
-      .bind(PCT, FIX, DATED)
+      .prepare(
+        `DELETE FROM discount_codes WHERE lower(code) IN (lower(?1), lower(?2), lower(?3), lower(?4))`,
+      )
+      .bind(PCT, FIX, DATED, VOL)
       .run(),
   );
 
@@ -119,6 +123,25 @@ test('a fixed code multiplies Toman into Rial exactly once', async ({ page }) =>
   expect(row?.kind).toBe('AMOUNT_OFF');
   expect(Number(row?.amount_irr)).toBe(250_000);
   expect(row?.percent).toBeNull();
+});
+
+test('a volume code is stored with its gigabytes and listed as what it gives', async ({ page }) => {
+  await create(page, VOL, async (form) => {
+    await form.locator('#new-code').fill(VOL);
+    await form.locator('#new-kind').selectOption('BONUS_GB');
+    await form.locator('#new-bonus-gb').fill('30');
+  });
+
+  const row = await codeRow(VOL);
+  expect(row?.kind).toBe('BONUS_GB');
+  expect(Number(row?.bonus_gb)).toBe(30);
+  expect(row?.amount_irr).toBeNull();
+  expect(row?.percent).toBeNull();
+
+  const fa = new Intl.NumberFormat('fa-IR');
+  const listed = page.locator('#main-content table').locator(`tr:has-text("${VOL}")`);
+  await expect(listed).toContainText('حجم اضافه');
+  await expect(listed).toContainText(`+${fa.format(30)} گیگ`);
 });
 
 test('an expiry is stored as the first instant of the next Tehran day', async ({ page }) => {

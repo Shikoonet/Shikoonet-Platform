@@ -89,6 +89,8 @@ interface PendingOrder {
   product_attrs: Record<string, unknown> | null;
   volume_gb: string | number | null;
   duration_days: number | null;
+  /** What a volume code added, frozen on the order at placement (0062). */
+  bonus_volume_gb: string | number;
   total_irr: number;
   product_name: string | null;
   provider_id: number | null;
@@ -148,6 +150,18 @@ function toNumber(value: string | number | null): number | null {
   if (value === null) return null;
   const n = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The plan's volume plus what a volume code added, to three decimals — the
+ * precision of both columns and therefore of what the panel is asked for. An
+ * unmetered plan stays unmetered: there is nothing to add to, and `checkCode`
+ * refused the code on it anyway.
+ */
+function withBonus(planGb: number | null, bonus: string | number): number | null {
+  if (planGb === null) return null;
+  const extra = toNumber(bonus) ?? 0;
+  return Math.round((planGb + extra) * 1000) / 1000;
 }
 
 /**
@@ -483,6 +497,7 @@ export async function provisionPaidOrders(
               pr.attrs        AS product_attrs,
               pl.volume_gb    AS volume_gb,
               pl.duration_days AS duration_days,
+              o.bonus_volume_gb AS bonus_volume_gb,
               pr.name         AS product_name,
               -- The order's OWN panel is last, and last is what makes it safe to
               -- add: a trial is the only kind that sets orders.provider_id, and
@@ -738,7 +753,8 @@ async function deliver(
    * day column is left empty. `expires_at` is what every screen reads.
    */
   const durationDays = trial === null ? row.duration_days : null;
-  const volumeGb = trial === null ? toNumber(row.volume_gb) : trial.volumeGb;
+  const volumeGb =
+    trial === null ? withBonus(toNumber(row.volume_gb), row.bonus_volume_gb) : trial.volumeGb;
   const expiresAt =
     trial === null
       ? durationDays === null
@@ -1246,8 +1262,14 @@ async function renew(
       // Zero on the dimension not being bought. In ADD mode zero means "add
       // nothing here" while null means "no limit" — the difference is what
       // stops an extra-volume purchase from removing an account's expiry.
+      // A plain renewal carries the plan's volume plus what a volume code
+      // added. An add-on never reads the plan (and its order holds 0 anyway).
       volumeGb:
-        addon === null ? toNumber(row.volume_gb) : addon.kind === 'ADD_VOLUME' ? addon.quantity : 0,
+        addon === null
+          ? withBonus(toNumber(row.volume_gb), row.bonus_volume_gb)
+          : addon.kind === 'ADD_VOLUME'
+            ? addon.quantity
+            : 0,
       durationDays:
         addon === null ? row.duration_days : addon.kind === 'ADD_TIME' ? addon.quantity : 0,
       note: `shikoo ${row.order_public_id}`,

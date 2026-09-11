@@ -62,11 +62,14 @@ const ListQuery = z.object({
 const CreateBody = z
   .object({
     code: z.string().trim().regex(CODE_PATTERN, 'code must be 3-64 of A-Z, 0-9, - or _'),
-    kind: z.enum(['GIFT_BALANCE', 'PERCENT_OFF', 'AMOUNT_OFF']),
+    kind: z.enum(['GIFT_BALANCE', 'PERCENT_OFF', 'AMOUNT_OFF', 'BONUS_GB', 'BONUS_PERCENT']),
     // A gift code is a credit to a wallet by another name, so it is bounded by
     // the same ceiling as a deposit.
     amountIrr: z.number().int().min(1).max(MAX_SINGLE_PAYMENT_IRR).nullable().default(null),
     percent: z.number().min(0.01).max(100).nullable().default(null),
+    // Gigabytes a BONUS_GB code adds (0062). The ceiling is a typo guard, not a
+    // policy: no plan in this shop is a tenth of it.
+    bonusGb: z.number().min(0.001).max(100_000).nullable().default(null),
     maxUses: z.number().int().min(1).max(1_000_000).nullable().default(null),
     appliesTo: z.enum(['ALL', 'BUY', 'RENEW']).default('ALL'),
     firstPurchaseOnly: z.boolean().default(false),
@@ -86,14 +89,15 @@ const CreateBody = z
   })
   .strict()
   // The same rule as the table's own CHECK, stated here so the caller gets a
-  // sentence instead of a driver error. The database still holds it.
+  // sentence instead of a driver error. The database still holds it. One
+  // value per kind — and exactly that one, so a form cannot save a bonus code
+  // that also carries money it would never take off.
   .refine(
-    (b) => (b.kind === 'PERCENT_OFF' ? b.percent !== null : b.amountIrr !== null),
-    'PERCENT_OFF needs a percent; the other kinds need an amount',
-  )
-  .refine(
-    (b) => (b.kind === 'PERCENT_OFF' ? b.amountIrr === null : b.percent === null),
-    'a code carries a percent or an amount, not both',
+    (b) =>
+      (['percent', 'amountIrr', 'bonusGb'] as const).every(
+        (field) => (b[field] !== null) === (VALUE_OF[b.kind] === field),
+      ),
+    'a code carries exactly the value its kind needs: a percent, an amount, or gigabytes',
   )
   // A gift credits a wallet and is never applied to a purchase, so the fields
   // that narrow a discount would silently do nothing on one.
@@ -104,12 +108,22 @@ const CreateBody = z
     'a gift code credits a wallet and cannot be limited to a product, panel or action',
   );
 
+/** Which value column each kind carries. */
+const VALUE_OF = {
+  PERCENT_OFF: 'percent',
+  BONUS_PERCENT: 'percent',
+  BONUS_GB: 'bonusGb',
+  AMOUNT_OFF: 'amountIrr',
+  GIFT_BALANCE: 'amountIrr',
+} as const;
+
 interface CodeRow {
   id: number;
   code: string;
   kind: string;
   amount_irr: number | null;
   percent: number | null;
+  bonus_gb: number | null;
   max_uses: number | null;
   applies_to: string;
   first_purchase_only: boolean;
@@ -156,6 +170,7 @@ function shape(r: CodeRow, nowMs: number) {
     kind: r.kind,
     amountIrr: r.amount_irr === null ? null : Number(r.amount_irr),
     percent: r.percent === null ? null : Number(r.percent),
+    bonusGb: r.bonus_gb === null ? null : Number(r.bonus_gb),
     maxUses: r.max_uses,
     used: Number(r.used),
     appliesTo: r.applies_to,
@@ -183,7 +198,7 @@ function shape(r: CodeRow, nowMs: number) {
 }
 
 const SELECT_CODE = `
-  SELECT dc.id, dc.code, dc.kind, dc.amount_irr, dc.percent, dc.max_uses,
+  SELECT dc.id, dc.code, dc.kind, dc.amount_irr, dc.percent, dc.bonus_gb, dc.max_uses,
          dc.applies_to, dc.first_purchase_only, dc.resellers_only,
          dc.product_id, p.name AS product_name,
          dc.provider_id, pr.name AS provider_name,
@@ -356,8 +371,8 @@ export function registerDiscountRoutes(
       `INSERT INTO discount_codes
          (code, kind, amount_irr, percent, max_uses, applies_to,
           first_purchase_only, resellers_only, product_id, provider_id, expires_at,
-          uses_per_user, target_user_id)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+          uses_per_user, target_user_id, bonus_gb)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
        RETURNING id`,
     )
       .bind(
@@ -374,6 +389,7 @@ export function registerDiscountRoutes(
         b.expiresAt,
         b.usesPerUser,
         targetUserId,
+        b.bonusGb,
       )
       .first<{ id: number }>();
     const id = Number(created!.id);
@@ -390,6 +406,7 @@ export function registerDiscountRoutes(
         kind: b.kind,
         amount_irr: b.amountIrr,
         percent: b.percent,
+        bonus_gb: b.bonusGb,
         max_uses: b.maxUses,
         applies_to: b.appliesTo,
         expires_at: b.expiresAt,

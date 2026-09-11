@@ -117,7 +117,7 @@ async function makeService(
 async function lastOrder(userId: number) {
   return db
     .prepare(
-      `SELECT id, kind, quantity, unit_price_irr, discount_irr, total_irr, status,
+      `SELECT id, kind, quantity, unit_price_irr, discount_irr, total_irr, status, bonus_volume_gb,
               target_subscription_id, plan_id
          FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`,
     )
@@ -195,6 +195,10 @@ describe('buying extra volume', () => {
       // No plan: an add-on is not a product, and a plan here would send the
       // sweep off to provision a whole new account.
       plan_id: null,
+      // And no bonus: a volume code adds to a PLAN's volume, and an add-on has
+      // none. The sweep's add-on branch never reads the column, and this pins
+      // that the column is never written for it either (0062).
+      bonus_volume_gb: 0,
     });
     expect(invoice.replies[0]?.text).toContain('250,000 تومان');
   });

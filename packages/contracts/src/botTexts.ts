@@ -371,6 +371,12 @@ export const TEXTS = {
     screen: 'planDetail',
     hint: 'تخفیف کدی که مشتری وارد کرده',
   },
+  PLAN_CODE_BONUS: {
+    default: '🎁 کد «{code}»: {bonus} حجم اضافه',
+    placeholders: ['code', 'bonus'],
+    screen: 'planDetail',
+    hint: 'کد حجمی — به‌جای تخفیف پولی، حجم اضافه می‌دهد',
+  },
   PLAN_PAYABLE: {
     default: '💳 قابل پرداخت: {amount}',
     placeholders: ['amount'],
@@ -446,6 +452,12 @@ export const TEXTS = {
     placeholders: ['code', 'amount'],
     screen: 'checkout',
     hint: 'کد تخفیف اعمال‌شده روی فاکتور تمدید',
+  },
+  CHECKOUT_CODE_BONUS: {
+    default: '🎁 کد «{code}»: {bonus} حجم اضافه',
+    placeholders: ['code', 'bonus'],
+    screen: 'checkout',
+    hint: 'کد حجمی روی فاکتور — مبلغ عوض نمی‌شود، حجم بیشتر تحویل می‌شود',
   },
   CHECKOUT_AMOUNT: {
     default: '💳 مبلغ دقیق: {amount}',
@@ -1440,6 +1452,12 @@ export const TEXTS = {
     placeholders: ['code', 'amount'],
     screen: 'discount',
     hint: 'کدی که روی یک پلن مشخص نشست',
+  },
+  DISCOUNT_APPLIED_BONUS: {
+    default: '✅ کد «{code}» اعمال شد — {bonus} حجم اضافه.',
+    placeholders: ['code', 'bonus'],
+    screen: 'discount',
+    hint: 'کد حجمی که روی یک پلن نشست؛ جملهٔ بالا از «تخفیف» می‌گوید و این از حجم',
   },
   DISCOUNT_HELD_TITLE: {
     default: '✅ کد «{code}» ثبت شد.',

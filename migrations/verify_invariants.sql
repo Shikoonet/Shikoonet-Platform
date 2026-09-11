@@ -263,6 +263,27 @@ SELECT assert_eq((SELECT count(*) FROM discount_redemptions
                  2,
                  'the same customer may redeem one code against two orders');
 
+-- A code that gives volume (0062) carries exactly the value its kind needs,
+-- and never money: a bonus that reached `discount_irr` would be a free plan.
+INSERT INTO discount_codes (code, kind, bonus_gb) VALUES ('__INV-VOL30', 'BONUS_GB', 30);
+INSERT INTO discount_codes (code, kind, percent)  VALUES ('__INV-VOL20P', 'BONUS_PERCENT', 20);
+SELECT assert_rejects($$
+  INSERT INTO discount_codes (code, kind, amount_irr) VALUES ('__INV-VOL-X', 'BONUS_GB', 1000)
+$$, 'a BONUS_GB code needs its gigabytes, not money');
+SELECT assert_rejects($$
+  INSERT INTO discount_codes (code, kind, bonus_gb) VALUES ('__INV-VOL-Y', 'BONUS_PERCENT', 5)
+$$, 'a BONUS_PERCENT code needs a percent, not gigabytes');
+SELECT assert_rejects($$
+  INSERT INTO discount_codes (code, kind, bonus_gb) VALUES ('__INV-VOL-Z', 'BONUS_GB', 0)
+$$, 'zero gigabytes is not a bonus');
+-- And the order keeps what was given, never a negative.
+SELECT assert_rejects($$
+  INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, discount_irr, total_irr,
+                      bonus_volume_gb)
+       VALUES ('__inv-neg-bonus', (SELECT id FROM users WHERE telegram_id = -900000001),
+               'NEW_PURCHASE', 1, 1000000, 0, 1000000, -1)
+$$, 'an order cannot carry a negative volume bonus');
+
 -- ==========================================================================
 -- 7. THE CONFIG SHELF — one config to one order, and only once
 -- ==========================================================================
