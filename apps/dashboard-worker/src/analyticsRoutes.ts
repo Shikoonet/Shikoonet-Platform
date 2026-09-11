@@ -402,7 +402,8 @@ export async function loadAccountAnalytics(
       currentBalanceIrr: acc.currentBalanceIrr,
       balanceAsOf: acc.balanceAsOf,
       balanceFreshness: acc.balanceFreshness,
-      purchaseCount: sales.bot_count,
+      // Auto and manual alike — the same rule as the card panel below it.
+      purchaseCount: sales.sales_count,
       salesCount: sales.sales_count,
       salesAmountIrr: sales.sales_amount_irr,
       transactionCount: bankInflow.count,
@@ -468,8 +469,7 @@ export async function loadCardAnalytics(
   // `purchase_count`'s own CASE, and each window brings its own cut-off.
   const windowSql = CARD_ACTIVITY_WINDOWS.map(
     (w) =>
-      `COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED'` +
-      ` AND ${VERIFIED_AT} >= ${p(now - w.hours * 3_600_000)}` +
+      `COUNT(DISTINCT CASE WHEN ${VERIFIED_AT} >= ${p(now - w.hours * 3_600_000)}` +
       ` THEN c.id END) AS w_${w.key}`,
   ).join(', ');
 
@@ -489,7 +489,15 @@ export async function loadCardAnalytics(
               -- no sales — a card that cannot take a sale, filed under cards
               -- that took none.
               pc.status AS card_status,
-              COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED'${rangeFilter}
+              -- Every VERIFIED claim naming the card, however it was verified.
+              -- Until 2026-09-11 this counted AUTO_VERIFIED matches only, on
+              -- the theory that it judged rotation fairness and a hand-approved
+              -- claim was not a rotation datapoint. Two things made that wrong:
+              -- the rotation cursor itself moves on every verified deposit
+              -- (0029), manual or not; and on staging every real sale had been
+              -- approved by hand, so the screen said «۰ خرید» beside 6.7M in
+              -- takings. Sam, 2026-09-11: count the manual ones.
+              COUNT(DISTINCT CASE WHEN c.id IS NOT NULL${rangeFilter}
                                   THEN c.id END) AS purchase_count,
               -- «چقدر به کارت ملت رفت، و کدام کاربرها ریختند» -- Sam,
               -- 2026-09-02. Summed here rather than in a route of its own:
@@ -497,14 +505,8 @@ export async function loadCardAnalytics(
               -- about, so a second endpoint would be a second scan and a
               -- second place to keep in step with this one.
               --
-              -- Deliberately a WIDER population than purchase_count beside it.
-              -- That column counts only AUTO_VERIFIED matches, because it
-              -- exists to judge whether card rotation is fair. Money does not
-              -- care who approved it: a claim an operator confirmed by hand
-              -- put the same rials on the same card. So these three agree with
-              -- each other and are counted over every settled claim naming the
-              -- card, and verified_count is here so the amount is never read
-              -- against a count that means something else.
+              -- Same population as purchase_count now; kept as its own column
+              -- because the panel reads it and the two used to differ.
               COUNT(DISTINCT CASE WHEN c.id IS NOT NULL${rangeFilter}
                                   THEN c.id END) AS verified_count,
               COALESCE(SUM(CASE WHEN c.id IS NOT NULL${rangeFilter}
@@ -525,9 +527,12 @@ export async function loadCardAnalytics(
          ON c.card_digits = pc.card_digits
         AND c.source_system = ${p(MIRZABOT_SOURCE)}
         AND c.status = 'VERIFIED'
+       -- The settled match, whichever kind: it carries the review time the
+       -- range and the windows are measured against. One per claim, held by
+       -- the partial unique index, so this cannot fan a claim out.
        LEFT JOIN reconciliation_matches m
          ON m.payment_claim_id = c.id
-        AND m.status = 'AUTO_VERIFIED'
+        AND m.status IN ('AUTO_VERIFIED', 'CONFIRMED')
        -- No WHERE fa.active = 1. It used to be here, and it is the reason
        -- this screen could not answer the question an operator brings to it.
        --
@@ -595,7 +600,7 @@ export async function loadCardAnalytics(
     .prepare(
       `SELECT c.card_digits,
               COUNT(DISTINCT c.id) AS verified_count,
-              COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED' THEN c.id END) AS purchase_count,
+              COUNT(DISTINCT c.id) AS purchase_count,
               COALESCE(SUM(c.expected_amount_irr), 0) AS takings_irr,
               COUNT(DISTINCT c.customer_reference) AS unique_customers
          FROM payment_claims c
@@ -709,7 +714,7 @@ export async function loadCardAnalytics(
   return {
     range,
     entity: 'card_number' as const,
-    metric: 'hub_auto_verified_purchases' as const,
+    metric: 'hub_verified_purchases' as const,
     // Sent rather than duplicated in the panel: the headers and the counts
     // come from one list, so a seventh window cannot appear on one side only.
     windows: CARD_ACTIVITY_WINDOWS,
@@ -719,7 +724,7 @@ export async function loadCardAnalytics(
     // کارت نگاشت‌شده» while the rows below now include the unmapped ones — a
     // sentence describing the query rather than the answer, which is the same
     // fault the rows were added to repair.
-    note: 'خریدهای تاییدشده به تفکیک کارت، شامل کارت‌هایی که دیگر نگاشت ندارند. توازن تخصیص کارت بر پایهٔ اجاره‌های تکمیل‌شدهٔ ربات است، نه این نمودار.',
+    note: 'خریدهای تاییدشده به تفکیک کارت — خودکار و دستی هر دو — شامل کارت‌هایی که دیگر نگاشت ندارند. توازن تخصیص کارت بر پایهٔ اجاره‌های تکمیل‌شدهٔ ربات است، نه این نمودار.',
     distribution,
     items: allItems.map((i) => ({
       ...i,

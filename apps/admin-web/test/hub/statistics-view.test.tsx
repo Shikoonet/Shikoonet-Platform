@@ -98,7 +98,7 @@ beforeEach(() => {
           ok: true,
           range: 'all',
           entity: 'card_number',
-          metric: 'hub_auto_verified_purchases',
+          metric: 'hub_verified_purchases',
           note: 'diagnostic note',
           windows: [
             { key: 'h12', hours: 12, label: '۱۲ ساعت' },

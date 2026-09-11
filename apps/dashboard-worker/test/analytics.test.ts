@@ -249,15 +249,17 @@ describe('GET /api/v1/cards/analytics', () => {
       .bind(ACCOUNT, CARD, now)
       .run();
 
-    // One an hour ago, one twenty hours ago, one ten days ago.
-    for (const [n, agoHours] of [
-      ['recent', 1],
-      ['yesterday', 20],
-      ['old', 24 * 10],
+    // One an hour ago, one twenty hours ago, one ten days ago — and the
+    // yesterday one approved by hand, because a window that only saw the
+    // automatic ones read «۰» on a staging box where every sale was manual.
+    for (const [n, agoHours, matchStatus] of [
+      ['recent', 1, 'AUTO_VERIFIED'],
+      ['yesterday', 20, 'CONFIRMED'],
+      ['old', 24 * 10, 'AUTO_VERIFIED'],
     ] as const) {
       await seedTx(`tx-w-${n}`, { ts: now - agoHours * HOUR });
       await seedClaim(`c-w-${n}`, `tx-w-${n}`, {
-        matchStatus: 'AUTO_VERIFIED',
+        matchStatus,
         reviewedAt: now - agoHours * HOUR,
         cardDigits: CARD,
       });
@@ -290,9 +292,9 @@ describe('GET /api/v1/cards/analytics', () => {
    * the answer and then asserts it is a test that agrees with itself.
    *
    * One of card A's claims is CONFIRMED rather than AUTO_VERIFIED, and that is
-   * the point of the case: money does not care who approved it. `takingsIrr`
-   * must count it and `purchaseCount` — which judges rotation fairness — must
-   * not.
+   * the point of the case: money does not care who approved it, and since
+   * 2026-09-11 neither does the purchase count — `takingsIrr` and
+   * `purchaseCount` must both include it.
    */
   it('sums what each card actually took, and from how many people', async () => {
     const CARD_A = '6104337712345678';
@@ -336,8 +338,8 @@ describe('GET /api/v1/cards/analytics', () => {
       takingsIrr: 7_000_000,
       verifiedCount: 3,
       uniqueCustomers: 2,
-      // The manual one is money but not a rotation datapoint.
-      purchaseCount: 2,
+      // The manual one counts as a purchase like the other two.
+      purchaseCount: 3,
     });
     expect(by.get(CARD_B)).toMatchObject({
       takingsIrr: 8_000_000,

@@ -49,7 +49,7 @@ const RESPONSE = {
   ok: true,
   range: 'all',
   entity: 'card_number',
-  metric: 'hub_auto_verified_purchases',
+  metric: 'hub_verified_purchases',
   note: 'یادداشت',
   windows: WINDOWS,
   distribution: { min: 0, max: 2, gap: 2 },
