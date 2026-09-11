@@ -163,14 +163,61 @@ function absoluteSubUrl(raw: unknown, baseUrl: string): string | null {
   return `${baseUrl.replace(/\/+$/, '')}/${value.replace(/^\/+/, '')}`;
 }
 
-async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    return await run(controller.signal);
-  } finally {
-    clearTimeout(timer);
-  }
+/**
+ * A deadline that outlives the call it was given to.
+ *
+ * The timer is deliberately NOT cleared when `run` resolves, and that is the
+ * whole fix. `run` is always a `fetch`, and a fetch resolves as soon as the
+ * response HEADERS arrive — the body has not been read yet. Every caller here
+ * then does `await res.json()` outside this function, so clearing the timer on
+ * the way out disarmed the deadline exactly one step before the part that can
+ * hang: a panel that answers 200 and then stalls its body blocked for ever.
+ *
+ * That is not one adapter call hanging. `provisionPaidOrders` runs inline in
+ * the single poll loop, so a stalled body stops `getUpdates`, stops
+ * `notify.flush`, and stops every sweep — the bot is dead to every customer
+ * until somebody restarts it. It is the same shape as the incident already
+ * written down in `poll.ts`, where a slow panel closed Telegram's callback
+ * window and every tap in the shop came back «query is too old».
+ *
+ * Leaving the timer armed keeps the signal live for the body read as well, so
+ * the abort reaches the response stream and `res.json()` rejects.
+ *
+ * `AbortSignal.timeout` rather than a hand-rolled `AbortController` and
+ * `setTimeout`, because the platform one is already what this needs: its timer
+ * is unref'd, so a pending deadline cannot hold the process open on its own,
+ * and it aborts with a `TimeoutError` whose message says the operation timed
+ * out. That message reaches a human — the catch below renders «could not reach
+ * the panel: {reason}» — where the hand-rolled version could only say «This
+ * operation was aborted», which does not tell an operator whether the panel was
+ * slow or the process was shutting down. Five other places in this repo already
+ * use it.
+ *
+ * MANY paths return without reading the body at all — every `!res.ok` early
+ * return, plus the `/reset` POST whose body nothing wants. Those leave an
+ * undrained body that the still-armed controller aborts later, which undici
+ * treats as discarding a stream nobody was reading.
+ *
+ * An earlier version of this comment said «three paths», and a review counted
+ * roughly twenty. The number was never the point and stating it wrongly made
+ * the paragraph read as a completed audit it was not — so it says what is
+ * true instead: this is the common case, not the exception.
+ *
+ * ## The one thing a caller must not do
+ *
+ * Do not `await` anything else between the fetch and its `res.json()`. The
+ * deadline now outlives the fetch, so an unrelated wait in between spends the
+ * same budget the body read is relying on — and `writeGroup` did exactly that,
+ * calling `hostedTags` (itself budgeted the full timeout) before reading a
+ * group the panel had already created. Read the body first, then do the other
+ * work; `listGroups` and `listInbounds` were already written that way.
+ */
+export function withTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  /** Overridable so a test can prove the deadline survives `run` resolving. */
+  timeoutMs: number = TIMEOUT_MS,
+): Promise<T> {
+  return run(AbortSignal.timeout(timeoutMs));
 }
 
 /**
@@ -473,8 +520,25 @@ async function writeGroup(
       }
       return { ok: false, reason: `panel refused the group (HTTP ${res.status})${detail}` };
     }
+    /*
+     * The body FIRST, and only then the second round trip.
+     *
+     * This read the body after `hostedTags`, and that ordering became unsafe
+     * the moment the deadline stopped being cleared when `fetch` resolved. The
+     * group was already written at the panel; `hostedTags` is itself budgeted
+     * the full timeout and swallows its own failures, so a merely slow
+     * `/api/hosts` burns the whole budget — and by the time this line ran, the
+     * controller belonging to `res` had fired and cancelled a body that had
+     * nothing left to wait for. The caller then reported «could not reach the
+     * panel» for a group that exists.
+     *
+     * `listGroups` and `listInbounds` already read the body before calling
+     * `hostedTags`. This was the one call site of nineteen with an unrelated
+     * `await` in between, and now there are none.
+     */
+    const created: unknown = await res.json();
     const hosted = await hostedTags(provider, base, auth.token);
-    const group = toGroup(await res.json(), hosted);
+    const group = toGroup(created, hosted);
     if (group === null) return { ok: false, reason: 'the panel replied without a group id' };
     return { ok: true, group };
   } catch (error) {
