@@ -15,6 +15,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { handleUpdate } from '../src/handle.js';
 import { provisionPaidOrders } from '../src/provision.js';
 import * as menu from '../src/menu.js';
+import { encode } from '../src/callback.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, providerId, setTierDiscount } from './helpers/shop.js';
@@ -485,7 +486,23 @@ describe('what the customer may type', () => {
     for (const [i, text] of ['', 'پنج', '-3', '2.5', '0'].entries()) {
       const out = await handleUpdate(db, types(updateId + 1 + i, telegramId, text));
       // An empty message is not a message; the rest are answered.
-      if (text !== '') expect(out.replies[0]?.text).toBe(menu.ADDON_NOT_A_NUMBER);
+      if (text !== '') {
+        expect(out.replies[0]?.text).toBe(menu.ADDON_NOT_A_NUMBER);
+        /*
+         * And answered WITH the prompt's buttons still on it.
+         *
+         * `withCleanChat` writes the answer back onto the message that asked,
+         * so a reply built with no keyboard does not merely arrive bare — it
+         * edits «چند گیگابایت؟» and takes its buttons away. The step stays open
+         * on purpose, so the customer was then inside a question whose only
+         * remaining exits were the bottom bar and `/start`.
+         *
+         * Every sibling re-ask in `handle.ts` passes chrome — the discount
+         * code, the account name, the top-up amount, the reseller application.
+         * This handler was the lone outlier.
+         */
+        expect(out.replies[0]?.keyboard).toEqual(menu.promptMenu(encode('sub', service)));
+      }
       expect(await lastOrder(userId)).toBeNull();
     }
   });
@@ -497,6 +514,22 @@ describe('what the customer may type', () => {
     await handleUpdate(db, press(updateId, telegramId, `xv:${service}`));
 
     await handleUpdate(db, types(updateId + 1, telegramId, '۵'));
+
+    expect(await lastOrder(userId)).toMatchObject({ quantity: 5 });
+  });
+
+  it('reads Arabic-Indic digits too, because an Arabic keyboard types those', async () => {
+    // U+0665, not U+06F5. Two Unicode blocks that look alike on screen and are
+    // produced by two different keyboard layouts, and `toAsciiDigits` has an arm
+    // for each. Only the Persian arm was covered anywhere in the repo, so the
+    // `0x0660` branch — the whole reason the helper is used on this path — could
+    // be deleted with every suite green.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeService(userId);
+    await handleUpdate(db, press(updateId, telegramId, `xv:${service}`));
+
+    await handleUpdate(db, types(updateId + 1, telegramId, '٥'));
 
     expect(await lastOrder(userId)).toMatchObject({ quantity: 5 });
   });

@@ -636,6 +636,43 @@ describe('the copy buttons on an invoice', () => {
   });
 });
 
+describe('what an invoice calls the thing being sold', () => {
+  const CARD = '6037997512345678';
+
+  /**
+   * A tier and a size, which is the shape every shop that uses the service
+   * level has — and the shape the shared `PLAN` fixture does not, because its
+   * product and plan names are the same string. So `soldAs(product, plan)` and
+   * a bare `plan.productName` produce identical output for it, and the renewal
+   * invoice could be reverted to the bare version with the suite green.
+   */
+  const TIERED: CatalogPlan = { ...PLAN, productName: 'پلاتینیوم', planName: '۳۰ گیگ' };
+
+  it('names the tier AND the size, on the purchase invoice and the renewal one', () => {
+    // Both, because they are two call sites of the same helper and the renewal
+    // one was the one that had drifted: it printed the product and dropped the
+    // plan, so a customer renewing «پلاتینیوم — ۳۰ گیگ» was shown «پلاتینیوم»
+    // and could not tell which size they were being charged for.
+    expect(menu.checkout('ORD-9', TIERED, 1_950_000, CARD, 'سام')).toContain('پلاتینیوم — ۳۰ گیگ');
+    expect(menu.renewCheckout('ORD-9', 'سرویس من', TIERED, 1_950_000, CARD, 'سام')).toContain(
+      'پلاتینیوم — ۳۰ گیگ',
+    );
+  });
+
+  it('says it once when the two names are the same', () => {
+    // The migrated shop, where every product carries its plan's own name. The
+    // helper exists so that case does not read «۱ماهه - ۵۰ گیگ — ۱ماهه - ۵۰ گیگ»
+    // — asserted against that exact doubling rather than against the dash,
+    // which the rest of the invoice uses for its own reasons.
+    expect(menu.renewCheckout('ORD-9', 'سرویس من', PLAN, 1_950_000, CARD, 'سام')).not.toContain(
+      `${PLAN.productName} — ${PLAN.planName}`,
+    );
+    expect(menu.renewCheckout('ORD-9', 'سرویس من', PLAN, 1_950_000, CARD, 'سام')).toContain(
+      PLAN.productName,
+    );
+  });
+});
+
 describe('the card-to-card notes', () => {
   const CARD = '6037997512345678';
 

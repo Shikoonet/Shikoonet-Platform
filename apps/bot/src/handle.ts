@@ -53,7 +53,7 @@ import {
 import { loadBotContent } from './botContent.js';
 import { acceptRules, gateFor, type GateVerdict, type MembershipApi } from './gate.js';
 import * as menu from './menu.js';
-import { IRR_PER_TOMAN, priceForUser } from './money.js';
+import { IRR_PER_TOMAN, priceForUser, toAsciiDigits } from './money.js';
 import {
   newPublicId,
   placeAddonOrder,
@@ -991,10 +991,38 @@ async function handleTypedAnswer(
   if (session.step.startsWith('addon:')) {
     return withCleanChat(await handleAddonAmount(tx, message, user, session), message, session);
   }
-  if (session.step === 'code') {
+  // `:held` too, and that is the fix rather than a widening for its own sake.
+  //
+  // After a code is accepted the step becomes `code:held`, and typing a SECOND
+  // code — the natural next action, right under a screen that just said the
+  // first one worked — matched nothing here and fell to `IGNORED`. That skips
+  // `withCleanChat` entirely, so there was no reply AND no delete: the
+  // customer's text sat in the chat for ever with no answer. It is exactly the
+  // failure `clean-chat.test.ts` exists to prevent.
+  //
+  // Safe to route, because both handlers re-check everything from the database
+  // and the `:held` payload carries the field each of them reads — `planId`
+  // for one, `subscriptionId` for the other. A second code simply replaces the
+  // first, which is what typing one means.
+  //
+  // The payload was never the risk, though — the SCREEN was, and it took a
+  // review to see it. `ask()` remembers a message id in `data.screen`, and
+  // `code:held` deliberately survives the order, so a stray word typed beside a
+  // live checkout invoice used to be EDITED ONTO that invoice. The invoice
+  // paths drop `data.screen` now (`forgetScreen`), which is why routing here is
+  // safe rather than merely well-intentioned.
+  //
+  // NOT extended to `uname:held`. `handleCustomerName` ends in
+  // `placeOrderScreen`, so routing a stray message there would place an order.
+  // That step therefore keeps the silence the rest of this fixes: a stray
+  // message at `uname:held` still falls through to IGNORED, and `withCleanChat`
+  // returns early on an ignored outcome, so it is not even deleted. Left as it
+  // is on purpose — placing an order for a customer who typed a word is worse
+  // than leaving that word in the chat.
+  if (session.step === 'code' || session.step === 'code:held') {
     return withCleanChat(await handleDiscountCode(tx, message, user, session), message, session);
   }
-  if (session.step === 'coder') {
+  if (session.step === 'coder' || session.step === 'coder:held') {
     return withCleanChat(await handleRenewalCode(tx, message, user, session), message, session);
   }
   if (session.step === 'gift') {
@@ -1347,6 +1375,34 @@ async function clearSession(tx: D1DatabaseSession, userId: number): Promise<void
     .run();
 }
 
+/**
+ * Forgets which message a question was asked on, without ending the question.
+ *
+ * `screenOf` is what makes a typed answer land back INSIDE the message that
+ * asked, and that is right while the question is still on screen. Once an
+ * invoice has replaced it, it is wrong: the id now points at the invoice, so a
+ * later refusal would edit the customer's card details and amount away and
+ * leave a one-line «this code is not usable» in their place.
+ *
+ * Reachable because the held-code step deliberately survives the order — it is
+ * what lets a second tap re-price the same plan identically — so a customer who
+ * types anything at all beside their invoice is still in `code:held`. Before
+ * those steps were routed, such a message was ignored; routing them made the
+ * silence into damage, which is worse than what it fixed.
+ *
+ * The step and the held code stay. Only the screen id goes, so the next reply
+ * arrives as a NEW message under the invoice instead of on top of it.
+ */
+async function forgetScreen(tx: D1DatabaseSession, userId: number): Promise<void> {
+  await tx
+    .prepare(
+      `UPDATE bot_sessions SET data = data - 'screen', updated_at = now()
+        WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .run();
+}
+
 /** Asks a question and remembers that it was asked. */
 async function ask(
   tx: D1DatabaseSession,
@@ -1408,14 +1464,34 @@ async function handleAddonAmount(
   const subscriptionId = Number(session.data['subscriptionId']);
   if (!Number.isSafeInteger(subscriptionId)) return IGNORED;
 
-  const reply = (text: string, keyboard?: InlineKeyboard): HandleOutcome => ({
+  /**
+   * The prompt's own chrome by default, and every sibling handler already does
+   * this.
+   *
+   * `withCleanChat` writes the answer back onto the message that ASKED, so a
+   * reply built with no keyboard does not merely arrive bare — it EDITS the
+   * «چند گیگابایت؟» screen and takes its buttons away. The step stays open on
+   * purpose, so the customer was then inside a question whose only remaining
+   * exits were the bottom bar and `/start`.
+   *
+   * Four paths reached it: two «this is not a number» and the two bounds. Every
+   * other re-ask in this file passes chrome — the discount code, the account
+   * name, the top-up amount, the reseller application — which is what makes
+   * this one the outlier rather than the convention.
+   */
+  const reply = (
+    text: string,
+    keyboard: InlineKeyboard = menu.promptMenu(encode('sub', subscriptionId)),
+  ): HandleOutcome => ({
     status: 'processed',
-    replies: [{ chatId: message.chat.id, text, ...(keyboard ? { keyboard } : {}) }],
+    replies: [{ chatId: message.chat.id, text, keyboard }],
   });
 
   // Persian digits are what a Persian keyboard produces, so they are accepted
   // and normalised rather than rejected as "not a number".
-  const typed = message.text!.trim().replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+  // Both digit blocks, via the money edge's own helper. This handled only the
+  // Persian one, so an Arabic keyboard layout's «١٠» was refused as not a number.
+  const typed = toAsciiDigits(message.text!.trim());
   if (!/^[0-9]+$/.test(typed)) return reply(menu.ADDON_NOT_A_NUMBER);
   const quantity = Number(typed);
   if (quantity <= 0) return reply(menu.ADDON_NOT_A_NUMBER);
@@ -1533,9 +1609,23 @@ async function handleDiscountCode(
   );
   if (!check.ok) {
     // The question stays open: the customer mistyped and can type again.
+    //
+    // And the keyboard has to agree with the session. This returns BEFORE
+    // `ask()`, so a refusal typed at `code:held` leaves the first code still
+    // held and still discounting the order — while a bare `planDetailMenu(plan)`
+    // withdraws «برداشتن کد» and offers «کد تخفیف دارم» again, which is a
+    // keyboard describing a state `bot_sessions` does not hold. Reachable only
+    // since `code:held` began routing here; before that the refusal branch was
+    // reachable from step `code` alone, where nothing was applied.
+    const stillHeld = await heldCode(tx, user, plan, price.totalIrr);
     return answer(
       menu.DISCOUNT_REFUSED[check.reason] ?? menu.DISCOUNT_REFUSED['UNKNOWN_CODE']!,
-      menu.planDetailMenu(plan),
+      menu.planDetailMenu(
+        plan,
+        stillHeld
+          ? { code: stillHeld.code.code, discountIrr: stillHeld.discountIrr }
+          : undefined,
+      ),
     );
   }
 
@@ -1716,6 +1806,9 @@ async function placeOrderScreen(
   if (checkout.claimed) {
     return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
   }
+  // The invoice now occupies the message the question was asked on, so nothing
+  // may edit it again. See `forgetScreen`.
+  await forgetScreen(tx, user.id);
   return screen(
     menu.checkout(
       placed.publicId,
@@ -1902,10 +1995,9 @@ async function handleTopupAmount(
 
   // Persian digits, and the separators a person types into a chat: `100,000`
   // and `۱۰۰٬۰۰۰` are both what somebody means by a hundred thousand.
-  const typed = message
-    .text!.trim()
-    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
-    .replace(/[,٬\s]/g, '');
+  // Same helper as the add-on path, and for the same reason: `٠-٩` is a second
+  // digit block that looks like `۰-۹` and is what an Arabic layout produces.
+  const typed = toAsciiDigits(message.text!.trim()).replace(/[,٬\s]/g, '');
   if (!/^[0-9]{1,12}$/.test(typed)) {
     return reply(menu.askTopupAmount(SHOP.topupMinIrr, SHOP.topupMaxIrr), back);
   }
@@ -2455,8 +2547,28 @@ async function handleCallback(
       if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
       // A service with no link has nothing to encode. Sending a QR of an empty
       // string is a picture that scans to nothing, which is worse than saying so.
+      //
+      // «لینک هنوز در دسترس نیست», not «این سرویس دستی آماده شده».
+      //
+      // What proves the service is panel-backed is the BUTTON, not this query:
+      // `serviceDetailMenu` draws `qr` only when `actionsFor()` returned
+      // something, and `actionsFor` requires a provider kind, a base URL and a
+      // remote username. `subscriptionOnPanelForUser` does not — its name
+      // oversells a LEFT JOIN, and it hands back rows whose `provider_kind` is
+      // null, which `actions.ts` treats as UNSUPPORTED precisely because they
+      // are the manual ones.
+      //
+      // So the manual sentence is false HERE, for the reachable press: the link
+      // has not synced yet. The BODY of this same screen already prints the true
+      // one, so the screen described one state two ways and the button's version
+      // was the wrong one. A stale `qr:` replayed out of old chat history can
+      // still reach this line for a row whose provider was deleted, and it is
+      // the better of the two answers there too.
       if (!service.subscription_url) {
-        return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu(actionsFor(service, SHOP, tierFor(user))));
+        return screen(
+          menu.SERVICE_DETAIL_NO_LINK,
+          menu.serviceDetailMenu(actionsFor(service, SHOP, tierFor(user))),
+        );
       }
       // A new message rather than an edit: the detail screen the customer is
       // looking at stays where it is, and the picture arrives under it.
@@ -2670,6 +2782,8 @@ async function handleCallback(
       if (checkout.claimed) {
         return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
       }
+      // Same as the purchase invoice: this message is no longer a question.
+      await forgetScreen(tx, user.id);
       return screen(
         menu.renewCheckout(
           placed.publicId,

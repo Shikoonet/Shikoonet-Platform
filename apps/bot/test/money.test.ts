@@ -73,6 +73,13 @@ describe('nameMentionsPrice', () => {
     expect(nameMentionsPrice('۱ماهه - ۵۰ گیگ - ۱۹۵٫۰۰۰ تومان', 1_950_000)).toBe(true);
   });
 
+  it('reads Arabic-Indic digits, which are a different block that looks the same', () => {
+    // U+0660-0669, not U+06F0-06F9. `toAsciiDigits` has an arm for each and
+    // only the Persian one was ever exercised — here or anywhere else in the
+    // repo — so the `0x0660` branch could be deleted with every suite green.
+    expect(nameMentionsPrice('١ماهه - ٥٠ گیگ - ١٩٥٫٠٠٠ تومان', 1_950_000)).toBe(true);
+  });
+
   it('says no when the name carries no price', () => {
     expect(nameMentionsPrice('۱ماهه - ۵۰ گیگ - چند کاربر', 1_950_000)).toBe(false);
     expect(nameMentionsPrice('اسپاتیفای - ۱ ماهه', 2_500_000)).toBe(false);

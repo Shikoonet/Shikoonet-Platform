@@ -139,6 +139,18 @@ export let ORDER_NOT_PAYABLE = DEFAULT_TEXTS.raw('ORDER_NOT_PAYABLE');
 export let MY_SERVICES_EMPTY = DEFAULT_TEXTS.raw('MY_SERVICES_EMPTY');
 export let SERVICE_GONE = DEFAULT_TEXTS.raw('SERVICE_GONE');
 export let ACTION_UNSUPPORTED = DEFAULT_TEXTS.raw('ACTION_UNSUPPORTED');
+/**
+ * The line for a panel-backed service whose link has not arrived yet.
+ *
+ * A live binding because `handle.ts` needs it too: the QR button answered
+ * `ACTION_UNSUPPORTED` — «این سرویس به‌صورت دستی آماده شده» — for a service that
+ * is not manual at all. What says it is on a panel is that `serviceDetailMenu`
+ * only draws `qr` when `actionsFor()` returned something, and that requires a
+ * provider kind, a base URL and a remote username; only the link is missing.
+ * The body of that very screen already prints this sentence for the same state,
+ * so one screen described it two ways and the button's version was false.
+ */
+export let SERVICE_DETAIL_NO_LINK = DEFAULT_TEXTS.raw('SERVICE_DETAIL_NO_LINK');
 export let CONFIRM_REVOKE = DEFAULT_TEXTS.raw('CONFIRM_REVOKE');
 export let ADDON_NOT_A_NUMBER = DEFAULT_TEXTS.raw('ADDON_NOT_A_NUMBER');
 export let ASK_ACCOUNT_NAME = DEFAULT_TEXTS.raw('ASK_ACCOUNT_NAME');
@@ -264,6 +276,7 @@ export function applyContent(content: BotContent): void {
   MY_SERVICES_EMPTY = t.raw('MY_SERVICES_EMPTY');
   SERVICE_GONE = t.raw('SERVICE_GONE');
   ACTION_UNSUPPORTED = t.raw('ACTION_UNSUPPORTED');
+  SERVICE_DETAIL_NO_LINK = t.raw('SERVICE_DETAIL_NO_LINK');
   CONFIRM_REVOKE = t.raw('CONFIRM_REVOKE');
   ADDON_NOT_A_NUMBER = t.raw('ADDON_NOT_A_NUMBER');
   ASK_ACCOUNT_NAME = t.raw('ASK_ACCOUNT_NAME');
@@ -2317,7 +2330,17 @@ export function renewCheckout(
     '',
     t.render('CHECKOUT_ORDER_ID', { id: publicId }),
     t.render('CHECKOUT_RENEW_SERVICE', { service: serviceName }),
-    t.render('CHECKOUT_RENEW_PLAN', { plan: plan.productName }),
+    // `soldAs`, not the product name alone — the same helper the button the
+    // customer just pressed uses, and the same one the purchase invoice uses.
+    //
+    // A tiered service has several sizes on one panel and `plansOnPanel` returns
+    // them flat, so «پلاتینیوم — ۳۰ گیگ», «۵۰ گیگ» and «۱۰۰ گیگ» all produced
+    // the identical invoice line «با پلن: پلاتینیوم». This is the screen that
+    // asks for an exact transfer with no tolerance, so it is the worst place to
+    // be vague about which one was chosen. The button was fixed on 2026-08-23
+    // and its own comment says the invoice under it was the screen that fix did
+    // not reach.
+    t.render('CHECKOUT_RENEW_PLAN', { plan: soldAs(plan.productName, plan.planName) }),
   ];
   if (applied && applied.discountIrr > 0) {
     lines.push(
