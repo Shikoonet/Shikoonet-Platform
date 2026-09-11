@@ -74,6 +74,38 @@ export interface PollResult {
  */
 export const MAX_UPDATE_ATTEMPTS = 3;
 
+/**
+ * How long one cycle may spend, in total, waiting out Telegram's rate limits
+ * before giving a reply up.
+ *
+ * Telegram allows roughly one message per second per chat, and one update here
+ * can emit the reply-keyboard carrier, the screen and its deletes — so a
+ * customer tapping quickly through a menu exceeds it in ordinary use. Until now
+ * the reply was simply dropped: the transaction had committed, the spinner had
+ * already been cleared by `answer()`, and the customer watched nothing happen.
+ *
+ * A budget rather than a per-call cap, because the loop is what has to be
+ * protected. Telegram's callback window is short, and a batch that slept once
+ * per throttled reply would answer «query is too old» to every press behind it.
+ * Ten seconds is under half a `getUpdates` long poll, so even a fully spent
+ * budget leaves the cycle shorter than a quiet one.
+ */
+export const REPLY_RETRY_BUDGET_MS = 10_000;
+
+/**
+ * The most one reply may hold up the loop, whatever the budget still has.
+ *
+ * The budget alone would let a single `retry_after: 10` spend all of it at
+ * once, and every update behind that one waits for `answer()` while it does —
+ * a spinner Telegram gives a short life to. The per-chat limit this retry
+ * exists for is roughly one message per second, and the `retry_after` that
+ * comes back with it is small; the large values are the group and broadcast
+ * limits, which belong to `sweepBroadcasts` and its own pause, not here.
+ *
+ * Three seconds covers the wait this is for and refuses the one it is not.
+ */
+export const MAX_SINGLE_WAIT_MS = 3_000;
+
 /** What is known about an update that has failed at least once. */
 export interface Attempt {
   count: number;
@@ -160,9 +192,76 @@ export async function pollOnce(
    * only in a log line nobody kept.
    */
   attempts: Map<number, Attempt> = new Map(),
+  /**
+   * Overridable for one reason: the budget is a property of the CYCLE, and a
+   * test that pins it against the real ten seconds has to sleep for ten
+   * seconds. With a small budget the same two updates prove the same thing in
+   * a second.
+   */
+  budgetMs: number = REPLY_RETRY_BUDGET_MS,
 ): Promise<PollResult> {
   const updates = await api.getUpdates(offset, timeoutSec, signal);
   const counts = { ...EMPTY_COUNTS };
+  /**
+   * How long this whole cycle may spend waiting out rate limits, in total.
+   *
+   * A budget for the CYCLE rather than a cap per call, because the thing worth
+   * protecting is the loop: Telegram's callback window is short, and a batch
+   * that sleeps once per reply would answer «query is too old» to every press
+   * behind it. One customer being throttled must not cost the shop its
+   * responsiveness — so the first few waits are paid and the rest are not.
+   *
+   * Ten seconds is under half a `getUpdates` long poll, so a fully spent budget
+   * still leaves the cycle shorter than a quiet one.
+   */
+  let retryBudgetMs = budgetMs;
+  /**
+   * Sends, and on a 429 waits exactly as long as Telegram said and sends once
+   * more.
+   *
+   * Only a 429, and that is the whole design. `telegram.ts` says it plainly:
+   * a 429 is the one refusal that carries its own proof of NON-delivery —
+   * Telegram is stating it did not send this. Every other non-permanent error,
+   * a 5xx or a socket that closed, leaves it unknown whether the message went,
+   * and re-sending an unknown is how a customer gets the same screen twice.
+   *
+   * Wrapped around the leaf SEND rather than around the branch that chooses
+   * one, so the decision is made per call against the error that call actually
+   * produced. A wrapper around the whole branch would judge a failed
+   * `sendPhotoBytes` by whether the fallback `sendMessage` was rate limited.
+   *
+   * Three sends are wrapped, all of them `sendMessage`: the QR fallback, the
+   * new screen, and the edit fallback. The photo, the document and the
+   * reply-keyboard carrier are deliberately not. The first two have no producer
+   * in the bot today; the carrier is a `sendMessage` against the same limit,
+   * but what it costs when it is refused is a stale bottom label, and its own
+   * catch already says that is not worth spending the cycle's budget on. The
+   * screen it precedes is wrapped, and that is the message the customer is
+   * waiting for.
+   */
+  const onceMore = async (trace: string, send: () => Promise<void>): Promise<void> => {
+    try {
+      await send();
+    } catch (err) {
+      const waitMs = rateLimitedForMs(err);
+      // Two ceilings, and they answer different questions. `MAX_SINGLE_WAIT_MS`
+      // asks «how long may ONE customer hold up the loop», because `answer()`
+      // for every update behind this one waits here too and the spinner they
+      // are watching is on a short Telegram clock. The budget asks «how long
+      // may the whole cycle spend». A wait past either is refused outright
+      // rather than partly paid — a partly paid wait is still a wait, and it
+      // does not deliver the message at the end of it.
+      if (waitMs === null || waitMs > MAX_SINGLE_WAIT_MS || waitMs > retryBudgetMs) throw err;
+      retryBudgetMs -= waitMs;
+      log.warn('reply.rate_limited', { trace, waitMs, budget_left_ms: retryBudgetMs });
+      await sleep(waitMs, signal);
+      // `sleep` resolves on abort rather than rejecting, so without this the
+      // retry fires into a process that is shutting down: one doomed API call
+      // and one misleading `reply.undelivered` per pending retry.
+      if (signal?.aborted) throw err;
+      await send();
+    }
+  };
   let failed = 0;
   let abandoned = 0;
   let confirmedThrough = offset - 1;
@@ -279,9 +378,9 @@ export async function pollOnce(
         if (reply.qrOf !== undefined) {
           // The only reply here with a fallback, because it is the only one
           // whose text stands on its own: `reply.text` for the QR button IS the
-          // subscription link. Nothing on this path is retried — the
-          // transaction has committed and re-fetching the update would be a
-          // no-op against the claim — so a picture Telegram refuses used to
+          // subscription link. The update itself is never retried — the
+          // transaction has committed and re-fetching it would be a no-op
+          // against the claim — so a picture Telegram refuses used to
           // take the link with it and the customer was left with a button that
           // did nothing. The picture is worth trying for and not worth losing
           // the address over.
@@ -294,7 +393,9 @@ export async function pollOnce(
             );
           } catch (err) {
             log.warn('reply.qr_failed', { trace: traceOf(update), fallback: 'link only' }, err);
-            await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
+            await onceMore(traceOf(update), () =>
+              api.sendMessage(reply.chatId, reply.text, reply.keyboard),
+            );
           }
         } else if (reply.photo !== undefined) {
           await api.sendPhoto(reply.chatId, reply.photo, reply.text);
@@ -304,12 +405,14 @@ export async function pollOnce(
           reply.editMessageId === undefined ||
           outcome.replyKeyboardUpdate !== undefined
         ) {
-          await api.sendMessage(
-            reply.chatId,
-            reply.text,
-            reply.keyboard,
-            undefined,
-            reply.replyKeyboard,
+          await onceMore(traceOf(update), () =>
+            api.sendMessage(
+              reply.chatId,
+              reply.text,
+              reply.keyboard,
+              undefined,
+              reply.replyKeyboard,
+            ),
           );
           if (reply.editMessageId !== undefined) {
             // The replacement is safely below the keyboard carrier now. The
@@ -344,7 +447,9 @@ export async function pollOnce(
             // tidiness problem; a screen that never arrives is the customer
             // pressing a button and watching nothing happen.
             log.warn('reply.edit_failed', { trace: traceOf(update), fallback: 'new message' }, err);
-            await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
+            await onceMore(traceOf(update), () =>
+              api.sendMessage(reply.chatId, reply.text, reply.keyboard),
+            );
           }
         }
       } catch (err) {
