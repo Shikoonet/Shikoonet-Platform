@@ -72,7 +72,18 @@ export type RemovalReason = 'expired' | 'volume';
 interface DueRow {
   id: number;
   public_id: string;
-  telegram_id: number | null;
+  /**
+   * NOT nullable, and the type says so now.
+   *
+   * `users.telegram_id` is `bigint NOT NULL UNIQUE` (migration 0001) and no
+   * later `ALTER TABLE users` touches it — 0020 and 0047 both only ADD a
+   * column. Every branch of the query below inner-joins `users`, so the value
+   * cannot arrive null.
+   *
+   * Declaring it nullable bought a dead branch that returned «yes, handled» for
+   * a row that could not exist, and the counters believed it.
+   */
+  telegram_id: number;
   plan_name_at_sale: string;
   remote_username: string;
   provider_id: number;
@@ -94,9 +105,13 @@ interface ProviderRow {
 }
 
 export interface RemovalSummary {
-  /** Accounts actually deleted from a panel. Always 0 while the dry run is on. */
+  /**
+   * Subscriptions this pass moved to REMOVED. Always 0 while the dry run is on.
+   * A row this pass deleted on the panel but did not move is `remove.already_gone`
+   * in the log and is deliberately not counted here.
+   */
   removed: number;
-  /** Rows that met every condition. Equals `removed` only outside the dry run. */
+  /** Rows that met every condition. */
   due: number;
   /** Panels that refused or could not be reached. Those rows stay for next cycle. */
   failed: number;
@@ -114,9 +129,21 @@ const NOTHING: RemovalSummary = { removed: 0, due: 0, failed: 0, dryRun: true };
  * NULL must mean «do not act». Written as an equality so that stays true no
  * matter what a panel starts sending.
  *
- * `FOR UPDATE SKIP LOCKED` and a CTE, for the reason rule nine gives: a `LIMIT`
- * inside a subquery bounds each re-execution rather than the batch, and this is
- * a batch whose size is the number of accounts destroyed.
+ * The CTE is for the reason rule nine gives: a `LIMIT` inside a subquery bounds
+ * each re-execution rather than the batch, and this is a batch whose size is the
+ * number of accounts destroyed. That part is load-bearing and correct.
+ *
+ * `FOR UPDATE SKIP LOCKED` is NOT, and this used to claim it was. `prepare()`
+ * runs one autocommit statement through the pool, so the row locks are released
+ * the instant it returns — before the caller has even read a row, let alone
+ * called a panel. It is the trap `notify.ts` writes down and avoids by making
+ * its claiming statement an UPDATE; this file selects, deletes on the panel, and
+ * only then guards on the status it selected.
+ *
+ * So the only thing standing between two pollers and a double delete is that
+ * guarded UPDATE, plus the panel answering 404 the second time. That is enough
+ * — nothing is lost twice — but the file that destroys customer accounts should
+ * not carry a comment claiming a stronger guarantee than it has.
  */
 const EXPIRED_DUE = `
   WITH due AS MATERIALIZED (
@@ -262,7 +289,11 @@ export async function removeFinishedServices(
     // is tracking. So the write is guarded on the same status the SELECT used
     // and the message is enqueued beside it, and a crash between the two costs
     // one duplicate 404 rather than a customer's service.
-    const told = await db.withSession(async (tx) => {
+    // Two facts, not one. `claimed` is «our row moved to REMOVED», `told` is
+    // «the customer has a message owed to them» — and the count below is about
+    // the first. Collapsing them into one boolean is what let `removed` report
+    // a removal for a row this pass did not move.
+    const { claimed, told } = await db.withSession(async (tx) => {
       const marked = await tx
         .prepare(
           `UPDATE subscriptions
@@ -271,9 +302,8 @@ export async function removeFinishedServices(
         )
         .bind(row.id)
         .run();
-      if (marked.meta.changes === 0) return false;
-      if (row.telegram_id === null) return true;
-      return enqueue(tx, {
+      if (marked.meta.changes === 0) return { claimed: false, told: false };
+      const queued = await enqueue(tx, {
         dedupeKey: `remove:${row.id}:${reason}`,
         chatId: row.telegram_id,
         text:
@@ -281,8 +311,25 @@ export async function removeFinishedServices(
             ? menu.serviceRemovedExpired(row.plan_name_at_sale, row.days)
             : menu.serviceRemovedVolume(row.plan_name_at_sale, row.days),
       });
+      return { claimed: true, told: queued };
     });
 
+    // Counted only when this pass is the one that moved the row. It used to
+    // increment either way, so a row another poller had already taken — or one
+    // that left ACTIVE between the SELECT and here — was reported as an account
+    // this sweep deleted. The only hint was `told:false` in the log line.
+    if (!claimed) {
+      log.info('remove.already_gone', {
+        job: reason,
+        ref: row.public_id,
+        panel: provider.ctx.code,
+        // Both fields are here for the one irreversible case: the panel DELETE
+        // went through and somebody else took our row. `app_events` outlives
+        // the container, so this line is the only record that it happened.
+        was_present: result.gone,
+      });
+      continue;
+    }
     removed += 1;
     log.info('remove.done', {
       job: reason,

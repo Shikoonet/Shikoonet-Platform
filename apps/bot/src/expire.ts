@@ -52,7 +52,12 @@ const BATCH = 100;
 interface ExpiredRow {
   id: number;
   public_id: string;
-  telegram_id: number | null;
+  /**
+   * Not nullable: the column is `NOT NULL` since 0001 and the RETURNING reads it
+   * through an inner join, so «no chat id» is a state this query cannot produce.
+   * The branch that used to skip on null went with the type.
+   */
+  telegram_id: number;
 }
 
 /**
@@ -148,7 +153,6 @@ export async function expireUnpaidOrders(
     // Same transaction as the expiry itself, so an order can never be marked
     // EXPIRED without the customer being owed the news.
     for (const row of expired ?? []) {
-      if (row.telegram_id === null) continue;
       await enqueue(tx, {
         dedupeKey: `expire:${row.public_id}`,
         chatId: row.telegram_id,
