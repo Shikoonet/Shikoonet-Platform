@@ -110,7 +110,60 @@ export function normalizeCode(typed: string): string {
   return typed.trim().slice(0, MAX_CODE_LENGTH).toLowerCase();
 }
 
-/** The row, or null. Case-insensitive, and never more than one row: `code` is UNIQUE. */
+/**
+ * A redemption that still counts against a code's ceilings.
+ *
+ * A use is spent when an order is placed, and given BACK when that order dies
+ * without the customer keeping anything. Until now nothing gave it back:
+ * `expireUnpaidOrders` closes the order and leaves the redemption, and both
+ * ceilings are counted straight off `discount_redemptions` — so one tap on
+ * «ثبت سفارش» that the customer never paid burnt a `max_uses = 1` code for the
+ * whole shop, for ever, with nothing an operator could look at to see why the
+ * code had stopped working.
+ *
+ * Written as a filter on the COUNT rather than as a DELETE in the expiry sweep,
+ * and the difference matters: `discount_redemptions.amount_irr` is a money
+ * record, and deleting it so a counter reads correctly destroys the evidence of
+ * what was offered to whom. The row stays and simply stops counting, which is
+ * what «the use was given back» actually means.
+ *
+ * `FAILED` is in the list for the same reason as `EXPIRED`, and it was missed
+ * on the first pass. `fail()` marks the order FAILED and refunds it in the same
+ * transaction, so the customer paid, received nothing, and got their money
+ * back — and a `max_uses = 1` code was burnt for the whole shop by an outage on
+ * a panel. `EXPIRED` is what `expireUnpaidOrders` writes and `CANCELLED` is
+ * what the legacy import carries; between the three, every way an order dies
+ * without the customer keeping something is covered.
+ *
+ * `order_id IS NULL` still counts, and that is not an oversight. The legacy
+ * import writes redemptions with only `legacy_id`, `code_id` and `user_id`
+ * (`migrate.ts`, out of `Giftcodeconsumed`), so a migrated use has no order to
+ * ask about — and it was a real use.
+ */
+const REDEMPTION_COUNTS = `
+  LEFT JOIN orders o ON o.id = r.order_id
+   WHERE (r.order_id IS NULL OR o.status NOT IN ('EXPIRED', 'CANCELLED', 'FAILED'))
+`;
+
+/**
+ * The row, or null. Case-insensitive, and never more than one row: `code` is UNIQUE.
+ *
+ * `FOR UPDATE`, and it belongs here rather than behind a flag.
+ *
+ * `redeem` has taken this row for update since migration 0059 so two customers
+ * cannot both pass the `max_uses` count. But on the purchase path the ORDER is
+ * written before `redeem` runs, and the price on it was decided by a `checkCode`
+ * that held no lock — so the guarantee the migration was written to give stopped
+ * one step short of the thing it was protecting. Locking on the read closes that
+ * without a parameter every future order-writing caller could forget, which is
+ * the argument `redeem`'s own comment already makes about where a lock belongs.
+ *
+ * Nearly free today, and honestly so: `poll.ts` awaits each `handleUpdate` in a
+ * plain `for` loop and the singleton advisory lock allows one poller, so two
+ * customers are never inside this transaction at once. What it actually defends
+ * is the window where that lock is lost or a deploy runs two containers — which
+ * is a real window, and the reason not to leave the read unlocked.
+ */
 async function findCode(tx: D1DatabaseSession, typed: string) {
   return tx
     .prepare(
@@ -119,7 +172,9 @@ async function findCode(tx: D1DatabaseSession, typed: string) {
               uses_per_user, status, target_user_id
          FROM discount_codes
         WHERE lower(code) = ?1
-        LIMIT 1`,
+        ORDER BY id
+        LIMIT 1
+          FOR UPDATE`,
     )
     .bind(normalizeCode(typed))
     .first<
@@ -223,14 +278,16 @@ export async function checkCode(
   // `redeem`, which is the only place it has to hold under load. Here it is a
   // read, so a customer is told before they tap rather than after.
   const mine = await tx
-    .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1 AND user_id = ?2`)
+    .prepare(`SELECT count(*)::int AS n FROM discount_redemptions r ${REDEMPTION_COUNTS}
+           AND r.code_id = ?1 AND r.user_id = ?2`)
     .bind(row.id, userId)
     .first<{ n: number }>();
   if ((mine?.n ?? 0) >= row.uses_per_user) return { ok: false, reason: 'ALREADY_USED', code: row };
 
   if (row.max_uses !== null) {
     const used = await tx
-      .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1`)
+      .prepare(`SELECT count(*)::int AS n FROM discount_redemptions r ${REDEMPTION_COUNTS}
+           AND r.code_id = ?1`)
       .bind(row.id)
       .first<{ n: number }>();
     if ((used?.n ?? 0) >= row.max_uses) return { ok: false, reason: 'USED_UP' };
@@ -314,7 +371,8 @@ export async function redeem(
 
   if (code.max_uses !== null) {
     const used = await tx
-      .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1`)
+      .prepare(`SELECT count(*)::int AS n FROM discount_redemptions r ${REDEMPTION_COUNTS}
+           AND r.code_id = ?1`)
       .bind(codeId)
       .first<{ n: number }>();
     if ((used?.n ?? 0) >= code.max_uses) return { ok: false, reason: 'USED_UP' };
@@ -329,7 +387,8 @@ export async function redeem(
   // counts a set the first has already committed to. Exactly the argument
   // `max_uses` above rests on, and the same test shape proves it.
   const mine = await tx
-    .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1 AND user_id = ?2`)
+    .prepare(`SELECT count(*)::int AS n FROM discount_redemptions r ${REDEMPTION_COUNTS}
+           AND r.code_id = ?1 AND r.user_id = ?2`)
     .bind(codeId, userId)
     .first<{ n: number }>();
   if ((mine?.n ?? 0) >= code.uses_per_user) return { ok: false, reason: 'ALREADY_USED' };
@@ -372,16 +431,29 @@ export async function redemptionOnOpenOrder(
   codeId: number,
   userId: number,
   planId: number,
+  /** What the order would cost with this code on it, so a stale price does not match. */
+  totalIrr: number,
 ): Promise<boolean> {
   const row = await tx
     .prepare(
+      // The TOTAL as well as the plan, because the price is what makes it the
+      // same order.
+      //
+      // Without it this answered yes for any open order of this customer on
+      // this plan carrying this code — including one placed at a different
+      // price. The `ALREADY_USED` fallback above it would then grant the
+      // discount again while `place()` reused nothing, and `redeem` wrote no
+      // second row: a discounted, payable invoice with no redemption behind
+      // it. A discount is money and the redemption is the only record that a
+      // use was spent.
       `SELECT 1 FROM discount_redemptions r
          JOIN orders o ON o.id = r.order_id
         WHERE r.code_id = ?1 AND r.user_id = ?2
           AND o.plan_id = ?3 AND o.status = 'AWAITING_PAYMENT'
+          AND o.total_irr = ?4
         LIMIT 1`,
     )
-    .bind(codeId, userId, planId)
+    .bind(codeId, userId, planId, totalIrr)
     .first<{ '?column?': number }>();
   return row !== null;
 }

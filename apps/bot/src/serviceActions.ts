@@ -41,18 +41,66 @@ export function actionsFor(
 ): menu.ServiceActions | null {
   if (!service.provider_kind || !service.provider_base_url || !service.remote_username) return null;
   if (!isAutomated(service.provider_kind)) return null;
+  /*
+   * A credential, asked for beside the address it goes with.
+   *
+   * The address was already required here and the credential was not, which is
+   * half a question: `login()` refuses a panel with no secret and answers
+   * `retryable: false`, so an add-on bought on such a panel is taken, fails,
+   * and — for a card-to-card payment — is not refunded automatically.
+   *
+   * This is the sibling of the shop-side hole in #182 and it is the one the
+   * shop-side clause does NOT cover: «➕ حجم اضافه» and «➕ زمان اضافه» sell
+   * against a service that already exists, so they never go near
+   * `purchasablePlan`. Both spellings of «has a credential» count, the same two
+   * `trialPanelsForUser` counts, because a panel wired before `provider_secrets`
+   * existed resolves through the environment.
+   *
+   * Drawing no button is the right answer rather than failing at checkout: the
+   * customer never spends anything, and an operator who fixes the panel gets
+   * the buttons back on the next screen with nothing to unwind.
+   *
+   * ## What it asks, exactly
+   *
+   * Whether a credential is NAMED, not whether it RESOLVES. A `secret_ref`
+   * pointing at a `PANEL_<REF>` that is absent from the environment still draws
+   * the buttons, and that panel still cannot log in. Deliberate, for two
+   * reasons: it is the predicate `trialPanelsForUser` already uses for the same
+   * question, so the tree agrees with itself; and a panel whose env var has
+   * gone missing cannot provision anything either, so the add-on path is not
+   * the exposure — a new purchase on it fails too, and that one IS refunded.
+   * What this closes is the never-wired panel, which `migrate.ts` produces by
+   * design and the dashboard counts as `panels_without_secret`.
+   *
+   * ## It takes away only what needs the panel
+   *
+   * An earlier version of this returned null for the WHOLE object, which also
+   * withdrew «کانفیگ» — and that button never touches a panel. It encodes
+   * `subscriptions.subscription_url`, a column the shelf and the last sync
+   * already filled, so it works perfectly well on a panel nobody can log into.
+   *
+   * The state is not hypothetical: `migrate.ts` lands every imported provider
+   * with an address and no `secret_ref` on purpose, the dashboard counts
+   * `panels_without_secret` as a live condition, and a shelf-backed panel
+   * legitimately has no credential at all because a shelf delivery hands out a
+   * pre-made link without ever logging in. Taking the customer's own config
+   * away from them in all three cases is a worse bug than the one being fixed.
+   */
   // REMOVED, FAILED, PENDING_PAYMENT: nothing to revoke and nothing to switch.
   if (service.status !== 'ACTIVE' && service.status !== 'DISABLED') return null;
   const pricing = extraPricingFor(service.provider_config ?? {}, tier);
+  const canReachPanel = Boolean(service.provider_secret_ref || service.provider_sealed);
   return {
     id: service.id,
     disabled: service.status === 'DISABLED',
     // A panel that prices an add-on can still be a shop that does not sell it.
     // Production has had both of these switched off for years while our bot
     // drew the buttons anyway.
-    volumeIrrPerGb: shop.sellsExtraVolume ? pricing.volumeIrrPerGb : null,
-    timeIrrPerDay: shop.sellsExtraTime ? pricing.timeIrrPerDay : null,
-    canSwitch: shop.allowsServiceSwitch,
+    volumeIrrPerGb: canReachPanel && shop.sellsExtraVolume ? pricing.volumeIrrPerGb : null,
+    timeIrrPerDay: canReachPanel && shop.sellsExtraTime ? pricing.timeIrrPerDay : null,
+    canSwitch: canReachPanel && shop.allowsServiceSwitch,
+    canRevoke: canReachPanel,
+    // Deliberately NOT gated on the credential — see above.
     showsConfig: shop.showsConfigButton,
   };
 }

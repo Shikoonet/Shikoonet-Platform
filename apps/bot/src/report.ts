@@ -118,8 +118,16 @@ async function perPanel(
               COALESCE(sum(s.price_irr), 0)  AS irr,
               COALESCE(sum(s.volume_gb), 0)  AS gb
          FROM subscriptions s
+         -- LEFT, so a subscription carried over by the import — which has no
+         -- order at all — still counts. What the join is here for is the one
+         -- kind that would otherwise make the heading false: a TRIAL writes a
+         -- subscription and is not a sale, so it appeared in this block while
+         -- «🛒 فروش نو» above counts NEW_PURCHASE orders and never saw it. A
+         -- renewal writes no subscription row, so it was never in either.
+         LEFT JOIN orders o ON o.id = s.order_id
         WHERE s.purchased_at >= to_timestamp(?1 / 1000.0)
           AND s.purchased_at <  to_timestamp(?2 / 1000.0)
+          AND (o.kind IS NULL OR o.kind = 'NEW_PURCHASE')
         GROUP BY s.provider_name_at_sale
         ORDER BY irr DESC`,
     )
@@ -207,7 +215,24 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
   ];
 
   if (panels.length > 0) {
-    lines.push('', '🖥 به تفکیک لوکیشن');
+    // «فروش نو», not «فروش», and the word is the whole fix.
+    //
+    // The block counts SUBSCRIPTIONS on `purchased_at`, which is written once
+    // when a service is first delivered and never again — the renewal UPDATE in
+    // `provision.ts` touches neither `purchased_at` nor `price_irr`. The total
+    // directly above it counts ORDERS and includes renewals. So on a shop whose
+    // revenue is mostly renewals the two disagreed by most of the day's
+    // takings, with nothing on screen saying why, and an admin reading down the
+    // message had every reason to think the panel lines should sum to the line
+    // above them.
+    //
+    // Naming what it counts closes that without changing what it counts, and
+    // keeps the legacy meaning: the PHP report is per-panel NEW services too.
+    // If the shop would rather see sales and renewals together per panel, that
+    // is a different query — build it from `orders` joined to the subscription
+    // it targets, so both halves answer from the same table — and a different
+    // decision, because it also has to say what a TRIAL counts as.
+    lines.push('', '🖥 فروش نو به تفکیک لوکیشن');
     for (const p of panels) {
       lines.push(`• ${p.name}: ${p.count} سرویس — ${toman(p.irr)} تومان — ${p.gb} گیگ`);
     }

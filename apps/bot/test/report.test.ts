@@ -22,7 +22,7 @@ import {
 } from '../src/settings.js';
 import { blockForSpam } from '../src/spam.js';
 import { createTelegramApi } from '../src/telegram.js';
-import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
 
 /** Mid-afternoon Tehran on the day being reported, so no boundary is grazed. */
 const DAY = '2026-08-17';
@@ -45,29 +45,55 @@ function ids() {
  * the suite happens to run on.
  */
 async function completedOrder(opts: {
-  kind: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP';
+  kind: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP' | 'TRIAL';
   irr: number;
   atMs: number;
   reseller?: boolean;
+  /** Deliver it too, onto a named panel — what the per-panel block reads. */
+  onPanel?: string;
 }): Promise<{ orderId: number; userId: number; telegramId: number }> {
   const { telegramId } = ids();
   const userId = await makeCustomer(telegramId, { reseller: opts.reseller ?? false });
   const plan = opts.kind === 'WALLET_TOPUP' ? null : await planId('sim-vip-1m-50');
   const row = await db
     .prepare(
+      // `provider_id` for the sake of `orders_trial_is_free`, which requires a
+      // TRIAL to be free AND to name the panel it came from.
       `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
-                           unit_price_irr, total_irr, status, completed_at)
-       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, 'COMPLETED', to_timestamp(?6 / 1000.0))
+                           unit_price_irr, total_irr, status, completed_at,
+                           provider_id)
+       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, 'COMPLETED', to_timestamp(?6 / 1000.0), ?7)
        RETURNING id`,
     )
-    .bind(`rep${seq}${opts.kind[0]}`, userId, opts.kind, plan, opts.irr, opts.atMs)
+    .bind(
+      `rep${seq}${opts.kind[0]}`,
+      userId,
+      opts.kind,
+      plan,
+      opts.irr,
+      opts.atMs,
+      opts.kind === 'TRIAL' ? await providerId('sim-vip') : null,
+    )
     .first<{ id: number }>();
+  if (opts.onPanel !== undefined) {
+    await db
+      .prepare(
+        `INSERT INTO subscriptions (public_id, user_id, plan_id, order_id,
+                                    provider_name_at_sale, plan_name_at_sale,
+                                    price_irr, volume_gb, status, purchased_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'plan', ?6, 10, 'ACTIVE',
+                 to_timestamp(?7 / 1000.0))`,
+      )
+      .bind(`reps${seq}`, userId, plan, row!.id, opts.onPanel, opts.irr, opts.atMs)
+      .run();
+  }
   return { orderId: row!.id, userId, telegramId };
 }
 
 beforeEach(async () => {
   await ensureCatalog();
   await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'report:%'`).run();
+  await db.prepare(`DELETE FROM subscriptions WHERE public_id LIKE 'reps%'`).run();
   await db.prepare(`DELETE FROM orders WHERE public_id LIKE 'rep%'`).run();
   await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
   await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'spam:%'`).run();
@@ -80,6 +106,40 @@ afterEach(() => {
 });
 
 describe('the daily report', () => {
+  it('breaks new sales down by panel, and a free trial is not a sale', async () => {
+    /*
+     * The per-panel block was rendered by no test at all — `completedOrder`
+     * never wrote a subscription, so `perPanel()` returned nothing and the
+     * whole block was skipped. Its heading could say anything.
+     *
+     * What it says now is «فروش نو به تفکیک لوکیشن», and this is what makes
+     * that true: a TRIAL writes a subscription and is not a sale, so it used to
+     * appear here while «🛒 فروش نو» above — which counts NEW_PURCHASE orders —
+     * never saw it. The two lines disagreed about the same panel on any day a
+     * trial was handed out.
+     */
+    const { start } = tehranDayBoundsFromDate(DAY);
+    await completedOrder({
+      kind: 'NEW_PURCHASE',
+      irr: 1_000_000,
+      atMs: start + 60_000,
+      onPanel: 'zz-report-panel',
+    });
+    await completedOrder({
+      kind: 'TRIAL',
+      irr: 0,
+      atMs: start + 120_000,
+      onPanel: 'zz-report-panel',
+    });
+
+    const text = await buildDailyReport(db, DAY);
+
+    expect(text).toContain('zz-report-panel');
+    // One sale on that panel, counted the same way in both lines.
+    expect(text).toContain('فروش نو: 1');
+    expect(text).toMatch(/zz-report-panel[^\n]*\b1\b/);
+  });
+
   it('counts only what happened inside the Tehran day', async () => {
     // The bounds come from the domain helper, so this test and the report
     // cannot agree with each other about a day that is wrong for both.
