@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import type { Cache } from './query.js';
 import { HistoryDateNav } from './historyRangeNav.js';
-import { HeaderSlot } from './shikoonetShell.js';
 import { SalesTrendChart, TopMetricsSummary } from './financialHub.js';
 import { AccountUsagePanel } from './accountAnalytics.js';
 import { CardBalancingPanel } from './cardAnalytics.js';
@@ -31,15 +30,16 @@ export function StatisticsView({ cache }: { cache: Cache }) {
 
   return (
     <section className="panel statistics">
-      {/* The date control goes to the panel's one header, exactly as
-          «پرداخت‌ها» sends its own. What used to be here was a second header
-          carrying a second copy of «آمار مالی» and a second date control, so
-          this screen served four `header` elements and the title twice — the
-          two-shells problem slice 5 set out to end, still standing on the one
-          screen its test did not visit. */}
-      <HeaderSlot slot="dateNav">
-        <HistoryDateNav value={rangeState} onChange={setRangeState} />
-      </HeaderSlot>
+      {/* On the screen, not in the header — a deliberate exception to what
+          «پرداخت‌ها» does. There the control shares the header with the
+          payment tabs and has to fold; here it had folded into a badge
+          reading «همه 📅» that nobody recognised as a control (Sam,
+          2026-09-11). A screen that is only numbers has the room to show every
+          window as a chip, and the two hour windows added the same day only
+          make sense where they can be seen. The second-header problem the
+          header slot was created to end stays ended: no `header` element
+          here, no repeated title. */}
+      <HistoryDateNav value={rangeState} onChange={setRangeState} variant="strip" />
 
       {analyticsStatus === 'error' && (
         <p className="error">بارگذاری آمار ناموفق بود. صفحه را تازه کنید.</p>

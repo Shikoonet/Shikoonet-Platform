@@ -86,6 +86,8 @@ export type TrendBucketKind = 'hour' | 'day' | 'month';
 
 export function trendBucketKind(range: HistoryRange): TrendBucketKind {
   switch (range) {
+    case '1h':
+    case '3h':
     case 'today':
     case 'day':
       return 'hour';

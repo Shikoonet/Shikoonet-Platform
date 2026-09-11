@@ -35,11 +35,24 @@
  * operator asking «چقدر در مرداد فروختیم» wants a calendar month, and an
  * operator watching a card go hot has the six rolling windows on the card
  * screen for that.
+ *
+ * ## …and then the hour was asked for — 2026-09-11
+ *
+ * Sam: «آمار مالی ۱ ساعته و ۳ ساعته هم مدیر کل می‌خواد». The card screen's
+ * rolling windows answer «is this card hot», not «what did the shop take in
+ * the last hour», which is this hub's question. The objection above was never
+ * about the arithmetic — `historyRangeDays` already answers `null` for a month
+ * and `historyRangeBounds` already has a branch that never asks it — so `1h`
+ * and `3h` join by the same door: no day count, a rolling window from NOW,
+ * bucketed by the hour. The one deliberate ceiling: a one-hour chart is one or
+ * two hourly bars. A finer bucket is real code for a question nobody has asked.
  */
 
 /** Every window the hub's `range=` parameter accepts. */
 export type HistoryRange =
   | 'all'
+  | '1h'
+  | '3h'
   | 'today'
   | '2d'
   | '3d'
@@ -57,4 +70,12 @@ export type HistoryRange =
  * not list them, because «روز انتخاب‌شده» already covers a single day and two
  * near-identical two-and-three-day buttons is a menu nobody reads.
  */
-export type HistoryRangePreset = 'all' | '7d' | '30d' | 'month' | 'prev_month' | 'day';
+export type HistoryRangePreset =
+  | 'all'
+  | '1h'
+  | '3h'
+  | '7d'
+  | '30d'
+  | 'month'
+  | 'prev_month'
+  | 'day';

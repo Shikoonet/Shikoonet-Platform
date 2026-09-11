@@ -163,7 +163,6 @@ describe('the money hub can ask for a Jalali month', () => {
   it('parses the two new values and still refuses anything else', () => {
     expect(parseHistoryRange('month')).toBe('month');
     expect(parseHistoryRange('prev_month')).toBe('prev_month');
-    expect(parseHistoryRange('1h')).toBe('all');
     expect(parseHistoryRange('mordad')).toBe('all');
   });
 
@@ -257,5 +256,42 @@ describe('the money hub can ask for a Jalali month', () => {
       // subtracting the span stops coinciding with it.
       expect(previousHistoryRangeBounds('month', at)).toEqual(prev);
     }
+  });
+});
+
+describe('the money hub can ask for the last hour and the last three', () => {
+  // Sam, 2026-09-11: «آمار مالی ۱ ساعته و ۳ ساعته هم مدیر کل می‌خواد». The
+  // window rolls from NOW, not from the top of the hour — the shop's own
+  // «آمار» screen (`statsRange.ts`) already does it that way, and an operator
+  // watching a card go hot at 14:23 wants 13:23–14:23, not 13:00–14:00.
+  const NOW = Date.UTC(2026, 8, 11, 10, 53, 17, 250);
+  const HOUR = 3_600_000;
+
+  it('parses both and refuses the hours it was never told about', () => {
+    expect(parseHistoryRange('1h')).toBe('1h');
+    expect(parseHistoryRange('3h')).toBe('3h');
+    expect(parseHistoryRange('2h')).toBe('all');
+    expect(parseHistoryRange('24h')).toBe('all');
+  });
+
+  it('has no day count, like a month', () => {
+    expect(historyRangeDays('1h')).toBeNull();
+    expect(historyRangeDays('3h')).toBeNull();
+  });
+
+  it('ends at the instant asked and starts exactly N hours earlier', () => {
+    expect(historyRangeBounds('1h', NOW)).toEqual({ start: NOW - HOUR, end: NOW });
+    expect(historyRangeBounds('3h', NOW)).toEqual({ start: NOW - 3 * HOUR, end: NOW });
+  });
+
+  it('ignores a `day` parameter — the window is about now, not a date', () => {
+    expect(historyRangeBounds('1h', NOW, '2026-01-01')).toEqual(historyRangeBounds('1h', NOW));
+  });
+
+  it('compares against the hour before, tiling exactly', () => {
+    const cur = historyRangeBounds('3h', NOW);
+    const prev = previousHistoryRangeBounds('3h', NOW);
+    expect(prev.end).toBe(cur.start);
+    expect(prev.start).toBe(cur.start! - 3 * HOUR);
   });
 });

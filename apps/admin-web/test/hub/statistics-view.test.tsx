@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createCache } from '../../src/hub/query.js';
 import { StatisticsView } from '../../src/hub/StatisticsView.js';
 
@@ -169,5 +169,26 @@ describe('StatisticsView', () => {
     render(<StatisticsView cache={createCache()} />);
     expect(await screen.findByText('توازن کارت‌ها (تشخیصی)')).toBeTruthy();
     expect(screen.getByText(/فاصلهٔ بیشترین تا کمترین: ۵/)).toBeTruthy();
+  });
+
+  /*
+   * The range control used to be a `<details>` in the header reading «همه 📅»
+   * — a control nobody recognised as one (Sam, 2026-09-11: «ux اش اصلا
+   * userfriendly نیست»). It is a row of chips on the screen now, and the two
+   * hour windows the same request added sit at its head.
+   */
+  it('offers the ranges as a visible chip row, hours first, and asks the API for the one tapped', async () => {
+    render(<StatisticsView cache={createCache()} />);
+    const group = await screen.findByRole('radiogroup', { name: 'بازهٔ تاریخ' });
+    const chips = Array.from(group.querySelectorAll('[role="radio"]')).map((c) => c.textContent);
+    expect(chips.slice(0, 2)).toEqual(['۱ ساعت اخیر', '۳ ساعت اخیر']);
+    expect(screen.queryByText('همه 📅')).toBeNull();
+
+    fireEvent.click(screen.getByRole('radio', { name: '۱ ساعت اخیر' }));
+    await waitFor(() => {
+      const urls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u) => u.includes('/api/v1/analytics?range=1h'))).toBe(true);
+    });
+    expect(screen.getByRole('radio', { name: '۱ ساعت اخیر' }).getAttribute('aria-checked')).toBe('true');
   });
 });

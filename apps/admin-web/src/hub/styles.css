@@ -412,6 +412,40 @@
   min-height: 0;
 }
 
+/* The same presets, unfolded — «آمار مالی» draws them on the screen. */
+.range-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-block-end: var(--space-md);
+}
+
+.range-strip__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.range-strip__chip {
+  min-height: 0;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.range-strip__chip--on {
+  border-color: var(--border-gold);
+  background: var(--gold-muted);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 .section-heading {
   margin: 0 0 var(--space-md);
   font-size: 0.95rem;
