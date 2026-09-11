@@ -41,8 +41,23 @@ export function tomanDigits(priceIrr: number): string {
   return String(Math.round(priceIrr / IRR_PER_TOMAN));
 }
 
-/** ۱۹۵ -> 195. Persian and Arabic-Indic digits both appear in these names. */
-function toAsciiDigits(text: string): string {
+/**
+ * ۱۹۵ -> 195. Persian and Arabic-Indic digits both appear in these names.
+ *
+ * Exported because two customer-typed paths — the top-up amount and the add-on
+ * quantity — had each grown their own normaliser that handled only `۰-۹`, the
+ * Persian block. `٠-٩` is a different block that looks identical, it is what an
+ * Arabic keyboard layout produces, and `telegram.ts` already says out loud that
+ * both appear in this shop. A customer typing on that layout had their number
+ * refused as «not a number».
+ *
+ * One helper rather than three regexes: this one was already correct and
+ * already lives on the money edge. It was NOT already exercised on both arms —
+ * every test in the repo passed it Persian digits, so the `0x0660` branch, the
+ * whole reason the two typed paths were pointed at it, was covered by nothing
+ * until 2026-09-10. `money.test.ts` and `addon.test.ts` each carry one now.
+ */
+export function toAsciiDigits(text: string): string {
   return text.replace(/[۰-۹٠-٩]/g, (digit) => {
     const code = digit.codePointAt(0) ?? 0;
     return String(code - (code >= 0x06f0 ? 0x06f0 : 0x0660));

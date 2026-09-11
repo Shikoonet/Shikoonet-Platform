@@ -1729,7 +1729,7 @@ export const TEXTS = {
     hint: 'به خودِ کاربر، همان لحظه‌ای که بلاک می‌شود',
   },
   SPAM_BLOCKED_REPORT: {
-    default: '🚫 کاربر با شناسهٔ عددی <code>{telegramId}</code> به‌دلیل اسپم در ربات بلاک شد.',
+    default: '🚫 کاربر با شناسهٔ عددی {telegramId} به‌دلیل اسپم در ربات بلاک شد.',
     placeholders: ['telegramId'],
     screen: 'warnings',
     hint: 'به کانال گزارش، با دکمهٔ باز کردن همان کاربر',
@@ -1739,30 +1739,48 @@ export const TEXTS = {
    * The reports, one per topic. Editable like every other text the bot sends,
    * because an operator who wants «فروش» instead of «خرید» in their own group
    * should not need a deploy.
+   *
+   * ## No markup, and this is the second time
+   *
+   * These carried `<b>` and `<code>` and the operator read them literally.
+   * `parse_mode` is set for a message ONLY when its text contains a
+   * `<tg-emoji>` tag — `hasCustomEmoji` matches that and nothing else — so
+   * every other tag goes out as characters.
+   *
+   * `report.ts` records the identical bug in the nightly report, fixed
+   * 2026-08-21, and `report.test.ts` pins it by driving one through
+   * `sendMessage`. That guard covers `buildDailyReport` alone; nothing was
+   * watching these five, and `report-topics.test.ts` asserts the chat and the
+   * thread without ever looking at the text.
+   *
+   * There is a second cost that is easy to miss: an admin could not put a
+   * premium emoji in any of these lines. `checkCustomEmoji` refuses an override
+   * whose remainder still holds a tag, so `<b>` made every attempt come back as
+   * MALFORMED_TAG — an error about emoji, on a line whose problem was bold.
    */
   REPORT_PURCHASE: {
     default:
-      '🛍 <b>خرید تازه</b>\nسفارش: <code>{order}</code>\nمشتری: <code>{customer}</code>\nسرویس: {service}\nمبلغ: {amount}',
+      '🛍 خرید تازه\nسفارش: {order}\nمشتری: {customer}\nسرویس: {service}\nمبلغ: {amount}',
     placeholders: ['order', 'customer', 'service', 'amount'],
     screen: 'warnings',
     hint: 'به تاپیک «گزارش‌های خرید»، بعد از تحویل سرویس',
   },
   REPORT_SERVICE: {
     default:
-      '📌 <b>{kind}</b>\nسفارش: <code>{order}</code>\nمشتری: <code>{customer}</code>\nسرویس: {service}',
+      '📌 {kind}\nسفارش: {order}\nمشتری: {customer}\nسرویس: {service}',
     placeholders: ['kind', 'order', 'customer', 'service'],
     screen: 'warnings',
     hint: 'به تاپیک «گزارش خرید خدمات» — تمدید و حجم و زمان اضافه',
   },
   REPORT_TRIAL: {
-    default: '🔑 <b>اکانت تست</b>\nسفارش: <code>{order}</code>\nمشتری: <code>{customer}</code>\nپنل: {panel}',
+    default: '🔑 اکانت تست\nسفارش: {order}\nمشتری: {customer}\nپنل: {panel}',
     placeholders: ['order', 'customer', 'panel'],
     screen: 'warnings',
     hint: 'به تاپیک «گزارش اکانت تست»',
   },
   REPORT_PAYMENT: {
     default:
-      '💰 <b>پرداخت تایید شد</b>\nفیش: <code>{payment}</code>\nمشتری: <code>{customer}</code>\nمبلغ: {amount}',
+      '💰 پرداخت تایید شد\nفیش: {payment}\nمشتری: {customer}\nمبلغ: {amount}',
     placeholders: ['payment', 'customer', 'amount'],
     screen: 'warnings',
     hint: 'به تاپیک «گزارش مالی»، وقتی پرداختی تسویه می‌شود',

@@ -433,6 +433,114 @@ describe('a code that works', () => {
   });
 });
 
+describe('typing beside a live invoice', () => {
+  it('does not overwrite the invoice with the answer', async () => {
+    /*
+     * Routing the `:held` steps closed a silence and opened something worse.
+     *
+     * The held-code step deliberately SURVIVES the order — it is what lets a
+     * second tap re-price the same plan identically — so a customer looking at
+     * their invoice is still in `code:held`. The session's `screen` is the
+     * message the question was asked on, and the invoice replaced that message.
+     * So a refusal typed beside the invoice was written back ONTO it: card
+     * digits, amount and buttons gone, replaced by one line about a code.
+     *
+     * Before the routing that message was ignored. Turning silence into damage
+     * is a worse trade than the one it fixed, and this is the assertion that
+     * says so.
+     */
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('invoicecode', { percent: 20 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'invoicecode');
+    // The invoice replaces the question on message 7 — `press` uses that id.
+    const invoice = await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    expect(invoice.replies[0]?.editMessageId).toBe(7);
+
+    // Now anything at all, typed beside it. The step is still `code:held`.
+    const stray = await handleUpdate(db, types(updateId + 3, telegramId, 'not-a-real-code'));
+
+    // Answered — that part of the routing is right and stays...
+    expect(stray.status).toBe('processed');
+    // ...but NOT by editing the invoice. A new message under it instead.
+    expect(stray.replies[0]?.editMessageId).toBeUndefined();
+  });
+});
+
+describe('a second code typed after the first was accepted', () => {
+  it('replaces it, instead of being dropped in silence', async () => {
+    /*
+     * The natural next action, right under a screen that just said the first
+     * code worked — and it did nothing at all.
+     *
+     * After a code is accepted the step is `code:held`, which matched no branch
+     * in `handleTypedAnswer` and fell through to `IGNORED`. That skips
+     * `withCleanChat` entirely, so there was no reply AND no delete: the
+     * customer's message sat in the chat for ever with no answer. It is the
+     * exact failure `clean-chat.test.ts` exists to prevent, arrived at from the
+     * one step nobody had walked.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('firstone', { percent: 20 });
+    await makeCode('secondone', { percent: 30 });
+
+    const first = await useCode(updateId, telegramId, VIP_PLAN, 'firstone');
+    expect(first).toContain('firstone');
+
+    // Typed while the first is still held.
+    const out = await handleUpdate(db, types(updateId + 2, telegramId, 'secondone'));
+
+    // Answered at all, which it was not...
+    expect(out.status).toBe('processed');
+    expect(out.replies[0]?.text ?? '').toContain('secondone');
+    // ...and the typed message is taken out of the chat, like every other
+    // answer to a question this bot asked.
+    expect(out.deletes).toContainEqual({ chatId: telegramId, messageId: updateId + 2 });
+
+    // And the ORDER agrees with the screen, which is this file's standard: a
+    // screen saying «30%» over an invoice charging 20% is the failure it is
+    // for. Asserting only the reply left the replacement half untested.
+    await handleUpdate(db, press(updateId + 3, telegramId, `order:${VIP_PLAN}`));
+    expect(await lastOrder(userId)).toMatchObject({
+      discount_irr: Math.round(VIP_PRICE * 0.3),
+    });
+  });
+
+  it('keeps the first one when the second is refused, and says so on the keyboard', async () => {
+    /*
+     * The state routing `code:held` here made reachable, and the one the
+     * keyboard used to describe wrongly.
+     *
+     * `handleDiscountCode` returns before `ask()` on a refusal, so the FIRST
+     * code is still held and still discounting the order — while the keyboard
+     * was rebuilt with no `applied`, which withdraws «برداشتن کد» and offers
+     * «کد تخفیف دارم» again. A keyboard describing a state `bot_sessions` does
+     * not hold.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('kept20', { percent: 20 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'kept20');
+    const out = await handleUpdate(db, types(updateId + 2, telegramId, 'no-such-code'));
+
+    expect(out.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['UNKNOWN_CODE']);
+    const data = (out.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data);
+    // «برداشتن کد» is drawn, «کد تخفیف دارم» is not — because one IS held.
+    expect(data.some((d) => (d ?? '').startsWith('dsx:'))).toBe(true);
+    expect(data.some((d) => (d ?? '').startsWith('dsc:'))).toBe(false);
+
+    // And the money follows the keyboard: the first code is still the one
+    // charged.
+    await handleUpdate(db, press(updateId + 3, telegramId, `order:${VIP_PLAN}`));
+    expect(await lastOrder(userId)).toMatchObject({
+      discount_irr: Math.round(VIP_PRICE * 0.2),
+    });
+  });
+});
+
 describe('a code that does not', () => {
   it('refuses one whose date has passed', async () => {
     // 31 of the 33 production codes are in this state.
