@@ -221,55 +221,6 @@ export function withTimeout<T>(
 }
 
 /**
- * What a call site sees instead of the raw `Response`.
- *
- * The body has already been read by the time this is handed back, so `json()`
- * and `text()` are synchronous — they return the bytes that were read inside
- * the deadline, not a fresh stream. `await res.json()` at the call sites still
- * reads correctly (awaiting a value is a value), and unlike `Response.json()`
- * this may be called more than once.
- */
-interface TimedResponse {
-  status: number;
-  ok: boolean;
-  json(): unknown;
-  text(): string;
-}
-
-/**
- * Fetch AND read the body under one deadline.
- *
- * `withTimeout` covers only the fetch, which resolves the instant the response
- * HEADERS arrive; it then clears its timer, so the `await res.json()` that
- * every call site ran next was unguarded. A panel that answered `200` and then
- * stalled its body blocked for ever — and because `provisionPaidOrders` runs
- * inline in the single poll loop, one stalled panel took `getUpdates` and
- * `notify.flush` down with it and the bot was dead to every customer until a
- * restart (#175).
- *
- * Reading the body here, inside the timed scope and under the same abort
- * signal, puts the whole exchange — headers and body — under the one deadline.
- * The call sites change by exactly one word (`withTimeout` → `send`); the body
- * read and the status checks that follow are untouched.
- *
- * The body is read once, as text, so a 404 or an error page that is not JSON
- * costs nothing until a caller actually asks for `json()` — which throws on
- * non-JSON exactly as `Response.json()` did.
- */
-async function send(run: (signal: AbortSignal) => Promise<Response>): Promise<TimedResponse> {
-  return withTimeout(async (signal) => {
-    const res = await run(signal);
-    const raw = await res.text();
-    return {
-      status: res.status,
-      ok: res.ok,
-      text: () => raw,
-      json: () => JSON.parse(raw) as unknown,
-    };
-  });
-}
-
-/**
  * A bearer token for this panel.
  *
  * Deliberately not cached. The legacy bot keeps the token in a database column
@@ -309,7 +260,7 @@ async function login(provider: ProviderContext): Promise<{ token: string } | Log
     username: provider.credentials.username,
     password: provider.credentials.password,
   });
-  const res = await send((signal) =>
+  const res = await withTimeout((signal) =>
     provider.fetch(`${provider.baseUrl!.replace(/\/+$/, '')}/api/admin/token`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
@@ -351,7 +302,7 @@ async function getUser(
   token: string,
   username: string,
 ): Promise<UserLookup> {
-  const res = await send((signal) =>
+  const res = await withTimeout((signal) =>
     provider.fetch(
       `${provider.baseUrl!.replace(/\/+$/, '')}/api/user/${encodeURIComponent(username)}`,
       {
@@ -474,7 +425,7 @@ async function hostedTags(
   token: string,
 ): Promise<Set<string> | null> {
   try {
-    const res = await send((signal) =>
+    const res = await withTimeout((signal) =>
       provider.fetch(`${base}/api/hosts`, {
         headers: { accept: 'application/json', authorization: `Bearer ${token}` },
         signal,
@@ -538,7 +489,7 @@ async function writeGroup(
     const auth = await login(provider);
     if ('error' in auth) return { ok: false, reason: auth.error };
     const base = provider.baseUrl!.replace(/\/+$/, '');
-    const res = await send((signal) =>
+    const res = await withTimeout((signal) =>
       provider.fetch(`${base}${path}`, {
         method,
         headers: {
@@ -663,7 +614,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const groups = groupIdsFor(request);
       if (groups !== undefined) body['group_ids'] = groups;
 
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         provider.fetch(`${base}/api/user`, {
           method: 'POST',
           headers: {
@@ -841,7 +792,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       // claiming «old + new» gigabytes with nothing spent, handing the customer
       // everything they had already used back as free traffic.
       if (request.mode === 'RESET') {
-        const reset = await send((signal) =>
+        const reset = await withTimeout((signal) =>
           provider.fetch(`${base}/api/user/${encodeURIComponent(request.username)}/reset`, {
             method: 'POST',
             headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
@@ -859,7 +810,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
         applied.push('usage counter reset to zero');
       }
 
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         provider.fetch(`${base}/api/user/${encodeURIComponent(request.username)}`, {
           method: 'PUT',
           headers: {
@@ -940,7 +891,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const auth = await login(provider);
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         provider.fetch(`${base}/api/groups`, {
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
           signal,
@@ -992,7 +943,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const auth = await login(provider);
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         provider.fetch(`${base}/api/inbounds`, {
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
           signal,
@@ -1063,7 +1014,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const auth = await login(provider);
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         provider.fetch(`${base}/api/group/${encodeURIComponent(String(id))}`, {
           method: 'DELETE',
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
@@ -1104,7 +1055,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const auth = await login(provider);
       if ('error' in auth) return { ok: false, reason: auth.error, retryable: true };
       const base = provider.baseUrl!.replace(/\/+$/, '');
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         provider.fetch(`${base}/api/user/${encodeURIComponent(username)}`, {
           method: 'DELETE',
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
@@ -1157,7 +1108,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
 
       let scanned = 0;
       for (let offset = 0; offset < MAX_ACCOUNTS; offset += PAGE_SIZE) {
-        const res = await send((signal) =>
+        const res = await withTimeout((signal) =>
           provider.fetch(`${base}/api/users?offset=${offset}&limit=${PAGE_SIZE}`, {
             headers,
             signal,
@@ -1182,7 +1133,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
           const next = groups.filter((g) => g !== from);
           if (!next.includes(to)) next.push(to);
 
-          const put = await send((signal) =>
+          const put = await withTimeout((signal) =>
             provider.fetch(`${base}/api/user/${encodeURIComponent(username)}`, {
               method: 'PUT',
               headers: { ...headers, 'content-type': 'application/json' },
@@ -1227,7 +1178,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const auth = await login(provider);
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         provider.fetch(`${base}/api/hosts`, {
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
           signal,
@@ -1270,7 +1221,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const auth = await login(provider);
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         provider.fetch(`${base}/api/host/`, {
           method: 'POST',
           headers: {
@@ -1315,7 +1266,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const auth = await login(provider);
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         provider.fetch(`${base}/api/host/${encodeURIComponent(String(id))}`, {
           method: 'DELETE',
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
@@ -1368,7 +1319,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
 
       const admins: PanelAdmin[] = [];
       for (let offset = 0; offset < MAX_ACCOUNTS; offset += PAGE_SIZE) {
-        const res = await send((signal) =>
+        const res = await withTimeout((signal) =>
           provider.fetch(`${base}/api/admins?offset=${offset}&limit=${PAGE_SIZE}`, {
             method: 'GET',
             headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
@@ -1438,7 +1389,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
 
       const accounts: RemoteAccount[] = [];
       for (let offset = 0; offset < MAX_ACCOUNTS; offset += PAGE_SIZE) {
-        const res = await send((signal) =>
+        const res = await withTimeout((signal) =>
           provider.fetch(`${base}/api/users?offset=${offset}&limit=${PAGE_SIZE}`, {
             method: 'GET',
             headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
@@ -1544,7 +1495,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
         }
       }
 
-      const res = await send((signal) =>
+      const res = await withTimeout((signal) =>
         action.kind === 'REVOKE_SUB'
           ? provider.fetch(`${base}/api/user/${user}/revoke_sub`, {
               method: 'POST',
