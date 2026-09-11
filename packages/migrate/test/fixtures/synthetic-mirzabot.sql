@@ -84,6 +84,23 @@
 --   money, exactly          Toman in the source, ×10 into IRR. The totals are
 --                           written at the bottom so a reader can check the
 --                           arithmetic without running anything.
+--
+--   a Location with many    Issue #71. Seven `product` rows over three
+--   prices                  Locations, all sharing ONE `inbounds`/`proxies`
+--                           pair, is the real dump's shape: one delivery
+--                           definition, many prices. The importer used to map
+--                           each row to a service AND a plan, which flattened
+--                           the middle layer away.
+--
+--   two gates on one        `fixture panel B` holds a free trial
+--   Location                (`one_buy_status`) beside a resellers-only tier.
+--                           `once_per_user` and `resellers_only` are columns
+--                           of `products`, so those two rows cannot share one
+--                           service without widening somebody's gate.
+--
+--   a discount scoped to    `FXSELL40` and `FXSELL50` name `code_product`s
+--   a non-head row          that are not the first row of their Location.
+--                           They must still reach their Location's service.
 
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
@@ -171,32 +188,71 @@ INSERT INTO `marzban_panel` (`id`, `name_panel`, `code_panel`, `type`, `version_
   -- version_panel '1' is PasarGuard, per transform.ts:269.
   (2, 'fixture panel B', 'fx02', 'marzban',    '1', 'https://panel-b.invalid', 'active',   '50',        '[3]'),
   (3, 'fixture panel C', 'fx03', 'marzneshin', '0', 'https://panel-c.invalid', 'disabled', 'unlimited', '[]'),
-  (4, 'fixture panel D', 'fx04', 'hiddify',    '0', 'https://panel-d.invalid', 'active',   'unlimited', NULL);
+  (4, 'fixture panel D', 'fx04', 'hiddify',    '0', 'https://panel-d.invalid', 'active',   'unlimited', NULL),
+  -- A panel whose name is Persian with emoji at both ends, which is what
+  -- production's `name_panel` actually looks like. `product.Location` holds
+  -- this string verbatim and it becomes a service NAME, so it is the fixture's
+  -- only check that the text survives MySQL -> Node -> Postgres intact.
+  (5, '🥇 لوکیشن طلایی 🎯', 'fx05', 'marzban', '0', 'https://panel-e.invalid', 'active', 'unlimited', '[4]');
 
 -- ---------------------------------------------------------------------------
 -- Catalogue
+--
+-- The columns are `legacy/faoxima/table.php`'s `CREATE TABLE product`, not a
+-- guess: `Location`, `Service_time`, `Volume_constraint`, `note`, `inbounds`
+-- and `proxies` are what `migrate.ts` reads, and until 2026-09-09 this fixture
+-- declared `code_panel`, `volume_product` and `time_product` instead — three
+-- columns the real table does not have. Every fixture product therefore
+-- migrated with NO provider, NO duration and NO volume, and the file that
+-- exists to prove the importer works could not see it.
+--
+-- `one_buy_status` is VARCHAR(20) there too, not `tinyint(1)`. That matters:
+-- `migrate.ts` reads it as `=== '1'`, which a tinyint would silently answer
+-- `false` for — the 963-customer bug of `roll_Status`, one column over.
+--
+-- WHAT THE ROWS ARE SHAPED TO PROVE (issue #71). On four real dumps
+-- `SELECT COUNT(DISTINCT MD5(CONCAT(inbounds,'|',proxies))) FROM product` is
+-- 1: every row shares one delivery definition while a Location carries several
+-- prices. So `inbounds`/`proxies` are identical on every row below, and the
+-- rows under a Location differ only in price, volume and duration.
 -- ---------------------------------------------------------------------------
 CREATE TABLE `product` (
-  `id`             int          NOT NULL,
-  `code_product`   varchar(32)  DEFAULT NULL,
-  `name_product`   varchar(128) DEFAULT NULL,
-  `code_panel`     varchar(32)  DEFAULT NULL,
-  `price_product`  varchar(32)  DEFAULT '0',
-  `volume_product` varchar(32)  DEFAULT NULL,
-  `time_product`   varchar(32)  DEFAULT NULL,
-  `one_buy_status` tinyint(1)   DEFAULT 0,
+  `id`                int          NOT NULL,
+  `code_product`      varchar(200) DEFAULT NULL,
+  `name_product`      varchar(2000) DEFAULT NULL,
+  `price_product`     varchar(2000) DEFAULT '0',
+  `Volume_constraint` varchar(2000) DEFAULT NULL,
+  -- The panel NAME, not its code — `index.php:1507` binds it against
+  -- `marzban_panel.name_panel`, and `migrate.ts` refuses a value that matches
+  -- no panel rather than importing a product nothing can deliver.
+  `Location`          varchar(200) DEFAULT NULL,
+  `Service_time`      varchar(200) DEFAULT NULL,
   -- Text, like `user`.`agent` and for the same reason: the migration reads the
   -- closed set 'f', 'n', 'n2' and refuses anything else by name.
-  `agent`          varchar(4)   DEFAULT 'f',
+  `agent`             varchar(100) DEFAULT 'f',
+  `note`              TEXT         NULL,
+  `one_buy_status`    varchar(20)  NOT NULL DEFAULT '0',
+  `inbounds`          TEXT         NULL,
+  `proxies`           TEXT         NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `product` (`id`, `code_product`, `name_product`, `code_panel`, `price_product`, `volume_product`, `time_product`, `one_buy_status`, `agent`) VALUES
-  (1, 'fxp01', '30 گیگ - یک‌ماهه', 'fx01', '195000', '30', '30', 0, 'f'),
-  (2, 'fxp02', '50 گیگ - یک‌ماهه', 'fx01', '295000', '50', '30', 0, 'f'),
-  (3, 'fxp03', 'تست رایگان',       'fx02',      '0',  '1',  '1', 1, 'f'),
-  -- The resellers-only row, so the migration has one to file that way.
-  (4, 'fxp04', 'نمایندگی',         'fx02', '900000','200', '60', 0, 'n');
+INSERT INTO `product` (`id`, `code_product`, `name_product`, `price_product`, `Volume_constraint`, `Location`, `Service_time`, `agent`, `note`, `one_buy_status`, `inbounds`, `proxies`) VALUES
+  -- Two prices on one Location, the price typed into the name because legacy
+  -- has `statusshowprice=offshowprice` and nowhere else to put it. These are
+  -- one service with two plans, and were two services before issue #71.
+  (1, 'fxp01', '30 گیگ - یک‌ماهه',  '195000',  '30', 'fixture panel A', '30', 'f', NULL,            '0', '{"vmess":["inb-1"]}', '{"vmess":{}}'),
+  (2, 'fxp02', '50 گیگ - یک‌ماهه',  '295000',  '50', 'fixture panel A', '30', 'f', 'یادداشت پلن ۲', '0', '{"vmess":["inb-1"]}', '{"vmess":{}}'),
+  -- One Location, two different PURCHASE GATES: a free trial that may be taken
+  -- once ever, and a resellers-only tier. They cannot be one service, because
+  -- `once_per_user` and `resellers_only` are columns of `products` and the bot
+  -- asks both before selling any plan underneath.
+  (3, 'fxp03', 'تست رایگان',             '0',   '1', 'fixture panel B',  '1', 'f', NULL,            '1', '{"vmess":["inb-1"]}', '{"vmess":{}}'),
+  (4, 'fxp04', 'نمایندگی',          '900000', '200', 'fixture panel B', '60', 'n', NULL,            '0', '{"vmess":["inb-1"]}', '{"vmess":{}}'),
+  -- Three prices on the Persian/emoji Location: the ordinary production shape.
+  (5, 'fxp05', '1ماهه-20گیگ-119.000ت', '119000',  '20', '🥇 لوکیشن طلایی 🎯', '30', 'f', NULL, '0', '{"vmess":["inb-1"]}', '{"vmess":{}}'),
+  (6, 'fxp06', '2ماهه-40گیگ-219.000ت', '219000',  '40', '🥇 لوکیشن طلایی 🎯', '60', 'f', NULL, '0', '{"vmess":["inb-1"]}', '{"vmess":{}}'),
+  (7, 'fxp07', '3ماهه-60گیگ-299.000ت', '299000',  '60', '🥇 لوکیشن طلایی 🎯', '90', 'f', NULL, '0', '{"vmess":["inb-1"]}', '{"vmess":{}}');
 
 -- ---------------------------------------------------------------------------
 -- Subscriptions. `Status` is a closed set with TWO spellings of disabled,
@@ -336,28 +392,50 @@ INSERT INTO `Discount` (`id`, `code`, `price`, `count`, `time`) VALUES
   (4, 'FXGIFTEMP', '',       '1',  NULL),
   (5, 'FXGIFTZER', '0',      '1',  NULL);
 
+-- The columns are `legacy/faoxima/table.php`'s `CREATE TABLE DiscountSell`.
+-- This declared `percent` and `count` until 2026-09-09, and the real table has
+-- neither: the percentage lives in `price` (`index.php:1795` does
+-- `(price / 100) * price_product`) and the cap in `limitDiscount`. With the
+-- invented names every row read a percentage of `undefined`, so all four were
+-- skipped as «percentage outside 0-100» and the scope mapping this file is
+-- meant to exercise was never reached.
 CREATE TABLE `DiscountSell` (
-  `id`           int         NOT NULL,
+  `id`            int          NOT NULL,
   -- `codeDiscount`, not `code`. The two discount tables name the same concept
   -- differently, which is why preflight compares them with an explicit UNION
   -- rather than a join on a shared column name.
-  `codeDiscount` varchar(64) DEFAULT NULL,
-  `percent`      varchar(16) DEFAULT NULL,
-  `count`        varchar(16) DEFAULT NULL,
-  `time`         varchar(32) DEFAULT NULL,
-  `code_product` varchar(32) DEFAULT 'all',
-  `code_panel`   varchar(32) DEFAULT '/all',
-  `type`         varchar(16) DEFAULT NULL,
+  `codeDiscount`  varchar(1000) DEFAULT NULL,
+  -- The PERCENTAGE, despite the name it shares with `Discount.price` (Toman).
+  `price`         varchar(200) DEFAULT NULL,
+  `limitDiscount` varchar(500) DEFAULT NULL,
+  `agent`         varchar(500) DEFAULT NULL,
+  `usefirst`      varchar(100) DEFAULT NULL,
+  `useuser`       varchar(100) DEFAULT NULL,
+  `code_product`  varchar(100) DEFAULT 'all',
+  `code_panel`    varchar(100) DEFAULT '/all',
+  `time`          varchar(100) DEFAULT NULL,
+  `type`          varchar(100) DEFAULT NULL,
+  `usedDiscount`  varchar(500) DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `DiscountSell` (`id`, `codeDiscount`, `percent`, `count`, `time`, `code_product`, `code_panel`, `type`) VALUES
-  (1, 'FXSELL10', '10', '100', '1783966057', 'all',   '/all', NULL),
-  -- Expired: a timestamp in the past.
-  (2, 'FXSELL20', '20', '50',  '1600000000', 'all',   '/all', 'buy'),
-  -- Scoped to one product and one panel.
-  (3, 'FXSELL30', '30', '10',  NULL,         'fxp01', 'fx01', 'renew'),
-  (4, 'FXSELL40', '40', '5',   NULL,         'fxp02', '/all', 'buy');
+INSERT INTO `DiscountSell` (`id`, `codeDiscount`, `price`, `limitDiscount`, `agent`, `usefirst`, `useuser`, `code_product`, `code_panel`, `time`, `type`, `usedDiscount`) VALUES
+  -- `type` NULL matches neither the buy SELECT nor the renew one, so this code
+  -- applies to nothing in the live bot and must not start applying to
+  -- everything in ours: the importer drops it.
+  (1, 'FXSELL10', '10', '100', 'f', '0', '0', 'all',   '/all', '1783966057', NULL,     '0'),
+  -- Expired: a timestamp in the past. Imported, with the date kept.
+  (2, 'FXSELL20', '20', '50',  'f', '1', '0', 'all',   '/all', '1600000000', 'buy',    '3'),
+  -- Scoped to the row that HEADS its Location's group. Resolves the same way
+  -- before and after issue #71, so on its own it proves nothing.
+  (3, 'FXSELL30', '30', '10',  'n', '0', '0', 'fxp01', 'fx01', NULL,         'extend', '1'),
+  -- Scoped to a row that does NOT head its group: `fxp02` and `fxp07` are the
+  -- second and third rows of their Locations. `products.code` only ever holds
+  -- the head's code, so a lookup on that alone drops both as «scoped to a
+  -- product that is gone» — a live discount deleted by a catalogue reshape.
+  -- Both must land on the SAME service as their group head.
+  (4, 'FXSELL40', '40', '5',   'f', '0', '0', 'fxp02', '/all', NULL,         'buy',    '0'),
+  (5, 'FXSELL50', '15', '25',  'f', '0', '0', 'fxp07', 'fx05', NULL,         'all',    '2');
 
 CREATE TABLE `Giftcodeconsumed` (
   `id`      int         NOT NULL,
