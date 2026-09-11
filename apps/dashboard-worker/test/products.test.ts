@@ -647,6 +647,59 @@ describe('creating a product and its plans', () => {
     expect(row!['status']).toBe('HIDDEN');
   });
 
+  /**
+   * A service's own badge and colour — the tier button's, since 0061.
+   *
+   * The rule is the one plans and categories already live under, and it is
+   * asserted the same way: what was sent is read back from the table, and the
+   * list the panel draws carries it too.
+   */
+  it('stores a badge and a colour on the service, and lists them back', async () => {
+    const cat = await post('product-categories', { name: `${PREFIX}دستهٔ بج`, sortOrder: 3 });
+    const categoryId = ((await cat.json()) as { category: { id: number } }).category.id;
+
+    const res = await post('products', {
+      code: `${PREFIX}badged`,
+      name: 'الماس',
+      kind: 'vpn',
+      categoryId,
+      badge: '💎 الماس',
+      buttonStyle: 'primary',
+    });
+    expect(res.status).toBe(201);
+    const productId = ((await res.json()) as { productId: number }).productId;
+
+    const row = await baseEnv.DB.prepare(`SELECT badge, button_style FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ badge: string; button_style: string }>();
+    expect([row!.badge, row!.button_style]).toEqual(['💎 الماس', 'primary']);
+
+    const patched = await post(`products/${productId}`, { buttonStyle: 'success' });
+    expect(patched.status).toBe(200);
+
+    const list = await app.request(
+      `/api/v1/admin/catalog?categoryId=${categoryId}`,
+      {},
+      envAs(ADMIN),
+    );
+    const item = ((await list.json()) as { items: { id: number; badge: string; buttonStyle: string }[] })
+      .items.find((s) => s.id === productId);
+    expect([item?.badge, item?.buttonStyle]).toEqual(['💎 الماس', 'success']);
+  });
+
+  it('refuses a badge that draws longer than a button', async () => {
+    const cat = await post('product-categories', { name: `${PREFIX}دستهٔ بج۲`, sortOrder: 4 });
+    const categoryId = ((await cat.json()) as { category: { id: number } }).category.id;
+    const res = await post('products', {
+      code: `${PREFIX}longbadge`,
+      name: 'الماس',
+      kind: 'vpn',
+      categoryId,
+      badge: 'x'.repeat(25),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('makes a plan unmetered and undying by default rather than guessing', async () => {
     // The one thing a create form must not do is substitute 0 GB or 30 days
     // for "not filled in" — those are prices the shop never agreed to.

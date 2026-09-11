@@ -295,6 +295,9 @@ const PRODUCT_FIELDS = {
    */
   groupIds: z.array(z.number().int().positive().max(1_000_000)).max(50).nullable(),
   deliveryNote: DELIVERY_NOTE,
+  /** The tier button's own badge and colour (0061) — the plan's rules, verbatim. */
+  badge: BADGE,
+  buttonStyle: BUTTON_STYLE,
 };
 
 const ProductCreate = z
@@ -311,6 +314,8 @@ const ProductCreate = z
     status: PRODUCT_FIELDS.status.default('ACTIVE'),
     groupIds: PRODUCT_FIELDS.groupIds.default(null),
     deliveryNote: PRODUCT_FIELDS.deliveryNote.default(null),
+    badge: PRODUCT_FIELDS.badge.default(null),
+    buttonStyle: PRODUCT_FIELDS.buttonStyle.default(null),
   })
   .strict();
 
@@ -328,6 +333,8 @@ const ProductPatch = z
     status: PRODUCT_FIELDS.status.optional(),
     groupIds: PRODUCT_FIELDS.groupIds.optional(),
     deliveryNote: PRODUCT_FIELDS.deliveryNote.optional(),
+    badge: PRODUCT_FIELDS.badge.optional(),
+    buttonStyle: PRODUCT_FIELDS.buttonStyle.optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -548,6 +555,8 @@ interface ServiceRow {
   once_per_user: boolean;
   group_ids: number[] | null;
   delivery_note: string | null;
+  badge: string | null;
+  button_style: 'primary' | 'success' | 'danger' | null;
   row_index: number | null;
   provider_id: number | null;
   provider_name: string | null;
@@ -619,6 +628,8 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
     resellersOnly: r.resellers_only,
     oncePerUser: r.once_per_user,
     groupIds: r.group_ids,
+    badge: r.badge,
+    buttonStyle: r.button_style,
     // Which row of the TIER screen this service sits on — `category:<id>`
     // layout, not the config layout inside it.
     rowIndex: r.row_index,
@@ -1104,7 +1115,7 @@ export function registerProductRoutes(
       `SELECT p.id, p.code, p.name, p.kind, p.status, p.description, p.sort_order,
               p.category_id, p.resellers_only, p.once_per_user,
               p.attrs->'group_ids' AS group_ids, p.attrs->>'delivery_note' AS delivery_note,
-              p.row_index,
+              p.row_index, p.badge, p.button_style,
               pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
               pr.status AS provider_status, pr.sort_order AS provider_sort_order,
               pr.kind AS provider_kind,
@@ -1705,8 +1716,8 @@ export function registerProductRoutes(
     const row = await c.env.DB.prepare(
       `INSERT INTO products
          (code, name, kind, provider_id, category_id, description,
-          resellers_only, once_per_user, sort_order, status, attrs)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+          resellers_only, once_per_user, sort_order, status, badge, button_style, attrs)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?13, ?14,
                (CASE WHEN ?11::jsonb IS NULL THEN '{}'::jsonb
                      ELSE jsonb_build_object('group_ids', ?11::jsonb) END)
                || (CASE WHEN ?12::text IS NULL THEN '{}'::jsonb
@@ -1726,6 +1737,8 @@ export function registerProductRoutes(
         p.status,
         p.groupIds === null ? null : JSON.stringify(p.groupIds),
         p.deliveryNote === null || p.deliveryNote === '' ? null : p.deliveryNote,
+        p.badge,
+        p.buttonStyle,
       )
       .first<{ id: number }>()
       // A provider or category id that does not exist fails the foreign key.
@@ -1776,6 +1789,7 @@ export function registerProductRoutes(
     if (patchProblem) return c.json({ ok: false, error: 'invalid_body', detail: patchProblem }, 400);
 
     const SELECT_PRODUCT = `SELECT id, code, name, kind, provider_id, category_id, description,
+                                   badge, button_style,
                                    resellers_only, once_per_user, sort_order, status,
                                    attrs->'group_ids' AS group_ids,
                                    attrs->>'delivery_note' AS delivery_note
@@ -1800,6 +1814,8 @@ export function registerProductRoutes(
     if (patch.oncePerUser !== undefined) put('once_per_user', patch.oncePerUser);
     if (patch.sortOrder !== undefined) put('sort_order', patch.sortOrder);
     if (patch.status !== undefined) put('status', patch.status);
+    if (patch.badge !== undefined) put('badge', patch.badge);
+    if (patch.buttonStyle !== undefined) put('button_style', patch.buttonStyle);
     // Both of these live in `attrs`, so they must produce ONE assignment
     // between them — see `attrsSql`. Not `put()`: these write a CASE over the
     // column rather than a value into it, and each reads its parameter twice.

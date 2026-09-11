@@ -262,6 +262,9 @@ export interface ServiceRow {
   /** Sent to the customer under every product this service sells, unless the
    *  product sets its own. */
   deliveryNote: string | null;
+  /** The tier button's own badge and colour (0061); null borrows its one config's. */
+  badge: string | null;
+  buttonStyle: ButtonStyle | null;
   panel: PanelRef | null;
   configs: ConfigRow[];
 }
@@ -364,6 +367,8 @@ export interface ProductBody {
   oncePerUser?: boolean;
   sortOrder?: number;
   status?: CatalogStatus;
+  badge?: string | null;
+  buttonStyle?: ButtonStyle | null;
   /**
    * The panel groups an account bought here joins — this service's tier.
    *
