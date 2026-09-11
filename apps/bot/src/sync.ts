@@ -144,7 +144,6 @@ export async function syncSubscriptions(
     if (!listed.ok) {
       summary.failed++;
       // The reason names the panel and an HTTP status, never a credential.
-      // The reason names the panel and an HTTP status, never a credential.
       log.warn('sync.panel_skipped', { ref: row.code, reason: listed.reason });
       continue;
     }

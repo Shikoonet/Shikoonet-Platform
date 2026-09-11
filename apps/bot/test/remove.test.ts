@@ -396,6 +396,104 @@ describe('when the panel will not do it', () => {
     expect(await toldAnything(telegramId)).toBe(false);
   });
 
+  it('does not count a row another pass already took', async () => {
+    /*
+     * `removed` is «accounts this pass deleted», and it used to be «rows this
+     * pass reached».
+     *
+     * The guarded UPDATE is what makes the removal at-most-once, so a row that
+     * leaves ACTIVE between the SELECT and that write matches nothing — a
+     * second poller during a rolling deploy, or an operator moving it by hand.
+     * The counter incremented anyway, so `sweep.acted` reported an account this
+     * sweep did not touch. The only hint was `told:false` in a log line.
+     *
+     * The window is staged where it actually occurs: the panel has done its
+     * half, and the row moves before ours runs. A first draft of this test just
+     * pre-set the row to REMOVED, which never reaches the loop at all —
+     * `EXPIRED_DUE` requires ACTIVE — so it passed with the fix reverted and
+     * proved nothing.
+     */
+    const telegramId = nextTelegramId();
+    const userId = await makeCustomer(telegramId);
+    const id = await makeService(userId, { publicId: 'rm-raced', expiredDaysAgo: 45 });
+
+    // A second due row, on a second customer, that nothing races. It is what
+    // makes the early `continue` a continuation rather than an exit: with one
+    // fixture, turning that `continue` into a `break` changed nothing.
+    const otherTelegramId = nextTelegramId();
+    const otherUserId = await makeCustomer(otherTelegramId);
+    await makeService(otherUserId, { publicId: 'rm-not-raced', expiredDaysAgo: 45 });
+
+    let panelCalled = false;
+    const racing = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (init?.method === 'DELETE' && url.includes('/api/user/u_rm-raced')) {
+        panelCalled = true;
+        // Somebody else takes the row, after it was selected and after the
+        // panel agreed, but before our guarded UPDATE. Only this row — the
+        // other one takes the ordinary path in the same pass.
+        await db
+          .prepare(`UPDATE subscriptions SET status = 'REMOVED' WHERE id = ?1`)
+          .bind(id)
+          .run();
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof globalThis.fetch;
+
+    const out = await removeFinishedServices(db, 'expired', racing, NOW_MS);
+
+    // It really was due and really reached the panel — without this the test
+    // would pass for the wrong reason.
+    expect(panelCalled).toBe(true);
+    // Two were due; only the unraced one is counted, and `failed` stays 0 —
+    // a raced row is not a panel failure and must not be retried as one.
+    expect(out).toMatchObject({ due: 2, removed: 1, failed: 0, dryRun: false });
+    // The customer whose row somebody else took is not told a second time
+    // about a service that is already finished with.
+    expect(await toldAnything(telegramId)).toBe(false);
+    // The other one is, in the same pass.
+    expect(await toldAnything(otherTelegramId)).toBe(true);
+  });
+
+  it('counts the row it moved even when the message was already queued', async () => {
+    /*
+     * The other half of the `{ claimed, told }` split. `claimed` is «our row
+     * moved to REMOVED» and `told` is «the customer has a message owed to
+     * them», and only the first decides the count.
+     *
+     * The state is reached the way production reaches it: the dedupe key is
+     * already in `bot_notifications`, so `enqueue` returns false. Nothing
+     * prunes that table, so a key written once is there for good — which is
+     * exactly why `told` must not be allowed to zero the count.
+     */
+    const telegramId = nextTelegramId();
+    const userId = await makeCustomer(telegramId);
+    const id = await makeService(userId, { publicId: 'rm-told', expiredDaysAgo: 45 });
+
+    await db
+      .prepare(
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+         VALUES (?1, ?2, 'anything', 'SENT')`,
+      )
+      .bind(`remove:${id}:expired`, telegramId)
+      .run();
+
+    const out = await removeFinishedServices(db, 'expired', fakePanel(), NOW_MS);
+
+    expect(deleted).toEqual(['u_rm-told']);
+    expect(out).toMatchObject({ due: 1, removed: 1, failed: 0, dryRun: false });
+    expect(await statusOf(id)).toBe('REMOVED');
+    // Nothing new was queued — the key was taken — and that is not a reason to
+    // report the removal as something that did not happen.
+    expect(await toldAnything(telegramId)).toBe(false);
+  });
+
   it('counts an account that was already gone as removed and still tells the customer', async () => {
     // A 404 is the end state that was asked for. Treating it as a failure
     // would retry against an account nobody can find, for ever.
