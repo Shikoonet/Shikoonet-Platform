@@ -27,6 +27,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from './api';
 import { useRole } from '../role.js';
 
@@ -188,7 +189,18 @@ function ActivateDialog({ onClose, onDone }: { onClose: () => void; onDone: () =
   const [error, setError] = useState<string | null>(null);
   const ready = reason.trim().length >= 3;
 
-  return (
+  /*
+   * Portalled to `document.body`, and that is the fix, not a style.
+   *
+   * The button lives in `.app-header`, which is `position: fixed` with a
+   * `backdrop-filter` — and a backdrop-filter makes its element the containing
+   * block for every fixed-position descendant. Rendered in place, this
+   * backdrop's `inset: 0` filled the HEADER: on staging the dialog measured
+   * 1703×63, a strip along the top with the form cut off underneath. Moving the
+   * subtree out of the header is the only thing that resolves `inset: 0`
+   * against the viewport again.
+   */
+  return createPortal(
     <div
       className="modal-backdrop"
       role="dialog"
@@ -196,7 +208,7 @@ function ActivateDialog({ onClose, onDone }: { onClose: () => void; onDone: () =
       aria-label="فعال‌کردن حالت تداوم"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="modal-body">
+      <div className="modal-body modal-body--danger">
         <h3>حالت تداوم فعال شود؟</h3>
         {/*
           Said before the button, not after. This is the one screen in the panel
@@ -207,25 +219,33 @@ function ActivateDialog({ onClose, onDone }: { onClose: () => void; onDone: () =
           تا پایان این مدت، هر سفارش تازه <strong>بدون تایید بانکی</strong> تحویل می‌شود و در صف
           «تحویل‌شده، در انتظار تطبیق» می‌ماند. سفارش‌های موجود دست نمی‌خورند.
         </p>
-        <label>
+        <label className="form-label" htmlFor="continuity-reason">
           چرا؟
-          <input
-            type="text"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder="مثلاً: رله پیامک از ساعت ۹ قطع است"
-          />
         </label>
-        <label>
+        <input
+          id="continuity-reason"
+          className="form-control"
+          type="text"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="مثلاً: رله پیامک از ساعت ۹ قطع است"
+          autoFocus
+        />
+        <label className="form-label" htmlFor="continuity-duration" style={{ marginBlockStart: 10 }}>
           برای چه مدت؟
-          <select value={durationMs} onChange={(e) => setDurationMs(Number(e.target.value))}>
-            {DURATIONS.map((d) => (
-              <option key={d.ms} value={d.ms}>
-                {d.label}
-              </option>
-            ))}
-          </select>
         </label>
+        <select
+          id="continuity-duration"
+          className="form-control"
+          value={durationMs}
+          onChange={(e) => setDurationMs(Number(e.target.value))}
+        >
+          {DURATIONS.map((d) => (
+            <option key={d.ms} value={d.ms}>
+              {d.label}
+            </option>
+          ))}
+        </select>
         {error && <div className="alert alert-error">{error}</div>}
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost" onClick={onClose}>
@@ -252,6 +272,7 @@ function ActivateDialog({ onClose, onDone }: { onClose: () => void; onDone: () =
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
