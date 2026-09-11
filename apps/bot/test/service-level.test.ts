@@ -118,6 +118,39 @@ async function openCategory(
   };
 }
 
+/** Press «خرید» as a real customer would, and hand back the keyboard. */
+async function openBuy(): Promise<{
+  text: string;
+  buttons: Array<{ text: string; data: string }>;
+}> {
+  const { updateId, telegramId } = ids();
+  await handleUpdate(db, {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      from: { id: telegramId, username: `sv${telegramId}` },
+      chat: { id: telegramId },
+      text: '/start',
+    },
+  });
+  const shown = await handleUpdate(db, {
+    update_id: updateId + 1,
+    callback_query: {
+      id: `cq-${updateId}`,
+      from: { id: telegramId, username: `sv${telegramId}` },
+      message: { message_id: updateId, chat: { id: telegramId } },
+      data: 'buy',
+    },
+  });
+  const reply = shown.replies[0];
+  return {
+    text: reply?.text ?? '',
+    buttons: (reply?.keyboard ?? [])
+      .flat()
+      .map((b) => ({ text: b.text, data: b.callback_data ?? '' })),
+  };
+}
+
 beforeAll(async () => {
   await assertSchema();
 });
@@ -170,6 +203,51 @@ describe('a category with several tiers asks which tier first', () => {
     expect(screen.text).toContain(`${PREFIX}named`);
   });
 
+  it('does not offer a way back to a category list the customer never saw', async () => {
+    /*
+     * The one-category shop. `handleCallback` collapses `buy` straight through
+     * to this screen, so «بازگشت به دسته‌بندی‌ها» would re-open the screen it is
+     * drawn on — Telegram answers «message is not modified» and the button does
+     * nothing at all.
+     *
+     * Reached the only way a customer can reach it: by pressing `buy` with
+     * exactly one purchasable category in the shop. Without this the `false`
+     * literal that carries the whole fix is executed by no test in the suite —
+     * the sim seed has two purchasable categories and every other file here
+     * ADDS one.
+     */
+    const shop = await makeShop('lonely', [
+      { name: 'پلاتینیوم', plans: 2 },
+      { name: 'طلایی', plans: 2 },
+    ]);
+    // Every other category off, whatever it was — this file shares a database
+    // with sixty others and cannot know what is in it. Restored to what each
+    // one actually was, not to `true`.
+    const { results } = await db
+      .prepare(`SELECT id, active FROM product_categories WHERE id <> ?1`)
+      .bind(shop.categoryId)
+      .all<{ id: number; active: boolean }>();
+    const others = (results ?? []).map((r) => ({ id: Number(r.id), active: r.active }));
+    await db
+      .prepare(`UPDATE product_categories SET active = false WHERE id <> ?1`)
+      .bind(shop.categoryId)
+      .run();
+    try {
+      const screen = await openBuy();
+      // It is this shop's own screen, not the category list.
+      expect(screen.text).toContain(`${PREFIX}lonely`);
+      expect(screen.buttons.map((b) => b.data)).toContain('menu');
+      expect(screen.buttons.map((b) => b.data)).not.toContain('buy');
+    } finally {
+      for (const c of others) {
+        await db
+          .prepare(`UPDATE product_categories SET active = ?2 WHERE id = ?1`)
+          .bind(c.id, c.active)
+          .run();
+      }
+    }
+  });
+
   it('offers a way back to the categories, not only to the menu', async () => {
     // A level with no way back up is a dead end, and this screen had a lone
     // «منو» for as long as nothing but an expired button could reach it.
@@ -177,6 +255,12 @@ describe('a category with several tiers asks which tier first', () => {
       { name: 'پلاتینیوم', plans: 2 },
       { name: 'طلایی', plans: 2 },
     ]);
+    // A SECOND category, built here rather than assumed. Until 2026-09-10 this
+    // test relied on whatever another file had left purchasable in the shared
+    // database: run this file on its own and it went red, because the button it
+    // asserts is drawn only when a category list exists above the screen — the
+    // condition the test above deliberately removes.
+    await makeShop('back-sibling', [{ name: 'معمولی', plans: 1 }]);
     const screen = await openCategory(shop.categoryId);
     expect(screen.buttons.map((b) => b.data)).toContain('buy');
     expect(screen.buttons.map((b) => b.data)).toContain('menu');

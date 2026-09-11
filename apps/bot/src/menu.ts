@@ -433,6 +433,26 @@ export function emojiTooLong(label: string): string {
 /** The button this shop no longer has — an admin removed its row. */
 export const EMOJI_BUTTON_GONE = '❌ این دکمه دیگر در کیبورد این فروشگاه نیست.';
 
+/** The glyph between the tags is not one emoji, so the button would not draw. */
+export const EMOJI_NOT_AN_EMOJI = [
+  '❌ این ایموجی روی دکمه نمی‌نشیند.',
+  '',
+  'یک ایموجی تکی بفرست — نه متن، نه چند تا با هم.',
+].join('\n');
+
+/**
+ * The one sentence for a refusal, chosen by what actually went wrong.
+ *
+ * Both admin screens used to render «جا نشد… اول کوتاهش کن» for every way this
+ * can fail. For a button that is not in this shop's layout at all that is a
+ * false instruction: shortening the label will never make it work, and
+ * `EMOJI_BUTTON_GONE` was sitting right here, unreachable from that path.
+ */
+export function emojiRefused(reason: 'TOO_LONG' | 'GONE' | 'BAD_EMOJI', label: string): string {
+  if (reason === 'TOO_LONG') return emojiTooLong(label);
+  return reason === 'GONE' ? EMOJI_BUTTON_GONE : EMOJI_NOT_AN_EMOJI;
+}
+
 export function mainMenu(viewer: MenuViewer): InlineKeyboard {
   return buildMainMenu(layout('main'), viewer);
 }
@@ -802,7 +822,27 @@ function usersText(limit: number | null): string {
  * otherwise draw the same button twice, which is the defect this whole screen
  * was built to remove.
  */
-export function productMenu(products: CatalogProduct[]): InlineKeyboard {
+export function productMenu(
+  products: CatalogProduct[],
+  /**
+   * Whether there is a category list ABOVE this screen to go back to.
+   *
+   * False on the migrated shop, and that is the whole reason this parameter
+   * exists. Migration 0032 puts every product in ONE category «سرویس‌ها», so
+   * `handle.ts` collapses `buy` straight through to this very screen — and the
+   * «بازگشت به دسته‌بندی‌ها» button's destination IS the screen it is drawn on.
+   * Telegram answers the resulting edit with «message is not modified»,
+   * `telegram.ts` swallows it, the spinner clears, and nothing happens.
+   *
+   * Dropping the button rather than re-pointing it: the screen above genuinely
+   * is the main menu, `menu` is already `required` on this layout, so there is
+   * no dead end — and two buttons both saying «back» to the same place is the
+   * defect `planDetailMenu` was written to avoid.
+   *
+   * Defaulted true so `panel:`, which cannot know the count, keeps drawing it.
+   */
+  hasCategoryList = true,
+): InlineKeyboard {
   const seen = new Map<string, number>();
   for (const p of products) seen.set(p.name, (seen.get(p.name) ?? 0) + 1);
   // Rows from `groupIntoRows`, not one per product. This was the last
@@ -828,6 +868,7 @@ export function productMenu(products: CatalogProduct[]): InlineKeyboard {
       })),
     ),
     'products',
+    { applies: (action) => (action === 'buy' ? hasCategoryList : true) },
   );
 }
 
@@ -854,6 +895,30 @@ export function planMenu(
    * into its name.
    */
   template: string | null = null,
+  /**
+   * Where «بازگشت» goes from this screen, decided by the CALLER.
+   *
+   * A string is that destination; `null` suppresses the button; `undefined`
+   * keeps it as the bare `buy` the chrome declares, which is what the
+   * `planMenu([])` error screens want and where there is nothing to derive
+   * from anyway.
+   *
+   * Explicit rather than derived, and the derived version is why. It read
+   * `plans[0].tiers > 1 ? cat : buy`, but `tiers` counts ACTIVE siblings while
+   * the screen it would send you to is built by `productsForUser`, which also
+   * applies `resellers_only`, `provider_hidden_users`, `once_per_user` and the
+   * panel's own status. The moment those two disagree — one ordinary admin
+   * action, switching a panel in a shared category to non-ACTIVE — `cat:`
+   * re-renders the identical plan list, Telegram answers «message is not
+   * modified», and the button is dead. That is the exact defect this screen's
+   * sibling was changed to fix, recreated one level down.
+   *
+   * Both real callers already know the answer without a count: the collapse in
+   * `categoryScreen` never drew a service list, so back is the category list
+   * or nothing; `prd:` was reached FROM a service list, so back is that
+   * category.
+   */
+  backTo?: string | null,
 ): InlineKeyboard {
   return withChrome(
     // The label and the callback are built together, from ONE plan object,
@@ -868,6 +933,15 @@ export function planMenu(
       })),
     ),
     'plans',
+    {
+      // Re-pointed, never suppressed — the opposite of what the screen above
+      // needs, and the difference matters.
+      //
+      // Suppressed only when the caller says there is nowhere to go.
+      applies: (action) => (action === 'buy' ? backTo !== null : true),
+      target: (action) =>
+        action === 'buy' && typeof backTo === 'string' ? backTo : undefined,
+    },
   );
 }
 

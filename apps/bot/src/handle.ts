@@ -292,6 +292,46 @@ export async function handleUpdate(
       .bind(update.update_id)
       .run();
     if (claim.meta.changes === 0) {
+      /*
+       * Handled already, so nothing runs and nothing is said. The rule that
+       * makes the silence safe is written here because it was real and unwritten
+       * — which is how issue #176 came to be filed against it.
+       *
+       * ## The outbox is the durability boundary, not this return value
+       *
+       * The claim commits with the transaction; the replies are sent afterwards
+       * by `poll.ts`. So a process that dies in between loses them, and the
+       * redelivery lands here and says nothing.
+       *
+       * What that can cost is a SCREEN, never a receipt and never a delivery.
+       * Everything a customer cannot re-summon is enqueued inside the very
+       * transaction that earns it — `settle.ts` for a settled payment,
+       * `provision.ts` for a delivered service — and `notify.flush` retries it
+       * until it lands. What travels on `replies` is the interactive half: a
+       * menu, an invoice, a confirmation of something whose durable half is
+       * already recorded.
+       *
+       * And a customer who presses again produces a NEW `update_id`, so their
+       * second press never reaches this branch. `paid` answers `paidAlready`,
+       * a re-sent receipt answers `replaced`, the QR redraws. The recovery is
+       * structural rather than lucky.
+       *
+       * ## The rule this makes checkable
+       *
+       * A handler that mutates state and announces it ONLY through `replies` is
+       * a bug. If a new one has something unrecoverable to say, it enqueues it
+       * beside the write, the way the two sweeps above do.
+       *
+       * Not made durable in general, deliberately. Routing screens through
+       * `bot_notifications` would put every button press behind the sweep chain
+       * — the latency `poll.ts` already blames for «query is too old» — and the
+       * row carries no `editMessageId`, no reply keyboard and no deletion list,
+       * so the one-live-screen ordering could not survive it. Replaying stored
+       * replies is worse: the offset is deliberately never persisted, so the
+       * last batch is unacknowledged after EVERY restart, and re-emitting it
+       * would turn a rare lost screen into a duplicate-screen storm on every
+       * deploy.
+       */
       return { status: 'duplicate', replies: [] };
     }
 
@@ -1024,11 +1064,18 @@ async function handlePremiumEmoji(
       return reply(menu.EMOJI_ONE_REQUIRED, menu.promptMenu(encode('emj')));
     }
 
-    const label = await setButtonEmoji(tx, target.action, found[0]!);
+    const placed = await setButtonEmoji(tx, target.action, found[0]!);
     await clearSession(tx, user.id);
-    if (label === null) {
-      return reply(menu.emojiTooLong(target.label), menu.emojiHomeMenu(menu.mainMenuButtons()));
+    if (!placed.ok) {
+      // The reason, not one sentence for all of them. Telling an admin whose
+      // button is not in this shop's layout to shorten its label is an
+      // instruction that can never work.
+      return reply(
+        menu.emojiRefused(placed.reason, target.label),
+        menu.emojiHomeMenu(menu.mainMenuButtons()),
+      );
     }
+    const label = placed.label;
     await enableCustomEmoji(tx);
     await rememberEmoji(tx, found);
     const buttons = menu
@@ -1989,6 +2036,15 @@ async function categoryScreen(
   user: Caller,
   category: CatalogCategory,
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+  /**
+   * Whether a category list exists above this screen.
+   *
+   * Passed rather than re-derived, because both callers have just run
+   * `categoriesForUser` and it is the authoritative predicate. Asking again in
+   * SQL would mean approximating `PURCHASABLE` with something simpler, and an
+   * approximation here draws or hides a button on the wrong shops.
+   */
+  hasCategoryList: boolean,
 ): Promise<HandleOutcome> {
   // The LEVEL, not the price list.
   //
@@ -2003,7 +2059,7 @@ async function categoryScreen(
   const services = await productsForUser(tx, user.id, undefined, category.categoryId);
   if (services.length === 0) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu([]));
   if (services.length > 1) {
-    return screen(menu.categoryPlans(category.name), menu.productMenu(services));
+    return screen(menu.categoryPlans(category.name), menu.productMenu(services, hasCategoryList));
   }
 
   // A list of one is not a choice — the same rule the category list follows one
@@ -2018,7 +2074,16 @@ async function categoryScreen(
   if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
   return screen(
     menu.choosePlan(only.name, plans, user.discount_percent),
-    menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate),
+    // The customer was never shown a service list — this screen IS the
+    // collapse — so back is the category list, or nothing when there is not
+    // one. Sending them to `cat:` here would re-run this same collapse and
+    // redraw the screen they are on.
+    menu.planMenu(
+      plans,
+      user.discount_percent,
+      SHOP.planButtonTemplate,
+      hasCategoryList ? encode('buy') : null,
+    ),
   );
 }
 
@@ -2126,7 +2191,10 @@ async function handleCallback(
       // applied. One category means the shop has no kinds, only prices, so the
       // customer meets them on the first tap instead of after a pointless one.
       if (categories.length === 1) {
-        return categoryScreen(tx, user, categories[0]!, screen);
+        // One category means there is no list above this screen, so the
+        // «بازگشت به دسته‌بندی‌ها» it would draw has nowhere to go. That is the
+        // migrated shop: 0032 puts every product in one category.
+        return categoryScreen(tx, user, categories[0]!, screen, false);
       }
       return screen(menu.CHOOSE_CATEGORY, menu.categoryMenu(categories));
     }
@@ -2159,7 +2227,8 @@ async function handleCallback(
       // to open. One answer for all three: telling them apart would hand out a
       // map of the hidden catalogue.
       if (!category) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu(categories));
-      return categoryScreen(tx, user, category, screen);
+      // Reached from the category list itself, so there is one to go back to.
+      return categoryScreen(tx, user, category, screen, categories.length > 1);
     }
 
     case 'panel': {
@@ -2192,7 +2261,14 @@ async function handleCallback(
       if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
       return screen(
         menu.choosePlan(plans[0]!.productName, plans, user.discount_percent),
-        menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate),
+        // Reached by pressing a service, so a service list really was drawn and
+        // its category is where back belongs.
+        menu.planMenu(
+          plans,
+          user.discount_percent,
+          SHOP.planButtonTemplate,
+          encode('cat', plans[0]!.categoryId),
+        ),
       );
     }
 
@@ -2704,14 +2780,17 @@ async function handleCallback(
           return screen(menu.EMOJI_BUTTON_GONE, menu.emojiHomeMenu(buttons));
         }
 
-        const label = await setButtonEmoji(tx, target.action, chosen);
-        if (label !== null) await enableCustomEmoji(tx);
+        const placed = await setButtonEmoji(tx, target.action, chosen);
+        if (placed.ok) await enableCustomEmoji(tx);
         await clearSession(tx, user.id);
         const after = buttons.map((b) =>
-          b.slot === target.slot && label !== null ? { ...b, label } : b,
+          b.slot === target.slot && placed.ok ? { ...b, label: placed.label } : b,
         );
+        // Same as the typed-emoji path: say which of the three it was.
         return screen(
-          label === null ? menu.emojiTooLong(target.label) : menu.emojiChanged(target.label),
+          placed.ok
+            ? menu.emojiChanged(target.label)
+            : menu.emojiRefused(placed.reason, target.label),
           menu.emojiHomeMenu(after),
         );
       }
