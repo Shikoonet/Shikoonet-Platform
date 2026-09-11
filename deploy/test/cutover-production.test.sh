@@ -98,6 +98,13 @@ case "$url" in
       "POST /deployments/deploy123/cancel")
         printf '{"message":"Deployment cannot be cancelled. Current status: finished"}400'
         ;;
+      # The web candidates' application records. `build_pack` and
+      # `docker_registry_image_name` are what the cutover has to look at before
+      # it moves a live name onto one, so the fake lets a case set them.
+      "GET /applications/$FAKE_CAND_INGEST" | "GET /applications/$FAKE_CAND_DASHBOARD")
+        printf '{"uuid":"%s","build_pack":"%s","docker_registry_image_name":"%s"}200' \
+          "${path#/applications/}" "${FAKE_WEB_BUILD_PACK:-dockerimage}" "${FAKE_WEB_IMAGE:-$FAKE_IMAGE}"
+        ;;
       # A restart of a Docker Image application is a queued redeploy; the fake
       # answers as Coolify does and lets the next `docker ps` show the
       # replacement container — unless the case says the roll never lands.
@@ -497,6 +504,50 @@ fi
 
 section 'pre-move refusal and redaction'
 
+# ── the candidate has to be the KIND of application that pulls a digest ──
+#
+# A Git-typed application asked to deploy clones and REBUILDS, ignoring the
+# pinned image entirely: the container comes up healthy running a tree nothing
+# in this pipeline verified. `relabel_candidate` does eventually notice — the
+# rebuilt image carries no matching RepoDigest — but only by exhausting
+# WAIT_TIMEOUT, and by then sms.chopon.uk is already pointing at it. So the
+# assertion below is on the recorded API calls, not on the exit code: what
+# matters is that the refusal lands before the first domain PATCH.
+GITTYPE=$(make_case gittype)
+GITTYPE_OUT="$GITTYPE/output.log"
+if run_cutover "$GITTYPE" "$GITTYPE_OUT" FAKE_WEB_BUILD_PACK=dockerfile; then
+  bad 'a Git-typed web candidate is refused before any domain moves' 'the cutover continued'
+elif grep -qF "is a 'dockerfile' application, not a Docker Image application" "$GITTYPE_OUT" &&
+  ! grep -q '^PATCH /applications/' "$GITTYPE/api.log" &&
+  ! grep -qF '/restart' "$GITTYPE/api.log" &&
+  ! grep -qF '/start' "$GITTYPE/api.log" &&
+  [ "$(cat "$GITTYPE/old-ingest-running")" = 1 ] &&
+  [ "$(cat "$GITTYPE/old-dashboard-running")" = 1 ] &&
+  [ "$(cat "$GITTYPE/old-running")" = 1 ] &&
+  [ ! -e "$GITTYPE/state/deployed" ]; then
+  ok 'a Git-typed web candidate is refused before any domain moves'
+else
+  bad 'a Git-typed web candidate is refused before any domain moves' \
+    "$(tail -4 "$GITTYPE_OUT") api=$(tr '\n' ' ' <"$GITTYPE/api.log")"
+fi
+
+# The other half of the same question: right type, wrong registry. The tag this
+# release pushed would land on somebody else's repository and Coolify would
+# pull an image nothing here built.
+FOREIGN=$(make_case foreign)
+FOREIGN_OUT="$FOREIGN/output.log"
+if run_cutover "$FOREIGN" "$FOREIGN_OUT" FAKE_WEB_IMAGE=ghcr.io/someone/else; then
+  bad 'a candidate pinned to another registry is refused before any domain moves' 'the cutover continued'
+elif grep -qF "pinned to image repository 'ghcr.io/someone/else'" "$FOREIGN_OUT" &&
+  ! grep -q '^PATCH /applications/' "$FOREIGN/api.log" &&
+  [ "$(cat "$FOREIGN/old-ingest-running")" = 1 ] &&
+  [ ! -e "$FOREIGN/state/deployed" ]; then
+  ok 'a candidate pinned to another registry is refused before any domain moves'
+else
+  bad 'a candidate pinned to another registry is refused before any domain moves' \
+    "$(tail -4 "$FOREIGN_OUT") api=$(tr '\n' ' ' <"$FOREIGN/api.log")"
+fi
+
 MULTIPLE=$(make_case multiple)
 MULTIPLE_OUT="$MULTIPLE/output.log"
 if run_cutover "$MULTIPLE" "$MULTIPLE_OUT" FAKE_OLD_COUNT=2; then
@@ -550,6 +601,7 @@ fi
 for secret in "$SECRET_TOKEN" "$SECRET_DB"; do
   if grep -qF -- "$secret" "$HAPPY_OUT" "$RECOVERY_OUT" "$MULTIPLE_OUT" "$RELABEL_OUT" \
     "$BOOTSTRAP_OUT" "$BOOTSTRAP_RECOVERY_OUT" "$TAMPERED_OUT" "$DUPLICATE_OUT" "$REUSED_OUT" \
+    "$GITTYPE_OUT" "$FOREIGN_OUT" "$GITTYPE/api.log" "$FOREIGN/api.log" \
     "$HAPPY/api.log" "$RECOVERY/api.log" "$BOOTSTRAP/api.log" "$BOOTSTRAP_RECOVERY/api.log" \
     "$MULTIPLE/api.log" "$TAMPERED/api.log" "$DUPLICATE/api.log" "$REUSED/api.log" "$RELABEL/api.log"; then
     bad 'cutover output contains no credential' 'a fake credential was printed'

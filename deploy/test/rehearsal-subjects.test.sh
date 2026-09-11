@@ -173,17 +173,16 @@ refuses() { # label sed-expr reason-regex [extra-env]
 }
 
 # 1. the restored production database is never migrated
-# A range that selects nothing: the loop runs, applies nothing, and exits zero.
-# This is the failure the old code could not see, because nothing counted.
-# shellcheck disable=SC2016
+# A selection that skips everything: the loop runs, applies nothing, and exits
+# zero. This is the failure the old code could not see, because nothing counted.
 refuses "refuses when the production restore is never migrated" \
-  's|^RANGE_LO=\${MIGRATION_RANGE%%\.\.\*}|RANGE_LO=9999|' \
+  's|^  grep -qxF .*applied\.txt.*|  continue|' \
   'never migrated|selected no migrations'
 
-# 2. the full range is applied instead of the derived pending range
-# shellcheck disable=SC2016
+# 2. everything in the repository is applied instead of what the ledger says
+#    is pending
 refuses "refuses when the full range is applied instead of the pending range" \
-  's|^RANGE_LO=\${MIGRATION_RANGE%%\.\.\*}|RANGE_LO=0001|' \
+  '/^  grep -qxF .*applied\.txt/d' \
   'wrong range was applied|ledger says'
 
 # 3. invariants run against the legacy destination
@@ -231,6 +230,33 @@ else
   bad "refuses when the subject's ledger does not match the restored production copy" \
     "$(grep -i 'STOP:' "$MW/out" | head -1)"
 fi
+
+# ── 3b. a shared four-digit prefix is not a migration's identity ─────────
+#
+# migrations/ ships three pairs of files under one number (0056, 0057, 0060).
+# When production's ledger stops BETWEEN the two halves of such a pair, the
+# pending set and the numeric range disagree: the range begins at the shared
+# number, so a selector built from filename digits picks up the half that has
+# already been applied and runs it again against the restored production copy.
+#
+# The fixture gives 0034 a second file while production's ledger ends at
+# 0034_m.sql — four migrations are pending, a numeric range selects five. The
+# assertion is the count the fake docker recorded, not what the script says it
+# did: the already-applied file must never reach the restored copy.
+DW="$WORKROOT/dup"; FAKE_DUP_MIGRATION=0034 build_world "$DW"
+DUPRC=0
+run_rehearsal "$DW" || DUPRC=$?
+DUP_RESTORE=$(grep -oE 'shikoo-rehearsal-restore-[0-9]+-[0-9]+' "$DW/log" | head -1 || true)
+DUP_N=$(grep -c "^migration|$DUP_RESTORE|prodrestore|" "$DW/log" || true)
+DUP_LABEL="a migration already in the ledger is not re-applied under a shared prefix"
+if [ "$DUPRC" -ne 0 ]; then
+  bad "$DUP_LABEL" "the rehearsal refused: $(grep -i 'STOP:' "$DW/out" | head -1)"
+elif [ "$DUP_N" = 4 ]; then
+  ok "$DUP_LABEL"
+else
+  bad "$DUP_LABEL" "$DUP_N migration(s) reached the production restore, expected the 4 pending"
+fi
+rm -rf "$DW"
 
 # ── 4. a blocked gate and a broken probe are different answers ───────────
 #

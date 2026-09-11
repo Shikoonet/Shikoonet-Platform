@@ -92,3 +92,21 @@ playwright-report.json
 # once already are the same mistake with a different extension.
 backup_*.sql
 *.sql.gz
+
+# ...and here is that extension, which this comment had been naming for months
+# while ignoring nothing: `before-waiting-claim.png` was sitting untracked in
+# the root the day these lines were added.
+#
+# The leading `/` is the whole point. It anchors these to the repository root,
+# which is where a tool drops a screenshot when nobody tells it otherwise.
+# Images BELOW the root are committed on purpose — the dashboard's receipt
+# fixture, the legacy acceptance shots — so an unanchored `*.png` would quietly
+# stop tracking new ones of those instead.
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp
+/*.avif
+/*.bmp
+/*.heic

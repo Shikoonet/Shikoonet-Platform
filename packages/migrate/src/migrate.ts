@@ -614,6 +614,64 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
   const categoryId = defaultCategory[0]?.id;
   if (categoryId === undefined) throw new Error('default product category could not be created');
 
+  /*
+   * A legacy `product` row is one PRICE, not one product.
+   *
+   * Issue #71 asked whether the shop needs a middle layer and said the answer
+   * hung on one query. Run on four real dumps it gives the same answer every
+   * time:
+   *
+   *     SELECT COUNT(DISTINCT MD5(CONCAT(inbounds,'|',proxies))) FROM product;  -> 1
+   *
+   * Every row shares ONE delivery definition, while a Location carries 1-7
+   * rows differing only in price, volume and duration. One delivery, many
+   * prices — which is what `0002_catalog.sql` says products/product_plans was
+   * split to stop duplicating.
+   *
+   * Mapping one row to a service AND a plan flattened that back. It would have
+   * produced services named «1ماهه-20گیگ-119.000ت» carrying a single plan each
+   * — the price typed into the name, because `statusshowprice=offshowprice`
+   * means legacy has nowhere else to put it. It is also why the simulation data
+   * answered «no» to issue #71: its shape was the importer's, not the shop's.
+   *
+   * So the SERVICE is the Location — the panel the customer picks first
+   * (`index.php:1507`) — and every row under it becomes one of its plans.
+   * `providerFor` reads the same value, so a service still has exactly one
+   * provider and nothing downstream learns a new shape.
+   *
+   * THE KEY CARRIES THE TWO PURCHASE GATES AS WELL AS THE NAME, and that is
+   * not decoration. `once_per_user` and `resellers_only` are columns of
+   * `products`, and `apps/bot/src/catalog.ts` asks both before it will sell any
+   * plan. A Location holding a free trial (`one_buy_status`) beside a paid row,
+   * or a reseller tier beside a public one, cannot answer both with one flag:
+   * merging them either makes a reseller-only price buyable by everybody or
+   * makes a free trial repeatable. Rows that gate differently therefore keep
+   * separate services under the same Location name, rather than one service
+   * with somebody's gate silently widened. When a Location's rows agree — the
+   * ordinary case — it is one service.
+   *
+   * A row with no Location keeps a service to itself. Six production rows have
+   * none, they appear under no panel in the bot's own menu either, and merging
+   * them would file unrelated things behind one empty name.
+   */
+  const groups = new Map<string, Row[]>();
+  for (const r of rows) {
+    const location = (t.legacyText(r.Location, 'product.Location') ?? '').trim();
+    const key =
+      location === ''
+        ? `\u0000row:${String(r.id)}`
+        : [location, r.one_buy_status === '1', t.isReseller(r.agent)].join('\u0000');
+    const held = groups.get(key);
+    if (held) held.push(r);
+    else groups.set(key, [r]);
+  }
+  // The lowest legacy id in the group. Deterministic, so a re-run writes the
+  // service from the same row and `ON CONFLICT (legacy_id)` finds the one it
+  // wrote last time instead of adding a second copy.
+  const heads = new Map(
+    [...groups].map(([key, g]) => [key, g.reduce((a, b) => (Number(a.id) <= Number(b.id) ? a : b))]),
+  );
+
   const written = await insertBatch(
     ctx.pg,
     'products',
@@ -630,10 +688,14 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
       'resellers_only',
       ['attrs', (p) => `${p}::jsonb`],
     ]),
-    rows.map((r) => [
+    [...heads.values()].map((r) => [
       Number(r.id),
       r.code_product ?? `product-${r.id}`,
-      r.name_product ?? `product-${r.id}`,
+      // The Location's own name, emoji and all — «🥇سرویس VIP - مولتی لوکیشن 🎯»
+      // and not the price. Only a row with no Location falls back to its own.
+      (t.legacyText(r.Location, 'product.Location') ?? '').trim() ||
+        r.name_product ||
+        `product-${r.id}`,
       'vpn',
       categoryId,
       providerFor(r.Location),
@@ -646,7 +708,9 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
     { conflict: '(legacy_id)' },
   );
 
-  // Each legacy product row is one purchasable plan: price, duration, volume.
+  // Each legacy product row is still exactly one purchasable plan: price,
+  // duration, volume. Grouping changes which service a plan hangs under, never
+  // how many plans there are — `verify` asserts that count against `product`.
   const { rows: products } = await ctx.pg.query<{ id: string; legacy_id: number }>(
     'SELECT id, legacy_id FROM products WHERE legacy_id IS NOT NULL',
   );
@@ -654,13 +718,28 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
   // returns it as a string, so a raw key would never match and every plan would
   // be silently skipped.
   const byLegacy = new Map(products.map((p) => [String(p.legacy_id), p.id]));
+  // legacy product.id -> the service its group was written as.
+  const serviceFor = new Map<string, string>();
+  for (const [key, g] of groups) {
+    const service = byLegacy.get(String(heads.get(key)?.id));
+    if (service === undefined) continue;
+    for (const r of g) serviceFor.set(String(r.id), service);
+  }
 
   await insertBatch(
     ctx.pg,
     'product_plans',
-    cols(['legacy_id', 'product_id', 'name', 'price_irr', 'duration_days', 'volume_gb']),
+    cols([
+      'legacy_id',
+      'product_id',
+      'name',
+      'price_irr',
+      'duration_days',
+      'volume_gb',
+      ['attrs', (p) => `${p}::jsonb`],
+    ]),
     rows.flatMap((r) => {
-      const pid = byLegacy.get(String(r.id));
+      const pid = serviceFor.get(String(r.id));
       if (!pid) return [];
       const days = Number(r.Service_time ?? 0);
       const gb = Number(r.Volume_constraint ?? 0);
@@ -672,6 +751,11 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
           t.tomanToIrr(r.price_product).toString(),
           Number.isFinite(days) && days > 0 ? days : null,
           Number.isFinite(gb) && gb > 0 ? gb : null,
+          // The row's own leftovers follow the row. A service can only carry
+          // its head's, so without this the other rows' `inbounds`, `proxies`
+          // and `note` would be dropped by the grouping — and `product_plans.
+          // attrs` is where 0002 says adapter parameters belong anyway.
+          JSON.stringify(t.legacyAttrs(r, claimed.filter((c) => c !== 'note'))),
         ],
       ];
     }),
@@ -737,6 +821,28 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     'SELECT id, code FROM products',
   );
   const productByCode = new Map(productRows.map((p) => [p.code, p.id]));
+  /*
+   * `DiscountSell.code_product` names one legacy `product` ROW, and a legacy
+   * row is now a PLAN: `migrateProducts` groups rows by Location into one
+   * service each. Money points at the plan (`orders.plan_id`) while a discount
+   * points at the service (`discount_codes.product_id`), so a scoped code has
+   * to be resolved THROUGH its plan to the service that carries it.
+   *
+   * Matching on `products.code` alone would only ever find a group's head row.
+   * Every other `code_product` would miss and be dropped a few lines below as
+   * «scoped to a product that is gone» — a live discount deleted by a catalogue
+   * reshape, which is the opposite of preserving its scope.
+   */
+  const legacyProducts = await mysqlRows<Row>(ctx.my, 'SELECT id, code_product FROM product');
+  const { rows: planRows } = await ctx.pg.query<{ product_id: string; legacy_id: number }>(
+    'SELECT product_id, legacy_id FROM product_plans WHERE legacy_id IS NOT NULL',
+  );
+  const serviceByLegacyRow = new Map(planRows.map((p) => [String(p.legacy_id), p.product_id]));
+  for (const r of legacyProducts) {
+    const code = t.legacyText(r.code_product, 'product.code_product');
+    const service = serviceByLegacyRow.get(String(r.id));
+    if (code && service !== undefined) productByCode.set(code, service);
+  }
   const { rows: providerRows } = await ctx.pg.query<{ id: string; code: string }>(
     'SELECT id, code FROM provisioning_providers',
   );

@@ -554,16 +554,17 @@ LEDGER_NOW=$(docker exec -i "$PROD_SUBJECT" psql -U postgres -d prodrestore -At 
   -c 'select count(*) from schema_migrations' 2>/dev/null || echo -1)
 [ "$LEDGER_NOW" = "$PROD_LEDGER_BEFORE" ] ||
   die "the subject of step 11 reports ${LEDGER_NOW} applied migrations, the restored production copy had ${PROD_LEDGER_BEFORE} — this is not that database"
-RANGE_LO=${MIGRATION_RANGE%%..*}
-RANGE_HI=${MIGRATION_RANGE##*..}
 APPLIED_TO_RESTORE=0
 for f in $MIG_LIST; do
-  n=$(basename "$f" | cut -c1-4)
-  # Bounded at BOTH ends. Only the lower bound was checked before, so a
-  # MIG_LIST that reached past the range would have carried the restore
-  # further than the release does and still called it the pending range.
-  [ ! "$n" \< "$RANGE_LO" ] || continue
-  [ ! "$n" \> "$RANGE_HI" ] || continue
+  # Selected by asking the ledger, not by re-parsing a number off the filename.
+  # The four-digit prefix is not an identity: migrations/ ships three pairs
+  # that share one (0056, 0057, 0060), so a numeric range whose low end falls
+  # between the halves of a pair selects the half production has ALREADY
+  # applied and re-applies it against the restored copy. $ART/applied.txt is
+  # that ledger, read in step 5 from the restored production database itself,
+  # and it cannot be wrong about which file production ran. MIGRATION_RANGE is
+  # unchanged and stays the attested summary; it is no longer the selector.
+  grep -qxF "$(basename "$f")" "$ART/applied.txt" && continue
   docker exec -i "$PROD_SUBJECT" psql -U postgres -d prodrestore -v ON_ERROR_STOP=1 -q <"$f" ||
     die "pending migration $(basename "$f") failed against the restored production copy"
   APPLIED_TO_RESTORE=$((APPLIED_TO_RESTORE + 1))
@@ -574,7 +575,7 @@ done
 # still pass, because they would be measuring an unmigrated database that was
 # already self-consistent.
 [ "$APPLIED_TO_RESTORE" -gt 0 ] ||
-  die "the pending range ${MIGRATION_RANGE} selected no migrations — the restored production copy was never migrated"
+  die "the ledger selected no migrations from ${MIGRATION_RANGE} — the restored production copy was never migrated"
 # Compared against the count derived from the production ledger in step 5, not
 # against the range this loop just used. Applying all thirty-seven instead of
 # the three that are pending is the mistake that matters, and a range checked
