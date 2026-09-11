@@ -212,6 +212,72 @@ jobs:
           no-cache: true
           provenance: false
 
+      # ── registry housekeeping, and why it can never fail the deploy ──────
+      #
+      # Nothing in this repository has ever deleted a package version, and this
+      # job pushes one on every green `main` — 78 of them between 2026-08-28 and
+      # 2026-09-07, about seven a day. The package is private, so each version
+      # counts against the account's package storage; when that fills, the push
+      # above is the thing that starts failing, and every deploy stops with it.
+      #
+      # Pruned by AGE, not by count. The production workflows upload their
+      # artifacts with `retention-days: 30` (see deploy/README.md — their
+      # filenames are deliberately absent from this file), so a promotion that
+      # is still valid can name a digest a month old. A count rule at seven a
+      # day would be a six-day window and would delete exactly that digest.
+      # Sixty days is double the artifact life. KEEP_NEWEST sits UNDER the age
+      # rule as a floor, not as the rule: it is what stops an idle month from
+      # emptying the registry, and it is why an idle repository prunes nothing.
+      #
+      # It never fails the deploy, and that is deliberate rather than an
+      # oversight. The image is already pushed and `staging` is about to run it;
+      # a registry that will not answer, a token without the scope, or an owner
+      # that is a user rather than an organisation is housekeeping that did not
+      # happen — it is not a release that went wrong. The script reports what it
+      # did and exits 0 on every path, and `continue-on-error` is the second
+      # belt for the case where the shell itself dies.
+      - name: prune GHCR versions older than 60 days (never fails the deploy)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_DAYS: '60'
+          KEEP_NEWEST: '20'
+          # Never the digest this run just pushed, whatever the dates say.
+          PUSHED_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -uo pipefail
+          owner=${GITHUB_REPOSITORY%%/*}
+          pkg=${IMAGE_NAME##*/}
+          api="/orgs/$owner/packages/container/$pkg/versions"
+          gh api "$api?per_page=1" >/dev/null 2>&1 ||
+            api="/users/$owner/packages/container/$pkg/versions"
+          list=$(mktemp)
+          if ! gh api --paginate "$api?per_page=100" \
+                 --jq '.[] | [.created_at, .id, .name] | @tsv' >"$list" 2>/dev/null; then
+            echo "could not list versions of ${pkg} — nothing pruned"
+            exit 0
+          fi
+          cutoff=$(date -u -d "-${KEEP_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+          # created_at is ISO-8601 in UTC, so a lexical sort IS a chronological
+          # one and a lexical comparison against the cutoff IS a date comparison.
+          # Newest first, then the floor is taken off the top before anything is
+          # even considered for deletion.
+          sort -r "$list" | tail -n "+$((KEEP_NEWEST + 1))" >"$list.candidates"
+          pruned=0; refused=0; kept=0
+          while IFS=$'\t' read -r created id digest; do
+            if [ "$created" \> "$cutoff" ] || [ "$digest" = "${PUSHED_DIGEST:-}" ]; then
+              kept=$((kept + 1))
+              continue
+            fi
+            if gh api -X DELETE "$api/$id" >/dev/null 2>&1; then
+              pruned=$((pruned + 1))
+            else
+              refused=$((refused + 1))
+            fi
+          done <"$list.candidates"
+          echo "ghcr prune: ${pruned} deleted, ${refused} refused, ${kept} younger than ${KEEP_DAYS}d or in use, newest ${KEEP_NEWEST} never considered"
+          exit 0
+
   staging:
     name: staging
     needs: [gate, image]
