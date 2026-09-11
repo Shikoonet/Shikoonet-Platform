@@ -12,6 +12,7 @@ import { provisionPaidOrders } from '../src/provision.js';
 import { deliverFromStock, STOCK_GRACE_MS } from '../src/stock.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
+import { TEXTS } from '@shikoo/contracts';
 
 const PROVIDER_CODE = 'sim-stock-panel';
 
@@ -41,6 +42,48 @@ async function paidOrder(
     .bind(publicId, userId, options.kind ?? 'NEW_PURCHASE', plan)
     .first<{ id: number }>();
   return { orderId: row!.id, publicId, telegramId, planId: plan };
+}
+
+/**
+ * A paid RENEWAL against a service that really exists.
+ *
+ * `renew()` fails an order whose `target_subscription_id` resolves to nothing —
+ * terminally, with a refund — so a renewal built without one would never reach
+ * the retryable exit this is for.
+ */
+async function paidRenewal(): Promise<{
+  orderId: number;
+  publicId: string;
+  telegramId: number;
+}> {
+  const { telegramId, publicId } = nextIds();
+  const userId = await makeCustomer(telegramId);
+  const plan = await planId('sim-vip-1m-50');
+  // The plan's own panel: `beforeAll` turns every provider into a live one, so
+  // the renewal resolves against the account's panel exactly as production does.
+  const provider = await providerId('sim-vip');
+  const sub = await db
+    .prepare(
+      `INSERT INTO subscriptions
+         (public_id, user_id, plan_id, provider_id, plan_name_at_sale,
+          provider_name_at_sale, price_irr, remote_username, volume_gb,
+          status, purchased_at, expires_at)
+       VALUES (?1, ?2, ?3, ?4, 'یک‌ماهه', 'لوکیشن تست', 1950000, ?5, 50,
+               'ACTIVE', now(), now() + interval '1 day')
+       RETURNING id`,
+    )
+    .bind(`sub-${publicId}`, userId, plan, provider, `u_${publicId}`)
+    .first<{ id: number }>();
+  const row = await db
+    .prepare(
+      `INSERT INTO orders (public_id, user_id, kind, plan_id, target_subscription_id,
+                           quantity, unit_price_irr, total_irr, status)
+       VALUES (?1, ?2, 'RENEWAL', ?3, ?4, 1, 1950000, 1950000, 'PAID')
+       RETURNING id`,
+    )
+    .bind(publicId, userId, plan, sub!.id)
+    .first<{ id: number }>();
+  return { orderId: row!.id, publicId, telegramId };
 }
 
 /**
@@ -120,6 +163,33 @@ function afterGrace(): number {
   return Date.now() + STOCK_GRACE_MS + 60_000;
 }
 
+/**
+ * Backdates the first-failure stamp by `ageMs`, against the SAME clock the
+ * sweep is given.
+ *
+ * The point is to stop comparing two clocks. `provision_first_failed_at` is
+ * written by Postgres with its own `now()`, and the grace check subtracts it
+ * from the mocked `Date.now()` — so a test that lets Postgres set it is
+ * asserting against a difference neither side chose.
+ */
+async function ageFailure(orderId: number, ageMs: number): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE orders SET provision_first_failed_at = to_timestamp(?2 / 1000.0) WHERE id = ?1`,
+    )
+    .bind(orderId, Date.now() - ageMs)
+    .run();
+}
+
+/** The «still working on it» notices for one order, by their own dedupe key. */
+async function waitingNotes(
+  publicId: string,
+): Promise<{ chatId: number; text: string; dedupeKey: string }[]> {
+  return (await pendingNotifications()).filter(
+    (n) => n.dedupeKey === `provision:${publicId}:waiting`,
+  );
+}
+
 beforeAll(async () => {
   await ensureCatalog();
   process.env[`PANEL_${PROVIDER_CODE.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`] = 'admin:secret';
@@ -184,6 +254,158 @@ describe('selling from the shelf', () => {
     expect(await stockRow(stock)).toMatchObject({ status: 'AVAILABLE', order_id: null });
     // And nothing is said to the customer — a blip is not news.
     expect(notes.some((n) => n.chatId === order.telegramId)).toBe(false);
+  });
+
+  it('tells a waiting customer once, when the shelf could not save them either', async () => {
+    /*
+     * The worst thing this bot can do to somebody: they paid, they have no
+     * config, and they hear nothing at all.
+     *
+     * Silence is right for a blip — «there was a problem» followed by success a
+     * minute later is worse than saying nothing — and the test above pins that.
+     * What had no answer was the panel that does not come back. With an EMPTY
+     * shelf the retry loop can run for days and the customer cannot tell being
+     * queued from being forgotten.
+     *
+     * Past the shelf's own grace, so it fires only once the shelf has had its
+     * chance and could not help. And exactly once: the dedupe key is the order,
+     * so a sweep running every twenty-five seconds for a week still says it one
+     * time.
+     */
+    const order = await paidOrder();
+    // No shelve() — an empty shelf is the state this exists for.
+
+    // One sweep to stamp `provision_first_failed_at`, then the clock is set
+    // from the TEST rather than compared against Postgres's own.
+    //
+    // The first version of this test asserted the early silence with the stamp
+    // left as Postgres wrote it, which is strictly LATER than the mocked clock
+    // the sweep is given — so `now - failingSince` was negative and the
+    // assertion held for a grace of ten minutes, of one second, or of zero. It
+    // pinned nothing. Both edges are driven explicitly now, and the wall-clock
+    // budget that construction quietly depended on is gone with it.
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    await ageFailure(order.orderId, STOCK_GRACE_MS - 60_000);
+
+    // Just inside the grace: still silent, and now for the right reason.
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    expect(await waitingNotes(order.publicId)).toHaveLength(0);
+
+    // Just past it: told, once, however many sweeps run.
+    await ageFailure(order.orderId, STOCK_GRACE_MS + 60_000);
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    // Identified by its own dedupe key, so this cannot pass on somebody else's
+    // message to the same chat — a delivery note or a failure carries a
+    // different key and would satisfy a `chatId` filter just as well.
+    const mine = await waitingNotes(order.publicId);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.text).toContain(order.publicId);
+    // Against the registry, not against a phrase typed here: this asserts the
+    // customer got THIS message and not the delivery one, which also carries
+    // the tracking id.
+    expect(mine[0]!.text).toContain(TEXTS.SERVICE_STILL_WORKING_TITLE.default);
+    // Still retryable — the notice is not a verdict on the order.
+    expect(await orderStatus(order.orderId)).toBe('PAID');
+  });
+
+  it('tells a waiting RENEWAL customer too, not only a new one', async () => {
+    /*
+     * One of three retryable exits used to carry this, and `renew()` has the
+     * other two — covering RENEWAL, ADD_VOLUME and ADD_TIME. A customer whose
+     * renewal could not be applied paid, watched their service expire, and
+     * heard nothing at all: the same defect, on the path where they already
+     * have something to lose.
+     *
+     * The notice lives in `release()` now, which is the funnel all three pass
+     * through, so this asserts the funnel rather than a third copy of the code.
+     */
+    const order = await paidRenewal();
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    await ageFailure(order.orderId, STOCK_GRACE_MS + 60_000);
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    const mine = await waitingNotes(order.publicId);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.text).toContain(TEXTS.SERVICE_STILL_WORKING_TITLE.default);
+    expect(await orderStatus(order.orderId)).toBe('PAID');
+  });
+
+  it('says nothing to a free trial, because that message talks about money', async () => {
+    /*
+     * Routing leaves exactly two kinds on the retryable branch: a purchase and
+     * a TRIAL. A trial customer paid nothing, and the waiting notice says
+     * «پرداخت شما ثبت شده» — so sending it to them states something false
+     * about money, which is the one thing this bot must never do.
+     *
+     * `orders_trial_is_free` requires a zero total and a named panel, so the
+     * fixture is the real shape a trial has rather than an approximation.
+     */
+    const { telegramId, publicId } = nextIds();
+    const userId = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+    // The plan's own panel, derived rather than named — `PROVIDER_CODE` in this
+    // file is an environment-variable key, not a provider row.
+    const panelRow = await db
+      .prepare(
+        `SELECT p.provider_id FROM products p
+           JOIN product_plans pl ON pl.product_id = p.id WHERE pl.id = ?1`,
+      )
+      .bind(plan)
+      .first<{ provider_id: number }>();
+    // The panel must actually OFFER a trial, or `deliver()` refuses it before
+    // the retryable branch and this test would pass without the fix — which is
+    // exactly what a first draft of it did.
+    await db
+      .prepare(
+        `UPDATE provisioning_providers
+            SET config = coalesce(config, '{}'::jsonb) || ?2::jsonb WHERE id = ?1`,
+      )
+      .bind(panelRow!.provider_id, JSON.stringify({ trial_enabled: true, trial_volume_gb: 1, trial_duration_hours: 24 }))
+      .run();
+    const trial = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, provider_id, quantity,
+                             unit_price_irr, total_irr, status)
+         VALUES (?1, ?2, 'TRIAL', ?3, ?4, 1, 0, 0, 'PAID')
+         RETURNING id`,
+      )
+      .bind(publicId, userId, plan, panelRow!.provider_id)
+      .first<{ id: number }>();
+
+    await provisionPaidOrders(db, deadPanel, afterGrace());
+    await provisionPaidOrders(db, deadPanel, afterGrace() + 60_000);
+
+    // By KEY, not «any message to that chat». A trial on a dead panel is also
+    // refused by `trialFor` and told so, and asserting on the chat alone would
+    // have caught that unrelated message instead of this one.
+    const waiting = (await pendingNotifications()).filter(
+      (n) => n.dedupeKey === `provision:${publicId}:waiting`,
+    );
+    expect(waiting).toEqual([]);
+    // And the clock column is left alone — nothing on the trial path reads it,
+    // so stamping it would be an extra write per sweep for no reader.
+    const stamped = await db
+      .prepare(`SELECT status, provision_first_failed_at FROM orders WHERE id = ?1`)
+      .bind(trial!.id)
+      .first<{ status: string; provision_first_failed_at: string | null }>();
+    // Still retryable, so it really did reach the branch under test rather than
+    // being refused earlier — without this the assertions below pass for the
+    // wrong reason, which is what two drafts of this test did.
+    expect(stamped?.status).toBe('PAID');
+    expect(stamped?.provision_first_failed_at).toBeNull();
+
+    // The trial switch is shared state on a shared database — put it back.
+    await db
+      .prepare(
+        `UPDATE provisioning_providers
+            SET config = ((config - 'trial_enabled') - 'trial_volume_gb') - 'trial_duration_hours'
+          WHERE id = ?1`,
+      )
+      .bind(panelRow!.provider_id)
+      .run();
   });
 
   it('finishes the order from the shelf once the panel has been down long enough', async () => {
