@@ -379,14 +379,41 @@ test('the palette keeps the keyboard while it is open', async ({ page }) => {
   await page.keyboard.press('Control+k');
   await expect(page.getByLabel('نام بخش یا مشتری')).toBeFocused();
 
-  // Enough presses to have left a four-element dialog several times over.
-  for (let i = 0; i < 12; i += 1) await page.keyboard.press('Tab');
+  /*
+   * Checked at EVERY step, and for «did focus reach the page behind» rather
+   * than «is focus inside the dialog right now».
+   *
+   * The first version pressed Tab twelve times and then asked whether the
+   * active element was inside the dialog. Walking staging showed why that is
+   * the wrong question: with a single focusable element Chromium parks focus on
+   * `<body>` for one step of the cycle while still confining it to the top
+   * layer, so the answer alternates — input, body, input, body — and twelve
+   * passes only because twelve is even. Add a button to the empty state and the
+   * same working palette fails the test.
+   *
+   * What must never happen is focus landing on a control the dialog is
+   * covering. That is stable whatever the cycle length is.
+   */
+  const escaped: string[] = [];
+  for (let i = 0; i < 12; i += 1) {
+    await page.keyboard.press('Tab');
+    const behind = await page.evaluate(() => {
+      const a = document.activeElement;
+      const out =
+        a &&
+        (a.closest('.app-sidebar') ?? a.closest('header.app-header') ?? a.closest('#main-content'));
+      return out ? out.className || out.tagName : null;
+    });
+    if (behind) escaped.push(`after ${i + 1} tabs: ${behind}`);
+  }
+  expect(escaped, 'focus reached the page behind the palette').toEqual([]);
 
-  const stillInside = await page.evaluate(() => {
-    const dialog = document.querySelector('dialog.palette');
-    return !!dialog && !!document.activeElement && dialog.contains(document.activeElement);
-  });
-  expect(stillInside, 'focus left the palette').toBe(true);
+  // And the thing that confines it, asked of the browser directly: `:modal`
+  // matches only a dialog opened with `showModal()`.
+  const isModal = await page.evaluate(
+    () => document.querySelector('dialog.palette')?.matches(':modal') ?? false,
+  );
+  expect(isModal, 'the palette is not a modal dialog').toBe(true);
 
   await page.keyboard.press('Escape');
   await expect(page.locator('dialog.palette')).toHaveCount(0);
