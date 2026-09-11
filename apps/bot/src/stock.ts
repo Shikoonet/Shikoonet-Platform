@@ -81,7 +81,7 @@ export interface StockDelivery {
  * refusing. The first failure is kept because every retry rewrites
  * `updated_at`, which would make the order look new forever.
  */
-async function failingSinceMs(db: D1Database, orderId: number): Promise<number | null> {
+export async function failingSinceMs(db: D1Database, orderId: number): Promise<number | null> {
   const row = await db
     .prepare(
       `UPDATE orders

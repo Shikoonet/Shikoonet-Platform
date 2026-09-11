@@ -44,7 +44,7 @@ import type { InlineKeyboard } from './telegram.js';
 import { enqueue } from './notify.js';
 import { subscriptionOnPanelForUser } from './owned.js';
 import { actionsFor, tierFor } from './serviceActions.js';
-import { deliverFromStock, type StockDelivery } from './stock.js';
+import { deliverFromStock, failingSinceMs, STOCK_GRACE_MS, type StockDelivery } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
 import { report } from './reports.js';
@@ -810,10 +810,12 @@ async function deliver(
       // customer gets the same screen. Whether their config came from stock is
       // ours to know and theirs not to be told.
       if (fromStock !== null) return stockedScreen(db, row, now, fromStock);
-      // Back to PAID so the next pass tries again. The customer is told nothing
-      // yet — a panel that is briefly down is not news, and saying "there was a
-      // problem" only to succeed a minute later is worse than silence.
-      await release(db, row.order_id);
+      // Back to PAID so the next pass tries again — and, once the outage has
+      // gone on long enough, the customer hears about it. Both live in
+      // `release`, which is the one funnel all three retryable exits pass
+      // through; the first version of this put the notice here, which covered
+      // the purchase path and left renewals and add-ons silent for ever.
+      await release(db, row, now);
       log.warn('provision.will_retry', { ref: row.order_public_id, reason: result.reason });
       return null;
     }
@@ -1210,7 +1212,7 @@ async function renew(
   if (addon === null) {
     const shop = await loadShopSettings(db);
     if (!shop.fromDatabase) {
-      await release(db, row.order_id);
+      await release(db, row, now);
       log.warn('provision.will_retry', {
         ref: row.order_public_id,
         reason: 'the cashback rate could not be read',
@@ -1282,7 +1284,7 @@ async function renew(
 
   if (!result.ok) {
     if (result.retryable) {
-      await release(db, row.order_id);
+      await release(db, row, now);
       log.warn('provision.will_retry', { ref: row.order_public_id, reason: result.reason });
       return null;
     }
@@ -1430,15 +1432,79 @@ async function renew(
  *
  * Silent when it changes nothing. Losing the claim is not an error: it means
  * somebody else finished the work, which is the outcome we wanted anyway.
+ *
+ * Not silent to the CUSTOMER, though, once the outage has gone on long enough —
+ * see `tellIfWaitingTooLong`. It belongs here rather than at the call sites
+ * because this is the single funnel all three retryable exits pass through, and
+ * putting it at one of them is what left the other two silent for ever.
  */
-async function release(db: D1Database, orderId: number): Promise<void> {
+async function release(db: D1Database, row: PendingOrder, now: number): Promise<void> {
   await db
     .prepare(
       `UPDATE orders SET status = 'PAID', updated_at = now()
         WHERE id = ?1 AND status = 'PROVISIONING'`,
     )
-    .bind(orderId)
+    .bind(row.order_id)
     .run();
+  await tellIfWaitingTooLong(db, row, now);
+}
+
+/**
+ * Tells a customer, once, that the order they paid for is still being worked
+ * on.
+ *
+ * Silence is right for a blip and wrong for an outage, and nothing used to draw
+ * the line. Saying «there was a problem» and then succeeding a minute later is
+ * worse than saying nothing — that is why this path is quiet, and it stays
+ * quiet for the first ten minutes. What it had no answer for was the panel that
+ * does not come back: the customer has paid, has nothing, and hears nothing at
+ * all, with no way to tell being queued from being forgotten. That is the worst
+ * thing this bot can do to somebody.
+ *
+ * Past the shelf's own grace, so on a purchase it fires only when the shelf has
+ * ALSO had its chance and could not help. `failingSinceMs` is the clock the
+ * shelf already keeps; on a renewal nothing else stamps it, so the first call
+ * here starts it and every later one reads it back.
+ *
+ * ONCE. The dedupe key is the order, so the sweep may run for a week and the
+ * customer is told a single time. The delivery message that follows carries its
+ * own key — `provision:<id>` against this one's `provision:<id>:waiting` — and
+ * is not blocked by it. The same distinction means an operator retry, which
+ * supersedes on the exact key `provision:<id>`, leaves this row alone: the
+ * notice is once per order for the life of the order, retries included.
+ *
+ * NOT for a TRIAL. Routing leaves a purchase and a trial on the first exit, and
+ * this message says «پرداخت شما ثبت شده» — so sending it to somebody who paid
+ * nothing states something false about money, which is the one thing this bot
+ * must never do. Reassuring a waiting trial customer would need its own line
+ * that promises nothing about payment; a free account arriving late is a much
+ * smaller problem than a paid one. The kind check comes FIRST so a trial is not
+ * even stamped: `deliverFromStock` bails for a trial before stamping, and
+ * calling `failingSinceMs` here unconditionally would have started writing a
+ * column nothing on that path reads.
+ *
+ * Best-effort by construction — a failure here must not stop the retry that is
+ * the actual remedy.
+ */
+async function tellIfWaitingTooLong(
+  db: D1Database,
+  row: PendingOrder,
+  now: number,
+): Promise<void> {
+  if (row.order_kind === 'TRIAL' || row.telegram_id === null) return;
+  const failingSince = await failingSinceMs(db, row.order_id);
+  if (failingSince === null || now - failingSince < STOCK_GRACE_MS) return;
+  await db
+    .withSession((tx) =>
+      enqueue(tx, {
+        dedupeKey: `provision:${row.order_public_id}:waiting`,
+        chatId: row.telegram_id!,
+        text: menu.serviceStillWorking(row.order_public_id),
+      }),
+    )
+    .catch((err: unknown) => {
+      log.warn('provision.waiting_note_unsent', { ref: row.order_public_id }, err);
+    });
 }
 
 /**
