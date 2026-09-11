@@ -305,8 +305,10 @@ describe('the order the screens ask in', () => {
     let label = '♻️ تمدید سرویس';
     for (const emoji of seq) {
       const next = await setButtonEmoji(db, 'renew', emoji);
-      expect(next).not.toBeNull();
-      label = next!;
+      // The result says WHY when it refuses, so a failure here names its own
+      // reason instead of arriving as a bare null.
+      expect(next).toMatchObject({ ok: true });
+      label = next.ok ? next.label : label;
     }
 
     // The ordinary icon that shipped with the button is replaced as well. A
@@ -331,12 +333,15 @@ describe('the order the screens ask in', () => {
         .bind(`${oldIcon} تمدید سرویس`)
         .run();
 
-      const label = await setButtonEmoji(db, 'renew', {
+      const placed = await setButtonEmoji(db, 'renew', {
         customEmojiId: FIRE_ID,
         fallbackEmoji: '🔥',
       });
-      expect(label).toBe(`<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji> تمدید سرویس`);
-      expect(label).not.toContain(oldIcon);
+      expect(placed).toMatchObject({
+        ok: true,
+        label: `<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji> تمدید سرویس`,
+      });
+      expect(placed.ok && placed.label).not.toContain(oldIcon);
     }
   });
 });
@@ -557,7 +562,75 @@ describe('putting it on a button', () => {
       .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
       .first<{ label: string }>();
     expect(renew?.label).toContain(FIRE_ID);
-    expect(placed).toContain(FIRE_ID);
+    expect(placed).toEqual({ ok: true, label: expect.stringContaining(FIRE_ID) });
+  });
+
+  it('says which of the three refusals it was, not «جا نشد» for all of them', async () => {
+    /*
+     * Five different refusals used to come back as a bare `null`, and both
+     * admin screens rendered one sentence for every one of them: «روی این دکمه
+     * جا نشد… اول در چیدمان کیبورد کوتاهش کن».
+     *
+     * For a button that is simply not in this shop's saved layout that is not
+     * merely unhelpful, it is a false instruction — shortening the label will
+     * never make it work. `EMOJI_BUTTON_GONE` already existed and was
+     * unreachable from this path.
+     *
+     * Asserted on the REASON rather than on the rendered Persian, so the test
+     * does not have to be edited every time a shop rewords a line.
+     */
+    // A fallback that is not one emoji cannot be drawn at all.
+    const bad = await setButtonEmoji(db, 'renew', {
+      customEmojiId: FIRE_ID,
+      fallbackEmoji: 'not an emoji',
+    });
+    expect(bad).toEqual({ ok: false, reason: 'BAD_EMOJI' });
+    // Identity, not inequality. «different from TOO_LONG» is satisfied by
+    // mapping BAD_EMOJI onto the GONE sentence, which would leave
+    // EMOJI_NOT_AN_EMOJI unreachable with every assertion here still green.
+    expect(menu.emojiRefused('BAD_EMOJI', 'تمدید سرویس')).toBe(menu.EMOJI_NOT_AN_EMOJI);
+    expect(menu.emojiRefused('TOO_LONG', 'تمدید سرویس')).toBe(
+      menu.emojiTooLong('تمدید سرویس'),
+    );
+
+    // An action this shop's layout does not carry. `zzz-not-a-button` is in no
+    // layout, shipped or saved, so the row read comes back empty.
+    const gone = await setButtonEmoji(db, 'zzz-not-a-button', {
+      customEmojiId: FIRE_ID,
+      fallbackEmoji: '🔥',
+    });
+    expect(gone).toEqual({ ok: false, reason: 'GONE' });
+    // And the sentence it produces is the one that is true.
+    expect(menu.emojiRefused('GONE', 'تمدید سرویس')).toBe(menu.EMOJI_BUTTON_GONE);
+  });
+
+  it('tells an admin the emoji was the problem, in the flow that produces it', async () => {
+    /*
+     * The reason has to survive the trip from `setButtonEmoji` to the screen,
+     * and until this test nothing checked that it did. The two end-to-end
+     * refusals in this file are GONE — which `handleCallback` answers before
+     * `setButtonEmoji` is ever called — and TOO_LONG, whose sentence is what
+     * the OLD one-sentence-for-everything code rendered too. So both handlers
+     * could be reverted to `menu.emojiTooLong(...)` with the suite green.
+     *
+     * BAD_EMOJI is the reachable third. The message carries a premium emoji
+     * whose visible fallback is ordinary text, so the glyph the shop would draw
+     * for a client that cannot render the pack is not an emoji at all.
+     */
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    const out = await handleUpdate(db, sentEmoji(ids().updateId, telegramId, FIRE_ID, 'ab'));
+
+    expect(out.replies[0]?.text).toBe(menu.EMOJI_NOT_AN_EMOJI);
+    // And nothing was written: a refusal is not a half-assignment.
+    const renew = await db
+      .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
+      .first<{ label: string }>();
+    expect(renew?.label ?? '').not.toContain(FIRE_ID);
   });
 
   it('does not claim success when the button is not in this shop’s layout', async () => {

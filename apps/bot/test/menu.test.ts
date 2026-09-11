@@ -231,6 +231,27 @@ const SERVICE: CatalogProduct = {
 };
 
 describe('the service list', () => {
+  it('draws no «back to categories» when the shop has only one category', () => {
+    /*
+     * The migrated shop IS one category. Migration 0032 puts every product in
+     * «سرویس‌ها», so `handle.ts` collapses `buy` straight through to this very
+     * screen — and the button's destination is the screen it is drawn on.
+     * Telegram answers the resulting edit with «message is not modified»,
+     * `telegram.ts` swallows it, the spinner clears, and nothing happens.
+     *
+     * The simulation seed has TWO active categories, which is why no
+     * integration test in this package reaches the state and why this one is
+     * built by hand.
+     */
+    const withList = callbacks(menu.productMenu([SERVICE])).map((b) => b.callback_data);
+    expect(withList).toContain('buy');
+
+    const alone = callbacks(menu.productMenu([SERVICE], false)).map((b) => b.callback_data);
+    expect(alone).not.toContain('buy');
+    // And not a dead end: the way home is `required` on this layout.
+    expect(alone).toContain('menu');
+  });
+
   it('is names, and nothing else', () => {
     // A level does not have a price. A service holding three sizes has three
     // of them, and quoting the cheapest with «از» — which this drew at first —
@@ -387,6 +408,44 @@ describe('the plan list', () => {
   it('goes back to the service list, which is the shop first screen', () => {
     const targets = callbacks(menu.planMenu([PLAN])).map((b) => b.callback_data);
     expect(targets).toContain('buy');
+  });
+
+  it('goes where the caller says, not where it can guess', () => {
+    /*
+     * The destination is the caller's to name, and the guess it replaced is
+     * why.
+     *
+     * It read `plans[0].tiers > 1 ? cat : buy`. But `tiers` counts ACTIVE
+     * siblings, while the screen `cat:` would draw is built by
+     * `productsForUser`, which ALSO applies `resellers_only`,
+     * `provider_hidden_users`, `once_per_user` and the panel's own status. One
+     * ordinary admin action — switching a panel in a shared category to
+     * non-ACTIVE — makes the two disagree: `cat:` re-renders the identical plan
+     * list, Telegram answers «message is not modified», and the button is dead.
+     * That is the same defect the service screen was changed to fix, recreated
+     * one level down.
+     *
+     * Both real callers know the answer without counting anything. The
+     * collapse in `categoryScreen` never drew a service list, so back is the
+     * category list or nothing; `prd:` was reached FROM a service list, so back
+     * is that category.
+     */
+    const named = callbacks(menu.planMenu([PLAN], 0, null, 'cat:42')).map((b) => b.callback_data);
+    expect(named).toContain('cat:42');
+    expect(named).not.toContain('buy');
+
+    // Null is «there is nothing above this screen» — the one-category collapse.
+    const alone = callbacks(menu.planMenu([PLAN], 0, null, null)).map((b) => b.callback_data);
+    expect(alone).not.toContain('buy');
+    expect(alone).toContain('menu');
+
+    // And `tiers` decides nothing now: the same plan with a count that used to
+    // force `cat:` follows the caller instead.
+    const ignoresTiers = callbacks(
+      menu.planMenu([{ ...PLAN, tiers: 9, categoryId: 7 }], 0, null, 'buy'),
+    ).map((b) => b.callback_data);
+    expect(ignoresTiers).toContain('buy');
+    expect(ignoresTiers).not.toContain('cat:7');
   });
 
   it('is just a way back when there is nothing to list', () => {
