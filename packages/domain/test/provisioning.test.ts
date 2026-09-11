@@ -22,6 +22,10 @@ import {
   type ProvisionRequest,
   type RenewRequest,
 } from '../src/index.js';
+// From the module rather than the package surface: `withTimeout` is not part of
+// this package's API, and its contract — a deadline that deliberately outlives
+// the call — is a trap for a general-purpose caller.
+import { withTimeout } from '../src/provisioning/marzban.js';
 
 const NOW = Date.UTC(2026, 7, 13, 12, 0, 0);
 
@@ -1316,5 +1320,148 @@ describe('reading the meter off a panel', () => {
     await marzbanAdapter.listPanelAdmins!(provider({ fetch: panel.fetchImpl }));
 
     expect(panel.calls.filter((u) => u.includes('/api/admins'))).toHaveLength(1);
+  });
+});
+
+/**
+ * The deadline has to outlive the call it was given to, and that is the whole
+ * of #175.
+ *
+ * `run` is always a `fetch`, and a fetch resolves as soon as the response
+ * HEADERS arrive. Every caller in the adapter then reads the body OUTSIDE this
+ * function, so a deadline cleared on the way out was disarmed exactly one step
+ * before the part that can hang. A panel answering 200 and then stalling its
+ * body blocked for ever — and because `provisionPaidOrders` runs inline in the
+ * single poll loop, that stops `getUpdates`, `notify.flush` and every sweep.
+ *
+ * Asserted on the SIGNAL rather than on a stalled body: the signal staying
+ * armed after `run` resolves is precisely what makes the abort reach the
+ * response stream, and it is provable in milliseconds instead of twenty
+ * seconds.
+ */
+describe('the adapter deadline', () => {
+  it('is still armed after the fetch has returned its headers', async () => {
+    const signal = await withTimeout(async (s) => s, 20);
+    // Headers are in; the body has not been read. Under the old shape the timer
+    // was cleared right here and nothing could ever abort the read.
+    expect(signal.aborted).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(signal.aborted).toBe(true);
+  });
+
+  it('hands back what the call returned', async () => {
+    // `withTimeout` is now a bare `return run(...)`, so the value passing
+    // through is the whole of its other job. The version this replaces asserted
+    // that an instantly-resolving call returns in under a second — which the
+    // shape it replaced also did, so it said nothing about the change.
+    expect(await withTimeout(async () => 'done', 5_000)).toBe('done');
+  });
+
+  it('carries the signal into the request the adapter actually sends', async () => {
+    /*
+     * The value of all of this lives in undici, which every fake in this file
+     * is too polite to exercise: they answer a `Response` and never look at
+     * `init.signal`. So `signal` could be dropped from all nineteen fetch calls
+     * in the adapter and the file would stay green.
+     *
+     * This does not fake an abort — that would be asserting a fake's behaviour.
+     * It asserts the one thing a fake CAN see honestly: the request carries a
+     * live deadline, so there is something for undici to act on.
+     */
+    const seen = new Map<string, AbortSignal | null | undefined>();
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      seen.set(url.includes('/api/groups') ? 'groups' : 'login', init?.signal);
+      return new Response(JSON.stringify({ access_token: 'tok', items: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    await marzbanAdapter.listGroups!(provider({ fetch: fetchImpl }));
+
+    // Keyed by request, not by call order, so this cannot pass on the login
+    // call's signal if the one that matters loses it.
+    expect(seen.get('groups')).toBeInstanceOf(AbortSignal);
+    expect(seen.get('groups')?.aborted).toBe(false);
+    expect(seen.get('login')).toBeInstanceOf(AbortSignal);
+  });
+});
+
+/**
+ * The ordering rule the armed deadline creates, and the one call site that
+ * broke it.
+ *
+ * `withTimeout` no longer clears its timer when `fetch` resolves, which is what
+ * lets the abort reach the body read. The cost is a rule: nothing unrelated may
+ * be awaited between the fetch and its `res.json()`, because that wait spends
+ * the same budget the body read is relying on.
+ *
+ * `createGroup` broke it — it called `hostedTags`, itself budgeted the full
+ * timeout and silently swallowing its own failures, BEFORE reading a group the
+ * panel had already created. A merely slow `/api/hosts` therefore aborted the
+ * body of a write that had already been applied, and the caller reported
+ * «could not reach the panel» for a group that exists.
+ */
+describe('reading a response body before doing anything else', () => {
+  it('reads the created group before it goes looking for hosts', async () => {
+    /*
+     * Measured with a SLOW body, and the two earlier attempts at this are worth
+     * recording because both passed against the broken order.
+     *
+     * A `ReadableStream`'s `start` runs when the stream is constructed, and its
+     * `pull` runs on the next tick after the `Response` is built — both before
+     * anything reads it. So neither can say when `res.json()` was called.
+     *
+     * What does distinguish the two orders is a body that takes time to
+     * arrive. Reading it first delays the hosts request by that long; reading
+     * it second does not delay it at all.
+     */
+    const BODY_MS = 120;
+    let groupAt = 0;
+    let hostsAt = 0;
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/hosts')) {
+        hostsAt = Date.now();
+        return new Response('[]', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      groupAt = Date.now();
+      return new Response(
+        new ReadableStream({
+          pull(controller) {
+            return new Promise<void>((resolve) => {
+              setTimeout(() => {
+                controller.enqueue(new TextEncoder().encode(JSON.stringify({ id: 9, name: 'g' })));
+                controller.close();
+                resolve();
+              }, BODY_MS);
+            });
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const out = await marzbanAdapter.createGroup!(provider({ fetch: fetchImpl }), {
+      name: 'g',
+      inboundTags: [],
+    });
+
+    expect(out.ok).toBe(true);
+    // The hosts request waited for the group body. Half the body time is a
+    // generous floor that still separates «waited» from «did not».
+    expect(hostsAt - groupAt).toBeGreaterThanOrEqual(BODY_MS / 2);
   });
 });
