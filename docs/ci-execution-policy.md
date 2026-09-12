@@ -249,8 +249,9 @@ Draft PR
    security check to save minutes.
 8. **Bundle minor documentation and cleanup with the next genuine related
    change** rather than spending a gate on a pull request of its own.
-9. **Production stays manual.** `Prepare`, `Promote` and `Cutover Production`
-   each need their own separate authorization.
+9. **Production stays manual.** `Promote Production` needs its own separate
+   authorization. (`Prepare` and `Cutover Production` were the one-time
+   bootstrap; removed 2026-09-12.)
 
 Agents working in this repository are bound by the same lifecycle, in
 `.claude/skills/agent-ground-rules/SKILL.md`, which adds one rule a human does

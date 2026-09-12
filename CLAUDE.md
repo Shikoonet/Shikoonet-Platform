@@ -64,12 +64,17 @@ PR #25 مرج شد، CI سبز شد، و `Deploy Staging` در **یازده ثا
 | | مالکان | کجا نوشته شده |
 | --- | --- | --- |
 | Staging | `Isusami,arshiajacki` | `deploy-staging.yml` → `DEPLOY_OWNERS` |
-| Production | فقط `Isusami` | `SOLO_DEPLOY_OWNER` در هر سه ورک‌فلوی پروداکشن |
+| Production | فقط `Isusami` | `SOLO_DEPLOY_OWNER` در `promote-production.yml` |
 
 `approval-gate.sh` اول `DEPLOY_OWNERS` را می‌خواند و `SOLO_DEPLOY_OWNER` فقط
-شکل قدیمیِ تک‌نامی است که هنوز پذیرفته می‌شود. `prepare`، `promote` و `cutover`
-هرکدام `SOLO_DEPLOY_OWNER` خودشان را دارند و `github.actor` را مستقیم با آن
-می‌سنجند — پس اضافه‌شدن مالک دوم به استیجینگ، پروداکشن را گشاد نکرد.
+شکل قدیمیِ تک‌نامی است که هنوز پذیرفته می‌شود. `promote-production.yml`
+`SOLO_DEPLOY_OWNER` خودش را دارد و `github.actor` را مستقیم با آن می‌سنجد — پس
+اضافه‌شدن مالک دوم به استیجینگ، پروداکشن را گشاد نکرد.
+
+**`Prepare Production` و `Cutover Production` دیگر وجود ندارند** — بوت‌استرپ
+یک‌بارهٔ ۲۰۲۶-۰۹-۰۸ بودند و ۲۰۲۶-۰۹-۱۲ حذف شدند، چون دو بار به‌جای `Promote
+Production` زده شدند و درست رد کردند («already adopted»). تنها دکمهٔ پروداکشن
+`Promote Production` است.
 
 > **این بند ۲۰۲۶-۰۸-۲۹ عوض شد و درسش از خودش بزرگ‌تر است.** تا آن روز این‌جا
 > نوشته بود «`SOLO_DEPLOY_OWNER=Isusami`، پس `arshiajacki` هم ریویو می‌خواهد هم

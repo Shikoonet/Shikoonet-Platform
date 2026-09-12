@@ -337,7 +337,6 @@ suite_deploy_suites() {
     deploy/test/current-production-apps.test.sh \
     deploy/test/cutover-bot.test.sh \
     deploy/test/cutover-production.test.sh \
-    deploy/test/production-workflows.test.sh \
     tools/test/ci-plan.test.sh \
     tools/test/ci-draft-state.test.sh \
     tools/test/ci-suite-map.test.sh; do
