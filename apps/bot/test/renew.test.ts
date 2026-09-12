@@ -572,6 +572,24 @@ describe('applying it', () => {
     return { userId, subId, plan, order, telegramId, username: `u_${telegramId}` };
   }
 
+  it('a renewal with a volume code sends the plan plus the bonus, and records it', async () => {
+    // The bonus sits on the ORDER, frozen at placement — the sweep reads it from
+    // there, so it is set there, the way `placeRenewalOrder` writes it.
+    const target = await paidRenewal();
+    await db
+      .prepare(`UPDATE orders SET bonus_volume_gb = 10 WHERE id = ?1`)
+      .bind(target.order.id)
+      .run();
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts[0]?.body['data_limit']).toBe(60 * GIB);
+    expect((await subscriptionRow(target.subId))?.volume_gb).toBe(60);
+  });
+
   it('RESET starts the clock now and zeroes the usage', async () => {
     const target = await paidRenewal();
     const panel = fakePanel({

@@ -55,8 +55,8 @@ function types(updateId: number, telegramId: number, text: string): TelegramUpda
 }
 
 interface CodeOptions {
-  kind?: 'PERCENT_OFF' | 'AMOUNT_OFF' | 'GIFT_BALANCE';
-  percent?: number;
+  kind?: 'PERCENT_OFF' | 'AMOUNT_OFF' | 'GIFT_BALANCE' | 'BONUS_GB' | 'BONUS_PERCENT';
+  percent?: number | null;
   amountIrr?: number;
   expiresInDays?: number | null;
   maxUses?: number | null;
@@ -68,6 +68,7 @@ interface CodeOptions {
   usesPerUser?: number;
   status?: 'ACTIVE' | 'DISABLED';
   targetUserId?: number | null;
+  bonusGb?: number | null;
 }
 
 async function makeCode(code: string, options: CodeOptions = {}): Promise<number> {
@@ -76,8 +77,8 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
       `INSERT INTO discount_codes
          (code, kind, percent, amount_irr, expires_at, max_uses, first_purchase_only,
           resellers_only, product_id, provider_id, applies_to,
-          uses_per_user, status, target_user_id)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+          uses_per_user, status, target_user_id, bonus_gb)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
        -- Every column, not just the one it conflicted on. This used to set the
        -- code to itself, which is a no-op upsert: a code left in the table by
        -- an earlier run kept its OLD kind, so a test asking for a gift code
@@ -92,7 +93,7 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
          product_id = EXCLUDED.product_id, provider_id = EXCLUDED.provider_id,
          applies_to = EXCLUDED.applies_to,
          uses_per_user = EXCLUDED.uses_per_user, status = EXCLUDED.status,
-         target_user_id = EXCLUDED.target_user_id
+         target_user_id = EXCLUDED.target_user_id, bonus_gb = EXCLUDED.bonus_gb
        RETURNING id`,
     )
     .bind(
@@ -112,6 +113,7 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
       options.usesPerUser ?? 1,
       options.status ?? 'ACTIVE',
       options.targetUserId ?? null,
+      options.bonusGb ?? null,
     )
     .first<{ id: number }>();
   if (!row) throw new Error(`code fixture ${code} failed`);
@@ -121,12 +123,13 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
 async function lastOrder(userId: number) {
   return db
     .prepare(
-      `SELECT id, unit_price_irr, discount_irr, total_irr, status
+      `SELECT id, unit_price_irr, discount_irr, total_irr, status, bonus_volume_gb
          FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`,
     )
     .bind(userId)
     .first<{
       id: number;
+      bonus_volume_gb: number;
       unit_price_irr: number;
       discount_irr: number;
       total_irr: number;
@@ -773,6 +776,116 @@ describe('renewing with a code', () => {
     const out = await handleUpdate(db, press(updateId, telegramId, `dsr:${service}`));
 
     expect(out.replies[0]?.text).toBe(menu.RENEWAL_GONE);
+  });
+});
+
+describe('a code that gives volume instead of money', () => {
+  /*
+   * Sam, 2026-09-11: «کدهای تخفیف رو میخوام بتونم علاوه بر اینکه مبلغ پولی
+   * باشه، یک درصد یا مقدار حجم اضافه هم باشه». Two kinds: `BONUS_GB` adds
+   * gigabytes, `BONUS_PERCENT` adds a share of the plan's volume. The price
+   * is untouched — which is the invariant these tests hold hardest, because
+   * `orders.total_irr = unit_price × qty − discount_irr` is a CHECK and a
+   * bonus that leaked into `discount_irr` would be a free plan.
+   */
+  it('leaves the price alone and puts the gigabytes on the order', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const codeId = await makeCode('plus30', { kind: 'BONUS_GB', percent: null, bonusGb: 30 });
+
+    const said = await useCode(updateId, telegramId, VIP_PLAN, 'plus30');
+    expect(said).toContain('+30 گیگ');
+    expect(said).not.toContain('تومان تخفیف');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+
+    const order = await lastOrder(userId);
+    expect(order).toMatchObject({
+      unit_price_irr: VIP_PRICE,
+      discount_irr: 0,
+      total_irr: VIP_PRICE,
+      bonus_volume_gb: 30,
+    });
+    // Still a use of the code — written against the order, with nothing off.
+    const redemption = await db
+      .prepare(
+        `SELECT order_id, amount_irr FROM discount_redemptions WHERE code_id = ?1 AND user_id = ?2`,
+      )
+      .bind(codeId, userId)
+      .first<{ order_id: number; amount_irr: number }>();
+    expect(redemption).toMatchObject({ order_id: order!.id, amount_irr: 0 });
+  });
+
+  it('a percentage is a share of the plan’s own volume', async () => {
+    // The fixture plan is 50 GB; twenty per cent of it is 10.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('vol20', { kind: 'BONUS_PERCENT', percent: 20 });
+
+    const said = await useCode(updateId, telegramId, VIP_PLAN, 'vol20');
+    expect(said).toContain('+20٪ حجم');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+
+    expect(await lastOrder(userId)).toMatchObject({ total_irr: VIP_PRICE, bonus_volume_gb: 10 });
+  });
+
+  it('is refused on a plan with no volume to add to', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('plus5', { kind: 'BONUS_GB', percent: null, bonusGb: 5 });
+    // The fixture plan, unmetered for the length of this test. `finally`,
+    // because every other file reads this row as a 50 GB plan.
+    try {
+      await db.prepare(`UPDATE product_plans SET volume_gb = NULL WHERE id = ?1`).bind(VIP_PLAN).run();
+      const said = await useCode(updateId, telegramId, VIP_PLAN, 'plus5');
+      expect(said).toBe(menu.DISCOUNT_REFUSED['NOT_FOR_THIS']);
+    } finally {
+      await db.prepare(`UPDATE product_plans SET volume_gb = 50 WHERE id = ?1`).bind(VIP_PLAN).run();
+    }
+  });
+
+  it('lands on a renewal order too, when the code allows renewals', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await db
+      .prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
+            remote_username, volume_gb, duration_days, status, purchased_at, expires_at)
+         VALUES (?1, ?2, ?3, 'کهنه', 1000000, ?4, 20, 30, 'ACTIVE', now(), now() + interval '3 days')
+         RETURNING id`,
+      )
+      .bind(`bv${telegramId}`, userId, VIP_PROVIDER, `u_bv${telegramId}`)
+      .first<{ id: number }>();
+    await makeCode('renew10', { kind: 'BONUS_GB', percent: null, bonusGb: 10, appliesTo: 'RENEW' });
+
+    await handleUpdate(db, press(updateId, telegramId, `dsr:${service!.id}`));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'renew10'));
+    await handleUpdate(db, press(updateId + 2, telegramId, `rord:${service!.id}:${VIP_PLAN}`));
+
+    expect(await lastOrder(userId)).toMatchObject({
+      discount_irr: 0,
+      total_irr: VIP_PRICE,
+      bonus_volume_gb: 10,
+    });
+  });
+
+  it('an order already placed at plain volume is not quietly upgraded by a code held later', async () => {
+    // Same rule as a money code: a code changes the order, so it is a new
+    // order, and the old one stays what the customer saw when they placed it.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await handleUpdate(db, press(updateId, telegramId, `order:${VIP_PLAN}`));
+    const plain = await lastOrder(userId);
+    expect(plain?.bonus_volume_gb).toBe(0);
+
+    await makeCode('later5', { kind: 'BONUS_GB', percent: null, bonusGb: 5 });
+    await useCode(updateId + 1, telegramId, VIP_PLAN, 'later5');
+    await handleUpdate(db, press(updateId + 3, telegramId, `order:${VIP_PLAN}`));
+
+    expect(await orderCount(userId)).toBe(2);
+    const withBonus = await lastOrder(userId);
+    expect(withBonus?.id).not.toBe(plain?.id);
+    expect(withBonus?.bonus_volume_gb).toBe(5);
   });
 });
 

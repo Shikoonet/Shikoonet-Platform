@@ -43,6 +43,7 @@ import {
   trialPanelsForUser,
 } from './catalog.js';
 import {
+  bonusGbFor,
   checkCode,
   type DiscountCode,
   discountFor,
@@ -1607,6 +1608,7 @@ async function handleDiscountCode(
       priceIrr: price.totalIrr,
       productId: plan.productId,
       providerId: plan.providerId,
+      planVolumeGb: plan.volumeGb,
     },
     Date.now(),
   );
@@ -1623,21 +1625,28 @@ async function handleDiscountCode(
     const stillHeld = await heldCode(tx, user, plan, price.totalIrr);
     return answer(
       menu.DISCOUNT_REFUSED[check.reason] ?? menu.DISCOUNT_REFUSED['UNKNOWN_CODE']!,
-      menu.planDetailMenu(
-        plan,
-        stillHeld
-          ? { code: stillHeld.code.code, discountIrr: stillHeld.discountIrr }
-          : undefined,
-      ),
+      menu.planDetailMenu(plan, stillHeld ? appliedOf(stillHeld, plan) : undefined),
     );
   }
 
   await ask(tx, user.id, 'code:held', { planId, code: check.code.code }, screenOf(session));
-  const applied = { code: check.code.code, discountIrr: check.discountIrr };
+  const applied = appliedOf(check, plan);
   return answer(
-    `${menu.discountApplied(check.code.code, check.discountIrr)}\n\n${menu.planDetail(plan, price, applied)}`,
+    `${menu.discountApplied(check.code.code, check.discountIrr, applied.bonus)}\n\n${menu.planDetail(plan, price, applied)}`,
     menu.planDetailMenu(plan, applied),
   );
+}
+
+/** A held or checked code, as the screens draw it — money or volume. */
+function appliedOf(
+  held: { code: DiscountCode; discountIrr: number },
+  plan: CatalogPlan,
+): menu.AppliedCode {
+  return {
+    code: held.code.code,
+    discountIrr: held.discountIrr,
+    bonus: menu.bonusLabel(held.code, plan.volumeGb),
+  };
 }
 
 /**
@@ -1698,7 +1707,7 @@ async function heldRenewalCode(
   subscriptionId: number,
   plan: CatalogPlan,
   priceIrr: number,
-): Promise<{ code: DiscountCode; discountIrr: number } | null> {
+): Promise<{ code: DiscountCode; discountIrr: number; bonusGb: number } | null> {
   const row = await tx
     .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
     .bind(user.id)
@@ -1714,10 +1723,16 @@ async function heldRenewalCode(
     user.id,
     user.is_reseller,
     typed,
-    { kind: 'RENEW', priceIrr, productId: plan.productId, providerId: plan.providerId },
+    {
+      kind: 'RENEW',
+      priceIrr,
+      productId: plan.productId,
+      providerId: plan.providerId,
+      planVolumeGb: plan.volumeGb,
+    },
     Date.now(),
   );
-  if (check.ok) return { code: check.code, discountIrr: check.discountIrr };
+  if (check.ok) return { code: check.code, discountIrr: check.discountIrr, bonusGb: check.bonusGb };
   if (
     check.reason === 'ALREADY_USED' &&
     check.code &&
@@ -1732,7 +1747,11 @@ async function heldRenewalCode(
       priceIrr - discountFor(check.code, priceIrr),
     ))
   ) {
-    return { code: check.code, discountIrr: discountFor(check.code, priceIrr) };
+    return {
+      code: check.code,
+      discountIrr: discountFor(check.code, priceIrr),
+      bonusGb: bonusGbFor(check.code, plan.volumeGb),
+    };
   }
   return null;
 }
@@ -1846,6 +1865,7 @@ async function placeOrderScreen(
     user.discount_percent,
     held?.discountIrr ?? 0,
     chosenName,
+    held?.bonusGb ?? 0,
   );
   // A total of zero is refused rather than written. The code is left
   // unredeemed on purpose: nothing was bought with it.
@@ -1871,6 +1891,7 @@ async function placeOrderScreen(
       placed.totalIrr,
       checkout.cardDigits,
       checkout.cardHolder,
+      held ? appliedOf(held, plan) : null,
     ),
     menu.checkoutMenu(
       placed.id,
@@ -2085,7 +2106,7 @@ async function heldCode(
   user: Caller,
   plan: CatalogPlan,
   priceIrr: number,
-): Promise<{ code: DiscountCode; discountIrr: number } | null> {
+): Promise<{ code: DiscountCode; discountIrr: number; bonusGb: number } | null> {
   const row = await tx
     .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
     .bind(user.id)
@@ -2101,10 +2122,16 @@ async function heldCode(
     user.id,
     user.is_reseller,
     typed,
-    { kind: 'BUY', priceIrr, productId: plan.productId, providerId: plan.providerId },
+    {
+      kind: 'BUY',
+      priceIrr,
+      productId: plan.productId,
+      providerId: plan.providerId,
+      planVolumeGb: plan.volumeGb,
+    },
     Date.now(),
   );
-  if (check.ok) return { code: check.code, discountIrr: check.discountIrr };
+  if (check.ok) return { code: check.code, discountIrr: check.discountIrr, bonusGb: check.bonusGb };
   // Their own redemption, on an order they have not paid for, is this order.
   if (
     check.reason === 'ALREADY_USED' &&
@@ -2120,7 +2147,11 @@ async function heldCode(
       priceIrr - discountFor(check.code, priceIrr),
     ))
   ) {
-    return { code: check.code, discountIrr: discountFor(check.code, priceIrr) };
+    return {
+      code: check.code,
+      discountIrr: discountFor(check.code, priceIrr),
+      bonusGb: bonusGbFor(check.code, plan.volumeGb),
+    };
   }
   return null;
 }
@@ -2141,7 +2172,7 @@ async function planScreen(
 ): Promise<HandleOutcome> {
   const price = priceForUser(plan.priceIrr, user.discount_percent);
   const held = await heldCode(tx, user, plan, price.totalIrr);
-  const applied = held ? { code: held.code.code, discountIrr: held.discountIrr } : null;
+  const applied = held ? appliedOf(held, plan) : null;
   return screen(menu.planDetail(plan, price, applied), menu.planDetailMenu(plan, applied));
 }
 
@@ -2807,6 +2838,7 @@ async function handleCallback(
         user.discount_percent,
         service.id,
         held?.discountIrr ?? 0,
+        held?.bonusGb ?? 0,
       );
       if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.serviceDetailMenu());
       // Same rule as a purchase: the redemption is written in the transaction
@@ -2830,7 +2862,7 @@ async function handleCallback(
           placed.totalIrr,
           checkout.cardDigits,
           checkout.cardHolder,
-          held ? { code: held.code.code, discountIrr: held.discountIrr } : null,
+          held ? appliedOf(held, plan) : null,
         ),
         menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
           balanceIrr: await balanceFor(tx, user.id),

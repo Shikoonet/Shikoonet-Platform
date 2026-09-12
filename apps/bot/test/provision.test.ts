@@ -72,7 +72,9 @@ function nextIds() {
 }
 
 /** A paid order sitting exactly where the settlement sweep leaves one. */
-async function paidOrder(options: { kind?: string; planCode?: string } = {}): Promise<{
+async function paidOrder(
+  options: { kind?: string; planCode?: string; bonusVolumeGb?: number } = {},
+): Promise<{
   orderId: number;
   publicId: string;
   telegramId: number;
@@ -99,11 +101,11 @@ async function paidOrder(options: { kind?: string; planCode?: string } = {}): Pr
   const row = await db
     .prepare(
       `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
-                           unit_price_irr, total_irr, status)
-       VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, 1950000, 1950000, 'PAID')
+                           unit_price_irr, total_irr, status, bonus_volume_gb)
+       VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, 1950000, 1950000, 'PAID', ?4)
        RETURNING id`,
     )
-    .bind(publicId, userId, plan)
+    .bind(publicId, userId, plan, options.bonusVolumeGb ?? 0)
     .first<{ id: number }>();
   return { orderId: row!.id, publicId, telegramId, userId };
 }
@@ -173,6 +175,31 @@ describe('delivering a paid order', () => {
     const note = notes.find((n) => n.chatId === order.telegramId);
     expect(note?.text).toContain(`https://panel.test/sub/${order.telegramId}_${order.publicId}`);
     expect(panel.created).toContain(`${order.telegramId}_${order.publicId}`);
+  });
+
+  /**
+   * A volume code's gigabytes reach the panel — and the service records what
+   * was actually sent.
+   *
+   * The order is the only thing the sweep reads, so the bonus is asserted from
+   * `orders.bonus_volume_gb` through to the `data_limit` in the request body,
+   * bytes and all: 50 GB plan + 6 GB = 56 × 1024³. Asserted on the BODY and not
+   * on `subscriptions.volume_gb` alone, because the adapter echoes what it
+   * wrote and a column that agrees with itself proves nothing (rule 6).
+   */
+  it('asks the panel for the plan’s volume plus what the code added', async () => {
+    const order = await paidOrder({ bonusVolumeGb: 6 });
+    const panel = fakePanel();
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
+    const body = panel.bodies.find(
+      (b) => b['username'] === `${order.telegramId}_${order.publicId}`,
+    );
+    expect(body?.['data_limit']).toBe(Math.round(56 * 1024 ** 3));
+    const subs = await subsFor(order.orderId);
+    expect(Number(subs[0]?.volume_gb)).toBe(56);
   });
 
   it('still tells the customer when the pretty screen cannot be built', async () => {

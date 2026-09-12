@@ -1101,6 +1101,8 @@ export interface DiscountItem {
   kind: string;
   amountIrr: number | null;
   percent: number | null;
+  /** BONUS_GB only — the gigabytes it adds (0062). */
+  bonusGb: number | null;
   maxUses: number | null;
   used: number;
   appliesTo: string;

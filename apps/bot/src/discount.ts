@@ -51,13 +51,15 @@ export type DiscountRefusal =
 export interface DiscountCode {
   id: number;
   code: string;
-  kind: 'GIFT_BALANCE' | 'PERCENT_OFF' | 'AMOUNT_OFF';
+  kind: 'GIFT_BALANCE' | 'PERCENT_OFF' | 'AMOUNT_OFF' | 'BONUS_GB' | 'BONUS_PERCENT';
   amount_irr: number | null;
   percent: number | null;
+  /** `BONUS_GB` only — the gigabytes it adds. */
+  bonus_gb: number | null;
 }
 
 export type DiscountCheck =
-  | { ok: true; code: DiscountCode; discountIrr: number }
+  | { ok: true; code: DiscountCode; discountIrr: number; bonusGb: number }
   /** The row is carried on ALREADY_USED so a caller can ask whether the
    *  redemption is the customer's own, on an order they have not paid yet. */
   | { ok: false; reason: DiscountRefusal; code?: DiscountCode };
@@ -78,6 +80,13 @@ export interface PurchaseContext {
    */
   productId: number | null;
   providerId: number;
+  /**
+   * The plan's volume, for a code that gives volume. `undefined` while the
+   * plan is not chosen yet (the renewal path, like `productId: null`); `null`
+   * for an unmetered plan, which such a code is refused on — there is nothing
+   * to add to, and «applied» would be a lie the invoice repeats.
+   */
+  planVolumeGb?: number | null;
 }
 
 /**
@@ -167,7 +176,7 @@ const REDEMPTION_COUNTS = `
 async function findCode(tx: D1DatabaseSession, typed: string) {
   return tx
     .prepare(
-      `SELECT id, code, kind, amount_irr, percent, max_uses, first_purchase_only,
+      `SELECT id, code, kind, amount_irr, percent, bonus_gb, max_uses, first_purchase_only,
               resellers_only, product_id, provider_id, expires_at, applies_to,
               uses_per_user, status, target_user_id
          FROM discount_codes
@@ -212,12 +221,39 @@ async function findCode(tx: D1DatabaseSession, typed: string) {
  * what the code actually grants.
  */
 export function discountFor(code: DiscountCode, priceIrr: number): number {
+  // A volume code takes nothing off. Said explicitly rather than left to the
+  // `amount_irr ?? 0` fallback below: the CHECK on `orders` ties `total_irr`
+  // to `discount_irr`, and a bonus that leaked into money would be a free plan.
+  if (isBonus(code)) return 0;
   const raw =
     code.kind === 'PERCENT_OFF'
       ? (Number(code.percent ?? 0) / 100) * priceIrr
       : (code.amount_irr ?? 0);
   const off = Math.floor(raw / IRR_PER_TOMAN) * IRR_PER_TOMAN;
   return Math.max(0, Math.min(priceIrr, off));
+}
+
+export function isBonus(code: Pick<DiscountCode, 'kind'>): boolean {
+  return code.kind === 'BONUS_GB' || code.kind === 'BONUS_PERCENT';
+}
+
+/**
+ * The gigabytes a volume code adds to a plan of `planVolumeGb`.
+ *
+ * Three decimals, because that is what `orders.bonus_volume_gb` and
+ * `subscriptions.volume_gb` hold (`numeric(12,3)`): what is stored is exactly
+ * what `provision.ts` sends, so the panel, the order and the service agree.
+ * Zero for a money code and for a plan with no volume to add to.
+ */
+export function bonusGbFor(code: DiscountCode, planVolumeGb: number | null | undefined): number {
+  if (planVolumeGb === null || planVolumeGb === undefined) return 0;
+  const raw =
+    code.kind === 'BONUS_GB'
+      ? Number(code.bonus_gb ?? 0)
+      : code.kind === 'BONUS_PERCENT'
+        ? (planVolumeGb * Number(code.percent ?? 0)) / 100
+        : 0;
+  return Math.max(0, Math.round(raw * 1000) / 1000);
 }
 
 /**
@@ -245,6 +281,12 @@ export async function checkCode(
     return { ok: false, reason: 'EXPIRED' };
   }
   if (row.applies_to !== 'ALL' && row.applies_to !== context.kind) {
+    return { ok: false, reason: 'NOT_FOR_THIS' };
+  }
+  // Extra volume on a plan without a volume is nothing, and «applied» would be
+  // a lie the invoice then repeats. Only once the plan is known — on the
+  // renewal path it is chosen after the code, and checked again then.
+  if (isBonus(row) && context.planVolumeGb === null) {
     return { ok: false, reason: 'NOT_FOR_THIS' };
   }
   if (
@@ -307,7 +349,12 @@ export async function checkCode(
     if (owned) return { ok: false, reason: 'FIRST_PURCHASE_ONLY' };
   }
 
-  return { ok: true, code: row, discountIrr: discountFor(row, context.priceIrr) };
+  return {
+    ok: true,
+    code: row,
+    discountIrr: discountFor(row, context.priceIrr),
+    bonusGb: bonusGbFor(row, context.planVolumeGb),
+  };
 }
 
 /**

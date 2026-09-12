@@ -26,6 +26,8 @@ const KIND_FA: Record<string, string> = {
   GIFT_BALANCE: 'شارژ کیف پول',
   PERCENT_OFF: 'درصدی',
   AMOUNT_OFF: 'مبلغ ثابت',
+  BONUS_GB: 'حجم اضافه (گیگ)',
+  BONUS_PERCENT: 'حجم اضافه (درصد)',
 };
 
 const STATE_FA: Record<string, string> = {
@@ -64,6 +66,9 @@ function message(e: unknown): string {
 /** The value a code carries, in the unit that code uses. */
 function value(d: DiscountItem): string {
   if (d.kind === 'PERCENT_OFF') return `${count(d.percent ?? 0)}٪`;
+  // What a volume code GIVES, with a plus: it is not taken off anything.
+  if (d.kind === 'BONUS_PERCENT') return `+${count(d.percent ?? 0)}٪ حجم`;
+  if (d.kind === 'BONUS_GB') return `+${count(d.bonusGb ?? 0)} گیگ`;
   return toman(d.amountIrr);
 }
 
@@ -346,6 +351,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
   const [kind, setKind] = useState('PERCENT_OFF');
   const [amountToman, setAmountToman] = useState('');
   const [percent, setPercent] = useState('');
+  const [bonusGb, setBonusGb] = useState('');
   const [maxUses, setMaxUses] = useState('');
   /**
    * How many times ONE customer may use it. Blank means the old behaviour.
@@ -377,7 +383,9 @@ function CreateForm({ onDone }: { onDone: () => void }) {
   const [busy, setBusy] = useState(false);
 
   const isGift = kind === 'GIFT_BALANCE';
-  const isPercent = kind === 'PERCENT_OFF';
+  // Two kinds carry a percent — of the price, or of the plan's volume.
+  const isPercent = kind === 'PERCENT_OFF' || kind === 'BONUS_PERCENT';
+  const isBonusGb = kind === 'BONUS_GB';
 
   async function submit() {
     setBusy(true);
@@ -388,7 +396,11 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         code: code.trim(),
         kind,
         // Toman in the form, Rial on the wire — the one conversion, in one line.
-        ...(isPercent ? { percent: Number(percent) } : { amountIrr: Math.round(typedAmount) * 10 }),
+        ...(isPercent
+          ? { percent: Number(percent) }
+          : isBonusGb
+            ? { bonusGb: Number(bonusGb) }
+            : { amountIrr: Math.round(typedAmount) * 10 }),
         ...(maxUses.trim() ? { maxUses: Number(maxUses) } : {}),
         ...(usesPerUser.trim() ? { usesPerUser: Number(usesPerUser) } : {}),
         ...(targetTelegramId.trim() ? { targetTelegramId: Number(targetTelegramId) } : {}),
@@ -439,12 +451,14 @@ function CreateForm({ onDone }: { onDone: () => void }) {
             <option value="PERCENT_OFF">درصدی</option>
             <option value="AMOUNT_OFF">مبلغ ثابت</option>
             <option value="GIFT_BALANCE">شارژ کیف پول</option>
+            <option value="BONUS_GB">حجم اضافه (گیگ)</option>
+            <option value="BONUS_PERCENT">حجم اضافه (درصد)</option>
           </select>
         </div>
         {isPercent ? (
           <div>
             <label className="form-label" htmlFor="new-percent">
-              درصد
+              {kind === 'BONUS_PERCENT' ? 'درصدِ حجم پلن' : 'درصد'}
             </label>
             <input
               id="new-percent"
@@ -452,6 +466,20 @@ function CreateForm({ onDone }: { onDone: () => void }) {
               type="number"
               value={percent}
               onChange={(e) => setPercent(e.target.value)}
+            />
+          </div>
+        ) : isBonusGb ? (
+          <div>
+            <label className="form-label" htmlFor="new-bonus-gb">
+              حجم اضافه (گیگ)
+            </label>
+            <input
+              id="new-bonus-gb"
+              className="form-control ltr"
+              type="number"
+              step="0.001"
+              value={bonusGb}
+              onChange={(e) => setBonusGb(e.target.value)}
             />
           </div>
         ) : (
