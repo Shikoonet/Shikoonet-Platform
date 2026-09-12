@@ -236,6 +236,12 @@ export const TEXTS = {
     screen: 'categories',
     hint: 'وقتی هیچ سرویس قابل خریدی برای این کاربر وجود ندارد',
   },
+  TARIFF_MORE: {
+    default: '… و سرویس‌های دیگر — قیمت‌شان را از «خرید اشتراک» ببینید.',
+    placeholders: [],
+    screen: 'categories',
+    hint: 'وقتی فهرست تعرفه در یک پیام جا نمی‌شود و سرویس‌های آخر حذف شده‌اند',
+  },
   CATEGORY_EMPTY: {
     default: 'در حال حاضر چیزی در این دسته موجود نیست.',
     placeholders: [],

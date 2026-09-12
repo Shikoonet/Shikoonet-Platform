@@ -1772,6 +1772,7 @@ async function renewPlansScreen(
   service: RenewableSubscription,
   all: boolean,
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+  page = 1,
 ): Promise<HandleOutcome> {
   const plans = await plansOnPanel(tx, user.id, service.provider_id);
   if (plans.length === 0) {
@@ -1788,6 +1789,8 @@ async function renewPlansScreen(
         plans,
         user.discount_percent,
         await heldRenewalName(tx, user.id, service.id),
+        false,
+        page,
       ),
     );
   }
@@ -2787,7 +2790,14 @@ async function handleCallback(
       if (!renewAllowed(service.provider_config ?? {})) {
         return screen(menu.RENEWAL_CLOSED, menu.afterPaidMenu());
       }
-      return renewPlansScreen(tx, user, service, action.action === 'rnwl', screen);
+      return renewPlansScreen(
+        tx,
+        user,
+        service,
+        action.action === 'rnwl',
+        screen,
+        action.action === 'rnwl' ? (action.id2 ?? 1) : 1,
+      );
     }
 
     case 'dsr': {

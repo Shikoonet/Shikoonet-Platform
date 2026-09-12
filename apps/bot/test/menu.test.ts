@@ -45,6 +45,30 @@ const PLAN: CatalogPlan = {
 };
 
 describe('the price list', () => {
+  /**
+   * Issue #180. One message with every plan in the shop used to rely on
+   * `telegram.ts` clamping it mid-line with «…». Whole services are dropped
+   * from the end instead, and the customer is told there are more.
+   */
+  it('drops whole services rather than cutting a price in half, and says so', () => {
+    const plans = Array.from({ length: 150 }, (_, i) => ({
+      ...PLAN,
+      planId: 1000 + i,
+      productId: 500 + Math.floor(i / 3),
+      productName: `سرویس شمارهٔ ${Math.floor(i / 3) + 1} با نام نسبتاً بلند`,
+      planName: `${(i % 3) + 1} ماهه · ${10 * ((i % 3) + 1)} گیگ`,
+    }));
+    const text = menu.tariff(plans);
+    expect(text.length).toBeLessThanOrEqual(4096);
+    // Not clamped mid-line by telegram.ts: nothing but the footer ends in the mark.
+    expect(text.split('…').length).toBe(2);
+    expect(text.endsWith('… و سرویس‌های دیگر — قیمت‌شان را از «خرید اشتراک» ببینید.')).toBe(true);
+    // Every service that IS listed is listed whole: three sizes each.
+    const listed = text.split('\n\n').slice(1, -1);
+    for (const block of listed) expect(block.split('\n')).toHaveLength(4);
+    expect(listed.length).toBeGreaterThan(10);
+  });
+
   const plan = (over: Partial<CatalogPlan>): CatalogPlan => ({ ...PLAN, ...over });
 
   it('names each row by whatever tells it apart from its siblings', () => {
@@ -547,6 +571,33 @@ describe('the renewal plan list', () => {
     const legacy = '1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀';
     const [row] = menu.renewPlanMenu(9, [{ ...PLAN, productName: legacy, planName: legacy }]);
     expect(row?.[0]?.text).toBe(legacy);
+  });
+
+  /**
+   * Issue #180. A renewal is offered everything the panel sells, and a panel
+   * with sixty plans was sixty rows; Telegram refuses a keyboard past a
+   * hundred buttons and the whole message with it. Paged like «سرویس های من».
+   */
+  it('pages a long panel, and a stale page number lands on the last page', () => {
+    const plans = Array.from({ length: 20 }, (_, i) => ({
+      ...PLAN,
+      planId: 100 + i,
+      planName: `پلن ${i + 1}`,
+    }));
+    const first = menu.renewPlanMenu(9, plans);
+    const dataOf = (kb: ReturnType<typeof menu.renewPlanMenu>) =>
+      kb.flat().map((b) => ('callback_data' in b ? b.callback_data : ''));
+    expect(dataOf(first).filter((d) => d.startsWith('rord:')).length).toBe(menu.RENEW_PLANS_PER_PAGE);
+    expect(dataOf(first)).toContain('rnwl:9:2');
+    expect(dataOf(first)).not.toContain('rnwl:9:0');
+
+    const third = menu.renewPlanMenu(9, plans, 0, null, false, 3);
+    expect(dataOf(third).filter((d) => d.startsWith('rord:')).length).toBe(4);
+    expect(dataOf(third)).toContain('rnwl:9:2');
+    expect(dataOf(third)).not.toContain('rnwl:9:4');
+
+    // A button from before the catalogue shrank still draws a real page.
+    expect(dataOf(menu.renewPlanMenu(9, plans, 0, null, false, 9))).toEqual(dataOf(third));
   });
 });
 
