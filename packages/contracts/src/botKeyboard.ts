@@ -273,16 +273,35 @@ export const MENUS = {
     hint: 'وقتی مشتری «پرداخت کردم» را زده',
     buttons: [
       // The way out of a mis-tap. Drawn only under a screen that names an
-      // order under review, and the bot lets it work only while the claim
-      // carries nothing — a receipt or a matched deposit makes it a person's
-      // decision, and the button then answers with that sentence.
+      // order under review; it opens `withdrawConfirm` below rather than
+      // acting, and the bot lets the answer work only while the claim carries
+      // nothing — a receipt or a deposit the matcher has seen makes it a
+      // person's decision, and the button then says so instead.
       {
         action: 'unpd',
         label: '↩️ پرداختی نکردم',
-        hint: 'وقتی «پرداخت کردم» اشتباهی زده شده — تا رسیدی نفرستاده، ثبت پرداخت را پس می‌گیرد',
+        hint: 'وقتی «پرداخت کردم» اشتباهی زده شده — اول می‌پرسد، بعد ثبت پرداخت را پس می‌گیرد',
         conditional: true,
       },
       BACK_TO_MENU,
+    ],
+  },
+  withdrawConfirm: {
+    label: 'تایید «پرداختی نکردم»',
+    hint: 'قبل از پس گرفتن ثبت پرداخت',
+    buttons: [
+      // Two steps, like «تغییر لینک»: the answer closes the claim for good, and
+      // a customer who DID transfer and taps this by mistake would have their
+      // receipt refused and their deposit land beside nothing. The «no» button
+      // is «پرداخت کردم» itself, which answers «قبلاً ثبت شده» and redraws the
+      // screen this one was opened from.
+      {
+        action: 'unpd2',
+        label: '↩️ بله، پرداختی نکردم',
+        hint: 'تنها راه تایید — بدون آن صفحه بن‌بست است',
+        required: true,
+      },
+      { action: 'paid', label: '✅ نه، پرداخت کرده‌ام', hint: 'برگشت به صفحهٔ ثبت پرداخت' },
     ],
   },
   myServices: {
@@ -606,6 +625,10 @@ const DEFAULT_CELLS: Record<
   afterPaid: [
     ['unpd', 0, 0],
     ['menu', 1, 0],
+  ],
+  withdrawConfirm: [
+    ['unpd2', 0, 0, 'danger'],
+    ['paid', 1, 0],
   ],
   myServices: [['menu', 0, 0]],
   serviceDetail: [

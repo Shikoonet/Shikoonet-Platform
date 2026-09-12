@@ -1223,6 +1223,8 @@ function navigationParent(raw: string | undefined): string | null {
     case 'order':
     case 'auto':
     case 'paid':
+    case 'unpd':
+    case 'unpd2':
     case 'rord':
     case 'wpay':
       // Once an order exists, going back into its construction screen can
@@ -2892,14 +2894,43 @@ async function handleCallback(
 
     case 'unpd': {
       if (action.id === undefined) return IGNORED;
+      // Asked, not done. A REJECTED claim has no way back, and the customer
+      // who DID transfer and taps this by mistake would lose their receipt's
+      // place in the queue — the same mis-tap class this button exists for.
       const order = await orderForUser(tx, user.id, action.id);
       if (!order) return screen(menu.ORDER_GONE, menu.afterPaidMenu());
-      const result = await withdrawPaidClick(tx, user.id, order.id, query.from.id);
+      return screen(menu.WITHDRAW_CONFIRM, menu.withdrawConfirmMenu(order.id));
+    }
+
+    case 'unpd2': {
+      if (action.id === undefined) return IGNORED;
+      // Held, for the reason `wpay` gives: the expiry sweep closes its
+      // candidates under a lock, and this writes a payment row for the order.
+      const order = await lockOrderForUser(tx, user.id, action.id);
+      if (!order || order.status !== 'AWAITING_PAYMENT') {
+        return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      }
+      const result = await withdrawPaidClick(tx, user.id, order, query.from.id);
       switch (result.outcome) {
         case 'withdrawn':
-          return screen(menu.paidWithdrawn(result.publicId), menu.afterPaidMenu());
+        case 'open':
+          // The invoice again, with the same buttons the original carried —
+          // including the wallet, which the guard in `wpay` refused a moment
+          // ago and now lets through, because nothing is under review.
+          return screen(
+            menu.invoiceReopened(order.public_id, result.amountIrr, result.cardDigits, result.cardHolder),
+            menu.checkoutMenu(
+              order.id,
+              result.amountIrr,
+              result.cardDigits,
+              order.kind === 'WALLET_TOPUP'
+                ? undefined
+                : { balanceIrr: await balanceFor(tx, user.id), totalIrr: result.amountIrr },
+              SHOP.showsCopyButtons,
+            ),
+          );
         case 'evidence':
-          return screen(menu.paidHasEvidence(result.publicId), menu.afterPaidMenu());
+          return screen(menu.paidHasEvidence(result.publicId), menu.afterPaidMenu(order.id));
         case 'none':
           return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       }
@@ -3102,8 +3133,8 @@ async function handleCallback(
        * this file already uses for «you have told us, we are waiting» — and
        * the keyboard under it carries «پرداختی نکردم», which is the way out
        * for the customer who never sent anything (#199): it closes the empty
-       * claim, and the invoice's own wallet button, still live in the chat,
-       * then goes through.
+       * claim and redraws the invoice, wallet button included, so the next
+       * press of this button passes this guard.
        */
       const alreadyClaimed = await tx
         .prepare(

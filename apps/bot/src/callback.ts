@@ -60,9 +60,11 @@ export const CALLBACK_ACTIONS = [
   //         CUSTOMER_TEXT order with no text after its own order id, which is
   //         the generated name the customer is agreeing to here.
   'paid', // <orderId> — the customer says they have paid
-  'unpd', // <orderId> — «پرداختی نکردم»: they pressed `paid` by mistake. Closes
-  //         their own claim, and only while nothing is on it — no receipt, no
-  //         matched deposit — so the invoice can be drawn again. #199.
+  'unpd', // <orderId> — «پرداختی نکردم»: they pressed `paid` by mistake. Asks
+  //         first — the answer closes a claim and there is no reopening one.
+  'unpd2', // <orderId> — do it. Closes their own claim, and only while nothing
+  //         is on it — no receipt, no deposit the matcher has seen — and puts
+  //         the same invoice back in front of them. #199.
   'mine', // [page] — the services this customer already owns
   'sub', // <subscriptionId> — one owned service, with its link
   'renew', // [page] — the services that can be extended
