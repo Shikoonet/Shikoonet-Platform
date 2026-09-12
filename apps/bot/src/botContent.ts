@@ -186,9 +186,9 @@ export async function loadBotContent(
   // The cost was not a wrong screen, it was a permanent one. `withEmojiFallback`
   // decides «is this message rich» by looking at the text AND both keyboards, so
   // one tagged label made every screen in the shop take the premium path: sent,
-  // refused, stripped, sent again. Telegram refusing once switches the feature
-  // off — and the tag stayed in the label, so the doubling continued for ever,
-  // on exactly the shop whose account cannot use the feature.
+  // refused, stripped, sent again. Telegram refusing once rests the feature —
+  // and the tag stayed in the label, so the doubling continued for ever, on
+  // exactly the shop whose account cannot use the feature.
   const content: BotContent = {
     texts: new Texts(overrides, customEmoji),
     layouts: customEmoji ? layouts : plainLayouts(layouts),
