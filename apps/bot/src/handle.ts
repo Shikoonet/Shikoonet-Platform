@@ -389,11 +389,18 @@ export async function handleUpdate(
      *
      * `orderForUser` and `recordReceipt` both re-check the owner, so a forged
      * id belongs to nobody and a customer with nothing waiting learns nothing.
+     *
+     * «پرداختی نکردم» is the same door in the other direction: it takes back
+     * a tap on an order the customer already owns and puts the invoice back
+     * as it was. A gate that let the tap through and held the way out of it
+     * would leave a gated customer's mis-tap in the review queue until an
+     * operator cleared it — CodeRabbit's finding on #221.
      */
     const carriesReceipt =
       update.message?.photo !== undefined ||
       (update.message?.document !== undefined && isReceiptFile(update.message.document.mime_type));
-    const recoversAPayment = carriesReceipt || action === 'paid';
+    const recoversAPayment =
+      carriesReceipt || action === 'paid' || action === 'unpd' || action === 'unpd2';
 
     if (!SHOP.open && from && chatId !== undefined && !recoversAPayment && !(await isAdmin())) {
       return {
@@ -2305,8 +2312,17 @@ async function handleCallback(
   // through for the same reason: it records a claim against an order the
   // customer already owns. `orderForUser` re-checks the owner, so a forged id
   // belongs to nobody, and the button that comes back leads to the main menu,
-  // which a blocked customer is still refused. Nothing else is opened.
-  if (user.status === 'BLOCKED' && action.action !== 'paid') return IGNORED;
+  // which a blocked customer is still refused. Nothing else is opened —
+  // «پرداختی نکردم» closes rather than opens, and passes for the reason
+  // `recoversAPayment` gives.
+  if (
+    user.status === 'BLOCKED' &&
+    action.action !== 'paid' &&
+    action.action !== 'unpd' &&
+    action.action !== 'unpd2'
+  ) {
+    return IGNORED;
+  }
 
   switch (action.action) {
     // The two buttons the gate draws, and the only ones it lets past. Both end
