@@ -38,7 +38,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import type { EnvName } from '@shikoo/contracts';
-import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
+import { MAX_SINGLE_PAYMENT_IRR, NOT_WHOLE_TOMAN, isWholeToman } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
 const PAGE_SIZE_MAX = 100;
@@ -65,7 +65,14 @@ const CreateBody = z
     kind: z.enum(['GIFT_BALANCE', 'PERCENT_OFF', 'AMOUNT_OFF', 'BONUS_GB', 'BONUS_PERCENT']),
     // A gift code is a credit to a wallet by another name, so it is bounded by
     // the same ceiling as a deposit.
-    amountIrr: z.number().int().min(1).max(MAX_SINGLE_PAYMENT_IRR).nullable().default(null),
+    amountIrr: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_SINGLE_PAYMENT_IRR)
+      .refine(isWholeToman, NOT_WHOLE_TOMAN)
+      .nullable()
+      .default(null),
     percent: z.number().min(0.01).max(100).nullable().default(null),
     // Gigabytes a BONUS_GB code adds (0062). The ceiling is a typo guard, not a
     // policy: no plan in this shop is a tenth of it.

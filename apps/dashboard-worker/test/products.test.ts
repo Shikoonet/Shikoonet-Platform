@@ -328,6 +328,16 @@ describe('POST /api/v1/admin/products/plans/:id', () => {
     expect(Number((await planRow(planId))!.price_irr)).toBe(MAX_SINGLE_PAYMENT_IRR);
   });
 
+  it('refuses a price that is not a whole number of Toman', async () => {
+    // Issue #195. Auto-verify matches the bank's figure exactly, so a price
+    // with a stray Rial is one no transfer can equal — every sale at it would
+    // wait for a person for ever. Checked at the boundary, not by habit.
+    const { planId } = await makeCatalog('half-toman', { priceIrr: 500_000 });
+    expect((await patch(planId, { priceIrr: 1_950_005 })).status).toBe(400);
+    expect(Number((await planRow(planId))!.price_irr)).toBe(500_000);
+    expect((await patch(planId, { priceIrr: 1_950_000 })).status).toBe(200);
+  });
+
   it('refuses a negative price', async () => {
     const { planId } = await makeCatalog('negative', { priceIrr: 500_000 });
     expect((await patch(planId, { priceIrr: -1 })).status).toBe(400);
