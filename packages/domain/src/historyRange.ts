@@ -3,6 +3,7 @@ import { toJalali, type HistoryRange } from '@shikoo/contracts';
 
 const TEHRAN_OFFSET_MS = 3.5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
 // Re-exported so the seventeen files that import the type from here keep
 // working; `@shikoo/contracts` holds the one definition. See its header.
@@ -75,6 +76,8 @@ export function tehranDayRelativeLabel(dateStr: string, nowMs = Date.now()): str
 
 export function parseHistoryRange(raw: string | null | undefined): HistoryRange {
   if (
+    raw === '1h' ||
+    raw === '3h' ||
     raw === 'today' ||
     raw === '2d' ||
     raw === '3d' ||
@@ -139,6 +142,8 @@ export function parseHistoryDay(raw: string | null | undefined): string | null {
 export function historyRangeDays(range: HistoryRange): number | null {
   switch (range) {
     case 'all':
+    case '1h':
+    case '3h':
     case 'month':
     case 'prev_month':
       return null;
@@ -166,6 +171,13 @@ export function historyRangeBounds(
   end: number | null;
 } {
   if (range === 'all') return { start: null, end: null };
+  // Rolling from NOW, not from the top of the hour — an operator watching the
+  // last hour at 14:23 means 13:23–14:23. `day` is ignored on purpose: these
+  // windows are about the present, and a date would make the label a lie.
+  if (range === '1h' || range === '3h') {
+    const hours = range === '1h' ? 1 : 3;
+    return { start: nowMs - hours * HOUR_MS, end: nowMs };
+  }
   if (range === 'day') {
     const dateStr = parseHistoryDay(day) ?? tehranTodayDateString(nowMs);
     return tehranDayBoundsFromDate(dateStr);
