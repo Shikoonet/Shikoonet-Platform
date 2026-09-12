@@ -722,13 +722,16 @@ export async function trialPanelsForUser(db: Db, userId: number): Promise<TrialP
     .prepare(
       // A panel with no address or no credential cannot create an account, and
       // a trial that fails is worse than a button that was never drawn — the
-      // customer has spent their one free account on nothing. The same fragment
-      // PURCHASABLE uses, asked of every kind: a trial is always a panel account.
+      // customer has spent their one free account on nothing. The same clause
+      // PURCHASABLE asks, with the same exemption: a kind with no adapter is
+      // delivered by a person and has no address to check. Until 2026-09-12 the
+      // wired half was asked of every kind, so a shelf with a trial switched on
+      // answered «تست رایگان» with TRIAL_NONE — CodeRabbit's finding on #219.
       `SELECT pr.id AS provider_id, pr.name AS name, pr.config AS config
          FROM provisioning_providers pr
          JOIN users u ON u.id = ?1
         WHERE pr.status = 'ACTIVE'
-          AND ${PANEL_WIRED}
+          AND (pr.kind NOT IN (${AUTOMATED_KINDS_SQL}) OR (${PANEL_WIRED}))
           AND NOT EXISTS (
                 SELECT 1 FROM provider_hidden_users h
                  WHERE h.provider_id = pr.id AND h.user_id = u.id

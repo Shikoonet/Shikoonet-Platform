@@ -200,6 +200,41 @@ describe('the free trial', () => {
     expect(panels.find((p) => p.providerId === trialPanel)).toBeUndefined();
   });
 
+  it('asks a panel for an address, and a shelf for none', async () => {
+    // The same exemption PURCHASABLE makes: a kind with no adapter is delivered
+    // by a person, so «no address» is not a fault on it. It used to be asked of
+    // every kind, and a shelf with a trial switched on was never offered.
+    const on = { trial_enabled: true, trial_volume_gb: 1, trial_duration_hours: 24 };
+    const shelf = await db
+      .prepare(
+        `INSERT INTO provisioning_providers (code, name, kind, status, config)
+         VALUES ('sim-trial-shelf', 'قفسهٔ تست', 'manual', 'ACTIVE', ?1::jsonb)
+         ON CONFLICT (code) DO UPDATE SET config = EXCLUDED.config, status = 'ACTIVE'
+         RETURNING id`,
+      )
+      .bind(JSON.stringify(on))
+      .first<{ id: number }>();
+    try {
+      await setTrial(on);
+      await db
+        .prepare(`UPDATE provisioning_providers SET secret_ref = NULL WHERE id = ?1`)
+        .bind(trialPanel)
+        .run();
+      const panels = await trialPanelsForUser(db, ordinaryId);
+      expect(panels.find((p) => p.providerId === trialPanel)).toBeUndefined();
+      expect(panels.find((p) => p.providerId === shelf!.id)).toMatchObject({
+        volumeGb: 1,
+        durationHours: 24,
+      });
+    } finally {
+      await db
+        .prepare(`UPDATE provisioning_providers SET secret_ref = 'FIXTURE' WHERE id = ?1`)
+        .bind(trialPanel)
+        .run();
+      await db.prepare(`DELETE FROM provisioning_providers WHERE id = ?1`).bind(shelf!.id).run();
+    }
+  });
+
   /**
    * The quota is the WHERE clause of the increment, not a read before it.
    * Legacy reads `user.limit_usertest`, compares in PHP and writes back
