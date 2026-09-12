@@ -632,11 +632,16 @@ export const TEXTS = {
     // the button press, and automatic verification against the bank SMS needs
     // no picture at all. A customer who sends nothing still gets their service
     // when the money arrives; what they cost is the operator's certainty if it
-    // does not.
-    default: '📸 حالا عکس رسید واریز را همین‌جا بفرستید.',
+    // does not — which is the second sentence, and it is conditional on
+    // purpose: «بررسی دستی» is what happens when no transfer is found, not a
+    // penalty for the missing picture. Sam, 2026-09-12: after «پرداخت کردم»
+    // the bot insists on the receipt, and names the way out for the customer
+    // who never paid — the button beneath this text.
+    default:
+      '📸 حالا عکس رسید واریز را همین‌جا بفرستید. بدون رسید، اگر واریزی خودکار پیدا نشود تایید پرداخت شما به بررسی دستی می‌رود و دیرتر انجام می‌شود.\n\nاگر اشتباهی زده‌اید و هنوز واریز نکرده‌اید، «پرداختی نکردم» را بزنید.',
     placeholders: [],
     screen: 'paid',
-    hint: 'درخواست عکس رسید، بعد از «پرداخت کردم» — در هر دو حالت اول و تکرار گفته می‌شود',
+    hint: 'درخواست عکس رسید، بعد از «پرداخت کردم» — در هر دو حالت اول و تکرار گفته می‌شود، و راه خروجِ تپ اشتباهی را نام می‌برد',
   },
   RECEIPT_RECEIVED_TITLE: {
     default: '📸 رسید شما دریافت شد و به پروندهٔ پرداخت اضافه شد.',
