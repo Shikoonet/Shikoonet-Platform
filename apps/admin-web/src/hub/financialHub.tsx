@@ -15,8 +15,8 @@ import {
   type PaymentItem,
   type ResellerItem,
 } from './paymentReview.js';
-import type { AnalyticsResponse } from './analytics.js';
-import { IconBalance, IconBotSales, IconResellerSales } from './paymentsIcons.js';
+import { formatPercentChange, type AnalyticsResponse } from './analytics.js';
+import { IconBalance, IconBotSales, IconManualVerified, IconResellerSales } from './paymentsIcons.js';
 
 function AccountRef({ account }: { account: AccountRefLike }) {
   const bank = bankName(account);
@@ -74,7 +74,8 @@ export function SalesTrendChart({
       <div className="sales-trend__header">
         <h3 className="sales-trend__title section-heading">روند فروش</h3>
         <p className="sales-trend__subtitle muted tabular-nums">
-          {count(analytics.sales.count)} پرداخت · {formatTomanFromIrr(analytics.sales.amountIrr)}
+          {count(analytics.sales.count)} پرداخت · {formatTomanFromIrr(analytics.sales.amountIrr)} ·{' '}
+          {formatPercentChange(analytics.sales.amountChange)} نسبت به بازهٔ قبل
         </p>
       </div>
       <div className="sales-trend__chart">
@@ -93,52 +94,73 @@ export function SalesTrendChart({
   );
 }
 
+/**
+ * The four numbers a finance manager reads first (Sam, 2026-09-12): how much
+ * came in, and of the sales, how much the bot verified, how much a person
+ * did, how much was reseller money. Balances ride under the first tile — a
+ * stock, not a flow, so it does not follow the range and says so.
+ */
 export function TopMetricsSummary({ analytics }: { analytics: AnalyticsResponse }) {
+  const tiles: Array<{
+    key: string;
+    label: string;
+    irr: number;
+    meta: string;
+    icon: JSX.Element;
+    accent?: boolean;
+  }> = [
+    {
+      key: 'inflow',
+      label: 'واریز بانکی',
+      irr: analytics.bankInflowIrr,
+      meta: `موجودی فعلی: ${formatTomanFromIrr(analytics.balances.totalKnownIrr)} · ${count(
+        analytics.balances.knownAccounts,
+      )} از ${count(analytics.balances.totalActiveAccounts)} حساب`,
+      icon: <IconBalance />,
+    },
+    {
+      key: 'bot',
+      label: 'تایید ربات',
+      irr: analytics.botAutoVerified.amountIrr,
+      meta: `${count(analytics.botAutoVerified.count)} فروش`,
+      icon: <IconBotSales />,
+      accent: true,
+    },
+    {
+      key: 'manual',
+      label: 'تایید دستی',
+      irr: analytics.manualVerified.amountIrr,
+      meta: `${count(analytics.manualVerified.count)} فروش`,
+      icon: <IconManualVerified />,
+    },
+    {
+      key: 'reseller',
+      label: 'نمایندگی',
+      irr: analytics.reseller.amountIrr,
+      meta: `${count(analytics.reseller.count)} واریز`,
+      icon: <IconResellerSales />,
+    },
+  ];
   return (
-    <div className="metrics-strip" aria-label="شاخص‌های اصلی">
-      <article className="metrics-strip__item">
-        <span className="metrics-strip__icon" aria-hidden>
-          <IconBalance />
-        </span>
-        <div className="metrics-strip__body">
-          <span className="metrics-strip__label">موجودی کل</span>
-          <span className="metrics-strip__value tabular-nums">
-            {formatTomanFromIrr(analytics.balances.totalKnownIrr)}
+    <div className="metrics-strip metrics-strip--four" aria-label="شاخص‌های اصلی">
+      {tiles.map((t) => (
+        <article
+          key={t.key}
+          className={`metrics-strip__item${t.accent ? ' metrics-strip__item--accent' : ''}`}
+        >
+          <span
+            className={`metrics-strip__icon${t.accent ? ' metrics-strip__icon--accent' : ''}`}
+            aria-hidden
+          >
+            {t.icon}
           </span>
-          <span className="metrics-strip__meta muted">
-            {count(analytics.balances.knownAccounts)} حساب از{' '}
-            {count(analytics.balances.totalActiveAccounts)}
-          </span>
-        </div>
-      </article>
-      <article className="metrics-strip__item metrics-strip__item--accent">
-        <span className="metrics-strip__icon metrics-strip__icon--accent" aria-hidden>
-          <IconBotSales />
-        </span>
-        <div className="metrics-strip__body">
-          <span className="metrics-strip__label">فروش ربات</span>
-          <span className="metrics-strip__value tabular-nums">
-            {formatTomanFromIrr(analytics.botAutoVerified.amountIrr)}
-          </span>
-          <span className="metrics-strip__meta muted">
-            {count(analytics.botAutoVerified.count)} پرداخت
-          </span>
-        </div>
-      </article>
-      <article className="metrics-strip__item">
-        <span className="metrics-strip__icon" aria-hidden>
-          <IconResellerSales />
-        </span>
-        <div className="metrics-strip__body">
-          <span className="metrics-strip__label">فروش نمایندگی</span>
-          <span className="metrics-strip__value tabular-nums">
-            {formatTomanFromIrr(analytics.reseller.amountIrr)}
-          </span>
-          <span className="metrics-strip__meta muted">
-            {count(analytics.reseller.count)} پرداخت
-          </span>
-        </div>
-      </article>
+          <div className="metrics-strip__body">
+            <span className="metrics-strip__label">{t.label}</span>
+            <span className="metrics-strip__value tabular-nums">{formatTomanFromIrr(t.irr)}</span>
+            <span className="metrics-strip__meta muted tabular-nums">{t.meta}</span>
+          </div>
+        </article>
+      ))}
     </div>
   );
 }

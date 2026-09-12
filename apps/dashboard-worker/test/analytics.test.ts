@@ -168,10 +168,21 @@ describe('GET /api/v1/analytics', () => {
       items: Array<{
         currentBalanceIrr: number | null;
         primaryDeviceDisplayName: string | null;
+        botCount: number;
+        manualCount: number;
+        botAmountIrr: number;
+        manualAmountIrr: number;
       }>;
       totals: { knownAccounts: number; totalKnownBalanceIrr: number };
     };
     expect(body.items[0]!.currentBalanceIrr).toBe(4_200_000);
+    // The account row carries the same ربات/دستی split the page total does.
+    expect(body.items[0]).toMatchObject({
+      botCount: 0,
+      manualCount: 0,
+      botAmountIrr: 0,
+      manualAmountIrr: 0,
+    });
     expect(body.totals.knownAccounts).toBe(1);
     expect(body.totals.totalKnownBalanceIrr).toBe(4_200_000);
     expect(body.items[0]!.primaryDeviceDisplayName).toBe('Analytics Device');
@@ -340,12 +351,23 @@ describe('GET /api/v1/cards/analytics', () => {
       uniqueCustomers: 2,
       // The manual one counts as a purchase like the other two.
       purchaseCount: 3,
+      // «چقدر ربات تایید کرده، چقدر دستی» — per card, Sam 2026-09-12. The two
+      // halves add up to the takings, so neither can be read against the
+      // other's population.
+      botCount: 2,
+      botAmountIrr: 3_000_000,
+      manualCount: 1,
+      manualAmountIrr: 4_000_000,
     });
     expect(by.get(CARD_B)).toMatchObject({
       takingsIrr: 8_000_000,
       verifiedCount: 1,
       uniqueCustomers: 1,
       purchaseCount: 1,
+      botCount: 1,
+      botAmountIrr: 8_000_000,
+      manualCount: 0,
+      manualAmountIrr: 0,
     });
 
     // The two cards share one account, so an account-level figure would print
@@ -512,6 +534,8 @@ describe('GET /api/v1/cards/analytics', () => {
         exclusionReason: string;
         cardStatus: string;
         purchaseBarPercent: number;
+        botAmountIrr: number;
+        manualAmountIrr: number;
       }>;
     };
 
@@ -535,6 +559,7 @@ describe('GET /api/v1/cards/analytics', () => {
     expect(orphan).toBeDefined();
     expect(orphan!.takingsIrr).toBe(5_000_000);
     expect(orphan!.verifiedCount).toBe(1);
+    expect(orphan!.botAmountIrr + orphan!.manualAmountIrr).toBe(5_000_000);
     expect(orphan!.uniqueCustomers).toBe(1);
     // It is listed, and it is listed as something the bot can never hand out —
     // the same treatment a card whose account is switched off already gets.

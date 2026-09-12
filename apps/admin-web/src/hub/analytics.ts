@@ -53,6 +53,11 @@ export interface AccountAnalyticsItem {
   purchaseCount: number;
   salesCount: number;
   salesAmountIrr: number;
+  /** The sales split by who verified them; the two add up to `salesAmountIrr`. */
+  botCount: number;
+  botAmountIrr: number;
+  manualCount: number;
+  manualAmountIrr: number;
   bankInflowIrr: number;
   bankInflowCount: number;
   unassignedIncomeIrr: number;
@@ -90,7 +95,8 @@ export interface AccountAnalyticsResponse {
 export interface CardAnalyticsItem {
   cardDigits: string;
   cardMasked: string;
-  accountId: string;
+  /** Null for a card the table no longer has — money with no owner row. */
+  accountId: string | null;
   displayName: string;
   ownerLabel: string | null;
   accountHint: string | null;
@@ -106,6 +112,11 @@ export interface CardAnalyticsItem {
    */
   verifiedCount: number;
   takingsIrr: number;
+  /** `takingsIrr` split by who verified: bot or a person. */
+  botCount: number;
+  botAmountIrr: number;
+  manualCount: number;
+  manualAmountIrr: number;
   uniqueCustomers: number;
 
   /** Rotation weight: how many turns this card takes per turn of a normal one. */

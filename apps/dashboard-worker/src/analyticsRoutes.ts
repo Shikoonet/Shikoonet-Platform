@@ -406,6 +406,13 @@ export async function loadAccountAnalytics(
       purchaseCount: sales.sales_count,
       salesCount: sales.sales_count,
       salesAmountIrr: sales.sales_amount_irr,
+      // «چقدر ربات تایید کرده، چقدر دستی» — the same split the page total
+      // shows, per account (Sam, 2026-09-12). Computed by the query above all
+      // along; it just was not sent.
+      botCount: sales.bot_count,
+      botAmountIrr: sales.bot_amount_irr,
+      manualCount: sales.manual_count,
+      manualAmountIrr: sales.manual_amount_irr,
       transactionCount: bankInflow.count,
       bankInflowIrr: bankInflow.amountIrr,
       bankInflowCount: bankInflow.count,
@@ -511,6 +518,17 @@ export async function loadCardAnalytics(
                                   THEN c.id END) AS verified_count,
               COALESCE(SUM(CASE WHEN c.id IS NOT NULL${rangeFilter}
                                 THEN c.expected_amount_irr END), 0) AS takings_irr,
+              -- The takings split by who verified: the bot (AUTO_VERIFIED) or
+              -- a person (CONFIRMED). Same population as takings_irr, so the
+              -- two halves always add up to it.
+              COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED'${rangeFilter}
+                                  THEN c.id END) AS bot_count,
+              COALESCE(SUM(CASE WHEN m.status = 'AUTO_VERIFIED'${rangeFilter}
+                                THEN c.expected_amount_irr END), 0) AS bot_amount_irr,
+              COUNT(DISTINCT CASE WHEN m.status = 'CONFIRMED'${rangeFilter}
+                                  THEN c.id END) AS manual_count,
+              COALESCE(SUM(CASE WHEN m.status = 'CONFIRMED'${rangeFilter}
+                                THEN c.expected_amount_irr END), 0) AS manual_amount_irr,
               COUNT(DISTINCT CASE WHEN c.id IS NOT NULL${rangeFilter}
                                   THEN c.customer_reference END) AS unique_customers,
               ${windowSql}
@@ -566,6 +584,10 @@ export async function loadCardAnalytics(
       purchase_count: number;
       verified_count: number;
       takings_irr: number;
+      bot_count: number;
+      bot_amount_irr: number;
+      manual_count: number;
+      manual_amount_irr: number;
       unique_customers: number;
     } & Record<`w_${CardActivityWindowKey}`, number>>();
 
@@ -602,6 +624,12 @@ export async function loadCardAnalytics(
               COUNT(DISTINCT c.id) AS verified_count,
               COUNT(DISTINCT c.id) AS purchase_count,
               COALESCE(SUM(c.expected_amount_irr), 0) AS takings_irr,
+              COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED' THEN c.id END) AS bot_count,
+              COALESCE(SUM(CASE WHEN m.status = 'AUTO_VERIFIED'
+                                THEN c.expected_amount_irr END), 0) AS bot_amount_irr,
+              COUNT(DISTINCT CASE WHEN m.status = 'CONFIRMED' THEN c.id END) AS manual_count,
+              COALESCE(SUM(CASE WHEN m.status = 'CONFIRMED'
+                                THEN c.expected_amount_irr END), 0) AS manual_amount_irr,
               COUNT(DISTINCT c.customer_reference) AS unique_customers
          FROM payment_claims c
          LEFT JOIN reconciliation_matches m
@@ -621,6 +649,10 @@ export async function loadCardAnalytics(
       verified_count: number;
       purchase_count: number;
       takings_irr: number;
+      bot_count: number;
+      bot_amount_irr: number;
+      manual_count: number;
+      manual_amount_irr: number;
       unique_customers: number;
     }>();
 
@@ -636,6 +668,10 @@ export async function loadCardAnalytics(
     purchaseCount: Number(r.purchase_count ?? 0),
     verifiedCount: Number(r.verified_count ?? 0),
     takingsIrr: Number(r.takings_irr ?? 0),
+    botCount: Number(r.bot_count ?? 0),
+    botAmountIrr: Number(r.bot_amount_irr ?? 0),
+    manualCount: Number(r.manual_count ?? 0),
+    manualAmountIrr: Number(r.manual_amount_irr ?? 0),
     uniqueCustomers: Number(r.unique_customers ?? 0),
     // Zeroed rather than computed: the windows answer «is this card busy right
     // now», and a card the bot cannot hand out is not busy — it is finished.
@@ -665,6 +701,10 @@ export async function loadCardAnalytics(
     // sent, so a total assembled there is a total of one page.
     verifiedCount: r.verified_count,
     takingsIrr: Number(r.takings_irr ?? 0),
+    botCount: Number(r.bot_count ?? 0),
+    botAmountIrr: Number(r.bot_amount_irr ?? 0),
+    manualCount: Number(r.manual_count ?? 0),
+    manualAmountIrr: Number(r.manual_amount_irr ?? 0),
     uniqueCustomers: r.unique_customers,
     // Numbers, not a nested query per card: one scan produces all six.
     activity: Object.fromEntries(

@@ -79,6 +79,10 @@ beforeEach(() => {
               purchaseCount: 5,
               salesCount: 6,
               salesAmountIrr: 10_000_000,
+              botCount: 4,
+              botAmountIrr: 7_000_000,
+              manualCount: 2,
+              manualAmountIrr: 3_000_000,
               bankInflowIrr: 0,
               bankInflowCount: 0,
               unassignedIncomeIrr: 0,
@@ -122,6 +126,10 @@ beforeEach(() => {
               activity: { h12: 1, h24: 2, d3: 3, d7: 4, d15: 5, d30: 5 },
               verifiedCount: 6,
               takingsIrr: 12_000_000,
+              botCount: 4,
+              botAmountIrr: 8_000_000,
+              manualCount: 2,
+              manualAmountIrr: 4_000_000,
               uniqueCustomers: 4,
               purchaseBarPercent: 100,
               hubEligible: true,
@@ -141,34 +149,40 @@ afterEach(() => {
 });
 
 describe('StatisticsView', () => {
-  it('shows three top metrics and sales trend', async () => {
+  /*
+   * Sam, 2026-09-12: «چقدر ربات تایید کرده و فروخته، چقدر دستی بوده، چقدر
+   * نمایندگی». Four tiles — bank inflow (with the balances under it), bot,
+   * manual, reseller — and the range total with its change on the chart.
+   */
+  it('shows the four tiles a finance manager reads first, and the trend', async () => {
     render(<StatisticsView cache={createCache()} />);
     // The screen no longer names itself. Its title was a second copy of the one
-    // the shell already draws, in a second `header` beside the shell's own —
-    // and the date control that sat next to it now goes to the shell's date
-    // slot. `shell.test.tsx` asserts the heading; this file asserts the numbers.
+    // the shell already draws. `shell.test.tsx` asserts the heading; this file
+    // asserts the numbers.
     expect(screen.queryByText('آمار مالی')).toBeNull();
-    expect(await screen.findByText('موجودی کل')).toBeTruthy();
-    expect(await screen.findByText('فروش ربات')).toBeTruthy();
-    expect(await screen.findByText('فروش نمایندگی')).toBeTruthy();
+    const strip = await screen.findByLabelText('شاخص‌های اصلی');
+    const labels = Array.from(strip.querySelectorAll('.metrics-strip__label')).map(
+      (l) => l.textContent,
+    );
+    expect(labels).toEqual(['واریز بانکی', 'تایید ربات', 'تایید دستی', 'نمایندگی']);
+    expect(strip.textContent).toContain('۲٬۰۰۰٬۰۰۰ تومان'); // bot 20M IRR
+    expect(strip.textContent).toContain('۴۰۰٬۰۰۰ تومان'); // manual 4M IRR
+    expect(strip.textContent).toContain('۶۰۰٬۰۰۰ تومان'); // reseller 6M IRR
+    expect(strip.textContent).toContain('۴ از ۵ حساب');
     expect(await screen.findByText('روند فروش')).toBeTruthy();
-    expect(screen.queryByText(/Open queues/i)).toBeNull();
-    expect(screen.queryByText('Verification mix')).toBeNull();
+    expect(screen.getByText(/↑ ۸٫۵٪ نسبت به بازهٔ قبل/)).toBeTruthy();
   });
 
-  it('shows simplified account usage rows', async () => {
+  it('shows one accounts-and-cards table in place of the two old blocks', async () => {
     render(<StatisticsView cache={createCache()} />);
-    expect(await screen.findByText('میزان استفاده از حساب‌ها')).toBeTruthy();
-    expect(screen.getAllByText(/7613/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Puyan/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('۵ خرید').length).toBeGreaterThan(0);
+    expect(await screen.findByLabelText('حساب‌ها و کارت‌ها')).toBeTruthy();
+    expect(screen.getByText('**** 7613 · Puyan')).toBeTruthy();
+    expect(screen.getByText('****7613')).toBeTruthy();
+    expect(screen.getByText('جمع همه')).toBeTruthy();
+    expect(screen.queryByText('میزان استفاده از حساب‌ها')).toBeNull();
+    expect(screen.queryByText('توازن کارت‌ها (تشخیصی)')).toBeNull();
+    expect(screen.queryByText('۱۲ ساعت')).toBeNull();
     expect(screen.queryByText(/دستگاه/i)).toBeNull();
-  });
-
-  it('shows card balancing diagnostic panel', async () => {
-    render(<StatisticsView cache={createCache()} />);
-    expect(await screen.findByText('توازن کارت‌ها (تشخیصی)')).toBeTruthy();
-    expect(screen.getByText(/فاصلهٔ بیشترین تا کمترین: ۵/)).toBeTruthy();
   });
 
   /*

@@ -2,8 +2,7 @@ import { useState } from 'react';
 import type { Cache } from './query.js';
 import { HistoryDateNav } from './historyRangeNav.js';
 import { SalesTrendChart, TopMetricsSummary } from './financialHub.js';
-import { AccountUsagePanel } from './accountAnalytics.js';
-import { CardBalancingPanel } from './cardAnalytics.js';
+import { FinanceTable } from './financeTable.js';
 import type { AnalyticsResponse } from './analytics.js';
 import {
   defaultHistoryRangeState,
@@ -53,8 +52,7 @@ export function StatisticsView({ cache }: { cache: Cache }) {
         </>
       )}
 
-      <AccountUsagePanel cache={cache} rangeState={rangeState} />
-      <CardBalancingPanel cache={cache} rangeState={rangeState} />
+      <FinanceTable cache={cache} rangeState={rangeState} analytics={analytics} />
     </section>
   );
 }
