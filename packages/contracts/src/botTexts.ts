@@ -588,6 +588,27 @@ export const TEXTS = {
     screen: 'paid',
     hint: 'وقتی دکمهٔ «پرداخت کردم» دوباره زده می‌شود',
   },
+  WITHDRAW_CONFIRM: {
+    default:
+      '⚠️ اگر واریز کرده‌اید، این را نزنید: ثبت پرداخت پس گرفته می‌شود و رسیدتان بررسی نخواهد شد.\n\nمطمئنید که پرداختی نکرده‌اید؟',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'پرسش قبل از پس گرفتن ثبت پرداخت — زیرش «بله» و «نه، پرداخت کرده‌ام»',
+  },
+  PAID_WITHDRAWN_TITLE: {
+    default:
+      '↩️ ثبت پرداخت پس گرفته شد. فاکتور همچنان باز است: اگر خواستید بخرید، به همین کارت واریز کنید و بعد «پرداخت کردم» را بزنید.',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'بالای فاکتوری که بعد از «پرداختی نکردم» دوباره کشیده می‌شود',
+  },
+  PAID_HAS_EVIDENCE: {
+    default:
+      '📎 برای این پرداخت رسید یا واریزی ثبت شده و در حال بررسی است؛ دیگر نمی‌شود پسش گرفت. اگر اشتباهی بوده، به پشتیبانی پیام دهید.',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'وقتی «پرداختی نکردم» روی پرداختی زده می‌شود که رسید یا واریزی دارد',
+  },
   PAID_TRACKING_ID: {
     default: '🔖 شمارهٔ پیگیری: {id}',
     placeholders: ['id'],
@@ -611,11 +632,16 @@ export const TEXTS = {
     // the button press, and automatic verification against the bank SMS needs
     // no picture at all. A customer who sends nothing still gets their service
     // when the money arrives; what they cost is the operator's certainty if it
-    // does not.
-    default: '📸 حالا عکس رسید واریز را همین‌جا بفرستید.',
+    // does not — which is the second sentence, and it is conditional on
+    // purpose: «بررسی دستی» is what happens when no transfer is found, not a
+    // penalty for the missing picture. Sam, 2026-09-12: after «پرداخت کردم»
+    // the bot insists on the receipt, and names the way out for the customer
+    // who never paid — the button beneath this text.
+    default:
+      '📸 حالا عکس رسید واریز را همین‌جا بفرستید. بدون رسید، اگر واریزی خودکار پیدا نشود تایید پرداخت شما به بررسی دستی می‌رود و دیرتر انجام می‌شود.\n\nاگر اشتباهی زده‌اید و هنوز واریز نکرده‌اید، «پرداختی نکردم» را بزنید.',
     placeholders: [],
     screen: 'paid',
-    hint: 'درخواست عکس رسید، بعد از «پرداخت کردم» — در هر دو حالت اول و تکرار گفته می‌شود',
+    hint: 'درخواست عکس رسید، بعد از «پرداخت کردم» — در هر دو حالت اول و تکرار گفته می‌شود، و راه خروجِ تپ اشتباهی را نام می‌برد',
   },
   RECEIPT_RECEIVED_TITLE: {
     default: '📸 رسید شما دریافت شد و به پروندهٔ پرداخت اضافه شد.',

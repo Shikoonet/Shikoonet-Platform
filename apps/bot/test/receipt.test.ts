@@ -495,9 +495,27 @@ describe('a blocked customer who has already paid', () => {
     expect(claim?.n).toBe(1);
   });
 
+  it('can still take back a «پرداخت کردم» they pressed by mistake', async () => {
+    // The door out of the state the door above lets them into. Without it a
+    // blocked customer's mis-tap sits in the review queue until an operator
+    // clears it, and the block was never meant to make work for a person.
+    const sale = await buyAndClaim('sim-gold-10');
+    const order = await db
+      .prepare(`SELECT id FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`)
+      .bind(sale.userId)
+      .first<{ id: number }>();
+    await block(sale.telegramId);
+
+    const asked = await handleUpdate(db, press(sale.updateId + 2, sale.telegramId, `unpd:${order!.id}`));
+    expect(asked.status).toBe('processed');
+    const out = await handleUpdate(db, press(sale.updateId + 3, sale.telegramId, `unpd2:${order!.id}`));
+    expect(out.status).toBe('processed');
+    expect((await claimRow(sale.claimId))?.status).toBe('REJECTED');
+  });
+
   it('is still refused everything else, and answered nothing', async () => {
     // The block has to keep costing a flooder what it always cost, or it stops
-    // being a block. Only the two payment-recovery doors are open.
+    // being a block. Only the payment-recovery doors are open.
     const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);
     await block(telegramId);

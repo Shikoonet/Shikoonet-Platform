@@ -152,6 +152,7 @@ export let ACTION_UNSUPPORTED = DEFAULT_TEXTS.raw('ACTION_UNSUPPORTED');
  */
 export let SERVICE_DETAIL_NO_LINK = DEFAULT_TEXTS.raw('SERVICE_DETAIL_NO_LINK');
 export let CONFIRM_REVOKE = DEFAULT_TEXTS.raw('CONFIRM_REVOKE');
+export let WITHDRAW_CONFIRM = DEFAULT_TEXTS.raw('WITHDRAW_CONFIRM');
 export let ADDON_NOT_A_NUMBER = DEFAULT_TEXTS.raw('ADDON_NOT_A_NUMBER');
 export let ASK_ACCOUNT_NAME = DEFAULT_TEXTS.raw('ASK_ACCOUNT_NAME');
 export let ACCOUNT_NAME_REFUSED = DEFAULT_TEXTS.raw('ACCOUNT_NAME_REFUSED');
@@ -278,6 +279,7 @@ export function applyContent(content: BotContent): void {
   ACTION_UNSUPPORTED = t.raw('ACTION_UNSUPPORTED');
   SERVICE_DETAIL_NO_LINK = t.raw('SERVICE_DETAIL_NO_LINK');
   CONFIRM_REVOKE = t.raw('CONFIRM_REVOKE');
+  WITHDRAW_CONFIRM = t.raw('WITHDRAW_CONFIRM');
   ADDON_NOT_A_NUMBER = t.raw('ADDON_NOT_A_NUMBER');
   ASK_ACCOUNT_NAME = t.raw('ASK_ACCOUNT_NAME');
   ACCOUNT_NAME_REFUSED = t.raw('ACCOUNT_NAME_REFUSED');
@@ -1596,8 +1598,58 @@ export function paymentConfirmed(publicId: string): string {
   ].join('\n');
 }
 
-export function afterPaidMenu(): InlineKeyboard {
-  return buildMenu('afterPaid', layout('afterPaid'));
+/**
+ * The chrome under every payment-side screen.
+ *
+ * With an order id, it carries «پرداختی نکردم» for that order — drawn under
+ * `paidRecorded` and `paidAlready`, where the customer has just been told
+ * their tap opened a claim and may be looking at a tap they did not mean.
+ * Without one there is nothing to withdraw, and the row is dropped.
+ */
+export function afterPaidMenu(orderId?: number): InlineKeyboard {
+  return buildMenu('afterPaid', layout('afterPaid'), {
+    applies: (action) => action !== 'unpd' || orderId !== undefined,
+    target: (action) => (action === 'unpd' ? encode('unpd', orderId) : action),
+  });
+}
+
+/** The question before «پرداختی نکردم» does anything. `unpd2` says yes; «پرداخت کردم» says no. */
+export function withdrawConfirmMenu(orderId: number): InlineKeyboard {
+  return buildMenu('withdrawConfirm', layout('withdrawConfirm'), {
+    target: (action) => encode(action as 'unpd2', orderId),
+  });
+}
+
+/**
+ * «پرداختی نکردم» accepted: the same invoice, back in front of the customer.
+ *
+ * The card and the amount are printed again rather than pointed at — the
+ * screen this replaces was the one that said «ثبت شد», and the invoice with
+ * the card on it may be several messages up.
+ */
+export function invoiceReopened(
+  publicId: string,
+  totalIrr: number,
+  cardDigits: string,
+  cardHolder: string | null,
+): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('PAID_WITHDRAWN_TITLE'),
+    '',
+    t.render('CHECKOUT_ORDER_ID', { id: publicId }),
+    t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
+    '',
+    ...checkoutTail(cardDigits, cardHolder),
+  ].join('\n');
+}
+
+/** «پرداختی نکردم» refused: something is on the claim, so a person decides. */
+export function paidHasEvidence(publicId: string): string {
+  const t = TEXTS_NOW;
+  return [t.raw('PAID_HAS_EVIDENCE'), '', t.render('PAID_TRACKING_ID', { id: publicId })].join(
+    '\n',
+  );
 }
 
 /**

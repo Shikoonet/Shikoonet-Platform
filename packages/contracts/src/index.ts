@@ -84,6 +84,8 @@ export type RejectionReason =
   | 'EXPIRED'
   | 'REFUNDED'
   | 'TEST_PAYMENT'
+  /** The customer took back their own «پرداخت کردم» (bot, `withdrawPaidClick`). */
+  | 'CUSTOMER_WITHDREW'
   | 'OTHER';
 
 export type AccessRole = 'ADMIN' | 'REVIEWER' | 'READ_ONLY';

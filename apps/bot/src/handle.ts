@@ -101,7 +101,7 @@ import {
   storedEmoji,
 } from './emoji.js';
 import { actionsFor, tierFor } from './serviceActions.js';
-import { checkoutFor, recordPaidClick, recordReceipt } from './payment.js';
+import { checkoutFor, recordPaidClick, recordReceipt, withdrawPaidClick } from './payment.js';
 import {
   balanceFor,
   entriesFor,
@@ -389,11 +389,18 @@ export async function handleUpdate(
      *
      * `orderForUser` and `recordReceipt` both re-check the owner, so a forged
      * id belongs to nobody and a customer with nothing waiting learns nothing.
+     *
+     * «پرداختی نکردم» is the same door in the other direction: it takes back
+     * a tap on an order the customer already owns and puts the invoice back
+     * as it was. A gate that let the tap through and held the way out of it
+     * would leave a gated customer's mis-tap in the review queue until an
+     * operator cleared it — CodeRabbit's finding on #221.
      */
     const carriesReceipt =
       update.message?.photo !== undefined ||
       (update.message?.document !== undefined && isReceiptFile(update.message.document.mime_type));
-    const recoversAPayment = carriesReceipt || action === 'paid';
+    const recoversAPayment =
+      carriesReceipt || action === 'paid' || action === 'unpd' || action === 'unpd2';
 
     if (!SHOP.open && from && chatId !== undefined && !recoversAPayment && !(await isAdmin())) {
       return {
@@ -1223,6 +1230,8 @@ function navigationParent(raw: string | undefined): string | null {
     case 'order':
     case 'auto':
     case 'paid':
+    case 'unpd':
+    case 'unpd2':
     case 'rord':
     case 'wpay':
       // Once an order exists, going back into its construction screen can
@@ -1549,7 +1558,7 @@ async function handleAddonAmount(
 
   const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
   if (!checkout) return reply(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
-  if (checkout.claimed) return reply(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+  if (checkout.claimed) return reply(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
 
   return reply(
     menu.addonCheckout(
@@ -1879,7 +1888,7 @@ async function placeOrderScreen(
     return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
   }
   if (checkout.claimed) {
-    return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+    return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
   }
   // The invoice now occupies the message the question was asked on, so nothing
   // may edit it again. See `forgetScreen`.
@@ -2303,8 +2312,17 @@ async function handleCallback(
   // through for the same reason: it records a claim against an order the
   // customer already owns. `orderForUser` re-checks the owner, so a forged id
   // belongs to nobody, and the button that comes back leads to the main menu,
-  // which a blocked customer is still refused. Nothing else is opened.
-  if (user.status === 'BLOCKED' && action.action !== 'paid') return IGNORED;
+  // which a blocked customer is still refused. Nothing else is opened —
+  // «پرداختی نکردم» closes rather than opens, and passes for the reason
+  // `recoversAPayment` gives.
+  if (
+    user.status === 'BLOCKED' &&
+    action.action !== 'paid' &&
+    action.action !== 'unpd' &&
+    action.action !== 'unpd2'
+  ) {
+    return IGNORED;
+  }
 
   switch (action.action) {
     // The two buttons the gate draws, and the only ones it lets past. Both end
@@ -2850,7 +2868,7 @@ async function handleCallback(
         return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
       }
       if (checkout.claimed) {
-        return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+        return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
       }
       // Same as the purchase invoice: this message is no longer a question.
       await forgetScreen(tx, user.id);
@@ -2880,11 +2898,55 @@ async function handleCallback(
       const result = await recordPaidClick(tx, user.id, order.id, query.from.id);
       switch (result.outcome) {
         case 'claimed':
-          return screen(menu.paidRecorded(result.publicId), menu.afterPaidMenu());
+          return screen(menu.paidRecorded(result.publicId), menu.afterPaidMenu(order.id));
         case 'already':
-          return screen(menu.paidAlready(result.publicId), menu.afterPaidMenu());
+          return screen(menu.paidAlready(result.publicId), menu.afterPaidMenu(order.id));
         case 'expired':
           return screen(menu.ORDER_EXPIRED, menu.afterPaidMenu());
+        case 'none':
+          return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      }
+    }
+
+    case 'unpd': {
+      if (action.id === undefined) return IGNORED;
+      // Asked, not done. A REJECTED claim has no way back, and the customer
+      // who DID transfer and taps this by mistake would lose their receipt's
+      // place in the queue — the same mis-tap class this button exists for.
+      const order = await orderForUser(tx, user.id, action.id);
+      if (!order) return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      return screen(menu.WITHDRAW_CONFIRM, menu.withdrawConfirmMenu(order.id));
+    }
+
+    case 'unpd2': {
+      if (action.id === undefined) return IGNORED;
+      // Held, for the reason `wpay` gives: the expiry sweep closes its
+      // candidates under a lock, and this writes a payment row for the order.
+      const order = await lockOrderForUser(tx, user.id, action.id);
+      if (!order || order.status !== 'AWAITING_PAYMENT') {
+        return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      }
+      const result = await withdrawPaidClick(tx, user.id, order, query.from.id);
+      switch (result.outcome) {
+        case 'withdrawn':
+        case 'open':
+          // The invoice again, with the same buttons the original carried —
+          // including the wallet, which the guard in `wpay` refused a moment
+          // ago and now lets through, because nothing is under review.
+          return screen(
+            menu.invoiceReopened(order.public_id, result.amountIrr, result.cardDigits, result.cardHolder),
+            menu.checkoutMenu(
+              order.id,
+              result.amountIrr,
+              result.cardDigits,
+              order.kind === 'WALLET_TOPUP'
+                ? undefined
+                : { balanceIrr: await balanceFor(tx, user.id), totalIrr: result.amountIrr },
+              SHOP.showsCopyButtons,
+            ),
+          );
+        case 'evidence':
+          return screen(menu.paidHasEvidence(result.publicId), menu.afterPaidMenu(order.id));
         case 'none':
           return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       }
@@ -3084,7 +3146,11 @@ async function handleCallback(
        *
        * Refused rather than reconciled: the money is in a bank and only a
        * person can decide about it. `paidAlready` is the sentence the rest of
-       * this file already uses for «you have told us, we are waiting».
+       * this file already uses for «you have told us, we are waiting» — and
+       * the keyboard under it carries «پرداختی نکردم», which is the way out
+       * for the customer who never sent anything (#199): it closes the empty
+       * claim and redraws the invoice, wallet button included, so the next
+       * press of this button passes this guard.
        */
       const alreadyClaimed = await tx
         .prepare(
@@ -3095,7 +3161,7 @@ async function handleCallback(
         .bind(order.id)
         .first<{ public_id: string }>();
       if (alreadyClaimed) {
-        return screen(menu.paidAlready(alreadyClaimed.public_id), menu.afterPaidMenu());
+        return screen(menu.paidAlready(alreadyClaimed.public_id), menu.afterPaidMenu(order.id));
       }
       const spent = await spendOnOrder(tx, user.id, order.id, order.total_irr);
       if (spent === 'INSUFFICIENT') {
@@ -3198,7 +3264,7 @@ async function topup(
   if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.walletMenu());
   const checkout = await checkoutFor(tx, userId, placed.id, placed.totalIrr, newPublicId());
   if (!checkout) return screen(menu.NO_CARD_AVAILABLE, menu.walletMenu());
-  if (checkout.claimed) return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+  if (checkout.claimed) return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
   return screen(
     menu.topupCheckout(placed.publicId, placed.totalIrr, checkout.cardDigits, checkout.cardHolder),
     menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits),

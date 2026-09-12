@@ -7,7 +7,14 @@ import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { INCOME_TX_WHERE } from './incomeEligibility.js';
 
 const PENDING_CLAIM = `c.status IN ('PENDING','MATCH_SUGGESTED')`;
-const NO_TRANSFER_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
+/**
+ * The two suspect reasons that mean «the matcher looked and found no money».
+ * Every other reason is a deposit it DID find and could not settle — an
+ * amount off, an account off, two claims for one transfer — and a claim
+ * carrying one is evidence, not a mistake a customer may take back.
+ * `mirzabotRoutes.ts` keeps the same pair as its NEEDS_REVIEW boundary.
+ */
+export const NO_TRANSFER_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
 
 const SETTLED_MATCH = `
   SELECT m2.id FROM reconciliation_matches m2

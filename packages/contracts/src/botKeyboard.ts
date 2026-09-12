@@ -271,7 +271,38 @@ export const MENUS = {
   afterPaid: {
     label: 'بعد از ثبت پرداخت',
     hint: 'وقتی مشتری «پرداخت کردم» را زده',
-    buttons: [BACK_TO_MENU],
+    buttons: [
+      // The way out of a mis-tap. Drawn only under a screen that names an
+      // order under review; it opens `withdrawConfirm` below rather than
+      // acting, and the bot lets the answer work only while the claim carries
+      // nothing — a receipt or a deposit the matcher has seen makes it a
+      // person's decision, and the button then says so instead.
+      {
+        action: 'unpd',
+        label: '↩️ پرداختی نکردم',
+        hint: 'وقتی «پرداخت کردم» اشتباهی زده شده — اول می‌پرسد، بعد ثبت پرداخت را پس می‌گیرد',
+        conditional: true,
+      },
+      BACK_TO_MENU,
+    ],
+  },
+  withdrawConfirm: {
+    label: 'تایید «پرداختی نکردم»',
+    hint: 'قبل از پس گرفتن ثبت پرداخت',
+    buttons: [
+      // Two steps, like «تغییر لینک»: the answer closes the claim for good, and
+      // a customer who DID transfer and taps this by mistake would have their
+      // receipt refused and their deposit land beside nothing. The «no» button
+      // is «پرداخت کردم» itself, which answers «قبلاً ثبت شده» and redraws the
+      // screen this one was opened from.
+      {
+        action: 'unpd2',
+        label: '↩️ بله، پرداختی نکردم',
+        hint: 'تنها راه تایید — بدون آن صفحه بن‌بست است',
+        required: true,
+      },
+      { action: 'paid', label: '✅ نه، پرداخت کرده‌ام', hint: 'برگشت به صفحهٔ ثبت پرداخت' },
+    ],
   },
   myServices: {
     label: 'سرویس‌های من',
@@ -591,7 +622,14 @@ const DEFAULT_CELLS: Record<
     ['tpo', 0, 1],
     ['paid', 1, 0, 'success'],
   ],
-  afterPaid: [['menu', 0, 0]],
+  afterPaid: [
+    ['unpd', 0, 0],
+    ['menu', 1, 0],
+  ],
+  withdrawConfirm: [
+    ['unpd2', 0, 0, 'danger'],
+    ['paid', 1, 0],
+  ],
   myServices: [['menu', 0, 0]],
   serviceDetail: [
     ['xv', 0, 0],
