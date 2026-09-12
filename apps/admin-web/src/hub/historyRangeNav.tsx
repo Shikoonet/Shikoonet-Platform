@@ -51,9 +51,17 @@ export function tehranTodayDateString(nowMs = Date.now()): string {
 export function HistoryDateNav({
   value,
   onChange,
+  variant = 'menu',
 }: {
   value: HistoryRangeState;
   onChange: (next: HistoryRangeState) => void;
+  /**
+   * `menu` is the compact `<details>` that fits the header beside the payment
+   * tabs. `strip` lays every preset out as a chip, for a screen with room —
+   * «آمار مالی», where the folded menu read as a badge saying «همه» and nobody
+   * took it for the control it was.
+   */
+  variant?: 'menu' | 'strip';
 }) {
   const day = value.day ?? tehranTodayDateString();
   const relative = value.preset === 'day' ? tehranDayRelativeLabel(day) : null;
@@ -65,6 +73,70 @@ export function HistoryDateNav({
       return;
     }
     onChange({ preset });
+  }
+
+  const dayNav = value.preset === 'day' && (
+    <div className="unified-date-control__day" aria-label="پیمایش روز">
+      <button
+        type="button"
+        className="ghost unified-date-control__nav"
+        aria-label="روز قبل"
+        onClick={() => onChange({ preset: 'day', day: tehranAdjacentDay(day, -1) })}
+      >
+        ←
+      </button>
+      <label className="unified-date-control__picker">
+        <span className="visually-hidden">انتخاب تاریخ</span>
+        <input
+          type="date"
+          value={day}
+          aria-label="انتخاب تاریخ از تقویم"
+          onChange={(e) => {
+            if (e.target.value) onChange({ preset: 'day', day: e.target.value });
+          }}
+        />
+      </label>
+      <button
+        type="button"
+        className="ghost unified-date-control__nav"
+        aria-label="روز بعد"
+        onClick={() => onChange({ preset: 'day', day: tehranAdjacentDay(day, 1) })}
+      >
+        →
+      </button>
+      <button
+        type="button"
+        className="ghost unified-date-control__today"
+        onClick={() => onChange({ preset: 'day', day: tehranTodayDateString() })}
+      >
+        امروز
+      </button>
+    </div>
+  );
+
+  if (variant === 'strip') {
+    return (
+      <div className="range-strip">
+        <div className="range-strip__chips" role="radiogroup" aria-label="بازهٔ تاریخ">
+          {HISTORY_RANGE_PRESETS.map((o) => {
+            const on = o.value === value.preset;
+            return (
+              <button
+                key={o.value}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                className={`range-strip__chip${on ? ' range-strip__chip--on' : ''}`}
+                onClick={() => setPreset(o.value)}
+              >
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+        {dayNav}
+      </div>
+    );
   }
 
   return (
@@ -102,44 +174,7 @@ export function HistoryDateNav({
             ))}
           </select>
         </label>
-        {value.preset === 'day' && (
-          <div className="unified-date-control__day" aria-label="پیمایش روز">
-            <button
-              type="button"
-              className="ghost unified-date-control__nav"
-              aria-label="روز قبل"
-              onClick={() => onChange({ preset: 'day', day: tehranAdjacentDay(day, -1) })}
-            >
-              ←
-            </button>
-            <label className="unified-date-control__picker">
-              <span className="visually-hidden">انتخاب تاریخ</span>
-              <input
-                type="date"
-                value={day}
-                aria-label="انتخاب تاریخ از تقویم"
-                onChange={(e) => {
-                  if (e.target.value) onChange({ preset: 'day', day: e.target.value });
-                }}
-              />
-            </label>
-            <button
-              type="button"
-              className="ghost unified-date-control__nav"
-              aria-label="روز بعد"
-              onClick={() => onChange({ preset: 'day', day: tehranAdjacentDay(day, 1) })}
-            >
-              →
-            </button>
-            <button
-              type="button"
-              className="ghost unified-date-control__today"
-              onClick={() => onChange({ preset: 'day', day: tehranTodayDateString() })}
-            >
-              امروز
-            </button>
-          </div>
-        )}
+        {dayNav}
       </div>
     </details>
   );

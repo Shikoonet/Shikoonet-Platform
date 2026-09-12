@@ -44,6 +44,7 @@ import { configName } from '@shikoo/contracts';
 import {
   api,
   ApiError,
+  type ButtonStyle,
   type CatalogStatus,
   type CategoryRow,
   type ConfigRow,
@@ -54,6 +55,7 @@ import {
 } from '../api.js';
 import { count, irrToToman, STATUS_FA, toman } from '../format.js';
 import { LayoutEditor } from './LayoutEditor.js';
+import { BadgeField, badgeValue } from './BadgeField.js';
 import { anyHosted, GroupForm, InboundCount, InboundPicker } from '../groups.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -2009,6 +2011,8 @@ function ServiceDrawer({
   const [oncePerUser, setOncePerUser] = useState(service.oncePerUser);
   const [groupIds, setGroupIds] = useState<number[] | null>(service.groupIds);
   const [deliveryNote, setDeliveryNote] = useState(service.deliveryNote ?? '');
+  const [badge, setBadge] = useState(service.badge ?? '');
+  const [buttonStyle, setButtonStyle] = useState<ButtonStyle | null>(service.buttonStyle);
   const [err, setErr] = useState<string | null>(null);
   const [refused, setRefused] = useState<Refused>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -2041,6 +2045,8 @@ function ServiceDrawer({
         oncePerUser,
         groupIds,
         deliveryNote: deliveryNote.trim() === '' ? null : deliveryNote.trim(),
+        badge: badgeValue(badge),
+        buttonStyle,
       });
       setDone('سرویس ذخیره شد.');
       onChanged();
@@ -2166,6 +2172,22 @@ function ServiceDrawer({
           onResellers={setResellersOnly}
           onOnce={setOncePerUser}
         />
+      </div>
+
+      {/* The tier button's own badge and colour (0061). The same field the
+          category and the config forms use, so the three screens of the shop
+          are styled with one vocabulary. */}
+      <div className="toolbar" style={{ borderBlockEnd: 'none', paddingBlockEnd: 0 }}>
+        <div className="grow">
+          <BadgeField
+            id="sv-badge"
+            value={badge}
+            onChange={setBadge}
+            style={buttonStyle}
+            onStyleChange={setButtonStyle}
+            preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || service.name}`}
+          />
+        </div>
       </div>
 
       <label className="form-label" htmlFor="sv-note">

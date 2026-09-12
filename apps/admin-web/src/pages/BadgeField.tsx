@@ -94,6 +94,8 @@ export function BadgeField({
   id,
   /** The button as the bot will draw it, so the preview is not a guess. */
   preview,
+  /** What the field calls itself; the default is right on a form, and wrong on a board. */
+  label = 'نشان روی دکمه',
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -101,6 +103,7 @@ export function BadgeField({
   onStyleChange: (s: ButtonStyle | null) => void;
   id: string;
   preview: string;
+  label?: string;
 }) {
   const w = useAdminWriteProps();
   // Appended, never replaced: a preset and a word already there are two chips
@@ -142,7 +145,7 @@ export function BadgeField({
   return (
     <div>
       <label className="form-label" htmlFor={id}>
-        نشان روی دکمه
+        {label}
       </label>
       <input
         id={id}

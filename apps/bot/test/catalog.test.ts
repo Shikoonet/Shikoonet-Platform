@@ -291,6 +291,52 @@ describe('what the shop shows a customer', () => {
     }
   });
 
+  /**
+   * A service's OWN badge, since 0061 — and it wins over the borrowed one.
+   *
+   * The tier screen is where «💎 الماس» beside «🥇 طلایی» is wanted, and a
+   * service with five plans is the common case, so «several plans, therefore
+   * no badge» stopped being an answer (Sam, 2026-09-11). The single-plan
+   * fallback stays for every row that has no badge of its own.
+   */
+  it('draws the service’s own badge and colour, over the one it would borrow', async () => {
+    const single = await productId('sim-vip-1m-20');
+    const tiered = await productId('sim-vip-platinum');
+    try {
+      await db
+        .prepare(`UPDATE product_plans SET badge = ?1, button_style = ?2 WHERE product_id = ?3`)
+        .bind('🆕 نیو', 'success', single)
+        .run();
+      await db
+        .prepare(`UPDATE products SET badge = ?1, button_style = ?2 WHERE id = ?3`)
+        .bind('💎 الماس', 'primary', single)
+        .run();
+      await db
+        .prepare(`UPDATE products SET badge = ?1, button_style = ?2 WHERE id = ?3`)
+        .bind('🥇 طلایی', 'success', tiered)
+        .run();
+
+      const products = await productsForUser(db, customer);
+      const one = products.find((p) => p.productId === single);
+      expect([one?.badge, one?.buttonStyle]).toEqual(['💎 الماس', 'primary']);
+      const many = products.find((p) => p.productId === tiered);
+      expect([many?.badge, many?.buttonStyle]).toEqual(['🥇 طلایی', 'success']);
+      expect(productMenu([many!])[0]![0]).toMatchObject({
+        text: expect.stringContaining('🥇 طلایی'),
+        style: 'success',
+      });
+    } finally {
+      await db
+        .prepare(`UPDATE product_plans SET badge = NULL, button_style = NULL WHERE product_id = ANY($1)`)
+        .bind([single, tiered])
+        .run();
+      await db
+        .prepare(`UPDATE products SET badge = NULL, button_style = NULL WHERE id = ANY($1)`)
+        .bind([single, tiered])
+        .run();
+    }
+  });
+
   it('does not offer a disabled panel', async () => {
     expect(await panelCodes(customer)).not.toContain('sim-off');
   });

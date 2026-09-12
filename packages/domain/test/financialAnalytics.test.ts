@@ -35,6 +35,8 @@ describe('financialAnalytics', () => {
 
   it('trend buckets vary by range', () => {
     expect(trendBucketKind('today')).toBe('hour');
+    expect(trendBucketKind('1h')).toBe('hour');
+    expect(trendBucketKind('3h')).toBe('hour');
     expect(trendBucketKind('7d')).toBe('day');
     expect(trendBucketKind('all')).toBe('month');
     expect(trendBucketStart(now, 'today')).toBeLessThanOrEqual(now);

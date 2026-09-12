@@ -27,8 +27,8 @@
  * matching row makes the product invisible in the shop, silently.
  */
 
-import { useEffect, useState } from 'react';
-import { MAX_CATALOG_ROWS } from '@shikoo/contracts';
+import { useEffect, useRef, useState } from 'react';
+import { MAX_CATALOG_ROWS, stripCustomEmoji } from '@shikoo/contracts';
 import {
   api,
   ApiError,
@@ -57,8 +57,24 @@ export function CategoriesPage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<number | null>(null);
-  const [arranging, setArranging] = useState(false);
-  const [arrangingTiers, setArrangingTiers] = useState<number | null>(null);
+  /**
+   * Which arrangement editor is open — the shop's first screen, or one
+   * category's tier screen. ONE state, so one editor: this used to be two
+   * booleans, and the tier editor rendered inside the card that was clicked. A
+   * phone-sized preview inside one cell of a card grid stretched every card
+   * in the row to a thousand pixels, and two cards could hold two editors at
+   * once (seen on staging, 2026-09-11). The editor has one home now, above
+   * the grid, whichever screen it is arranging.
+   */
+  const [arranging, setArranging] = useState<'categories' | { categoryId: number } | null>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+
+  function openEditor(next: 'categories' | { categoryId: number }) {
+    setArranging(next);
+    // The editor is above the grid and the card that opened it may be a screen
+    // below; without this the click appears to do nothing.
+    requestAnimationFrame(() => editorRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+  }
 
   async function load() {
     setLoading(true);
@@ -127,32 +143,45 @@ export function CategoriesPage() {
         <button
           type="button"
           className="btn btn-primary"
-          onClick={() => setArranging((v) => !v)}
+          onClick={() => (arranging === 'categories' ? setArranging(null) : openEditor('categories'))}
           disabled={rows.length === 0}
         >
-          {arranging ? 'بستن چیدمان' : 'چیدمان در ربات'}
+          {arranging === 'categories' ? 'بستن چیدمان' : 'چیدمان در ربات'}
         </button>
       </div>
 
-      {arranging && (
-        <div className="card" style={{ marginBlockEnd: 20 }}>
-          <div className="card__head">
-            <div className="card__title">صفحهٔ اول فروشگاه</div>
-            <div className="page-head__sub">
-              دسته‌بندیِ خاموش این‌جا هست و به مشتری نشان داده نمی‌شود
-            </div>
-          </div>
-          <LayoutEditor
-            scope="categories"
-            screenText="کدام دسته‌بندی؟"
-            items={rows.map((r) => ({
-              id: r.id,
-              label: `${r.badge ? `${r.badge} ` : ''}${r.name}`,
-              hint: r.active ? `${count(r.sellableCount)} قابل خرید` : 'خاموش',
-              rowIndex: r.rowIndex,
-            }))}
-            onSaved={() => void load()}
-          />
+      {arranging !== null && (
+        <div className="card" style={{ marginBlockEnd: 20, scrollMarginBlockStart: 80 }} ref={editorRef}>
+          {arranging === 'categories' ? (
+            <>
+              <div className="card__head">
+                <div className="card__title">صفحهٔ اول فروشگاه</div>
+                <div className="page-head__sub">
+                  دسته‌بندیِ خاموش این‌جا هست و به مشتری نشان داده نمی‌شود
+                </div>
+              </div>
+              <LayoutEditor
+                scope="categories"
+                screenText="کدام دسته‌بندی؟"
+                items={rows.map((r) => ({
+                  id: r.id,
+                  label: r.name,
+                  badge: r.badge,
+                  buttonStyle: r.buttonStyle,
+                  hint: r.active ? `${count(r.sellableCount)} قابل خرید` : 'خاموش',
+                  rowIndex: r.rowIndex,
+                }))}
+                onSaved={() => void load()}
+                editBadge={(id, patch) => api.updateCategory(id, patch).then(() => undefined)}
+              />
+            </>
+          ) : (
+            <ArrangeTiers
+              category={rows.find((r) => r.id === arranging.categoryId)!}
+              onSaved={() => void load()}
+              onClose={() => setArranging(null)}
+            />
+          )}
         </div>
       )}
 
@@ -212,7 +241,10 @@ export function CategoriesPage() {
           ) : (
             <div key={r.id} className={`cat-card${r.active ? '' : ' cat-card--off'}`}>
               <div className="cat-card__face">
-                {r.badge && <span className="cat-card__emoji">{r.badge}</span>}
+                {/* The glyph, not the tag: a premium emoji is stored as
+                    `<tg-emoji …>👋</tg-emoji>` and this card drew all fifty
+                    characters of it. */}
+                {r.badge && <span className="cat-card__emoji">{stripCustomEmoji(r.badge)}</span>}
                 <span>{r.name}</span>
               </div>
               <div className="cat-card__meta">
@@ -244,9 +276,6 @@ export function CategoriesPage() {
                   </div>
                 </div>
               )}
-              {arrangingTiers === r.id && (
-                <ArrangeTiers category={r} onSaved={() => void load()} />
-              )}
               <div className="cat-card__actions">
                 <button
                   type="button"
@@ -272,10 +301,10 @@ export function CategoriesPage() {
                       ? 'با یک سرویس، ربات این صفحه را رد می‌کند'
                       : `چیدمان سرویس‌های «${r.name}» در ربات`
                   }
-                  onClick={() => setArrangingTiers(arrangingTiers === r.id ? null : r.id)}
+                  onClick={() => openEditor({ categoryId: r.id })}
                   {...w}
                 >
-                  {arrangingTiers === r.id ? 'بستن چیدمان' : 'چیدمان سرویس‌ها'}
+                  چیدمان سرویس‌ها
                 </button>
                 {/* Drawn only when it can succeed. The route and the foreign key
                     both refuse a category holding products, and a button that
@@ -335,9 +364,18 @@ export function CategoriesPage() {
  * at a time, and the card list would otherwise pull every service in the shop
  * to draw counts it already has.
  */
-function ArrangeTiers({ category, onSaved }: { category: CategoryRow; onSaved: () => void }) {
+function ArrangeTiers({
+  category,
+  onSaved,
+  onClose,
+}: {
+  category: CategoryRow;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
   const [services, setServices] = useState<ServiceRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [gen, setGen] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -348,30 +386,50 @@ function ArrangeTiers({ category, onSaved }: { category: CategoryRow; onSaved: (
     return () => {
       live = false;
     };
-  }, [category.id]);
-
-  if (err !== null) return <div className="alert alert-error">{err}</div>;
-  if (services === null) return <p className="muted">…</p>;
+  }, [category.id, gen]);
 
   return (
-    <LayoutEditor
-      scope={`category:${category.id}`}
-      screenText={`یکی از گزینه‌های «${category.name}» را انتخاب کنید.`}
-      items={services.map((s) => ({
-        id: s.id,
-        label: s.name,
-        // What a customer would meet behind this button, and why they might
-        // not: the editor draws every service, including the ones the shop is
-        // not offering. Said in configs because that is the unit the next
-        // screen is measured in.
-        hint:
-          s.status === 'ACTIVE'
-            ? `${count(s.configs.length)} کانفیگ`
-            : `${count(s.configs.length)} کانفیگ · ${STATUS_FA[s.status] ?? s.status}`,
-        rowIndex: s.rowIndex,
-      }))}
-      onSaved={onSaved}
-    />
+    <>
+      <div className="card__head">
+        <div className="card__title">سرویس‌های «{category.name}»</div>
+        <div className="page-head__sub">
+          صفحه‌ای که مشتری بعد از انتخاب این دسته‌بندی می‌بیند
+        </div>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن چیدمان
+        </button>
+      </div>
+      {err !== null && <div className="alert alert-error">{err}</div>}
+      {err === null && services === null && <p className="muted">…</p>}
+      {services !== null && (
+        <LayoutEditor
+          scope={`category:${category.id}`}
+          screenText={`یکی از گزینه‌های «${category.name}» را انتخاب کنید.`}
+          items={services.map((s) => ({
+            id: s.id,
+            label: s.name,
+            badge: s.badge,
+            buttonStyle: s.buttonStyle,
+            // What a customer would meet behind this button, and why they might
+            // not: the editor draws every service, including the ones the shop is
+            // not offering. Said in configs because that is the unit the next
+            // screen is measured in.
+            hint:
+              s.status === 'ACTIVE'
+                ? `${count(s.configs.length)} کانفیگ`
+                : `${count(s.configs.length)} کانفیگ · ${STATUS_FA[s.status] ?? s.status}`,
+            rowIndex: s.rowIndex,
+          }))}
+          onSaved={() => {
+            // The board's own list, re-read: a badge just written has to show
+            // on the chip, and `onSaved` above only reloads the categories.
+            setGen((g) => g + 1);
+            onSaved();
+          }}
+          editBadge={(id, patch) => api.updateProduct(id, patch).then(() => undefined)}
+        />
+      )}
+    </>
   );
 }
 

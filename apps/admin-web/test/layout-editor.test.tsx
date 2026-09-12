@@ -31,7 +31,12 @@ vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
   return {
     ...actual,
-    api: { saveCatalogLayout: (s: LayoutScope, i: LayoutItem[]) => saveCatalogLayout(s, i) },
+    api: {
+      saveCatalogLayout: (s: LayoutScope, i: LayoutItem[]) => saveCatalogLayout(s, i),
+      // `BadgeField` asks whether the shop sends premium emoji; «no» keeps its
+      // picker out of a test about arrangement.
+      emojiPacks: async () => ({ ok: true, customEmoji: false, packs: [] }),
+    },
   };
 });
 
@@ -186,5 +191,49 @@ describe('the arrangement editor', () => {
     press('نهم', 'ArrowUp');
     // The move was refused, so nothing changed, so there is nothing to save.
     expect(saveButton()).toHaveProperty('disabled', true);
+  });
+});
+
+describe('a button’s badge and colour, edited where it is arranged', () => {
+  /*
+   * Sam, 2026-09-11: «داخل چیدمان محصولات هم بشه رنگبندی و ایموجی پرمیوم اضافه
+   * کرد». The board already knows every button of the screen; asking an admin
+   * to leave it, find the row on another page, and come back to see the colour
+   * was the round trip this removes.
+   */
+  const editBadge = vi.fn(async () => {});
+
+  function drawEditable() {
+    render(
+      <RoleProvider role="ADMIN">
+        <LayoutEditor
+          scope="category:1"
+          items={[
+            { id: 11, label: 'الماس', rowIndex: null, badge: '💎', buttonStyle: 'primary' },
+            { id: 22, label: 'طلایی', rowIndex: null, badge: null, buttonStyle: null },
+          ]}
+          screenText="کدام؟"
+          onSaved={() => {}}
+          editBadge={editBadge}
+        />
+      </RoleProvider>,
+    );
+  }
+
+  it('paints the chip in the colour the bot will use, badge in front', () => {
+    drawEditable();
+    const c = chip('💎 الماس');
+    expect(c.style.background).toContain('var(--accent)');
+    expect(chip('طلایی').style.background).toBe('');
+  });
+
+  it('selecting a chip opens its badge and colour, and saving sends both for that id', async () => {
+    drawEditable();
+    fireEvent.click(chip('طلایی'));
+    const field = await screen.findByLabelText('بج دکمهٔ «طلایی»');
+    fireEvent.change(field, { target: { value: '🥇' } });
+    fireEvent.click(screen.getByRole('button', { name: 'سبز' }));
+    fireEvent.click(screen.getByRole('button', { name: 'ذخیرهٔ دکمه' }));
+    await waitFor(() => expect(editBadge).toHaveBeenCalledWith(22, { badge: '🥇', buttonStyle: 'success' }));
   });
 });

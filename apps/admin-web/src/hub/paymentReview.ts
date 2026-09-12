@@ -93,6 +93,10 @@ export interface HistoryRangeState {
 }
 
 export const HISTORY_RANGE_PRESETS: { value: HistoryRangePreset; label: string }[] = [
+  // Hours first: the two windows an operator reaches for while something is
+  // happening, ahead of the ones they read at the end of the day.
+  { value: '1h', label: '۱ ساعت اخیر' },
+  { value: '3h', label: '۳ ساعت اخیر' },
   { value: 'all', label: 'همه' },
   { value: 'day', label: 'روز انتخاب‌شده' },
   { value: '7d', label: '۷ روز اخیر' },
