@@ -9,6 +9,19 @@ export const INTEGRATION_REPLAY_WINDOW_MS = 5 * 60 * 1000;
 /** Strict auto-match payment window (±5 minutes from paid_clicked_at). */
 export const AUTO_MATCH_MAX_TIME_DELTA_MS = 5 * 60 * 1000;
 
+/**
+ * The window for a claim the shop has ALREADY delivered without bank
+ * evidence — Continuity mode, or a manual fulfilment (`FULFILLED_UNRECONCILED`).
+ *
+ * Continuity is switched on because the SMS relay is down, so its credits
+ * arrive as a backlog hours later; under the five-minute window that queue
+ * could never drain itself (issue #134). Sam, 2026-09-12: a separate window
+ * for delivered claims, the five-minute one untouched for everything else.
+ * Everything else about the match stays exact — same account, same amount,
+ * one candidate — so what is relaxed is only WHEN the bank got round to it.
+ */
+export const FULFILLED_RECONCILE_MAX_TIME_DELTA_MS = 24 * 60 * 60 * 1000;
+
 /** Receipt waiting period before a no-evidence claim becomes Suspected Fake. */
 export const WAITING_TIMEOUT_MS = 10 * 60 * 1000;
 
