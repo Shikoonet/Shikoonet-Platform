@@ -300,7 +300,7 @@ describe('a custom emoji inside a NAME, not inside the wording', () => {
 describe('sending it, and being refused', () => {
   /** A Telegram that answers however the test says, and records what it got. */
   function fakeTelegram(
-    answers: ('ok' | 'reject' | 'network' | 'notmodified' | 'chatnotfound')[],
+    answers: ('ok' | 'reject' | 'network' | 'notmodified' | 'chatnotfound' | 'docinvalid')[],
   ) {
     const bodies: Record<string, unknown>[] = [];
     let call = 0;
@@ -315,6 +315,12 @@ describe('sending it, and being refused', () => {
             error_code: 400,
             description: 'Bad Request: message is not modified',
           }),
+          { status: 400 },
+        );
+      }
+      if (answer === 'docinvalid') {
+        return new Response(
+          JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: DOCUMENT_INVALID' }),
           { status: 400 },
         );
       }
@@ -498,6 +504,25 @@ describe('sending it, and being refused', () => {
     });
 
     await expect(api.sendMessage(1, `خوش آمدید ${FIRE}`)).rejects.toThrow();
+    expect(refused).not.toHaveBeenCalled();
+  });
+
+  it('lands plain on DOCUMENT_INVALID and asks again next time, without resting', async () => {
+    // The refusal staging actually logged, three times, for ids Telegram
+    // itself returns from `getCustomEmojiStickers`. It is about the document,
+    // not the bot — so the screen lands plain and nothing is switched off.
+    const { bodies, fetchImpl } = fakeTelegram(['docinvalid', 'ok']);
+    const refused = vi.fn();
+    const api = createTelegramApi({
+      token: 't',
+      baseUrl: 'http://fake',
+      fetch: fetchImpl,
+      onCustomEmojiRefused: refused,
+    });
+    await api.editMessageText(1, 2, `سلام ${FIRE}`, [[{ text: 'x', callback_data: 'y' }]]);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]?.['text']).toBe('سلام 🔥');
+    expect(bodies[1]?.['parse_mode']).toBeUndefined();
     expect(refused).not.toHaveBeenCalled();
   });
 

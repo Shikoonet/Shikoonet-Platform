@@ -698,6 +698,11 @@ function isNotModified(err: unknown): boolean {
   return String(err).includes('message is not modified');
 }
 
+/** Telegram refusing the emoji's document itself — see `withEmojiFallback`. */
+function isDocumentInvalid(err: unknown): boolean {
+  return String(err).includes('DOCUMENT_INVALID');
+}
+
 export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
   const base = (options.baseUrl ?? TELEGRAM_API_BASE).replace(/\/+$/, '');
   const doFetch = options.fetch ?? globalThis.fetch;
@@ -832,6 +837,16 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     }
     await send({ text: stripCustomEmoji(clamped), ...both(false) });
     log.warn('telegram.custom_emoji_refused', {}, richError);
+    // `DOCUMENT_INVALID` names the emoji, not the bot's entitlement — and on
+    // staging it named emoji that were valid. Three refusals (2026-09-07, -08,
+    // -12), all `editMessageText`, every id on the box answered by
+    // `getCustomEmojiStickers`, and the same ids drawn fine before and after.
+    // That is Telegram being transient about a document, so the screen has
+    // landed plain and the next one simply asks again. Resting on it turned a
+    // one-screen blip into a shop-wide outage. Ceiling: an id that is
+    // PERSISTENTLY invalid — typed by hand into a badge — costs its screen a
+    // doubled send and one warning per draw, with no rest to cap it.
+    if (isDocumentInvalid(richError)) return;
     await options.onCustomEmojiRefused?.();
   }
 
