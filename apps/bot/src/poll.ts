@@ -961,8 +961,10 @@ export async function run(
       // which is a primary-key hit against six aggregate queries.
       await sweep('the daily report', async () => {
         const queued = await sweepDailyReport(db);
-        if (queued) log.info('report.queued');
-        return queued ? 1 : 0;
+        // The dates, because after an outage this is more than one and the
+        // line is the only record of which nights were made up.
+        if (queued.length > 0) log.info('report.queued', { nights: queued.join(',') });
+        return queued.length;
       });
       // After every sweep that can enqueue, so a payment settled at the top of
       // this cycle is told about at the bottom of the same one — the property

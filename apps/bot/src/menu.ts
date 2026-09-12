@@ -801,7 +801,7 @@ function durationText(days: number | null): string {
  * screen «نامحدود» is the thing the customer is choosing between, and an empty
  * slot there reads as a plan whose volume nobody filled in.
  */
-function volumeText(gb: number | null): string {
+export function volumeText(gb: number | null): string {
   if (gb === null) return 'نامحدود';
   // `numeric(12,3)` arrives as a number; 50.000 must draw as «50 گیگ».
   const shown = Number.isInteger(gb) ? gb : Number(gb.toFixed(3));
