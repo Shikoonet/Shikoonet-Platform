@@ -90,6 +90,25 @@ async function completedOrder(opts: {
   return { orderId: row!.id, userId, telegramId };
 }
 
+/**
+ * Every night before the reported day was sent, so the sweep is looking at an
+ * ordinary morning that owes exactly one report. Without this the table is
+ * empty — a shop that has never reported — and the sweep rightly queues the
+ * whole window.
+ */
+async function ordinaryMorning(): Promise<void> {
+  for (let back = 1; back < 7; back++) {
+    const night = new Date(Date.UTC(2026, 7, 17 - back)).toISOString().slice(0, 10);
+    await db
+      .prepare(
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+         VALUES (?1, ?2, 'sent earlier', 'SENT') ON CONFLICT (dedupe_key) DO NOTHING`,
+      )
+      .bind(`report:${night}`, CHANNEL)
+      .run();
+  }
+}
+
 beforeEach(async () => {
   await ensureCatalog();
   await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'report:%'`).run();
@@ -189,10 +208,11 @@ describe('the daily report', () => {
     const { start } = tehranDayBoundsFromDate(DAY);
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
 
+    await ordinaryMorning();
     setReportChatIdFallback(CHANNEL);
-    expect(await sweepDailyReport(db)).toBe(true);
-    expect(await sweepDailyReport(db)).toBe(false);
-    expect(await sweepDailyReport(db)).toBe(false);
+    expect(await sweepDailyReport(db)).toEqual([DAY]);
+    expect(await sweepDailyReport(db)).toEqual([]);
+    expect(await sweepDailyReport(db)).toEqual([]);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
     expect(queued).toHaveLength(1);
@@ -204,7 +224,7 @@ describe('the daily report', () => {
 
   it('does nothing at all without a channel', async () => {
     setReportChatIdFallback(null);
-    expect(await sweepDailyReport(db)).toBe(false);
+    expect(await sweepDailyReport(db)).toEqual([]);
     expect(
       (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:')),
     ).toHaveLength(0);
@@ -217,39 +237,97 @@ describe('the daily report', () => {
    * reports for good. The `report:<date>` key already made a catch-up safe;
    * nothing did one.
    */
-  it('catches up the nights it missed, oldest first, and stops at the last one sent', async () => {
+  it('catches up the nights it missed, oldest first, and no night that was sent', async () => {
     setReportChatIdFallback(CHANNEL);
-    // The night before the outage was sent as usual.
-    const lastSent = '2026-08-14';
-    await db
-      .prepare(
-        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
-         VALUES (?1, ?2, 'sent earlier', 'SENT')`,
-      )
-      .bind(`report:${lastSent}`, CHANNEL)
-      .run();
+    // Every night up to the outage was sent as usual.
+    for (const sent of ['2026-08-11', '2026-08-12', '2026-08-13', '2026-08-14']) {
+      await db
+        .prepare(
+          `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+           VALUES (?1, ?2, 'sent earlier', 'SENT')`,
+        )
+        .bind(`report:${sent}`, CHANNEL)
+        .run();
+    }
 
     // The loop's first look after three days down: 08-15, 08-16 and 08-17 are
-    // all owed, and 08-14 is where the walk must stop.
-    expect(await sweepDailyReport(db)).toBe(true);
+    // all owed, and nothing before them is.
+    expect(await sweepDailyReport(db)).toEqual(['2026-08-15', '2026-08-16', '2026-08-17']);
     const queued = (await pendingNotifications())
       .filter((n) => n.dedupeKey.startsWith('report:'))
       .map((n) => n.dedupeKey);
     expect(queued).toEqual(['report:2026-08-15', 'report:2026-08-16', 'report:2026-08-17']);
 
     // And once, like the ordinary night.
-    expect(await sweepDailyReport(db)).toBe(false);
+    expect(await sweepDailyReport(db)).toEqual([]);
   });
 
-  it('owes a shop that has never sent a report yesterday, not a week', async () => {
+  it('fills a hole behind a night that was sent', async () => {
+    // The deploy morning: the old code queued one night mid-outage, so the
+    // last SENT row is not the edge of the gap. A walk that stopped at it
+    // would leave 08-14 and 08-15 unsent for ever.
     setReportChatIdFallback(CHANNEL);
-    // Nothing in `bot_notifications` at all — `beforeEach` saw to that — which
-    // is a first run, not an outage. Seven zero-filled nights would be noise.
-    expect(await sweepDailyReport(db)).toBe(true);
-    const queued = (await pendingNotifications())
-      .filter((n) => n.dedupeKey.startsWith('report:'))
-      .map((n) => n.dedupeKey);
-    expect(queued).toEqual([`report:${DAY}`]);
+    for (const sent of ['2026-08-11', '2026-08-12', '2026-08-13', '2026-08-16']) {
+      await db
+        .prepare(
+          `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+           VALUES (?1, ?2, 'sent earlier', 'SENT')`,
+        )
+        .bind(`report:${sent}`, CHANNEL)
+        .run();
+    }
+    expect(await sweepDailyReport(db)).toEqual(['2026-08-14', '2026-08-15', '2026-08-17']);
+  });
+
+  it('after a week or more down, makes up the whole window and no more', async () => {
+    // Seven missing with an eighth present is an outage, not a first run —
+    // the two states an empty window used to conflate, one of which lost six
+    // nights for good. The cap is the cap: 08-10 stays unsent, and the log
+    // says so.
+    setReportChatIdFallback(CHANNEL);
+    await db
+      .prepare(
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+         VALUES ('report:2026-08-09', ?1, 'sent earlier', 'SENT')`,
+      )
+      .bind(CHANNEL)
+      .run();
+    expect(await sweepDailyReport(db)).toEqual([
+      '2026-08-11',
+      '2026-08-12',
+      '2026-08-13',
+      '2026-08-14',
+      '2026-08-15',
+      '2026-08-16',
+      '2026-08-17',
+    ]);
+  });
+
+  it('gives a shop that has never sent a report the whole window, once', async () => {
+    // No `report:<date>` row at all — `beforeEach` deletes them. Seven nights
+    // on the first morning is the documented price of not telling «never
+    // sent» from «down a week»; what matters is that it happens once and that
+    // the next cycle is quiet.
+    setReportChatIdFallback(CHANNEL);
+    expect(await sweepDailyReport(db)).toHaveLength(7);
+    expect(await sweepDailyReport(db)).toEqual([]);
+  });
+
+  it('says «نامحدود» for a panel that sold only unmetered services, and counts them beside a sum', async () => {
+    const { start } = tehranDayBoundsFromDate(DAY);
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-unmetered' });
+    await db.prepare(`UPDATE subscriptions SET volume_gb = NULL WHERE public_id = ?1`).bind(`reps${seq}`).run();
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-mixed' });
+    await db.prepare(`UPDATE subscriptions SET volume_gb = NULL WHERE public_id = ?1`).bind(`reps${seq}`).run();
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-mixed' });
+
+    const text = await buildDailyReport(db, DAY);
+
+    // sum() skips NULL and COALESCE used to fold the all-NULL case to zero, so
+    // a panel that sold two unlimited services printed «0 گیگ».
+    expect(text).toMatch(/zz-unmetered[^\n]*نامحدود/);
+    expect(text).not.toMatch(/zz-unmetered[^\n]*0 گیگ/);
+    expect(text).toMatch(/zz-mixed[^\n]*10 گیگ \+ 1 نامحدود/);
   });
 
   it('adds the panel gigabytes up with the shop’s own formatter', async () => {
@@ -323,8 +401,9 @@ describe('the report channel', () => {
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
     await setChannel(SHOP_CHANNEL);
 
+    await ordinaryMorning();
     setReportChatIdFallback(ENV_FALLBACK);
-    expect(await sweepDailyReport(db)).toBe(true);
+    expect(await sweepDailyReport(db)).toEqual([DAY]);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
     expect(queued[0]?.chatId).toBe(SHOP_CHANNEL);
@@ -335,8 +414,9 @@ describe('the report channel', () => {
     const { start } = tehranDayBoundsFromDate(DAY);
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
 
+    await ordinaryMorning();
     setReportChatIdFallback(ENV_FALLBACK);
-    expect(await sweepDailyReport(db)).toBe(true);
+    expect(await sweepDailyReport(db)).toEqual([DAY]);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
     expect(queued[0]?.chatId).toBe(ENV_FALLBACK);
