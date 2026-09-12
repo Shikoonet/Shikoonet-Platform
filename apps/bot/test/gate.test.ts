@@ -172,6 +172,14 @@ beforeAll(async () => {
   await assertSchema();
   await ensureCatalog();
   await ensurePaymentCard();
+  // This file's own block of update ids, given back before it starts. Without
+  // this a second standalone run of the file finds every id already claimed —
+  // `handleUpdate` answers those with `{ status: 'duplicate' }`, silently —
+  // and every test fails about something else (issue #183).
+  await db
+    .prepare(`DELETE FROM telegram_updates WHERE update_id BETWEEN ?1 AND ?2`)
+    .bind(BASE_UPDATE, BASE_UPDATE + 999_999)
+    .run();
   const { results } = await db
     .prepare(`SELECT id FROM required_channels WHERE active AND chat_ref NOT LIKE '@gate_test%'`)
     .all<{ id: number }>();

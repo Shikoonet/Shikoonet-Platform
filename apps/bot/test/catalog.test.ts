@@ -614,6 +614,38 @@ describe('the panel cap', () => {
     expect(await sellsFrom(vip)).toBe(true);
   });
 
+  /**
+   * Issue #182. A pasarguard panel with no address or no credential fails its
+   * login with retryable=false — after the money is taken. The trial list
+   * already refused such a panel; the shop did not.
+   */
+  it('does not sell from a panel the bot could not log in to', async () => {
+    const before = await db
+      .prepare(`SELECT base_url, secret_ref FROM provisioning_providers WHERE id = ?1`)
+      .bind(vip)
+      .first<{ base_url: string | null; secret_ref: string | null }>();
+    expect(before!.base_url).not.toBeNull();
+    expect(await sellsFrom(vip)).toBe(true);
+    try {
+      await db
+        .prepare(`UPDATE provisioning_providers SET base_url = NULL WHERE id = ?1`)
+        .bind(vip)
+        .run();
+      expect(await sellsFrom(vip)).toBe(false);
+      await db
+        .prepare(`UPDATE provisioning_providers SET base_url = ?2, secret_ref = NULL WHERE id = ?1`)
+        .bind(vip, before!.base_url)
+        .run();
+      expect(await sellsFrom(vip)).toBe(false);
+    } finally {
+      await db
+        .prepare(`UPDATE provisioning_providers SET base_url = ?2, secret_ref = ?3 WHERE id = ?1`)
+        .bind(vip, before!.base_url, before!.secret_ref)
+        .run();
+    }
+    expect(await sellsFrom(vip)).toBe(true);
+  });
+
   it('does not touch renewals — a full panel still renews what it already sold', async () => {
     /*
      * This test asserted `SELECT count(*) FROM provisioning_providers WHERE

@@ -51,7 +51,9 @@ async function completedOrder(opts: {
   reseller?: boolean;
   /** Deliver it too, onto a named panel — what the per-panel block reads. */
   onPanel?: string;
-}): Promise<{ orderId: number; userId: number; telegramId: number }> {
+  /** A RENEWAL of this subscription — what the per-panel block reads for one. */
+  renews?: number | undefined;
+}): Promise<{ orderId: number; userId: number; telegramId: number; subscriptionId?: number | undefined }> {
   const { telegramId } = ids();
   const userId = await makeCustomer(telegramId, { reseller: opts.reseller ?? false });
   const plan = opts.kind === 'WALLET_TOPUP' ? null : await planId('sim-vip-1m-50');
@@ -61,8 +63,8 @@ async function completedOrder(opts: {
       // TRIAL to be free AND to name the panel it came from.
       `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
                            unit_price_irr, total_irr, status, completed_at,
-                           provider_id)
-       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, 'COMPLETED', to_timestamp(?6 / 1000.0), ?7)
+                           provider_id, target_subscription_id)
+       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, 'COMPLETED', to_timestamp(?6 / 1000.0), ?7, ?8)
        RETURNING id`,
     )
     .bind(
@@ -73,21 +75,25 @@ async function completedOrder(opts: {
       opts.irr,
       opts.atMs,
       opts.kind === 'TRIAL' ? await providerId('sim-vip') : null,
+      opts.renews ?? null,
     )
     .first<{ id: number }>();
+  let subscriptionId: number | undefined;
   if (opts.onPanel !== undefined) {
-    await db
+    const sub = await db
       .prepare(
         `INSERT INTO subscriptions (public_id, user_id, plan_id, order_id,
                                     provider_name_at_sale, plan_name_at_sale,
                                     price_irr, volume_gb, status, purchased_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 'plan', ?6, 10, 'ACTIVE',
-                 to_timestamp(?7 / 1000.0))`,
+                 to_timestamp(?7 / 1000.0))
+         RETURNING id`,
       )
       .bind(`reps${seq}`, userId, plan, row!.id, opts.onPanel, opts.irr, opts.atMs)
-      .run();
+      .first<{ id: number }>();
+    subscriptionId = Number(sub!.id);
   }
-  return { orderId: row!.id, userId, telegramId };
+  return { orderId: row!.id, userId, telegramId, subscriptionId };
 }
 
 beforeEach(async () => {
@@ -137,7 +143,46 @@ describe('the daily report', () => {
     expect(text).toContain('zz-report-panel');
     // One sale on that panel, counted the same way in both lines.
     expect(text).toContain('فروش نو: 1');
-    expect(text).toMatch(/zz-report-panel[^\n]*\b1\b/);
+    expect(text).toContain('• zz-report-panel: 1 فروش، 0 تمدید — 100,000 تومان');
+  });
+
+  /**
+   * Issue #179. The block used to count subscriptions on `purchased_at`, which
+   * a renewal never touches, so the panel lines could not add up to
+   * «مجموع فروش و تمدید» printed above them. Both halves read `orders` now.
+   */
+  it('puts a renewal on the panel of the service it renewed, so the lines add up', async () => {
+    const { start } = tehranDayBoundsFromDate(DAY);
+    // Sold yesterday — outside the window, so the sale itself is not counted.
+    const sold = await completedOrder({
+      kind: 'NEW_PURCHASE',
+      irr: 2_000_000,
+      atMs: start - 3_600_000,
+      onPanel: 'zz-report-panel',
+    });
+    await completedOrder({
+      kind: 'RENEWAL',
+      irr: 1_500_000,
+      atMs: start + 60_000,
+      renews: sold.subscriptionId,
+    });
+    await completedOrder({
+      kind: 'NEW_PURCHASE',
+      irr: 1_000_000,
+      atMs: start + 120_000,
+      onPanel: 'zz-report-other',
+    });
+
+    const text = await buildDailyReport(db, DAY);
+
+    expect(text).toContain('مجموع فروش و تمدید: 250,000 تومان');
+    expect(text).toContain('• zz-report-panel: 0 فروش، 1 تمدید — 150,000 تومان');
+    expect(text).toContain('• zz-report-other: 1 فروش، 0 تمدید — 100,000 تومان');
+    // The panel lines sum to the total above them — the whole point.
+    const perPanel = [...text.matchAll(/• zz-report-[a-z]+: [^—]+— ([\d,]+) تومان/g)].map((m) =>
+      Number(m[1]!.replace(/,/g, '')),
+    );
+    expect(perPanel.reduce((a, b) => a + b, 0)).toBe(250_000);
   });
 
   it('counts only what happened inside the Tehran day', async () => {

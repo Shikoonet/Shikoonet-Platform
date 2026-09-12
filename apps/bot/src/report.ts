@@ -102,40 +102,49 @@ async function totals(db: D1Database, start: number, end: number): Promise<DayTo
 /**
  * Per panel, so the shop can see which location is carrying the day.
  *
- * Read from `subscriptions`, not from the plan's provider: the provider a
- * service actually landed on is the one recorded on the subscription, and a
- * delivery from the shelf can differ from what the plan pointed at.
+ * Counted from ORDERS — the same table, the same `completed_at` window and
+ * the same two kinds as «مجموع فروش و تمدید» above it — so the lines add up to
+ * that total (issue #179). Until 2026-09-12 this read `subscriptions` on
+ * `purchased_at`, which a renewal never touches, so on a shop living on
+ * renewals the block silently left out most of the day.
+ *
+ * The panel is the one the service actually landed on, read off the
+ * subscription: for a renewal the order names it (`target_subscription_id`);
+ * for a sale the subscription names the order. A delivery from the shelf can
+ * differ from what the plan pointed at, which is why it is not the plan's.
+ * Volume is the service's — what a renewal resets to, what a sale delivered.
  */
 async function perPanel(
   db: D1Database,
   start: number,
   end: number,
-): Promise<{ name: string; count: number; irr: number; gb: number }[]> {
+): Promise<{ name: string; sales: number; renewals: number; irr: number; gb: number }[]> {
   const { results } = await db
     .prepare(
-      `SELECT s.provider_name_at_sale AS name,
-              count(*)::int           AS n,
-              COALESCE(sum(s.price_irr), 0)  AS irr,
-              COALESCE(sum(s.volume_gb), 0)  AS gb
-         FROM subscriptions s
-         -- LEFT, so a subscription carried over by the import — which has no
-         -- order at all — still counts. What the join is here for is the one
-         -- kind that would otherwise make the heading false: a TRIAL writes a
-         -- subscription and is not a sale, so it appeared in this block while
-         -- «🛒 فروش نو» above counts NEW_PURCHASE orders and never saw it. A
-         -- renewal writes no subscription row, so it was never in either.
-         LEFT JOIN orders o ON o.id = s.order_id
-        WHERE s.purchased_at >= to_timestamp(?1 / 1000.0)
-          AND s.purchased_at <  to_timestamp(?2 / 1000.0)
-          AND (o.kind IS NULL OR o.kind = 'NEW_PURCHASE')
-        GROUP BY s.provider_name_at_sale
+      `SELECT COALESCE(sr.provider_name_at_sale, sn.provider_name_at_sale) AS name,
+              count(*) FILTER (WHERE o.kind = 'NEW_PURCHASE')::int AS sales,
+              count(*) FILTER (WHERE o.kind = 'RENEWAL')::int      AS renewals,
+              COALESCE(sum(o.total_irr), 0)                        AS irr,
+              COALESCE(sum(COALESCE(sr.volume_gb, sn.volume_gb)), 0) AS gb
+         FROM orders o
+         LEFT JOIN subscriptions sr ON sr.id = o.target_subscription_id
+         -- One row per order, whatever the quantity: the scalar subquery is
+         -- per order by construction, not the batch-LIMIT trap of rule 9.
+         LEFT JOIN subscriptions sn
+           ON sn.id = (SELECT id FROM subscriptions WHERE order_id = o.id ORDER BY id LIMIT 1)
+        WHERE o.status = 'COMPLETED'
+          AND o.kind IN ('NEW_PURCHASE', 'RENEWAL')
+          AND o.completed_at >= to_timestamp(?1 / 1000.0)
+          AND o.completed_at <  to_timestamp(?2 / 1000.0)
+        GROUP BY 1
         ORDER BY irr DESC`,
     )
     .bind(start, end)
-    .all<{ name: string | null; n: number; irr: number; gb: number }>();
+    .all<{ name: string | null; sales: number; renewals: number; irr: number; gb: number }>();
   return (results ?? []).map((r) => ({
     name: r.name ?? '—',
-    count: r.n,
+    sales: r.sales,
+    renewals: r.renewals,
     irr: Number(r.irr),
     gb: Number(r.gb),
   }));
@@ -215,26 +224,13 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
   ];
 
   if (panels.length > 0) {
-    // «فروش نو», not «فروش», and the word is the whole fix.
-    //
-    // The block counts SUBSCRIPTIONS on `purchased_at`, which is written once
-    // when a service is first delivered and never again — the renewal UPDATE in
-    // `provision.ts` touches neither `purchased_at` nor `price_irr`. The total
-    // directly above it counts ORDERS and includes renewals. So on a shop whose
-    // revenue is mostly renewals the two disagreed by most of the day's
-    // takings, with nothing on screen saying why, and an admin reading down the
-    // message had every reason to think the panel lines should sum to the line
-    // above them.
-    //
-    // Naming what it counts closes that without changing what it counts, and
-    // keeps the legacy meaning: the PHP report is per-panel NEW services too.
-    // If the shop would rather see sales and renewals together per panel, that
-    // is a different query — build it from `orders` joined to the subscription
-    // it targets, so both halves answer from the same table — and a different
-    // decision, because it also has to say what a TRIAL counts as.
-    lines.push('', '🖥 فروش نو به تفکیک لوکیشن');
+    // The same money as «مجموع فروش و تمدید» above, split by panel — so the
+    // lines add up to it. A trial is neither kind and is not here.
+    lines.push('', '🖥 فروش و تمدید به تفکیک لوکیشن');
     for (const p of panels) {
-      lines.push(`• ${p.name}: ${p.count} سرویس — ${toman(p.irr)} تومان — ${p.gb} گیگ`);
+      lines.push(
+        `• ${p.name}: ${p.sales} فروش، ${p.renewals} تمدید — ${toman(p.irr)} تومان — ${p.gb} گیگ`,
+      );
     }
   }
 
