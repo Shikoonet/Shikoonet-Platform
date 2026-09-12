@@ -42,7 +42,7 @@ import {
   type CatalogLayoutProblem,
 } from '@shikoo/contracts';
 import { checkNameEmoji } from './customEmojiNames.js';
-import { isAutomated } from '@shikoo/domain';
+import { NOT_A_SHELF, isAutomated } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 import { PANEL_HAS_SECRET } from './panelRoutes.js';
 import { faNum } from './fa.js';
@@ -1007,8 +1007,10 @@ export function registerProductRoutes(
 
     // The filter needs the panels, and there are five of them — a second
     // round trip from the browser to fetch a five-row list is not worth it.
+    // Shelves are not offered: a plan is never moved onto one by hand (#125).
     const providers = await c.env.DB.prepare(
-      `SELECT id, code, name, status, kind FROM provisioning_providers ORDER BY sort_order, id`,
+      `SELECT id, code, name, status, kind FROM provisioning_providers pr
+        WHERE ${NOT_A_SHELF} ORDER BY sort_order, id`,
     ).all<{ id: number; code: string; name: string; status: string; kind: string }>();
 
     return c.json({
@@ -1142,7 +1144,8 @@ export function registerProductRoutes(
     const configs = rows.length === 0 ? [] : await configsFor(c.env.DB, rows.map((r) => r.id));
 
     const panels = await c.env.DB.prepare(
-      `SELECT id, code, name, status, kind FROM provisioning_providers ORDER BY sort_order, id`,
+      `SELECT id, code, name, status, kind FROM provisioning_providers pr
+        WHERE ${NOT_A_SHELF} ORDER BY sort_order, id`,
     ).all<{ id: number; code: string; name: string; status: string; kind: string }>();
 
     return c.json({

@@ -62,6 +62,7 @@ import {
   usernameShapeFor,
   seal,
   splitCredential,
+  NOT_A_SHELF,
 } from '@shikoo/domain';
 import type { ProviderContext, ProvisioningAdapter } from '@shikoo/domain';
 import { faNum } from './fa.js';
@@ -886,11 +887,12 @@ export function registerPanelRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   app.get('/api/v1/admin/panels', async (c) => {
+    // Panels only. A shelf's provider row is not one — it is managed from
+    // «قفسهٔ انبار» — and with a row per shelf the list would bend under them
+    // (issue #125). The rest stays unpaged: a shop has a few dozen panels.
     const rows = await c.env.DB.prepare(
-      `${SELECT_PANEL} ORDER BY pr.sort_order, pr.id`,
+      `${SELECT_PANEL} WHERE ${NOT_A_SHELF} ORDER BY pr.sort_order, pr.id`,
     ).all<PanelRow>();
-    // Five rows on this dataset and a hard ceiling of a few dozen — there is
-    // nothing to page.
     return c.json({ ok: true, items: (rows.results ?? []).map(shape) });
   });
 
