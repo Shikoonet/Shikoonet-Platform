@@ -33,6 +33,7 @@
  */
 
 import { encode } from './callback.js';
+import { MAX_MESSAGE_LENGTH } from './telegram.js';
 import type { CatalogCategory, CatalogPlan, CatalogProduct, TrialPanel } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
@@ -706,9 +707,25 @@ function usersTariffText(limit: number | null): string {
  */
 export function tariff(plans: readonly CatalogPlan[], discountPercent = 0): string {
   const table = tariffTable(plans, discountPercent);
-  return table === ''
-    ? TEXTS_NOW.render('TARIFF_EMPTY')
-    : `${TEXTS_NOW.render('TARIFF_TITLE')}\n\n${table}`;
+  if (table === '') return TEXTS_NOW.render('TARIFF_EMPTY');
+  const title = TEXTS_NOW.render('TARIFF_TITLE');
+  // One message, whole services. Telegram's limit is 4096 UTF-16 units and
+  // `telegram.ts` clamps anything longer mid-line with «…» — a price list cut
+  // in the middle of a number. Instead, whole service blocks are dropped from
+  // the end and the customer is told the shop has more (issue #180).
+  const more = TEXTS_NOW.render('TARIFF_MORE');
+  const budget = MAX_MESSAGE_LENGTH - title.length - 2 - more.length - 2;
+  if (table.length <= budget + more.length + 2) return `${title}\n\n${table}`;
+  const blocks = table.split('\n\n');
+  const kept: string[] = [];
+  let used = 0;
+  for (const block of blocks) {
+    const cost = block.length + (kept.length > 0 ? 2 : 0);
+    if (used + cost > budget) break;
+    kept.push(block);
+    used += cost;
+  }
+  return `${title}\n\n${kept.join('\n\n')}\n\n${more}`;
 }
 
 /** Back to where the customer came from — a price list has nothing to press. */
@@ -2369,12 +2386,20 @@ export function renewMatched(
   return `${renewIntro(service, mode, now, 'matched')}\n\n${planDetail(plan, price, applied)}`;
 }
 
+/** Renewal plans per screen — the same page size «سرویس های من» uses. */
+export const RENEW_PLANS_PER_PAGE = SERVICES_PER_PAGE;
+
 /**
  * One row per plan, each carrying BOTH the service and the plan.
  *
  * `matched` means the list is ONE plan — the one the service was sold under —
  * and «پلن‌های دیگر» is drawn so the rest are one tap away. Over the full list
  * that button would lead to the screen it is on, so it is not drawn.
+ *
+ * Paged (issue #180): a renewal is offered everything the panel sells, and a
+ * panel with sixty plans was sixty rows — Telegram refuses the keyboard past
+ * a hundred buttons and the whole message with it. `page` is 1-based and
+ * clamped, so a stale button never draws an empty screen.
  */
 export function renewPlanMenu(
   subscriptionId: number,
@@ -2382,8 +2407,12 @@ export function renewPlanMenu(
   discountPercent = 0,
   heldCode?: string | null,
   matched = false,
+  page = 1,
 ): InlineKeyboard {
-  const keyboard: InlineKeyboard = plans.map((plan) => {
+  const pages = Math.max(1, Math.ceil(plans.length / RENEW_PLANS_PER_PAGE));
+  const at = Math.min(Math.max(1, page), pages);
+  const shown = plans.slice((at - 1) * RENEW_PLANS_PER_PAGE, at * RENEW_PLANS_PER_PAGE);
+  const keyboard: InlineKeyboard = shown.map((plan) => {
     const price = priceForUser(plan.priceIrr, discountPercent);
     // The listed price stays the listed price while a code is held: which plan
     // the code applies to is not known until one is chosen, and a button that
@@ -2406,6 +2435,16 @@ export function renewPlanMenu(
       },
     ];
   });
+  if (pages > 1) {
+    const row: InlineKeyboard[number] = [];
+    if (at > 1) {
+      row.push({ text: TEXTS_NOW.raw('PAGING_PREV'), callback_data: encode('rnwl', subscriptionId, at - 1) });
+    }
+    if (at < pages) {
+      row.push({ text: TEXTS_NOW.raw('PAGING_NEXT'), callback_data: encode('rnwl', subscriptionId, at + 1) });
+    }
+    keyboard.push(row);
+  }
   return withChrome(keyboard, 'renewPlans', {
     applies: (action) =>
       action === 'dxr'
