@@ -12,7 +12,7 @@
  * database ended up holding rather than against a return value.
  */
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { runMirzabotMatching } from '../src/integrations/mirzabot.js';
@@ -136,6 +136,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// The last test above leaves the mode ON, and the row is shared with every
+// other file on this database: `mirzabot-integration.test.ts` then fulfils
+// where it expects a suspect, in whichever order vitest happens to pick.
+afterAll(async () => {
+  await env.DB.prepare(
+    `DELETE FROM settings WHERE scope = 'pay' AND key = 'continuity_mode'`,
+  ).run();
+});
+
 describe('a claim arriving while the shop is in NORMAL mode', () => {
   it('is not fulfilled — with no row at all, which is the real production default', async () => {
     // The seeded row is deleted in beforeEach on purpose. «No row» is what a
@@ -247,7 +256,8 @@ describe('a claim arriving while Continuity is on', () => {
     expect(delivery).toEqual({ status: 'DELIVERED', attempt_count: 1 });
   });
 
-  it('reconciles the delivered claim when its bank credit arrives later', async () => {
+  /** Delivers a claim in Continuity, then lands its credit `lateByMs` later and runs the matcher. */
+  async function reconcileAfter(lateByMs: number) {
     await setContinuity(true);
     const suffix = crypto.randomUUID().slice(0, 8);
     const accountId = `acc-cont-${suffix}`;
@@ -314,7 +324,7 @@ describe('a claim arriving while Continuity is on', () => {
        VALUES (?1, ?2, 'TEST', 'seed', ?3, ?3, ?4, ?4,
                'BANK_CREDIT', 'OK', 'test', 'v1', ?4)`,
     )
-      .bind(smsId, deviceId, `hash-${suffix}`, claim!.paid_clicked_at + 20_000)
+      .bind(smsId, deviceId, `hash-${suffix}`, claim!.paid_clicked_at + lateByMs)
       .run();
     await env.DB.prepare(
       `INSERT INTO transaction_candidates
@@ -329,18 +339,36 @@ describe('a claim arriving while Continuity is on', () => {
         smsId,
         claim!.target_financial_account_id,
         amountIrr,
-        claim!.paid_clicked_at + 20_000,
+        claim!.paid_clicked_at + lateByMs,
       )
       .run();
 
     const matched = await runMirzabotMatching(
       env.DB,
       { accountId: claim!.target_financial_account_id, amountIrr },
-      { autoMatchEnabled: true, now: claim!.paid_clicked_at + 30_000 },
+      { autoMatchEnabled: true, now: claim!.paid_clicked_at + lateByMs + 10_000 },
     );
 
-    expect(matched.autoVerifiedClaimIds).toEqual([claim!.id]);
-    const after = await claimFor(orderId);
+    return { matched, claimId: claim!.id, after: await claimFor(orderId) };
+  }
+
+  it('reconciles the delivered claim when its bank credit arrives twenty seconds later', async () => {
+    const { matched, claimId, after } = await reconcileAfter(20_000);
+    expect(matched.autoVerifiedClaimIds).toEqual([claimId]);
+    expect(after?.status).toBe('VERIFIED');
+    expect(after?.reconciled_at).not.toBeNull();
+  });
+
+  /**
+   * The delay the state actually occurs at — issue #134. Continuity is on
+   * because the SMS relay is down, so the credit arrives as a backlog hours
+   * later. Under the five-minute window the queue never drained; a delivered
+   * claim now has its own (Sam, 2026-09-12). Twenty seconds proves nothing
+   * here — the shape rule 9 of CLAUDE.md warns about.
+   */
+  it('reconciles the delivered claim when its bank credit arrives three hours later', async () => {
+    const { matched, claimId, after } = await reconcileAfter(3 * 60 * 60_000);
+    expect(matched.autoVerifiedClaimIds).toEqual([claimId]);
     expect(after?.status).toBe('VERIFIED');
     expect(after?.reconciled_at).not.toBeNull();
   });
