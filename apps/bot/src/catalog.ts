@@ -71,6 +71,27 @@ const PURCHASABLE = `
    */
       cat.active
   AND pr.status = 'ACTIVE'
+  /*
+   * A panel the bot cannot reach is not for sale — issue #182.
+   *
+   * The same two facts trialPanelsForUser asks, for the same reason: a
+   * pasarguard login with no base_url or no credential fails with
+   * retryable=false, so the order has already taken the money when a person
+   * finds out. Only the automated kind is held to it — a manual shelf has no
+   * address by design (catalog.test «a shelf made from the dashboard»), and
+   * 'pasarguard' is the one kind with an adapter (domain/provisioning/index.ts).
+   * Both spellings of «has a credential» count, as panelRoutes counts both.
+   */
+  AND (
+        pr.kind <> 'pasarguard'
+     OR (
+          pr.base_url IS NOT NULL
+      AND (
+            pr.secret_ref IS NOT NULL
+         OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id)
+          )
+        )
+      )
   AND p.status  = 'ACTIVE'
   AND pl.status = 'ACTIVE'
   AND (p.resellers_only = false OR u.is_reseller)

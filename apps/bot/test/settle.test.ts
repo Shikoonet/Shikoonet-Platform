@@ -308,23 +308,16 @@ describe('settling a verified payment', () => {
 });
 
 /**
- * Money that is not paid from a shipped constant.
- *
- * Referral commission comes out of the shop's wallet and cannot be taken back.
- * `settleVerifiedPayments` read the rate through `loadShopSettings`, which used
- * to answer a failed read with `DEFAULT_SHOP_SETTINGS` — ten per cent — while
- * the admin's own five sat unread. The comment above that line argued paying
- * something beats paying nothing, and never considered the third option:
- * paying in a minute, when the database answers.
+ * Settlement no longer reads the shop rules: the referral commission it used
+ * to pay at PAID is paid at COMPLETED since 2026-09-12 (issue #181), so a
+ * settings table that cannot be read stops nothing here. The wait moved to
+ * provisioning — `provision.test.ts` «the referrer is paid on delivery».
  */
 describe('settlement when the shop rules have never been read', () => {
-  it('waits instead of paying commission at the shipped rate', async () => {
+  it('settles anyway — nothing here depends on a rate any more', async () => {
     const sale = await buyAndClaim('sim-vip-1m-50');
     await hubVerifies(sale.paymentPublicId);
 
-    // The real failure, not a stub: the table is taken away AND the loader has
-    // nothing cached, which together is the only state where `fromDatabase` is
-    // false. Anything less and it would serve the last good read.
     invalidateShopSettings();
     await db.prepare(`ALTER TABLE settings RENAME TO settings_hidden`).run();
     let settled: number;
@@ -335,19 +328,17 @@ describe('settlement when the shop rules have never been read', () => {
       invalidateShopSettings();
     }
 
-    expect(settled).toBe(0);
-    // Untouched, so the next sweep does the whole thing properly.
-    expect(await statuses(sale.orderId, sale.paymentPublicId)).toEqual({
-      order: 'AWAITING_PAYMENT',
-      payment: 'AWAITING_REVIEW',
-    });
-
-    // And it really does settle once the rules can be read again.
-    expect(await settleVerifiedPayments(db)).toBe(1);
+    expect(settled).toBe(1);
     expect(await statuses(sale.orderId, sale.paymentPublicId)).toEqual({
       order: 'PAID',
       payment: 'PAID',
     });
+    // And no commission row was written at settlement — that is delivery's.
+    const bonus = await db
+      .prepare(`SELECT count(*)::int AS n FROM wallet_entries WHERE order_id = ?1 AND kind = 'REFERRAL_BONUS'`)
+      .bind(sale.orderId)
+      .first<{ n: number }>();
+    expect(bonus!.n).toBe(0);
   });
 });
 

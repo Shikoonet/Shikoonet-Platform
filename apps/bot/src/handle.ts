@@ -68,7 +68,6 @@ import { clientApps, helpArticle, helpArticles } from './content.js';
 import { blockForSpam, overSpamLimit } from './spam.js';
 import {
   claimReferrer,
-  payReferralCommission,
   referralLink,
   referralSummary,
   referrerFromPayload,
@@ -3149,10 +3148,8 @@ async function handleCallback(
         )
         .bind(order.id)
         .run();
-      // Paying from the balance is a purchase like any other, so it earns the
-      // referrer the same commission a card-to-card payment does. Both paths
-      // call the same function, which is what stops the two disagreeing.
-      await payReferralCommission(tx, order.id, SHOP.commissionPercent);
+      // The referrer is paid when the order is DELIVERED (provision.ts
+      // `complete`), the same as for a card-to-card payment — issue #181.
       await tx
         .prepare(
           // On the PAID-per-order index from 0016, not on `public_id`: that one

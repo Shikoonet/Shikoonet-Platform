@@ -10,6 +10,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { D1DatabaseSession } from '@shikoo/database';
 import { provisionPaidOrders } from '../src/provision.js';
+import { invalidateShopSettings } from '../src/settings.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
@@ -552,6 +553,81 @@ describe('when delivery cannot finish', () => {
 
     expect(await orderRow(order.orderId)).toMatchObject({ status: 'PROVISIONING' });
     expect(await subsFor(order.orderId)).toHaveLength(0);
+  });
+});
+
+/**
+ * Issue #181, Sam's call 2026-09-12: the referrer is paid when the order is
+ * DELIVERED, not when it is paid. Paid at PAID, a delivery that then failed
+ * refunded the buyer and left the referrer paid for a sale that never
+ * happened. Legacy pays at payment time; this is a deliberate departure.
+ */
+describe('the referrer is paid on delivery', () => {
+  async function referred(): Promise<{
+    orderId: number;
+    telegramId: number;
+    referrerId: number;
+  }> {
+    const referrer = await makeCustomer(nextIds().telegramId);
+    const order = await paidOrder();
+    await db
+      .prepare(`UPDATE users SET referred_by = ?2 WHERE id = ?1`)
+      .bind(order.userId, referrer)
+      .run();
+    return { orderId: order.orderId, telegramId: order.telegramId, referrerId: referrer };
+  }
+  async function bonusFor(orderId: number): Promise<number> {
+    const row = await db
+      .prepare(
+        `SELECT COALESCE(sum(amount_irr), 0)::bigint AS irr FROM wallet_entries
+          WHERE order_id = ?1 AND kind = 'REFERRAL_BONUS'`,
+      )
+      .bind(orderId)
+      .first<{ irr: number }>();
+    return Number(row!.irr);
+  }
+
+  it('pays once the account exists, and never for a delivery that failed', async () => {
+    const good = await referred();
+    const bad = await referred();
+    // Nothing yet: PAID is not delivered.
+    expect(await bonusFor(good.orderId)).toBe(0);
+
+    await provisionPaidOrders(db, fakePanel().fetchImpl);
+    expect(await orderRow(good.orderId)).toMatchObject({ status: 'COMPLETED' });
+    // 10% of the 5,000,000 IRR plan, the shipped rate the sim settings carry.
+    expect(await bonusFor(good.orderId)).toBeGreaterThan(0);
+
+    // The second referred order has already been delivered by the same sweep;
+    // make a fresh one that cannot be delivered.
+    const failed = await referred();
+    await provisionPaidOrders(db, brokenRequest);
+    expect(await orderRow(failed.orderId)).toMatchObject({ status: 'FAILED' });
+    expect(await bonusFor(failed.orderId)).toBe(0);
+    void bad;
+  });
+
+  it('waits for the rate rather than guessing, and pays on the next sweep', async () => {
+    const r = await referred();
+    // The real failure, not a stub: the table is taken away AND the loader has
+    // nothing cached, which together is the only state where `fromDatabase` is
+    // false. Anything less and it would serve the last good read.
+    invalidateShopSettings();
+    await db.prepare(`ALTER TABLE settings RENAME TO settings_hidden`).run();
+    try {
+      await provisionPaidOrders(db, fakePanel().fetchImpl);
+    } finally {
+      await db.prepare(`ALTER TABLE settings_hidden RENAME TO settings`).run();
+      invalidateShopSettings();
+    }
+    // Handed back untouched: no account, no commission, no message.
+    expect(await orderRow(r.orderId)).toMatchObject({ status: 'PAID' });
+    expect(await subsFor(r.orderId)).toHaveLength(0);
+    expect(await bonusFor(r.orderId)).toBe(0);
+
+    await provisionPaidOrders(db, fakePanel().fetchImpl);
+    expect(await orderRow(r.orderId)).toMatchObject({ status: 'COMPLETED' });
+    expect(await bonusFor(r.orderId)).toBeGreaterThan(0);
   });
 });
 

@@ -59,6 +59,14 @@ interface ProviderSpec {
   kind: ProviderKind;
   capacity: number | null;
   status?: 'ACTIVE' | 'DISABLED';
+  /**
+   * The shop refuses to sell from a pasarguard panel with no address or no
+   * credential (issue #182), so the simulated one carries both. The address
+   * is never dialled — every provisioning test injects its own fetch — and
+   * the ref only names an environment variable nobody has to set.
+   */
+  baseUrl?: string;
+  secretRef?: string;
 }
 
 interface PlanSpec {
@@ -106,7 +114,14 @@ interface ProductSpec {
  * active, two disabled.
  */
 const PROVIDERS: ProviderSpec[] = [
-  { code: 'sim-vip', name: '🥇 سرویس VIP (شبیه‌سازی)', kind: 'pasarguard', capacity: 500 },
+  {
+    code: 'sim-vip',
+    name: '🥇 سرویس VIP (شبیه‌سازی)',
+    kind: 'pasarguard',
+    capacity: 500,
+    baseUrl: 'https://panel.test',
+    secretRef: 'PANEL_SIM_VIP',
+  },
   { code: 'sim-gold', name: '🥈 سرویس طلایی (شبیه‌سازی)', kind: 'hiddify', capacity: 200 },
   // Fulfilled by hand. The one adapter that cannot fail for a network reason,
   // which makes it the right control in any provisioning test.
@@ -328,13 +343,28 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
         // to 'pasarguard', every already-seeded database kept the old value —
         // and 'marzban' has no adapter, so the panel silently became a manual
         // one. Nothing would have said so.
-        `INSERT INTO provisioning_providers (code, name, kind, status, capacity, sort_order)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        // Address and credential ref are only FILLED, never overwritten: the
+        // test box wires the real test panel into this row (wire-test-panel.ts),
+        // and a re-seed must not point it back at a placeholder.
+        `INSERT INTO provisioning_providers
+           (code, name, kind, status, capacity, sort_order, base_url, secret_ref)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT (code) DO UPDATE SET
            name = EXCLUDED.name, kind = EXCLUDED.kind, status = EXCLUDED.status,
-           capacity = EXCLUDED.capacity, sort_order = EXCLUDED.sort_order`,
+           capacity = EXCLUDED.capacity, sort_order = EXCLUDED.sort_order,
+           base_url = COALESCE(provisioning_providers.base_url, EXCLUDED.base_url),
+           secret_ref = COALESCE(provisioning_providers.secret_ref, EXCLUDED.secret_ref)`,
       )
-      .bind(p.code, p.name, p.kind, p.status ?? 'ACTIVE', p.capacity, i)
+      .bind(
+        p.code,
+        p.name,
+        p.kind,
+        p.status ?? 'ACTIVE',
+        p.capacity,
+        i,
+        p.baseUrl ?? null,
+        p.secretRef ?? null,
+      )
       .run();
     const row = await db
       .prepare(`SELECT id FROM provisioning_providers WHERE code = ?1`)

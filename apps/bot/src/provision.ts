@@ -47,6 +47,7 @@ import { actionsFor, tierFor } from './serviceActions.js';
 import { deliverFromStock, failingSinceMs, STOCK_GRACE_MS, type StockDelivery } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
+import { payReferralCommission } from './referral.js';
 import { report } from './reports.js';
 import { createLogger } from '@shikoo/domain';
 
@@ -168,15 +169,21 @@ function withBonus(planGb: number | null, bonus: string | number): number | null
  * Orders that have been claimed but never finished — a sweep that died, a
  * process restarted mid-flight. Returning them to PAID lets the next pass pick
  * them up.
+ *
+ * One clock. `updated_at` is Postgres's `now()`, so the cut-off is too —
+ * comparing it against this process's `Date.now()` (issue #181) reclaimed
+ * too early or too late by however far the two machines disagree. Harmless
+ * while the bot is a singleton on the database's own box; wrong the day it
+ * is not, in the direction of selling one order twice.
  */
-async function reclaimStalled(db: D1Database, now: number): Promise<void> {
+async function reclaimStalled(db: D1Database): Promise<void> {
   await db
     .prepare(
       `UPDATE orders SET status = 'PAID', updated_at = now()
         WHERE status = 'PROVISIONING'
-          AND updated_at < to_timestamp(?1 / 1000.0)`,
+          AND updated_at < now() - (?1 * interval '1 millisecond')`,
     )
-    .bind(now - STALLED_MS)
+    .bind(STALLED_MS)
     .run();
 }
 
@@ -431,7 +438,7 @@ export async function provisionPaidOrders(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
   now: number = Date.now(),
 ): Promise<number> {
-  await reclaimStalled(db, now);
+  await reclaimStalled(db);
 
   const { results } = await db
     .prepare(
@@ -743,6 +750,19 @@ async function deliver(
     return renew(db, row, fetchImpl, now);
   }
 
+  // The commission rate, read before anything irreversible — the same
+  // shape, for the same reason, as the cashback rate in renew(): a rate that
+  // cannot be read costs one sweep, never the referrer's money.
+  const shop = await loadShopSettings(db);
+  if (!shop.fromDatabase) {
+    await release(db, row, now);
+    log.warn('provision.will_retry', {
+      ref: row.order_public_id,
+      reason: 'the commission rate could not be read',
+    });
+    return null;
+  }
+
   /*
    * HOURS, not days, and that is why `duration_days` stays null on a trial.
    *
@@ -877,6 +897,7 @@ async function deliver(
       volumeGb,
       durationDays,
       expiresAt,
+      shop.commissionPercent,
     );
   } catch (err) {
     if (!isDuplicatePanelAccount(err)) throw err;
@@ -924,6 +945,7 @@ async function writeSubscription(
   volumeGb: number | null,
   durationDays: number | null,
   expiresAt: Date | null,
+  commissionPercent: number,
 ): Promise<void> {
   await db.withSession(async (tx) => {
     // The guard is in the statement, not in a read before it. It used to be a
@@ -971,7 +993,7 @@ async function writeSubscription(
         )
         .run();
     }
-    await complete(tx, row.order_id);
+    await complete(tx, row.order_id, commissionPercent);
   });
 }
 
@@ -1203,13 +1225,6 @@ async function renew(
   // throw away everything the customer had left.
   const mode = addon === null ? renewModeFor(row.provider_config ?? {}) : 'ADD';
 
-  if (!adapter.renew) {
-    // A manual product, or a panel type nobody automated. The money is real and
-    // the sale happened; what is outstanding is somebody's action.
-    await complete(db, row.order_id);
-    return say(menu.serviceBeingPrepared(row.order_public_id));
-  }
-
   // The cashback rate is read here, before the panel call, and that placement
   // is the whole of the fix.
   //
@@ -1224,18 +1239,23 @@ async function renew(
   // happened yet, so the order goes back to PAID and the next pass does the
   // whole thing properly. An add-on pays no cashback, so it does not wait on
   // this.
-  let renewCashbackPercent = 0;
-  if (addon === null) {
-    const shop = await loadShopSettings(db);
-    if (!shop.fromDatabase) {
-      await release(db, row, now);
-      log.warn('provision.will_retry', {
-        ref: row.order_public_id,
-        reason: 'the cashback rate could not be read',
-      });
-      return null;
-    }
-    renewCashbackPercent = shop.renewCashbackPercent;
+  const shop = await loadShopSettings(db);
+  if (!shop.fromDatabase) {
+    await release(db, row, now);
+    log.warn('provision.will_retry', {
+      ref: row.order_public_id,
+      reason: 'the cashback and commission rates could not be read',
+    });
+    return null;
+  }
+  // An add-on pays no cashback; it does pay the referrer, like any order.
+  const renewCashbackPercent = addon === null ? shop.renewCashbackPercent : 0;
+
+  if (!adapter.renew) {
+    // A manual product, or a panel type nobody automated. The money is real and
+    // the sale happened; what is outstanding is somebody's action.
+    await complete(db, row.order_id, shop.commissionPercent);
+    return say(menu.serviceBeingPrepared(row.order_public_id));
   }
 
   /*
@@ -1385,7 +1405,7 @@ async function renew(
         )
         .first<{ expires_at: string | null }>();
       storedExpiry = kept?.expires_at == null ? null : new Date(kept.expires_at);
-      await complete(tx, row.order_id);
+      await complete(tx, row.order_id, shop.commissionPercent);
     });
     return say(menu.addonApplied(addon.kind, addon.quantity, serviceName, storedExpiry));
   }
@@ -1433,7 +1453,7 @@ async function renew(
         mode === 'RESET',
       )
       .run();
-    await complete(tx, row.order_id);
+    await complete(tx, row.order_id, shop.commissionPercent);
     // In the same transaction as COMPLETED, so a renewal that ends up rolled
     // back cannot leave a customer credited for a service they did not get.
     cashbackIrr = await creditRenewalCashback(tx, row.order_id, renewCashbackPercent);
@@ -1546,14 +1566,27 @@ class LostTheClaim extends Error {
 }
 
 /**
- * Moves a claimed order to COMPLETED, or gives up the whole transaction.
+ * Moves a claimed order to COMPLETED, or gives up the whole transaction —
+ * and pays whoever referred the customer, in that same transaction.
  *
  * The `WHERE status = 'PROVISIONING'` was here before; what was missing is
  * anyone reading the answer. A transition that changed no rows returned exactly
  * like one that changed a row, so the sweep that lost the race still wrote its
  * subscription and still told the customer.
+ *
+ * The commission moved here from settlement on 2026-09-12 (issue #181, Sam's
+ * call). Paid at PAID, a delivery that then failed refunded the buyer and
+ * left the referrer paid for a sale that never happened; nothing clawed it
+ * back. Legacy pays at payment time (`function.php:939`) — this is a
+ * deliberate departure, the same one `creditRenewalCashback` already made.
+ * Every route to COMPLETED passes through here, so it is paid once, on a
+ * delivered order, whatever the customer paid with.
  */
-async function complete(tx: D1Database | D1DatabaseSession, orderId: number): Promise<void> {
+async function complete(
+  tx: D1Database | D1DatabaseSession,
+  orderId: number,
+  commissionPercent: number,
+): Promise<void> {
   const done = await tx
     .prepare(
       `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
@@ -1562,6 +1595,7 @@ async function complete(tx: D1Database | D1DatabaseSession, orderId: number): Pr
     .bind(orderId)
     .run();
   if (done.meta.changes !== 1) throw new LostTheClaim(orderId);
+  await payReferralCommission(tx as D1DatabaseSession, orderId, commissionPercent);
 }
 
 /**

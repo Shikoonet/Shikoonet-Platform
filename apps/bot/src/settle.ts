@@ -17,7 +17,6 @@ import { randomUUID } from 'node:crypto';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import * as menu from './menu.js';
 import { enqueue } from './notify.js';
-import { payReferralCommission } from './referral.js';
 import { loadShopSettings } from './settings.js';
 import { report } from './reports.js';
 import { creditTopup } from './wallet.js';
@@ -89,27 +88,10 @@ interface SettleRow {
  * paid, and the send is a separate, retryable step (`notify.ts`).
  */
 export async function settleVerifiedPayments(db: D1Database): Promise<number> {
-  // Read once per sweep rather than per payment: it is shop-wide configuration
-  // and it is cached anyway, but a sweep of fifty payments should not ask fifty
-  // times.
-  //
-  // `fromDatabase` is false only when this process has never once read the
-  // settings — `loadShopSettings` serves the last good read otherwise — so it
-  // means "the shop's rules are unknown", not "they are stale". Commission is
-  // money out of the shop's wallet and cannot be taken back, so an unknown rate
-  // waits for the next sweep rather than guessing at the shipped ten per cent.
-  // The comment here used to argue the opposite, on the grounds that paying
-  // something beats paying nothing; the third option — paying in a minute — was
-  // not considered, and it is strictly better than both.
-  //
-  // Same shape as `provision.ts:494`, which reached this conclusion first for
-  // renewal cashback. One situation, one answer, in both places now.
-  const shop = await loadShopSettings(db);
-  if (!shop.fromDatabase) {
-    log.warn('settle.waiting', { reason: 'the commission rate has never been read' });
-    return 0;
-  }
-  const { commissionPercent } = shop;
+  // No shop rules are read here any more. Until 2026-09-12 this sweep paid the
+  // referrer's commission at PAID and so waited on the commission rate; the
+  // commission is paid at COMPLETED now (`provision.ts` `complete`, issue
+  // #181), and the wait moved with it.
   /*
    * `FULFILLED_UNRECONCILED` is swept alongside `VERIFIED` for the reason the
    * status exists: the shop decided to deliver, so delivery must actually
@@ -211,12 +193,6 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
             }
             await creditTopup(tx, row.order_user_id, row.order_id, row.order_total_irr);
             credited = row.order_total_irr;
-          }
-          if (moved.meta.changes === 1 && !isTopup) {
-            // Whoever brought this customer is paid here, in the same transaction
-            // that made the order real — not in a sweep that could run against an
-            // order that later turned out not to be paid at all.
-            await payReferralCommission(tx, row.order_id, commissionPercent);
           }
           if (moved.meta.changes === 0) {
             // Somebody paid for an order that is no longer waiting to be paid —
