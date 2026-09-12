@@ -64,8 +64,16 @@ export interface WalletAdjustment {
   actor: string;
   /**
    * Whatever makes this attempt distinguishable from the next one — a form
-   * token from a browser, the update id from Telegram. Namespaced and combined
-   * with the amount below; a caller never sees the final key.
+   * token from a browser, the update id from Telegram. Namespaced with the
+   * customer; a caller never sees the final key.
+   *
+   * The amount is NOT part of the key — issue #196, Sam's call 2026-09-12. It
+   * was, so that a typo corrected on the same open form would go through;
+   * but the same shape let a retry after a lost response credit twice (the
+   * form keeps its key after a failure, the operator corrects the figure,
+   * two keys, two rows). A refusal the operator reads («این اصلاح قبلاً
+   * اعمال شده بود») beats a silent extra credit; the correction is a second,
+   * real decision and gets a fresh key by reopening the form.
    */
   idempotencyKey: string;
 }
@@ -82,7 +90,7 @@ export async function adjustWallet(
   db: Db,
   { userId, amountIrr, note, actor, idempotencyKey }: WalletAdjustment,
 ): Promise<WalletAdjustmentResult | null> {
-  const key = `admin-adjust:${userId}:${amountIrr}:${idempotencyKey}`;
+  const key = `admin-adjust:${userId}:${idempotencyKey}`;
 
   const write = async (tx: D1DatabaseSession): Promise<WalletAdjustmentResult | null> => {
     const exists = await tx

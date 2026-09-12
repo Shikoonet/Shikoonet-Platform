@@ -29,7 +29,12 @@ export const SALE_CLAIM_WHERE = `
 
 export const BOT_SALE_WHERE = `${SALE_CLAIM_WHERE} AND m.status = 'AUTO_VERIFIED'`;
 
-export const MANUAL_SALE_WHERE = `${SALE_CLAIM_WHERE} AND m.status = 'CONFIRMED'`;
+/**
+ * «Verified, and not by the bot» — which includes a VERIFIED claim that has no
+ * match row at all. Written as a negation so the two halves always add up to
+ * `SALE_CLAIM_WHERE`; read with a LEFT JOIN on the match (issue #223).
+ */
+export const MANUAL_SALE_WHERE = `${SALE_CLAIM_WHERE} AND m.status IS DISTINCT FROM 'AUTO_VERIFIED'`;
 
 export type PercentChange =
   | { kind: 'all_time' }
