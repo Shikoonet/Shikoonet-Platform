@@ -41,17 +41,29 @@ const HINT = /نشانِ پلن‌ها روی دکمه‌ها نشان داده 
 // Typed with the body it receives, not as `() =>`: a zero-argument mock makes
 // `mock.calls` a tuple of length nought, and reading `[0]` off it is a type
 // error rather than the assertion it looks like.
+/**
+ * What the fake server holds. A save is a write followed by a full `load()`,
+ * and a `settings` mock that always answered `''` made the field flip back to
+ * empty the moment that reload landed — so «the input shows what was sent» was
+ * true only in the gap between the two, and a loaded runner closed the gap
+ * (the third face of issue #168). The row remembers the write instead.
+ */
+let stored = TEMPLATE_ROW.value;
+
 const updateSetting = vi.fn(
-  async (_body: Parameters<typeof api.updateSetting>[0]) =>
-    ({ ok: true }) as Awaited<ReturnType<typeof api.updateSetting>>,
+  async (body: Parameters<typeof api.updateSetting>[0]) => {
+    stored = body.value;
+    return { ok: true } as Awaited<ReturnType<typeof api.updateSetting>>;
+  },
 );
 
 beforeEach(() => {
-  vi.spyOn(api, 'settings').mockResolvedValue({
+  stored = TEMPLATE_ROW.value;
+  vi.spyOn(api, 'settings').mockImplementation(async () => ({
     ok: true,
-    items: [TEMPLATE_ROW],
+    items: [{ ...TEMPLATE_ROW, value: stored, isSet: stored !== '' }],
     hiddenCount: 0,
-  });
+  }));
   updateSetting.mockClear();
   vi.spyOn(api, 'updateSetting').mockImplementation(updateSetting);
 });
@@ -140,7 +152,6 @@ describe('the plan-button template', () => {
     const sent = updateSetting.mock.calls.at(-1)![0];
     expect(sent.key).toBe('plan_button_template');
     expect(sent.value).not.toBe('');
-    expect((screen.getByLabelText('قالب دکمهٔ سرویس') as HTMLInputElement).value).toBe(sent.value);
 
     /*
      * Waited out rather than left running, and this is the whole reason the
@@ -154,6 +165,9 @@ describe('the plan-button template', () => {
      * been bitten by: let both promises settle, THEN finish.
      */
     await waitFor(() => expect(screen.getByText(/ذخیره شد/)).toBeTruthy());
+    // AFTER the reload, on purpose: what the field shows once the server has
+    // answered is the claim — not what it showed for a moment in between.
+    expect((screen.getByLabelText('قالب دکمهٔ سرویس') as HTMLInputElement).value).toBe(sent.value);
   });
 
   it('stays quiet on an empty template, which means «leave it as it always was»', SLOW, async () => {
