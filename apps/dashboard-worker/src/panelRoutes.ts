@@ -854,9 +854,11 @@ function tierPricesOf(
  * screen that drifted would be the one telling an operator where to look.
  *
  * `secret_ref` is the pre-2026 environment-variable form; `provider_secrets` is
- * the sealed one. Either counts.
+ * the sealed one. Either counts. An empty string does not: `credentialsFor` in
+ * the bot reads a falsy ref as «none», and this must agree with the thing that
+ * actually logs in — the bot's PANEL_WIRED spells it the same way.
  */
-export const PANEL_HAS_SECRET = `(pr.secret_ref IS NOT NULL
+export const PANEL_HAS_SECRET = `(NULLIF(pr.secret_ref, '') IS NOT NULL
             OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id))`;
 
 const SELECT_PANEL = `

@@ -36,11 +36,35 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { trialFor } from '@shikoo/domain';
+import { AUTOMATED_KINDS_SQL, trialFor } from '@shikoo/domain';
 
 import type { ButtonStyle } from './telegram.js';
 
 type Db = D1Database | D1DatabaseSession;
+
+/**
+ * The panel has an address and the bot has a credential for it.
+ *
+ * Spelled the way the adapter reads them: `marzban.ts` refuses on a falsy
+ * `baseUrl`, and `credentialsFor` on a falsy `secret_ref`, so an empty string
+ * is «missing» here too — the importer copies `url_panel` verbatim and only the
+ * dashboard's edit route turns '' into NULL. Both spellings of «has a
+ * credential» count, for the reason `panelRoutes` counts both: panels wired
+ * before `provider_secrets` resolve through the environment.
+ *
+ * What this cannot see is whether `PANEL_<REF>` is actually set in the process
+ * that will deliver. A panel whose variable went missing on a redeploy still
+ * passes here and still fails after payment; the dashboard's panel screen is
+ * where that shows.
+ *
+ * One fragment for the shop and the trial list, so they cannot drift.
+ */
+const PANEL_WIRED = `
+        NULLIF(pr.base_url, '') IS NOT NULL
+        AND (
+              NULLIF(pr.secret_ref, '') IS NOT NULL
+           OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id)
+            )`;
 
 /**
  * Joined against `users u` on the caller. Every query below must therefore
@@ -132,24 +156,14 @@ const PURCHASABLE = `
    * needed a person. That is the 2026-09-02 staging incident written up in
    * retryProvisioning.ts, reached from the shop instead of from an operator.
    *
-   * Only the kind with a real adapter is asked. Every other kind falls to the
-   * manual adapter (packages/domain/src/provisioning/index.ts, ADAPTERS), and a
-   * shelf of bulk-bought accounts legitimately has no address at all —
-   * catalog.test.ts pins that shape. If a second automated adapter is ever
-   * registered, its kind belongs in this list. Both spellings of «has a
-   * credential» count, for the reason the trial query gives: panels wired
-   * before provider_secrets resolve through the environment.
+   * Only the kinds with a real adapter are asked, and the list comes from the
+   * adapter registry itself. Every other kind falls to the manual adapter, and
+   * a shelf of bulk-bought accounts legitimately has no address at all —
+   * catalog.test.ts pins that shape. The dashboard's SELLABLE and
+   * whyNotSellable restate this clause, and sellable.test.ts is what keeps the
+   * three saying the same thing.
    */
-  AND (
-        pr.kind <> 'pasarguard'
-     OR (
-          pr.base_url IS NOT NULL
-          AND (
-                pr.secret_ref IS NOT NULL
-             OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id)
-              )
-        )
-      )
+  AND (pr.kind NOT IN (${AUTOMATED_KINDS_SQL}) OR (${PANEL_WIRED}))
 `;
 
 /**
@@ -708,18 +722,13 @@ export async function trialPanelsForUser(db: Db, userId: number): Promise<TrialP
     .prepare(
       // A panel with no address or no credential cannot create an account, and
       // a trial that fails is worse than a button that was never drawn — the
-      // customer has spent their one free account on nothing. Both spellings of
-      // «has a credential» count, for the same reason panelRoutes counts both:
-      // panels wired before provider_secrets resolve through the environment.
+      // customer has spent their one free account on nothing. The same fragment
+      // PURCHASABLE uses, asked of every kind: a trial is always a panel account.
       `SELECT pr.id AS provider_id, pr.name AS name, pr.config AS config
          FROM provisioning_providers pr
          JOIN users u ON u.id = ?1
         WHERE pr.status = 'ACTIVE'
-          AND pr.base_url IS NOT NULL
-          AND (
-                pr.secret_ref IS NOT NULL
-             OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id)
-              )
+          AND ${PANEL_WIRED}
           AND NOT EXISTS (
                 SELECT 1 FROM provider_hidden_users h
                  WHERE h.provider_id = pr.id AND h.user_id = u.id

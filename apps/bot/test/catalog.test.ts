@@ -738,27 +738,32 @@ describe('a shelf made from the dashboard is something a customer can buy', () =
 describe('a panel the bot cannot reach is not for sale', () => {
   let customer: number;
   let vip: number;
-  let secretRef: string | null;
+  let wired: { base_url: string | null; secret_ref: string | null };
 
   beforeAll(async () => {
     await ensureCatalog();
     customer = await makeCustomer(811_201);
     vip = await providerId('sim-vip');
     const row = await db
-      .prepare(`SELECT secret_ref FROM provisioning_providers WHERE id = ?1`)
+      .prepare(`SELECT base_url, secret_ref FROM provisioning_providers WHERE id = ?1`)
       .bind(vip)
-      .first<{ secret_ref: string | null }>();
-    secretRef = row!.secret_ref;
+      .first<{ base_url: string | null; secret_ref: string | null }>();
+    wired = row!;
   });
 
+  // Both restored here and not on the happy path: a sealed row that will not
+  // open wins over the environment in `credentialsFor` and throws, so one
+  // failed assertion in this file would take every later suite that
+  // provisions on sim-vip down with it, and nothing would point back here.
   afterAll(async () => {
+    await db.prepare(`DELETE FROM provider_secrets WHERE provider_id = ?1`).bind(vip).run();
     await db
-      .prepare(`UPDATE provisioning_providers SET secret_ref = ?2 WHERE id = ?1`)
-      .bind(vip, secretRef)
+      .prepare(`UPDATE provisioning_providers SET base_url = ?2, secret_ref = ?3 WHERE id = ?1`)
+      .bind(vip, wired.base_url, wired.secret_ref)
       .run();
   });
 
-  it('vanishes from the list and from the sale when the credential is gone', async () => {
+  it('vanishes from the list and from the sale when the credential or the address is gone', async () => {
     const plan = await planId('sim-vip-1m-50');
     expect(await purchasablePlan(db, customer, plan)).not.toBeNull();
 
@@ -785,6 +790,19 @@ describe('a panel the bot cannot reach is not for sale', () => {
       .bind(vip)
       .run();
     expect(await purchasablePlan(db, customer, plan)).not.toBeNull();
-    await db.prepare(`DELETE FROM provider_secrets WHERE provider_id = ?1`).bind(vip).run();
+
+    // The address half of the clause, pinned on its own: a credential with
+    // nowhere to send it is the same dead order.
+    await db
+      .prepare(`UPDATE provisioning_providers SET base_url = NULL WHERE id = ?1`)
+      .bind(vip)
+      .run();
+    expect(await purchasablePlan(db, customer, plan)).toBeNull();
+    // And an empty string is no address, the way marzban.ts reads it.
+    await db
+      .prepare(`UPDATE provisioning_providers SET base_url = '' WHERE id = ?1`)
+      .bind(vip)
+      .run();
+    expect(await purchasablePlan(db, customer, plan)).toBeNull();
   });
 });

@@ -352,19 +352,19 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
         // and 'marzban' has no adapter, so the panel silently became a manual
         // one. Nothing would have said so.
         //
-        // base_url and secret_ref converge only from NULL. A suite that nulls
-        // them to stage a dead panel leaves that state behind, and the next
-        // file's ensureCatalog is what puts the shop back — but a panel an
-        // operator pointed at the fake (sim/README.md, «The fake panel») must
-        // survive a re-seed, or every seed:sim silently unwires it.
+        // base_url and secret_ref converge for the same reason. A suite that
+        // nulls them to stage a dead panel, or points sim-vip at its own fake
+        // host, leaves that state behind in the shared database, and the next
+        // file's ensureCatalog is what puts the shop back. (seed:sim wipes the
+        // table first, so nothing an operator wired survives a re-seed either
+        // way — sim/README.md says to re-point the panels after seeding.)
         `INSERT INTO provisioning_providers (code, name, kind, status, capacity, sort_order,
                                              base_url, secret_ref)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT (code) DO UPDATE SET
            name = EXCLUDED.name, kind = EXCLUDED.kind, status = EXCLUDED.status,
            capacity = EXCLUDED.capacity, sort_order = EXCLUDED.sort_order,
-           base_url   = COALESCE(provisioning_providers.base_url,   EXCLUDED.base_url),
-           secret_ref = COALESCE(provisioning_providers.secret_ref, EXCLUDED.secret_ref)`,
+           base_url = EXCLUDED.base_url, secret_ref = EXCLUDED.secret_ref`,
       )
       .bind(p.code, p.name, p.kind, p.status ?? 'ACTIVE', p.capacity, i, p.baseUrl ?? null, p.secretRef ?? null)
       .run();
