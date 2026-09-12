@@ -40,6 +40,19 @@ const FULL: PanelRef = {
   capacity: 2,
   liveSubscriptions: 2,
 };
+// ACTIVE, with an address and no credential: the state PanelsPage flags and the
+// bot refuses to sell from (#182). A shelf in the same state is fine — it
+// never logs in to anything — which is what `hasGroups: false` says.
+const UNWIRED: PanelRef = { ...LIVE, id: 4, name: 'پنل فرانسه', code: 'unwired', hasCredential: false };
+const SHELF: PanelRef = {
+  ...LIVE,
+  id: 5,
+  name: 'قفسه',
+  code: 'shelf',
+  hasGroups: false,
+  baseUrl: null,
+  hasCredential: false,
+};
 
 function plan(
   id: number,
@@ -169,6 +182,14 @@ describe('«محصولات» says what the shop can do with a row', () => {
   it('names a full panel, which no screen could say before', async () => {
     await draw([plan(3, 'روی پنل پر', FULL)], 0);
     await waitFor(() => expect(table().getByText('پنل پر است')).toBeTruthy());
+  });
+
+  it('names a panel the bot cannot log in to, and leaves a shelf alone', async () => {
+    // The bot stopped selling from such a panel (#182); a screen that kept
+    // saying «در فروشگاه» about it would be the 2026-08-27 gap again.
+    await draw([plan(4, 'روی پنل بی‌اعتبارنامه', UNWIRED), plan(5, 'روی قفسه', SHELF)], 1);
+    await waitFor(() => expect(table().getByText('پنل وصل نیست')).toBeTruthy());
+    expect(table().getByText('در فروشگاه')).toBeTruthy();
   });
 
   it('says «در فروشگاه» only when a customer could really buy it', async () => {

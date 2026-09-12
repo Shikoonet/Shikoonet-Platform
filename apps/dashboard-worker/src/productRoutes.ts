@@ -42,7 +42,7 @@ import {
   type CatalogLayoutProblem,
 } from '@shikoo/contracts';
 import { checkNameEmoji } from './customEmojiNames.js';
-import { isAutomated } from '@shikoo/domain';
+import { AUTOMATED_KINDS_SQL, isAutomated } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 import { PANEL_HAS_SECRET } from './panelRoutes.js';
 import { faNum } from './fa.js';
@@ -499,6 +499,11 @@ function shape(r: PlanRow) {
           // See the note on the catalogue route's copy: a `manual` route has no
           // groups, and both screens read this off one answer rather than two.
           hasGroups: isAutomated(r.provider_kind ?? ''),
+          // The catalogue route has carried these since 2026-08-29; this one
+          // did not, so «سرویس‌ها» could not say «پنل وصل نیست» about a row
+          // the bot refuses to sell for exactly that reason.
+          baseUrl: r.provider_base_url ?? null,
+          hasCredential: Boolean(r.provider_has_secret),
           // Null is unlimited, and must stay null — a zero here would read as a
           // ceiling already reached and put every row on this panel in red.
           capacity: r.provider_capacity === null ? null : Number(r.provider_capacity),
@@ -718,7 +723,12 @@ const SELLABLE = `
   AND (pr.capacity IS NULL
        OR pr.capacity > (SELECT COUNT(*) FROM subscriptions s
                           WHERE s.provider_id = pr.id
-                            AND s.status IN ('ACTIVE', 'ON_HOLD')))`;
+                            AND s.status IN ('ACTIVE', 'ON_HOLD')))
+  -- A panel the bot cannot log in to is not for sale (PURCHASABLE, #182). Only
+  -- the kinds with a real adapter are asked; the list is the adapter registry's
+  -- own, so this and the bot cannot disagree about which kinds reach a panel.
+  AND (pr.kind NOT IN (${AUTOMATED_KINDS_SQL})
+       OR (NULLIF(pr.base_url, '') IS NOT NULL AND ${PANEL_HAS_SECRET}))`;
 
 /**
  * The panel's ceiling, and how much of it is spent.
@@ -755,6 +765,8 @@ const SELECT_PLAN = `
          p.attrs->>'delivery_note' AS product_delivery_note,
          pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
          pr.status AS provider_status, pr.kind AS provider_kind,
+         pr.base_url AS provider_base_url,
+         ${PANEL_HAS_SECRET} AS provider_has_secret,
          ${PANEL_CEILING},
          cat.name AS category_name,
          -- Carried for the same reason provider_capacity is: whyNotSellable
