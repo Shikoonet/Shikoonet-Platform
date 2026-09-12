@@ -222,6 +222,51 @@ CONF="$CONF" IMAGE_NAME="$IMAGE_NAME" \
   bash "$HERE/verify-production-bot-candidate.sh" prepared "$CAND_BOT" "$SHA_ARG" "$DIGEST_ARG" ||
   die "the candidate bot is not the stopped, immutable release preparation recorded"
 
+# The two web candidates, asked what KIND of application they are — before a
+# customer hostname moves.
+#
+# This is the same refusal `deploy.sh` makes before every deploy request, and
+# the reason is the same: «Docker Image» is an application TYPE fixed at
+# creation, not one of Coolify's five build strategies, and a Git application
+# asked to deploy runs `deploy_dockerfile_buildpack()` — it CLONES AND REBUILDS
+# and ignores `docker_registry_image_name` entirely. The run goes green, the
+# container comes up healthy, and it is running a tree this pipeline never
+# verified.
+#
+# `relabel_candidate` does eventually catch that, because a rebuilt image
+# carries no RepoDigest matching the prepared one — but only by exhausting
+# WAIT_TIMEOUT, and by then P11 has already put the live customer name on the
+# candidate. Detection after the traffic moved is not detection. So the
+# question is asked here, where the answer costs a refusal and nothing else.
+#
+# The bot is deliberately absent: `verify-production-bot-candidate.sh prepared`
+# above already asserts the same two fields plus the exact prepared tag, and it
+# runs before this line. Repeating it at P14 would have to `die` in the middle
+# of the handover, where every other failure calls `recover_bot_handover`.
+app_field() { # field, application record on stdin — deploy.sh's spelling
+  python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get(sys.argv[1]) or "")
+except Exception:
+    print("")' "$1"
+}
+assert_docker_image_app() { # uuid name
+  local record pack image
+  coolify_api GET "/applications/$1" ||
+    die "could not read the $2 application record from Coolify"
+  [ "$API_STATUS" = '200' ] ||
+    die "reading the $2 application record was refused (HTTP ${API_STATUS})"
+  record=$API_BODY
+  pack=$(printf '%s' "$record" | app_field build_pack)
+  [ "$pack" = 'dockerimage' ] ||
+    die "the candidate $2 is a '${pack:-unknown}' application, not a Docker Image application. Coolify would clone the repository and rebuild, ignoring the digest this release verified. There is no setting that converts it: «Docker Image» is an application TYPE chosen at creation. Refusing before ${LIVE_INGEST_DOMAIN} or ${LIVE_DASHBOARD_DOMAIN} moves."
+  image=$(printf '%s' "$record" | app_field docker_registry_image_name)
+  [ "$image" = "$IMAGE_NAME" ] ||
+    die "the candidate $2 is pinned to image repository '${image:-none}', but this release is '$IMAGE_NAME' — refusing to move a live domain onto it"
+}
+assert_docker_image_app "$CAND_INGEST" ingest
+assert_docker_image_app "$CAND_DASHBOARD" dashboard
+
 # The old web containers, by exact id, before a domain moves — the same
 # retain-for-rollback rule the bot handover uses. Exactly one each: zero means
 # customers are already off the air and this is not the tool for that, two

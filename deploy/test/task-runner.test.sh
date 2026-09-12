@@ -234,6 +234,13 @@ has "$RUNNER" 'unmanaged file(s) in' 'it refuses unmanaged files in the bundle d
 has "$RUNNER" 'flock -n 9' 'it locks against concurrent runs'
 has "$RUNNER" 'verify_bundle' 'every task verifies the bundle first'
 
+# The release lock lives on /run/lock, a tmpfs, so a reboot removes it and the
+# host looks no different afterwards. Its absence stayed invisible until a
+# production dispatch spent a whole run discovering it (2026-09-07). `status`
+# reporting it is the cheap way to see it, and nothing asserted that it does.
+has "$RUNNER" 'RELEASE_LOCK=/var/lock/shikoo-deploy-production.lock' 'it knows the release lock by name'
+has "$RUNNER" 'echo "release lock: $(' 'status reports the release lock'
+
 # Verification must happen before the work, on every path.
 for c in step-e-dry-run step-e-apply backup-dry-run backup-apply; do
   if grep -A1 "  ${c})" "$RUNNER" | grep -q 'run_task'; then
