@@ -119,6 +119,21 @@ type AnyEntry = EntryInternal<unknown>;
 /** Tracks live cache instances so dev can assert there's only one. */
 const cacheInstances = new Set<symbol>();
 
+/**
+ * Every live cache's `dispose`, so a test harness can end them all.
+ *
+ * A test that calls `createCache()` and never disposes it leaves its global
+ * timer armed; the next test's cache then competes with it — and, in a file
+ * with nine tests, with eight of them. That is the «multiple cache instances
+ * detected (4..9)» line on stderr and the reason two `waitFor`s flaked under a
+ * full run and never alone (issue #168). `test/setup.ts` calls this after
+ * every test. Not for the app: the app has one cache and never disposes it.
+ */
+const liveDisposers = new Map<symbol, () => void>();
+export function disposeAllCaches(): void {
+  for (const dispose of [...liveDisposers.values()]) dispose();
+}
+
 export interface Cache {
   /** Subscribe to a key. Returns stable object with the current snapshot
    *  and a refresh() bound to the cache. */
@@ -396,7 +411,7 @@ export function createCache(): Cache {
   // Install once on cache creation; survives unmounts (it's a global concern).
   removeWakeListeners = installWakeListeners();
 
-  return {
+  const cache: Cache = {
     useQuery<T>(key: string, opts?: CacheOptions): QueryState<T> {
       const optsRef = useRef(opts);
       optsRef.current = opts;
@@ -538,8 +553,11 @@ export function createCache(): Cache {
         e.listeners.clear();
       }
       cacheInstances.delete(instanceId);
+      liveDisposers.delete(instanceId);
     },
   };
+  liveDisposers.set(instanceId, cache.dispose);
+  return cache;
 }
 
 /**

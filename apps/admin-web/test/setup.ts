@@ -1,5 +1,6 @@
 import { afterEach } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
+import { disposeAllCaches } from '../src/hub/query.js';
 
 /**
  * How long a `waitFor` may wait before it calls the app broken.
@@ -26,6 +27,8 @@ configure({ asyncUtilTimeout: 5000 });
 
 afterEach(() => {
   cleanup();
+  // Every cache a test created, ended with it — see `disposeAllCaches`.
+  disposeAllCaches();
 });
 
 // happy-dom does not ship matchMedia. Stub a default that matches nothing;
