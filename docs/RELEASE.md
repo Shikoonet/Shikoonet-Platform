@@ -19,6 +19,13 @@ Git applications, then **Cutover Production** transfers the live domains and
 bot once. A successful cutover adopts those UUIDs; every later release returns
 to the single `Promote Production` path above.
 
+> **Both bootstrap dispatches were removed from Actions on 2026-09-12.** The
+> cutover happened on 2026-09-08 and `Prepare Production` refused every run
+> after it — twice it was pressed by mistake instead of `Promote Production`.
+> The scripts (`deploy/prepare-production.sh`, `deploy/cutover-production.sh`)
+> stay in the repository as the recipe should the bootstrap ever be redone;
+> the workflow files are in git history (`git log -- .github/workflows/`).
+
 `Deploy Staging` can also be started by hand — Actions ▸ Deploy Staging ▸ Run
 workflow — for a redeploy after a Coolify variable was fixed, or to roll the bot
 out. **It takes no inputs at all.** It resolves `refs/heads/main` on the server,
@@ -45,12 +52,10 @@ with a branch restriction, an actor check and an audit trail.
 9. ~~Authorise and run the secure production-dump rehearsal~~ — retired
    2026-09-07 with the legacy-import release path; see §5. Loading data is an
    owner operation after cutover, not a step of promotion.
-10. On the **first production release only**, run **Prepare Production** —
-    candidates, migration, temporary domains. Customers are still on the old
-    applications.
-11. Read the preparation evidence, then run **Cutover Production** — the only
-    step that moves live domains and the bot. For every later release, replace
-    steps 10 and 11 with **Promote Production**.
+10. ~~On the **first production release only**, run **Prepare Production**~~ —
+    done 2026-09-08; the dispatch was removed 2026-09-12.
+11. ~~Read the preparation evidence, then run **Cutover Production**~~ — done
+    2026-09-08. Every release now runs **Promote Production**.
 
 The first release's steps 10 and 11 are two separate dispatches on purpose. Its
 bootstrap has one irreversible step and several reversible ones, and putting

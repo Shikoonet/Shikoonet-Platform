@@ -192,9 +192,9 @@ Membership is an exact match on a whole element. `@Isusami2` does not inherit
 `@Isusami`'s authority, a prefix does not match, and an empty login matches
 nothing — `deploy/test/deploy-pipeline.test.sh` pins all three.
 
-**This widens Staging only.** `prepare-production.yml`, `cutover-production.yml`
-and `promote-production.yml` each set their own `SOLO_DEPLOY_OWNER` and compare
-`github.actor` against it directly, so Production promotion remains one person.
+**This widens Staging only.** `promote-production.yml` sets its own
+`SOLO_DEPLOY_OWNER` and compares `github.actor` against it directly, so
+Production promotion remains one person.
 
 Set the mode back to `team` the day there are enough reviewers for "somebody
 other than the author" to mean somebody who is not an owner — nothing else
