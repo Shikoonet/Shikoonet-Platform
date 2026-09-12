@@ -724,3 +724,67 @@ describe('a shelf made from the dashboard is something a customer can buy', () =
     expect(buyable?.volumeGb).toBeNull();
   });
 });
+
+/**
+ * A panel the bot cannot log in to is not for sale — issue #182.
+ *
+ * `trialPanelsForUser` refused such a panel from the day it was written; the
+ * shop did not, so a customer could pay for an account on a panel with no
+ * address, watch the order FAIL with `retryable: false`, and — on a card
+ * payment — wait for a person to give the money back. The shelf suite directly
+ * above is the other half of the rule: a manual panel has no address by
+ * design, and the same clause must leave it alone.
+ */
+describe('a panel the bot cannot reach is not for sale', () => {
+  let customer: number;
+  let vip: number;
+  let secretRef: string | null;
+
+  beforeAll(async () => {
+    await ensureCatalog();
+    customer = await makeCustomer(811_201);
+    vip = await providerId('sim-vip');
+    const row = await db
+      .prepare(`SELECT secret_ref FROM provisioning_providers WHERE id = ?1`)
+      .bind(vip)
+      .first<{ secret_ref: string | null }>();
+    secretRef = row!.secret_ref;
+  });
+
+  afterAll(async () => {
+    await db
+      .prepare(`UPDATE provisioning_providers SET secret_ref = ?2 WHERE id = ?1`)
+      .bind(vip, secretRef)
+      .run();
+  });
+
+  it('vanishes from the list and from the sale when the credential is gone', async () => {
+    const plan = await planId('sim-vip-1m-50');
+    expect(await purchasablePlan(db, customer, plan)).not.toBeNull();
+
+    await db
+      .prepare(`UPDATE provisioning_providers SET secret_ref = NULL WHERE id = ?1`)
+      .bind(vip)
+      .run();
+
+    // The list — and the gate behind it, which is the one that takes money.
+    // `callback_data` is unsigned, so hiding the button is not enough.
+    expect(await productsForUser(db, customer, vip)).toHaveLength(0);
+    expect(await purchasablePlan(db, customer, plan)).toBeNull();
+    // A renewal reaches the same panel, so it is refused too.
+    expect(await purchasablePlan(db, customer, plan, true)).toBeNull();
+
+    // The other spelling of «has a credential»: a sealed row in
+    // provider_secrets, which is how the dashboard wires a panel today.
+    await db
+      .prepare(
+        `INSERT INTO provider_secrets (provider_id, sealed, key_id)
+         VALUES (?1, 'not-a-real-seal', 'test')
+         ON CONFLICT (provider_id) DO NOTHING`,
+      )
+      .bind(vip)
+      .run();
+    expect(await purchasablePlan(db, customer, plan)).not.toBeNull();
+    await db.prepare(`DELETE FROM provider_secrets WHERE provider_id = ?1`).bind(vip).run();
+  });
+});

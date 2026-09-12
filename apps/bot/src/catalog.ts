@@ -122,17 +122,34 @@ const PURCHASABLE = `
         )
       )
   /*
-   * «محدودیت ساخت اکانت» — legacy 'limit_panel', migrated into
-   * provisioning_providers.capacity, where it sat unread. The dashboard has
-   * written it and drawn it beside the live count since the screen was built,
-   * so an operator setting it had every reason to believe it did something;
-   * nothing in the bot ever asked. NULL is unlimited, which is what the legacy
-   * 'unlimited' string became.
+   * A panel the bot cannot log in to cannot deliver, so it is not for sale.
    *
-   * Counted the way the PHP counted it (index.php:3600) — live subscriptions on
-   * the panel, not accounts on the panel itself, because the panel may carry
-   * accounts this shop never sold.
+   * trialPanelsForUser below asked this of a free account from the start —
+   * «a trial that fails is worse than a button that was never drawn» — and the
+   * shop did not ask it of a paid one. The order reached PAID, marzban.ts
+   * refused with retryable: false, fail() ran, and for a card-to-card payment
+   * refundOrder returns null: the customer had paid for nothing and the money
+   * needed a person. That is the 2026-09-02 staging incident written up in
+   * retryProvisioning.ts, reached from the shop instead of from an operator.
+   *
+   * Only the kind with a real adapter is asked. Every other kind falls to the
+   * manual adapter (packages/domain/src/provisioning/index.ts, ADAPTERS), and a
+   * shelf of bulk-bought accounts legitimately has no address at all —
+   * catalog.test.ts pins that shape. If a second automated adapter is ever
+   * registered, its kind belongs in this list. Both spellings of «has a
+   * credential» count, for the reason the trial query gives: panels wired
+   * before provider_secrets resolve through the environment.
    */
+  AND (
+        pr.kind <> 'pasarguard'
+     OR (
+          pr.base_url IS NOT NULL
+          AND (
+                pr.secret_ref IS NOT NULL
+             OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id)
+              )
+        )
+      )
 `;
 
 /**
