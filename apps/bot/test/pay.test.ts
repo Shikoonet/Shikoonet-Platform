@@ -401,3 +401,116 @@ describe('"I have paid"', () => {
     expect(await claimsOf(user)).toHaveLength(0);
   });
 });
+
+/**
+ * «پرداختی نکردم» — issue #199.
+ *
+ * One mis-tap on «پرداخت کردم» used to freeze the order for good: the expiry
+ * sweep skips an order under review, the wallet refuses one somebody says they
+ * paid by card, and re-entering the plan hands the same order back. The only
+ * exit was an operator rejecting a claim with nothing on it.
+ *
+ * Asserted against the rows, as the rest of this file is: a claim that reads
+ * REJECTED is what takes the row off the review screen and out of the matcher.
+ */
+describe('"I did not pay"', () => {
+  function sendsPhoto(updateId: number, telegramId: number, fileId: string): TelegramUpdate {
+    return {
+      update_id: updateId,
+      message: {
+        message_id: updateId,
+        chat: { id: telegramId },
+        from: { id: telegramId, username: `unpd${telegramId}` },
+        photo: [{ file_id: fileId }],
+      },
+    };
+  }
+
+  async function orderStatus(orderId: number): Promise<string> {
+    const row = await db
+      .prepare(`SELECT status FROM orders WHERE id = ?1`)
+      .bind(orderId)
+      .first<{ status: string }>();
+    return row!.status;
+  }
+
+  it('closes an empty claim and lets the same plan be bought again', async () => {
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const order = await orderIdOf(user);
+    const paid = await handleUpdate(db, press(updateId + 1, telegramId, `paid:${order}`));
+    // The way out is on the screen that opened the claim, and names the order.
+    expect(paid.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(
+      `unpd:${order}`,
+    );
+
+    const withdrawn = await handleUpdate(db, press(updateId + 2, telegramId, `unpd:${order}`));
+    expect(withdrawn.replies[0]?.text).toContain('پس گرفته شد');
+    // And nothing to withdraw any more, so the button is gone.
+    expect(withdrawn.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).not.toContain(
+      `unpd:${order}`,
+    );
+
+    // The claim leaves the review screen; the payment beneath it closes so the
+    // expiry sweep stops protecting the order; the order itself is untouched.
+    expect((await claimsOf(user)).map((c) => c.status)).toEqual(['REJECTED']);
+    expect((await paymentsOf(user)).map((p) => p.status)).toEqual(['REJECTED']);
+    expect(await orderStatus(order)).toBe('AWAITING_PAYMENT');
+    const audit = await db
+      .prepare(
+        `SELECT after_json FROM audit_logs
+          WHERE action = 'claim.rejected'
+            AND entity_id = (SELECT id FROM payment_claims WHERE external_order_id = ?1)`,
+      )
+      .bind((await claimsOf(user))[0]!.external_order_id)
+      .first<{ after_json: string }>();
+    expect(JSON.parse(audit!.after_json)).toMatchObject({ reason: 'customer_withdrew' });
+
+    // The plan is for sale again: the same order, a fresh invoice, and a
+    // second «پرداخت کردم» opens a second claim rather than answering «قبلاً».
+    const again = await handleUpdate(db, press(updateId + 3, telegramId, `order:${plan}`));
+    expect(again.replies[0]?.text).toContain(menu.formatCard((await paymentsOf(user))[1]!.assigned_card_number!));
+    expect(await orderIdOf(user)).toBe(order);
+    await handleUpdate(db, press(updateId + 4, telegramId, `paid:${order}`));
+    expect((await claimsOf(user)).map((c) => c.status)).toEqual(['REJECTED', 'PENDING']);
+    expect((await paymentsOf(user)).map((p) => p.status)).toEqual(['REJECTED', 'AWAITING_REVIEW']);
+  });
+
+  it('refuses once a receipt is on the claim — that decision is a person’s', async () => {
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const order = await orderIdOf(user);
+    await handleUpdate(db, press(updateId + 1, telegramId, `paid:${order}`));
+    await handleUpdate(db, sendsPhoto(updateId + 2, telegramId, 'AgACAgQAAxkBAAIBunpd0001'));
+
+    const refused = await handleUpdate(db, press(updateId + 3, telegramId, `unpd:${order}`));
+    expect(refused.replies[0]?.text).toContain('نمی‌شود پسش گرفت');
+    expect((await claimsOf(user)).map((c) => c.status)).toEqual(['PENDING']);
+    expect((await paymentsOf(user)).map((p) => p.status)).toEqual(['AWAITING_REVIEW']);
+  });
+
+  it('will not let one customer withdraw another customer’s claim', async () => {
+    const { updateId, telegramId } = ids();
+    const victim = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const victimOrder = await orderIdOf(victim);
+    await handleUpdate(db, press(updateId + 1, telegramId, `paid:${victimOrder}`));
+
+    const attacker = ids();
+    await makeCustomer(attacker.telegramId);
+    const outcome = await handleUpdate(
+      db,
+      press(attacker.updateId, attacker.telegramId, `unpd:${victimOrder}`),
+    );
+
+    expect(outcome.replies[0]?.text).toBe(menu.ORDER_GONE);
+    expect((await claimsOf(victim)).map((c) => c.status)).toEqual(['PENDING']);
+  });
+});

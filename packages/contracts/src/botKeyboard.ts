@@ -271,7 +271,19 @@ export const MENUS = {
   afterPaid: {
     label: 'بعد از ثبت پرداخت',
     hint: 'وقتی مشتری «پرداخت کردم» را زده',
-    buttons: [BACK_TO_MENU],
+    buttons: [
+      // The way out of a mis-tap. Drawn only under a screen that names an
+      // order under review, and the bot lets it work only while the claim
+      // carries nothing — a receipt or a matched deposit makes it a person's
+      // decision, and the button then answers with that sentence.
+      {
+        action: 'unpd',
+        label: '↩️ پرداختی نکردم',
+        hint: 'وقتی «پرداخت کردم» اشتباهی زده شده — تا رسیدی نفرستاده، ثبت پرداخت را پس می‌گیرد',
+        conditional: true,
+      },
+      BACK_TO_MENU,
+    ],
   },
   myServices: {
     label: 'سرویس‌های من',
@@ -591,7 +603,10 @@ const DEFAULT_CELLS: Record<
     ['tpo', 0, 1],
     ['paid', 1, 0, 'success'],
   ],
-  afterPaid: [['menu', 0, 0]],
+  afterPaid: [
+    ['unpd', 0, 0],
+    ['menu', 1, 0],
+  ],
   myServices: [['menu', 0, 0]],
   serviceDetail: [
     ['xv', 0, 0],

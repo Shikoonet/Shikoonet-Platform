@@ -1587,8 +1587,35 @@ export function paymentConfirmed(publicId: string): string {
   ].join('\n');
 }
 
-export function afterPaidMenu(): InlineKeyboard {
-  return buildMenu('afterPaid', layout('afterPaid'));
+/**
+ * The chrome under every payment-side screen.
+ *
+ * With an order id, it carries «پرداختی نکردم» for that order — drawn under
+ * `paidRecorded` and `paidAlready`, where the customer has just been told
+ * their tap opened a claim and may be looking at a tap they did not mean.
+ * Without one there is nothing to withdraw, and the row is dropped.
+ */
+export function afterPaidMenu(orderId?: number): InlineKeyboard {
+  return buildMenu('afterPaid', layout('afterPaid'), {
+    applies: (action) => action !== 'unpd' || orderId !== undefined,
+    target: (action) => (action === 'unpd' ? encode('unpd', orderId) : action),
+  });
+}
+
+/** «پرداختی نکردم» accepted: the claim is closed and the plan can be bought again. */
+export function paidWithdrawn(publicId: string): string {
+  const t = TEXTS_NOW;
+  return [t.raw('PAID_WITHDRAWN_TITLE'), '', t.render('PAID_TRACKING_ID', { id: publicId })].join(
+    '\n',
+  );
+}
+
+/** «پرداختی نکردم» refused: something is on the claim, so a person decides. */
+export function paidHasEvidence(publicId: string): string {
+  const t = TEXTS_NOW;
+  return [t.raw('PAID_HAS_EVIDENCE'), '', t.render('PAID_TRACKING_ID', { id: publicId })].join(
+    '\n',
+  );
 }
 
 /**

@@ -356,6 +356,107 @@ export async function recordPaidClick(
     : { outcome: 'claimed', publicId: payment.public_id };
 }
 
+export type WithdrawResult =
+  /** The claim is closed and the invoice is open again. */
+  | { outcome: 'withdrawn'; publicId: string }
+  /** There is evidence on the claim — a receipt, or a matched deposit — so a person owns it now. */
+  | { outcome: 'evidence'; publicId: string }
+  /** Nothing of theirs is under review. */
+  | { outcome: 'none' };
+
+/**
+ * «پرداختی نکردم» — the customer takes back a «پرداخت کردم» they pressed by
+ * mistake.
+ *
+ * Issue #199: one tap opened a claim, and every exit from that state was shut
+ * for a reason of its own — the expiry sweep skips an order under review, the
+ * wallet refuses an order somebody says they paid by card, and `place()` hands
+ * the same order back. Until an operator rejected a claim with no receipt on
+ * it, the customer could not buy that plan by any route.
+ *
+ * This is the customer's own version of `POST /suspects/:id/reject`, and it
+ * does the same three writes for the same reason that route gives: the claim,
+ * the payment beneath it — or the expiry guard keeps protecting an order whose
+ * payment was just withdrawn — and an audit row. The order itself is not
+ * touched: it stays AWAITING_PAYMENT, and the next tap on the plan draws a
+ * fresh invoice, because `checkoutFor` sees no open payment and opens one.
+ *
+ * Only a claim with NOTHING on it may be withdrawn. A receipt, or a bank SMS
+ * the matcher has already put beside it, is evidence that money may have
+ * moved, and a customer must not be able to make that disappear by pressing a
+ * button — that decision is a person's. The guard is in the statement rather
+ * than above it, so evidence that arrives between the read and the write still
+ * wins.
+ */
+export async function withdrawPaidClick(
+  tx: D1DatabaseSession,
+  userId: number,
+  orderId: number,
+  telegramId: number,
+  now: number = Date.now(),
+): Promise<WithdrawResult> {
+  // Same lock, same reason as `recordPaidClick`: the expiry sweep and the
+  // wallet path both decide on this order, and neither may see a half-done
+  // withdrawal.
+  await tx
+    .prepare(`SELECT status FROM orders WHERE id = ?1 FOR UPDATE`)
+    .bind(orderId)
+    .first<{ status: string }>();
+
+  const payment = await tx
+    .prepare(
+      `SELECT id, public_id FROM payments
+        WHERE order_id = ?1 AND user_id = ?2 AND status = 'AWAITING_REVIEW'
+        ORDER BY created_at DESC
+        LIMIT 1`,
+    )
+    .bind(orderId, userId)
+    .first<{ id: number; public_id: string }>();
+  if (!payment) return { outcome: 'none' };
+
+  const claim = await tx
+    .prepare(
+      `UPDATE payment_claims
+          SET status = 'REJECTED', updated_at = ?2
+        WHERE external_order_id = ?1
+          AND status = 'PENDING'
+          AND receipt_url_or_r2_key IS NULL
+      RETURNING id`,
+    )
+    .bind(`shikoo:${payment.public_id}`, now)
+    .first<{ id: string }>();
+  if (!claim) return { outcome: 'evidence', publicId: payment.public_id };
+
+  await tx
+    .prepare(
+      `UPDATE payments SET status = 'REJECTED', reject_reason = 'customer_withdrew', updated_at = now()
+        WHERE id = ?1`,
+    )
+    .bind(payment.id)
+    .run();
+  // SYSTEM, as every row this bot writes: the CHECK on actor_role has no word
+  // for a customer, and who pressed the button is in after_json.
+  await tx
+    .prepare(
+      `INSERT INTO audit_logs
+         (id, actor_email, actor_role, action, entity_type, entity_id,
+          before_json, after_json, reason, created_at)
+       VALUES (?1, NULL, 'SYSTEM', 'claim.rejected', 'CLAIM', ?2,
+               ?3::text, ?4::text, ?5, ?6)`,
+    )
+    .bind(
+      randomUUID(),
+      claim.id,
+      JSON.stringify({ status: 'PENDING' }),
+      JSON.stringify({ status: 'REJECTED', reason: 'customer_withdrew', telegramUserId: String(telegramId) }),
+      'the customer pressed «پرداختی نکردم» on a claim with no receipt',
+      now,
+    )
+    .run();
+
+  return { outcome: 'withdrawn', publicId: payment.public_id };
+}
+
 export type ReceiptResult =
   /** Attached, and it is the first one for this claim. */
   | { outcome: 'received'; publicId: string }

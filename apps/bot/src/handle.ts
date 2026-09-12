@@ -101,7 +101,7 @@ import {
   storedEmoji,
 } from './emoji.js';
 import { actionsFor, tierFor } from './serviceActions.js';
-import { checkoutFor, recordPaidClick, recordReceipt } from './payment.js';
+import { checkoutFor, recordPaidClick, recordReceipt, withdrawPaidClick } from './payment.js';
 import {
   balanceFor,
   entriesFor,
@@ -1549,7 +1549,7 @@ async function handleAddonAmount(
 
   const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
   if (!checkout) return reply(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
-  if (checkout.claimed) return reply(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+  if (checkout.claimed) return reply(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
 
   return reply(
     menu.addonCheckout(
@@ -1879,7 +1879,7 @@ async function placeOrderScreen(
     return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
   }
   if (checkout.claimed) {
-    return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+    return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
   }
   // The invoice now occupies the message the question was asked on, so nothing
   // may edit it again. See `forgetScreen`.
@@ -2850,7 +2850,7 @@ async function handleCallback(
         return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
       }
       if (checkout.claimed) {
-        return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+        return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
       }
       // Same as the purchase invoice: this message is no longer a question.
       await forgetScreen(tx, user.id);
@@ -2880,11 +2880,26 @@ async function handleCallback(
       const result = await recordPaidClick(tx, user.id, order.id, query.from.id);
       switch (result.outcome) {
         case 'claimed':
-          return screen(menu.paidRecorded(result.publicId), menu.afterPaidMenu());
+          return screen(menu.paidRecorded(result.publicId), menu.afterPaidMenu(order.id));
         case 'already':
-          return screen(menu.paidAlready(result.publicId), menu.afterPaidMenu());
+          return screen(menu.paidAlready(result.publicId), menu.afterPaidMenu(order.id));
         case 'expired':
           return screen(menu.ORDER_EXPIRED, menu.afterPaidMenu());
+        case 'none':
+          return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      }
+    }
+
+    case 'unpd': {
+      if (action.id === undefined) return IGNORED;
+      const order = await orderForUser(tx, user.id, action.id);
+      if (!order) return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      const result = await withdrawPaidClick(tx, user.id, order.id, query.from.id);
+      switch (result.outcome) {
+        case 'withdrawn':
+          return screen(menu.paidWithdrawn(result.publicId), menu.afterPaidMenu());
+        case 'evidence':
+          return screen(menu.paidHasEvidence(result.publicId), menu.afterPaidMenu());
         case 'none':
           return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       }
@@ -3084,7 +3099,11 @@ async function handleCallback(
        *
        * Refused rather than reconciled: the money is in a bank and only a
        * person can decide about it. `paidAlready` is the sentence the rest of
-       * this file already uses for «you have told us, we are waiting».
+       * this file already uses for «you have told us, we are waiting» — and
+       * the keyboard under it carries «پرداختی نکردم», which is the way out
+       * for the customer who never sent anything (#199): it closes the empty
+       * claim, and the invoice's own wallet button, still live in the chat,
+       * then goes through.
        */
       const alreadyClaimed = await tx
         .prepare(
@@ -3095,7 +3114,7 @@ async function handleCallback(
         .bind(order.id)
         .first<{ public_id: string }>();
       if (alreadyClaimed) {
-        return screen(menu.paidAlready(alreadyClaimed.public_id), menu.afterPaidMenu());
+        return screen(menu.paidAlready(alreadyClaimed.public_id), menu.afterPaidMenu(order.id));
       }
       const spent = await spendOnOrder(tx, user.id, order.id, order.total_irr);
       if (spent === 'INSUFFICIENT') {
@@ -3198,7 +3217,7 @@ async function topup(
   if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.walletMenu());
   const checkout = await checkoutFor(tx, userId, placed.id, placed.totalIrr, newPublicId());
   if (!checkout) return screen(menu.NO_CARD_AVAILABLE, menu.walletMenu());
-  if (checkout.claimed) return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+  if (checkout.claimed) return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
   return screen(
     menu.topupCheckout(placed.publicId, placed.totalIrr, checkout.cardDigits, checkout.cardHolder),
     menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits),
