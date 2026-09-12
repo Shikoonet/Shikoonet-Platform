@@ -401,3 +401,95 @@ describe('"I have paid"', () => {
     expect(await claimsOf(user)).toHaveLength(0);
   });
 });
+
+/**
+ * Issue #199, Sam's call 2026-09-12. One mis-tap on «پرداخت کردم» used to
+ * freeze the order for good: the invoice never expired, the plan handed back
+ * the same order, and paying from the wallet was refused. The customer now
+ * takes the tap back — but only while the claim is nothing but the tap.
+ */
+describe('«پرداختی نکردم»', () => {
+  function sendsPhoto(updateId: number, telegramId: number): TelegramUpdate {
+    return {
+      update_id: updateId,
+      message: {
+        message_id: updateId,
+        chat: { id: telegramId },
+        from: { id: telegramId, username: `payer${telegramId}` },
+        photo: [{ file_id: `AgACAgQAAxkBAAI${updateId}` }],
+      },
+    };
+  }
+
+  async function tapped(planCode = 'sim-vip-1m-50') {
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    const plan = await planId(planCode);
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const order = await orderIdOf(user);
+    const paid = await handleUpdate(db, press(updateId + 1, telegramId, `paid:${order}`));
+    return { updateId, telegramId, user, order, paid };
+  }
+
+  it('is offered right after the tap, and takes it back while nothing else has happened', async () => {
+    const t = await tapped();
+    const buttons = t.paid.replies[0]?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    expect(buttons).toContain(`unpay:${t.order}`);
+
+    const out = await handleUpdate(db, press(t.updateId + 2, t.telegramId, `unpay:${t.order}`));
+    expect(out.replies[0]?.text).toBe(menu.paidWithdrawn('withdrawn'));
+    expect(await claimsOf(t.user)).toHaveLength(0);
+    expect((await paymentsOf(t.user))[0]?.status).toBe('PENDING');
+    // Durable trace of what the customer did, since the claim row is gone.
+    const audit = await db
+      .prepare(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'PAID_CLICK_WITHDRAWN' AND entity_id = ?1`)
+      .bind((await paymentsOf(t.user))[0]!.public_id)
+      .first<{ n: number }>();
+    expect(audit!.n).toBe(1);
+  });
+
+  it('lets an honest second «پرداخت کردم» open a fresh claim on the same invoice', async () => {
+    const t = await tapped();
+    await handleUpdate(db, press(t.updateId + 2, t.telegramId, `unpay:${t.order}`));
+    const again = await handleUpdate(db, press(t.updateId + 3, t.telegramId, `paid:${t.order}`));
+    expect(again.replies[0]?.text).toContain('در حال بررسی');
+    const claims = await claimsOf(t.user);
+    expect(claims).toHaveLength(1);
+    expect(claims[0]!.status).toBe('PENDING');
+    expect((await paymentsOf(t.user))[0]?.status).toBe('AWAITING_REVIEW');
+  });
+
+  it('refuses once a receipt is attached — an operator is looking at it', async () => {
+    const t = await tapped();
+    expect(t.paid.replies[0]?.text).toContain('در حال بررسی');
+    expect((await paymentsOf(t.user)).map((p) => p.status)).toEqual(['AWAITING_REVIEW']);
+    const photo = await handleUpdate(db, sendsPhoto(t.updateId + 2, t.telegramId));
+    expect(photo.replies[0]?.text).toContain('رسید شما دریافت شد');
+    const out = await handleUpdate(db, press(t.updateId + 3, t.telegramId, `unpay:${t.order}`));
+    expect(out.replies[0]?.text).toBe(menu.paidWithdrawn('has_receipt'));
+    expect(await claimsOf(t.user)).toHaveLength(1);
+    expect((await paymentsOf(t.user))[0]?.status).toBe('AWAITING_REVIEW');
+  });
+
+  it('refuses once the engine has decided something about it', async () => {
+    const t = await tapped();
+    const claim = (await claimsOf(t.user))[0]!;
+    await db
+      .prepare(`UPDATE payment_claims SET status = 'MATCH_SUGGESTED' WHERE external_order_id = ?1`)
+      .bind(claim.external_order_id)
+      .run();
+    const out = await handleUpdate(db, press(t.updateId + 2, t.telegramId, `unpay:${t.order}`));
+    expect(out.replies[0]?.text).toBe(menu.paidWithdrawn('decided'));
+    expect(await claimsOf(t.user)).toHaveLength(1);
+    expect((await paymentsOf(t.user))[0]?.status).toBe('AWAITING_REVIEW');
+  });
+
+  it('will not take back another customer’s tap', async () => {
+    const t = await tapped();
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const out = await handleUpdate(db, press(updateId, telegramId, `unpay:${t.order}`));
+    expect(out.replies[0]?.text).toBe(menu.ORDER_GONE);
+    expect(await claimsOf(t.user)).toHaveLength(1);
+  });
+});

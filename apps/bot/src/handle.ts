@@ -101,7 +101,7 @@ import {
   storedEmoji,
 } from './emoji.js';
 import { actionsFor, tierFor } from './serviceActions.js';
-import { checkoutFor, recordPaidClick, recordReceipt } from './payment.js';
+import { checkoutFor, recordPaidClick, recordReceipt, withdrawPaidClick } from './payment.js';
 import {
   balanceFor,
   entriesFor,
@@ -1223,6 +1223,7 @@ function navigationParent(raw: string | undefined): string | null {
     case 'order':
     case 'auto':
     case 'paid':
+    case 'unpay':
     case 'rord':
     case 'wpay':
       // Once an order exists, going back into its construction screen can
@@ -2880,11 +2881,27 @@ async function handleCallback(
       const result = await recordPaidClick(tx, user.id, order.id, query.from.id);
       switch (result.outcome) {
         case 'claimed':
-          return screen(menu.paidRecorded(result.publicId), menu.afterPaidMenu());
+          return screen(menu.paidRecorded(result.publicId), menu.afterPaidMenu(order.id));
         case 'already':
-          return screen(menu.paidAlready(result.publicId), menu.afterPaidMenu());
+          return screen(menu.paidAlready(result.publicId), menu.afterPaidMenu(order.id));
         case 'expired':
           return screen(menu.ORDER_EXPIRED, menu.afterPaidMenu());
+        case 'none':
+          return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      }
+    }
+
+    case 'unpay': {
+      if (action.id === undefined) return IGNORED;
+      // Same ownership check as `paid`: the id came off a button.
+      const order = await orderForUser(tx, user.id, action.id);
+      if (!order) return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      const result = await withdrawPaidClick(tx, user.id, order.id, query.from.id);
+      switch (result.outcome) {
+        case 'withdrawn':
+        case 'has_receipt':
+        case 'decided':
+          return screen(menu.paidWithdrawn(result.outcome), menu.afterPaidMenu());
         case 'none':
           return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       }

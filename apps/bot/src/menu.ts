@@ -1596,8 +1596,28 @@ export function paymentConfirmed(publicId: string): string {
   ].join('\n');
 }
 
-export function afterPaidMenu(): InlineKeyboard {
-  return buildMenu('afterPaid', layout('afterPaid'));
+/**
+ * After «پرداخت کردم». With the order id the customer can take a mis-tap back
+ * (`unpay`, issue #199); without one — an order that is gone or expired —
+ * there is nothing to take back and only the way home is drawn.
+ */
+/** The three answers to «پرداختی نکردم» (issue #199). */
+export function paidWithdrawn(outcome: 'withdrawn' | 'has_receipt' | 'decided'): string {
+  const t = TEXTS_NOW;
+  return t.raw(
+    outcome === 'withdrawn'
+      ? 'PAID_WITHDRAWN'
+      : outcome === 'has_receipt'
+        ? 'PAID_WITHDRAW_HAS_RECEIPT'
+        : 'PAID_WITHDRAW_DECIDED',
+  );
+}
+
+export function afterPaidMenu(orderId?: number): InlineKeyboard {
+  return buildMenu('afterPaid', layout('afterPaid'), {
+    applies: (action) => action !== 'unpay' || orderId !== undefined,
+    target: (action) => (action === 'unpay' ? encode('unpay', orderId!) : action),
+  });
 }
 
 /**
