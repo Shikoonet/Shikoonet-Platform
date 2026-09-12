@@ -356,6 +356,105 @@ export async function recordPaidClick(
     : { outcome: 'claimed', publicId: payment.public_id };
 }
 
+export type WithdrawResult =
+  /** The claim is gone and the invoice is payable again. */
+  | { outcome: 'withdrawn'; publicId: string }
+  /** A receipt is attached — an operator is looking at it; not from here. */
+  | { outcome: 'has_receipt'; publicId: string }
+  /** The engine or an operator has already decided something about it. */
+  | { outcome: 'decided'; publicId: string }
+  /** Nothing of theirs is waiting. */
+  | { outcome: 'none' };
+
+/**
+ * «پرداختی نکردم» — takes back a mis-tapped «پرداخت کردم» (issue #199).
+ *
+ * One tap on the busiest screen in the shop moved the payment to
+ * AWAITING_REVIEW and opened a PENDING claim, and from there every exit was
+ * shut: the invoice never expired, re-entering the plan handed back the same
+ * order, and paying from the wallet was refused as a double charge. The only
+ * way out was an operator rejecting a claim with no receipt on it.
+ *
+ * Allowed only while the claim is still nothing but the tap: PENDING, no
+ * receipt attached, and no reconciliation row of any status — the moment the
+ * engine has found or suggested a transaction, or a person has looked, it is
+ * theirs (`settle.ts`, the review screen), not the customer's to undo.
+ *
+ * The claim row is deleted rather than moved: `external_order_id` is UNIQUE,
+ * so a second honest «پرداخت کردم» on the same invoice must be able to open a
+ * fresh claim, and a withdrawn tap is not evidence of anything. The fact that
+ * it happened is kept in `audit_logs`, which cannot lose it.
+ */
+export async function withdrawPaidClick(
+  tx: D1DatabaseSession,
+  userId: number,
+  orderId: number,
+  telegramId: number,
+): Promise<WithdrawResult> {
+  const payment = await tx
+    .prepare(
+      `SELECT id, public_id, status FROM payments
+        WHERE order_id = ?1 AND user_id = ?2
+        ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+    )
+    .bind(orderId, userId)
+    .first<{ id: number; public_id: string; status: string }>();
+  if (!payment || payment.status !== 'AWAITING_REVIEW') return { outcome: 'none' };
+
+  const claim = await tx
+    .prepare(
+      `SELECT c.id, c.status, c.receipt_submitted_at,
+              EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.payment_claim_id = c.id)
+                AS has_match
+         FROM payment_claims c
+        WHERE c.external_order_id = ?1
+        FOR UPDATE OF c`,
+    )
+    .bind(`shikoo:${payment.public_id}`)
+    .first<{ id: string; status: string; receipt_submitted_at: number | null; has_match: boolean }>();
+  if (!claim) return { outcome: 'none' };
+  if (claim.receipt_submitted_at !== null) return { outcome: 'has_receipt', publicId: payment.public_id };
+  if (claim.status !== 'PENDING' || claim.has_match) {
+    return { outcome: 'decided', publicId: payment.public_id };
+  }
+
+  // Guarded once more in the statement: the SELECTs above hold the rows, but
+  // the conditions are the whole contract, so they are the WHERE too.
+  const gone = await tx
+    .prepare(
+      `DELETE FROM payment_claims
+        WHERE id = ?1 AND status = 'PENDING' AND receipt_submitted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.payment_claim_id = ?1)`,
+    )
+    .bind(claim.id)
+    .run();
+  if (gone.meta.changes !== 1) return { outcome: 'decided', publicId: payment.public_id };
+  await tx
+    .prepare(
+      `UPDATE payments SET status = 'PENDING', updated_at = now()
+        WHERE id = ?1 AND status = 'AWAITING_REVIEW'`,
+    )
+    .bind(payment.id)
+    .run();
+  await tx
+    .prepare(
+      `INSERT INTO audit_logs
+         (id, actor_email, actor_role, action, entity_type, entity_id,
+          before_json, after_json, reason, created_at)
+       VALUES (?1, NULL, 'SYSTEM', 'PAID_CLICK_WITHDRAWN', 'payment', ?2,
+               ?3::text, NULL, ?4, ?5)`,
+    )
+    .bind(
+      randomUUID(),
+      payment.public_id,
+      JSON.stringify({ claimId: claim.id, orderId, telegramUserId: String(telegramId) }),
+      'the customer pressed «پرداختی نکردم» before any receipt or bank match',
+      Date.now(),
+    )
+    .run();
+  return { outcome: 'withdrawn', publicId: payment.public_id };
+}
+
 export type ReceiptResult =
   /** Attached, and it is the first one for this claim. */
   | { outcome: 'received'; publicId: string }

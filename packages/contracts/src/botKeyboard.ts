@@ -271,7 +271,15 @@ export const MENUS = {
   afterPaid: {
     label: 'بعد از ثبت پرداخت',
     hint: 'وقتی مشتری «پرداخت کردم» را زده',
-    buttons: [BACK_TO_MENU],
+    buttons: [
+      {
+        action: 'unpay',
+        label: '❌ پرداختی نکردم — انصراف',
+        hint: 'فقط تا وقتی رسیدی نفرستاده و واریزی پیدا نشده؛ ثبت پرداخت را پس می‌گیرد',
+        conditional: true,
+      },
+      BACK_TO_MENU,
+    ],
   },
   myServices: {
     label: 'سرویس‌های من',
@@ -591,7 +599,10 @@ const DEFAULT_CELLS: Record<
     ['tpo', 0, 1],
     ['paid', 1, 0, 'success'],
   ],
-  afterPaid: [['menu', 0, 0]],
+  afterPaid: [
+    ['unpay', 0, 0],
+    ['menu', 1, 0],
+  ],
   myServices: [['menu', 0, 0]],
   serviceDetail: [
     ['xv', 0, 0],

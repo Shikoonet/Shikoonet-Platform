@@ -60,6 +60,8 @@ export const CALLBACK_ACTIONS = [
   //         CUSTOMER_TEXT order with no text after its own order id, which is
   //         the generated name the customer is agreeing to here.
   'paid', // <orderId> — the customer says they have paid
+  'unpay', // <orderId> — «پرداختی نکردم»: a mis-tap taken back, while the
+  //          claim still carries no receipt and no bank match (issue #199)
   'mine', // [page] — the services this customer already owns
   'sub', // <subscriptionId> — one owned service, with its link
   'renew', // [page] — the services that can be extended

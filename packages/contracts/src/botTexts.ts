@@ -612,10 +612,31 @@ export const TEXTS = {
     // no picture at all. A customer who sends nothing still gets their service
     // when the money arrives; what they cost is the operator's certainty if it
     // does not.
-    default: '📸 حالا عکس رسید واریز را همین‌جا بفرستید.',
+    default:
+      '📸 حالا عکس رسید واریز را همین‌جا بفرستید. بدون رسید، تایید پرداخت شما به بررسی دستی می‌رود و دیرتر انجام می‌شود.\n\nاگر اشتباهی زده‌اید و هنوز واریز نکرده‌اید، «پرداختی نکردم» را بزنید.',
     placeholders: [],
     screen: 'paid',
     hint: 'درخواست عکس رسید، بعد از «پرداخت کردم» — در هر دو حالت اول و تکرار گفته می‌شود',
+  },
+  PAID_WITHDRAWN: {
+    default:
+      '↩️ ثبت پرداخت پس گرفته شد.\n\nفاکتور همچنان باز است — هر وقت واریز کردید، روی همان فاکتور «پرداخت کردم» را بزنید و عکس رسید را بفرستید.',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'بعد از «پرداختی نکردم» روی claimی که رسید و واریزی نداشت',
+  },
+  PAID_WITHDRAW_HAS_RECEIPT: {
+    default:
+      'رسید شما رسیده و در حال بررسی است، پس این ثبت دیگر از این‌جا پس گرفته نمی‌شود. اگر اشتباه بوده، به پشتیبانی پیام دهید.',
+    placeholders: [],
+    screen: 'paid',
+    hint: '«پرداختی نکردم» بعد از اینکه رسید فرستاده شده',
+  },
+  PAID_WITHDRAW_DECIDED: {
+    default: 'این پرداخت بررسی شده و دیگر قابل پس‌گرفتن نیست.',
+    placeholders: [],
+    screen: 'paid',
+    hint: '«پرداختی نکردم» روی claimی که تطبیق یا تصمیم دارد',
   },
   RECEIPT_RECEIVED_TITLE: {
     default: '📸 رسید شما دریافت شد و به پروندهٔ پرداخت اضافه شد.',
