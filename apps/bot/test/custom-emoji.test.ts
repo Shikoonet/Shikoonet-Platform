@@ -32,10 +32,13 @@ import { ensureCatalog, makeCustomer } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import { createTelegramApi } from '../src/telegram.js';
 import {
+  CUSTOM_EMOJI_PAUSE_MS,
   CUSTOM_EMOJI_SETTING,
-  disableCustomEmoji,
+  enableCustomEmoji,
   invalidateShopSettings,
   loadShopSettings,
+  pauseCustomEmoji,
+  resumeCustomEmoji,
 } from '../src/settings.js';
 import { invalidateBotContent, loadBotContent } from '../src/botContent.js';
 
@@ -88,6 +91,9 @@ async function clearAll(): Promise<void> {
     .prepare(`DELETE FROM settings WHERE scope = ?1 AND key = ?2`)
     .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key)
     .run();
+  // The rest is module state, so a test that paused must not leak into the
+  // next one.
+  resumeCustomEmoji();
   invalidateShopSettings();
   invalidateBotContent();
 }
@@ -294,7 +300,7 @@ describe('a custom emoji inside a NAME, not inside the wording', () => {
 describe('sending it, and being refused', () => {
   /** A Telegram that answers however the test says, and records what it got. */
   function fakeTelegram(
-    answers: ('ok' | 'reject' | 'network' | 'notmodified' | 'chatnotfound')[],
+    answers: ('ok' | 'reject' | 'network' | 'notmodified' | 'chatnotfound' | 'docinvalid')[],
   ) {
     const bodies: Record<string, unknown>[] = [];
     let call = 0;
@@ -309,6 +315,12 @@ describe('sending it, and being refused', () => {
             error_code: 400,
             description: 'Bad Request: message is not modified',
           }),
+          { status: 400 },
+        );
+      }
+      if (answer === 'docinvalid') {
+        return new Response(
+          JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: DOCUMENT_INVALID' }),
           { status: 400 },
         );
       }
@@ -495,6 +507,25 @@ describe('sending it, and being refused', () => {
     expect(refused).not.toHaveBeenCalled();
   });
 
+  it('lands plain on DOCUMENT_INVALID and asks again next time, without resting', async () => {
+    // The refusal staging actually logged, three times, for ids Telegram
+    // itself returns from `getCustomEmojiStickers`. It is about the document,
+    // not the bot — so the screen lands plain and nothing is switched off.
+    const { bodies, fetchImpl } = fakeTelegram(['docinvalid', 'ok']);
+    const refused = vi.fn();
+    const api = createTelegramApi({
+      token: 't',
+      baseUrl: 'http://fake',
+      fetch: fetchImpl,
+      onCustomEmojiRefused: refused,
+    });
+    await api.editMessageText(1, 2, `سلام ${FIRE}`, [[{ text: 'x', callback_data: 'y' }]]);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]?.['text']).toBe('سلام 🔥');
+    expect(bodies[1]?.['parse_mode']).toBeUndefined();
+    expect(refused).not.toHaveBeenCalled();
+  });
+
   it('does not classify a dead destination as a custom-emoji refusal', async () => {
     // Both are Telegram 400 responses, but only CUSTOM_EMOJI_INVALID says
     // anything about the optional feature. Retrying a dead chat as plain text
@@ -526,23 +557,24 @@ describe('sending it, and being refused', () => {
     expect(classified).toEqual([]);
   });
 
-  it('turns the setting off in the database, and the bot obeys it', async () => {
+  it('rests after a refusal, keeps the setting, and comes back by itself', async () => {
     await setSwitch(true);
     await putText('WELCOME', `خوش آمدید ${FIRE}`);
 
     // Warm BOTH caches by sending a real screen first. Without this the test
     // proves nothing about the second cache: the wording is loaded with the
     // stripping decision already baked in, so an empty content cache would
-    // reload correctly no matter what `disableCustomEmoji` invalidated.
+    // reload correctly no matter what `pauseCustomEmoji` invalidated.
     const warm = ids();
     await makeCustomer(warm.telegramId);
     const before = await handleUpdate(db, startUpdate(warm.updateId, warm.telegramId));
     expect(before.replies[0]?.text ?? '').toContain('tg-emoji');
     expect((await loadShopSettings(db)).customEmoji).toBe(true);
 
-    await disableCustomEmoji(db);
+    const refusedAt = Date.now();
+    pauseCustomEmoji(refusedAt);
 
-    expect((await loadShopSettings(db)).customEmoji).toBe(false);
+    expect((await loadShopSettings(db, refusedAt)).customEmoji).toBe(false);
     // Both caches went, so the very next screen is already plain — not thirty
     // seconds of sending the markup that was just refused.
     const { updateId, telegramId } = ids();
@@ -550,5 +582,31 @@ describe('sending it, and being refused', () => {
     const out = await handleUpdate(db, startUpdate(updateId, telegramId));
     expect(out.replies[0]?.text ?? '').toContain('خوش آمدید 🔥');
     expect(out.replies[0]?.text ?? '').not.toContain('tg-emoji');
+
+    // The ROW was not touched. Until 2026-09-12 this wrote `false`, and nothing
+    // wrote `true` back: one refusal — of any kind — left the shop plain until
+    // an admin assigned an emoji again.
+    const row = await db
+      .prepare(`SELECT value FROM settings WHERE scope = ?1 AND key = ?2`)
+      .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key)
+      .first<{ value: unknown }>();
+    expect(row?.value).toBe(true);
+
+    // And the rest ends on its own. Read with the cache cold, at a clock past
+    // the pause — the same read that a customer's next screen would do.
+    invalidateShopSettings();
+    expect((await loadShopSettings(db, refusedAt + CUSTOM_EMOJI_PAUSE_MS)).customEmoji).toBe(true);
+  });
+
+  it('ends the rest early when an admin assigns an emoji', async () => {
+    await setSwitch(true);
+    const refusedAt = Date.now();
+    pauseCustomEmoji(refusedAt);
+    expect((await loadShopSettings(db, refusedAt)).customEmoji).toBe(false);
+
+    // The round trip is the one honest test of the feature — the admin sends
+    // an emoji and has to SEE it drawn back — so it cannot wait out the rest.
+    await enableCustomEmoji(db);
+    expect((await loadShopSettings(db, refusedAt)).customEmoji).toBe(true);
   });
 });

@@ -435,10 +435,17 @@ export interface TelegramApiOptions {
    * Called once when Telegram refuses a message that carried custom emoji.
    *
    * The bot cannot know whether its owner has Premium — there is no API that
-   * says so — so it finds out by being told no. The caller uses this to switch
-   * the feature off, so the shop stops paying a failed send and a retry for
-   * every screen. An admin who turns it on without Premium must not be able to
-   * stop their own bot answering.
+   * says so — so it finds out by being told no. The caller uses this to rest
+   * the feature for a while, so the shop stops paying a failed send and a retry
+   * for every screen. An admin who turns it on without Premium must not be able
+   * to stop their own bot answering.
+   *
+   * A REST and not a switch-off, because this is a guess. Telegram does not
+   * document the sentence it refuses with, so «a 400 that a plain retry
+   * survives» is the whole test — and a 400 from any other cause passes it
+   * too. Acting on that guess for good took the emoji off a shop whose owner
+   * has Premium (2026-09-12); acting on it for fifteen minutes is the price of
+   * not knowing.
    */
   onCustomEmojiRefused?: () => void | Promise<void>;
 }
@@ -691,6 +698,11 @@ function isNotModified(err: unknown): boolean {
   return String(err).includes('message is not modified');
 }
 
+/** Telegram refusing the emoji's document itself — see `withEmojiFallback`. */
+function isDocumentInvalid(err: unknown): boolean {
+  return String(err).includes('DOCUMENT_INVALID');
+}
+
 export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
   const base = (options.baseUrl ?? TELEGRAM_API_BASE).replace(/\/+$/, '');
   const doFetch = options.fetch ?? globalThis.fetch;
@@ -825,6 +837,16 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     }
     await send({ text: stripCustomEmoji(clamped), ...both(false) });
     log.warn('telegram.custom_emoji_refused', {}, richError);
+    // `DOCUMENT_INVALID` names the emoji, not the bot's entitlement — and on
+    // staging it named emoji that were valid. Three refusals (2026-09-07, -08,
+    // -12), all `editMessageText`, every id on the box answered by
+    // `getCustomEmojiStickers`, and the same ids drawn fine before and after.
+    // That is Telegram being transient about a document, so the screen has
+    // landed plain and the next one simply asks again. Resting on it turned a
+    // one-screen blip into a shop-wide outage. Ceiling: an id that is
+    // PERSISTENTLY invalid — typed by hand into a badge — costs its screen a
+    // doubled send and one warning per draw, with no rest to cap it.
+    if (isDocumentInvalid(richError)) return;
     await options.onCustomEmojiRefused?.();
   }
 
