@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ContinuityBanner, ContinuityButton } from '../../src/hub/ContinuityBanner.js';
 import { App } from '../../src/App.js';
 import { RoleProvider } from '../../src/role.js';
@@ -140,5 +140,33 @@ describe('the strip is not in the controls row — the containment that starved 
     expect(container.querySelector('header.app-header + .continuity-banner')).not.toBeNull();
     // And the row that would have been starved still exists to be measured.
     expect(container.querySelector('.app-header__tools')).not.toBeNull();
+  });
+});
+
+describe('the activation dialog is not inside the header either', () => {
+  /*
+   * Seen on staging, 2026-09-11, measured with Playwright: the dialog's
+   * backdrop was 1703×63 — the header's box, not the viewport's. `.app-header`
+   * is `position: fixed` with a `backdrop-filter`, and a backdrop-filter makes
+   * an element the containing block for its fixed-position descendants. So a
+   * `.modal-backdrop` with `inset: 0` drawn INSIDE the header fills the header
+   * and nothing else: a strip 63px tall holding a question about giving product
+   * away, with the form cut off below it.
+   *
+   * jsdom computes no layout, so — like the strip above — this pins the
+   * containment that causes it: the dialog must be rendered outside the header.
+   */
+  it('renders under document.body, not under .app-header', async () => {
+    const { container } = draw(<ContinuityButton state={OFF} onChanged={noop} />);
+    const wrap = document.createElement('header');
+    wrap.className = 'app-header';
+    document.body.appendChild(wrap);
+    wrap.appendChild(container);
+
+    fireEvent.click(screen.getByRole('button', { name: 'حالت تداوم' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.closest('.app-header')).toBeNull();
+    expect(dialog.parentElement).toBe(document.body);
+    wrap.remove();
   });
 });

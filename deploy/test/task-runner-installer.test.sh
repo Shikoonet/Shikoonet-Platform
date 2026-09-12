@@ -216,6 +216,17 @@ has "$INSTALLER" '90-shikoo-task-runner" "$SUDOERS"' 'rollback restores a previo
 has "$INSTALLER" 'BACKUP/shikoo-task-runner" "$BIN"' 'rollback restores a previous runner'
 has "$INSTALLER" 'BACKUP/lib" "$LIB"' 'rollback restores a previous bundle directory'
 
+section 'the release lock survives a reboot'
+
+# /var/lock is /run/lock, a tmpfs: everything the installer sets on the lock is
+# undone by the next boot, and nothing about the host looks different
+# afterwards — the first signal is a production dispatch dying on a file nobody
+# removed. The tmpfiles.d fragment is what makes that not happen, and it had no
+# guard.
+has "$INSTALLER" 'TMPFILES=/etc/tmpfiles.d/shikoo-release-lock.conf' 'the boot-time fragment is named'
+has "$INSTALLER" 'mv -Tf "$TMPFILES.new" "$TMPFILES"' 'the fragment is written, atomically'
+has "$INSTALLER" 'systemd-tmpfiles --create "$TMPFILES"' 'the fragment is applied in the same run'
+
 section 'the negative tests the installer runs on itself'
 
 has "$INSTALLER" 'an extra argument was accepted' 'it proves extra arguments are refused'

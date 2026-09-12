@@ -1604,6 +1604,29 @@ fi
 kill "$HOLDER" 2>/dev/null || true
 wait "$HOLDER" 2>/dev/null || true
 
+# And it is a DIFFERENT file from the release lock. Those two were once the
+# same inode taken by two protocols on two file descriptors, which is the same
+# as no lock at all: a deploy and a release could each hold "the" lock and
+# never see the other. Every case above overrides LOCK_FILE, so the production
+# default is exercised nowhere else — read it out of the two scripts and
+# compare, rather than trusting the comment that says they differ.
+# Both single-quoted on purpose: these are literals to search FOR in another
+# file, so expansion is exactly what must not happen to them.
+# shellcheck disable=SC2016
+DEPLOY_LOCK=$(sed -n 's/^LOCK_FILE=${LOCK_FILE:-\(.*\)}$/\1/p' "$DEPLOY" | head -1)
+# shellcheck disable=SC2016
+DEPLOY_LOCK=${DEPLOY_LOCK//'$ENV_ARG'/production}
+RELEASE_LOCK=$(sed -n 's/^RELEASE_LOCK=//p' "$ROOT/deploy/shikoo-task-runner" | head -1)
+if [ -z "$DEPLOY_LOCK" ] || [ -z "$RELEASE_LOCK" ]; then
+  bad "the deploy lock and the release lock are different files" \
+    "could not read them: deploy='${DEPLOY_LOCK}' release='${RELEASE_LOCK}' — did a constant move or get renamed?"
+elif [ "$DEPLOY_LOCK" = "$RELEASE_LOCK" ]; then
+  bad "the deploy lock and the release lock are different files" \
+    "both are ${DEPLOY_LOCK} — one inode, two locking protocols, which is no lock at all"
+else
+  ok "the deploy lock and the release lock are different files"
+fi
+
 section 'over-ssh.sh — only a digest is deployable'
 
 if grep -qF 'deploy/deploy.sh deploy/current-production-apps.sh' "$OVER_SSH"; then
@@ -1763,6 +1786,132 @@ fi
 
 
 refute_wf 'no cache is read from pull request runs' 'type=gha'
+
+# ── the registry is pruned, and pruning cannot fail the deploy ────────────
+#
+# This job pushes an image on every green `main` and nothing has ever deleted
+# one. The package is private, so the versions accumulate against the account's
+# storage; the failure mode is the push in this same job starting to fail, which
+# stops every deploy. The window is sixty days because `prepare`, `promote` and
+# `cutover` keep their artifacts for thirty, so a promotion that is still valid
+# can name a digest a month old — and a count-based rule at this push rate would
+# be a six-day window that deletes it.
+assert_wf 'the image job prunes old GHCR versions' \
+  'name: prune GHCR versions older than 60 days'
+assert_wf 'the prune window is sixty days' "KEEP_DAYS: '60'"
+assert_wf 'a floor of newest versions survives regardless of age' "KEEP_NEWEST: '20'"
+assert_wf 'pruning never fails the deploy' 'continue-on-error: true'
+# shellcheck disable=SC2016
+assert_wf 'the digest this run pushed is never pruned' \
+  'PUSHED_DIGEST: ${{ steps.build.outputs.digest }}'
+
+# Those five assertions prove the numbers are written down. They do not prove
+# the script reads them, and a `run:` block that is never executed anywhere is
+# exactly the shape that passes review and prunes nothing — or prunes the wrong
+# thing. So the block is lifted out of the YAML and RUN, against a `gh` that
+# answers from a fixture, for the same reason every other script in this suite
+# is run rather than read.
+PRUNE="$WORK/prune.sh"
+awk '
+  /^      - name: prune GHCR versions/ { instep = 1 }
+  instep && /^        run: \|$/ { body = 1; next }
+  body && /^[[:space:]]*$/ { print ""; next }
+  body && !/^          / { exit }
+  body { sub(/^          /, ""); print }
+' "$WORKFLOW" >"$PRUNE"
+if [ -s "$PRUNE" ] && grep -q 'gh api' "$PRUNE"; then
+  ok 'the prune step is a runnable shell script'
+else
+  bad 'the prune step is a runnable shell script' \
+    'the run: block could not be lifted out of the workflow'
+fi
+
+PB="$WORK/prune-bin"
+mkdir -p "$PB"
+cat >"$PB/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+last=""; for a in "$@"; do last=$a; done
+case " $* " in
+  *" -X DELETE "*) printf '%s\n' "${last##*/}" >>"$FAKE_GH_DELETED"; exit 0 ;;
+  *" --paginate "*) [ "${FAKE_GH_LIST_RC:-0}" = 0 ] || exit 1; cat "$FAKE_GH_LIST"; exit 0 ;;
+esac
+exit 0
+FAKEGH
+chmod +x "$PB/gh"
+
+# Every date is computed from the clock the script itself will read. A fixture
+# pinned to a calendar date is a test that turns red on a day nobody touched it.
+vrow() { # days-ago  version-id  digest-suffix
+  printf '%s\t%s\tsha256:%s\n' "$(date -u -d "-$1 days" +%Y-%m-%dT%H:%M:%SZ)" "$2" "$3"
+}
+# The window and the floor come from the WORKFLOW, not from this file. The
+# expectations below are fixed numbers, so the two cannot quietly drift apart:
+# editing either value in the YAML changes what the script does here and turns
+# one of these red, which is the whole reason to run it rather than grep it.
+KEEP_DAYS_WF=$(sed -n "s/^ *KEEP_DAYS: '\\([0-9]\\{1,\\}\\)'.*/\\1/p" "$WORKFLOW" | head -1)
+KEEP_NEWEST_WF=$(sed -n "s/^ *KEEP_NEWEST: '\\([0-9]\\{1,\\}\\)'.*/\\1/p" "$WORKFLOW" | head -1)
+if [ -n "$KEEP_DAYS_WF" ] && [ -n "$KEEP_NEWEST_WF" ]; then
+  ok 'the window and the floor are readable out of the workflow'
+else
+  bad 'the window and the floor are readable out of the workflow' \
+    "KEEP_DAYS='${KEEP_DAYS_WF}' KEEP_NEWEST='${KEEP_NEWEST_WF}'"
+fi
+run_prune() { # list-file  deleted-file  pushed-digest  [list-rc]
+  local rc=0
+  : >"$2"
+  env PATH="$PB:$PATH" \
+    FAKE_GH_LIST="$1" FAKE_GH_DELETED="$2" FAKE_GH_LIST_RC="${4:-0}" \
+    GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' \
+    IMAGE_NAME='ghcr.io/shikoonet/shikoonet-platform' \
+    KEEP_DAYS="$KEEP_DAYS_WF" KEEP_NEWEST="$KEEP_NEWEST_WF" PUSHED_DIGEST="$3" \
+    bash "$PRUNE" >"$2.out" 2>&1 || rc=$?
+  return "$rc"
+}
+
+# Twenty-seven versions: twenty-four inside the window, three well outside it.
+# The floor takes the newest twenty off the top before anything is considered,
+# so the seven that remain are four young ones and the three old ones — and one
+# of the old ones is the digest this run pushed.
+: >"$WORK/versions-a.tsv"
+for d in $(seq 1 24); do vrow "$d" "1$d" "r$d"; done >>"$WORK/versions-a.tsv"
+for d in 100 101 102; do vrow "$d" "2$d" "o$d"; done >>"$WORK/versions-a.tsv"
+if run_prune "$WORK/versions-a.tsv" "$WORK/deleted-a" 'sha256:o101'; then
+  got=$(sort "$WORK/deleted-a" | tr '\n' ' ')
+  if [ "$got" = '2100 2102 ' ]; then
+    ok 'only versions past the window, outside the floor and not in use are pruned'
+  else
+    bad 'only versions past the window, outside the floor and not in use are pruned' \
+      "deleted: ${got:-nothing}; expected 2100 2102"
+  fi
+else
+  bad 'only versions past the window, outside the floor and not in use are pruned' \
+    "the prune step exited non-zero: $(cat "$WORK/deleted-a.out")"
+fi
+
+# Twenty-two versions, every one of them older than the window. Age alone would
+# empty the registry; the floor is what keeps twenty of them.
+: >"$WORK/versions-b.tsv"
+for d in $(seq 200 221); do vrow "$d" "3$d" "x$d"; done >>"$WORK/versions-b.tsv"
+run_prune "$WORK/versions-b.tsv" "$WORK/deleted-b" 'sha256:none' || true
+n=$(grep -c . "$WORK/deleted-b" || true)
+if [ "$n" = 2 ]; then
+  ok 'the newest twenty survive even when every version is past the window'
+else
+  bad 'the newest twenty survive even when every version is past the window' \
+    "$n of 22 deleted, expected 2"
+fi
+
+# A registry that will not answer is housekeeping that did not happen, not a
+# release that went wrong: the step has to exit zero and delete nothing.
+rc=0
+run_prune "$WORK/versions-b.tsv" "$WORK/deleted-c" 'sha256:none' 1 || rc=$?
+n=$(grep -c . "$WORK/deleted-c" || true)
+if [ "$rc" = 0 ] && [ "$n" = 0 ]; then
+  ok 'a registry that will not answer prunes nothing and still exits zero'
+else
+  bad 'a registry that will not answer prunes nothing and still exits zero' \
+    "exit ${rc}, ${n} deleted"
+fi
 
 # The gate must not be able to see a deployment secret, and everything that can
 # must depend on it. Checked by walking the job blocks rather than by grepping
