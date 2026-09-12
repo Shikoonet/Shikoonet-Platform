@@ -63,7 +63,8 @@ export const CALLBACK_ACTIONS = [
   'mine', // [page] — the services this customer already owns
   'sub', // <subscriptionId> — one owned service, with its link
   'renew', // [page] — the services that can be extended
-  'rnw', // <subscriptionId> — the plans this service can be extended onto
+  'rnw', // <subscriptionId> — the plan this service was sold under, or the list
+  'rnwl', // <subscriptionId> — the whole list, when `rnw` showed one plan
   'rord', // <subscriptionId>:<planId> — extend that service with that plan
   // ── admin only, and the guard is in the handler ──────────────────────────
   //

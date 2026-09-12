@@ -357,6 +357,12 @@ export const MENUS = {
         hint: 'به‌جای دکمهٔ بالا، وقتی کدی نگه داشته شده',
         conditional: true,
       },
+      {
+        action: 'rnwl',
+        label: '📋 پلن‌های دیگر',
+        hint: 'فقط وقتی صفحه یک پلنِ متناسب را نشان می‌دهد',
+        conditional: true,
+      },
       { action: 'renew', label: 'بازگشت به سرویس‌ها ⬅️', hint: 'برگشت به فهرست تمدید' },
       BACK_TO_MENU,
     ],
@@ -605,8 +611,9 @@ const DEFAULT_CELLS: Record<
   renewPlans: [
     ['dsr', 0, 0],
     ['dxr', 0, 1],
-    ['renew', 1, 0],
-    ['menu', 1, 1],
+    ['rnwl', 1, 0],
+    ['renew', 2, 0],
+    ['menu', 2, 1],
   ],
   wallet: [
     ['top', 0, 0],

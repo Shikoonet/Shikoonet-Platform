@@ -2263,6 +2263,8 @@ export function renewIntro(
   service: { plan_name_at_sale: string; public_id: string; expires_at: string | null },
   mode: RenewMode,
   now: number,
+  /** The line that closes the intro: «choose a plan» over a list, «the matching plan» over one. */
+  closing: 'choose' | 'matched' = 'choose',
 ): string {
   const t = TEXTS_NOW;
   const lines = [
@@ -2298,17 +2300,40 @@ export function renewIntro(
             t.raw('RENEW_MODE_ADD_VOLUME_RESET_TIME')
           : t.raw('RENEW_MODE_RESET'),
     '',
-    t.raw('RENEW_CHOOSE_PLAN'),
+    t.raw(closing === 'matched' ? 'RENEW_MATCHED_PLAN' : 'RENEW_CHOOSE_PLAN'),
   );
   return lines.join('\n');
 }
 
-/** One row per plan, each carrying BOTH the service and the plan. */
+/**
+ * The screen for a service whose plan is still on offer: the intro, then the
+ * plan's own detail block — size, length, price, the held code — exactly as the
+ * buy flow's plan screen draws it, so the two read as one shop.
+ */
+export function renewMatched(
+  service: { plan_name_at_sale: string; public_id: string; expires_at: string | null },
+  mode: RenewMode,
+  now: number,
+  plan: CatalogPlan,
+  price: Price,
+  applied?: AppliedCode | null,
+): string {
+  return `${renewIntro(service, mode, now, 'matched')}\n\n${planDetail(plan, price, applied)}`;
+}
+
+/**
+ * One row per plan, each carrying BOTH the service and the plan.
+ *
+ * `matched` means the list is ONE plan — the one the service was sold under —
+ * and «پلن‌های دیگر» is drawn so the rest are one tap away. Over the full list
+ * that button would lead to the screen it is on, so it is not drawn.
+ */
 export function renewPlanMenu(
   subscriptionId: number,
   plans: CatalogPlan[],
   discountPercent = 0,
   heldCode?: string | null,
+  matched = false,
 ): InlineKeyboard {
   const keyboard: InlineKeyboard = plans.map((plan) => {
     const price = priceForUser(plan.priceIrr, discountPercent);
@@ -2324,18 +2349,28 @@ export function renewPlanMenu(
     // in the one screen the fix did not reach.
     const label = soldAs(plan.productName, plan.planName);
     const quoted = price.discountIrr === 0 && nameMentionsPrice(label, plan.priceIrr);
+    const text = quoted ? label : `${label} — ${formatToman(price.totalIrr)}`;
     return [
       {
-        text: quoted ? label : `${label} — ${formatToman(price.totalIrr)}`,
+        // The one matching plan is a confirmation, not a choice, and reads so.
+        text: matched ? `✅ تمدید با همین پلن — ${text}` : text,
         callback_data: encode('rord', subscriptionId, plan.planId),
       },
     ];
   });
   return withChrome(keyboard, 'renewPlans', {
     applies: (action) =>
-      action === 'dxr' ? heldCode != null : action === 'dsr' ? heldCode == null : true,
+      action === 'dxr'
+        ? heldCode != null
+        : action === 'dsr'
+          ? heldCode == null
+          : action === 'rnwl'
+            ? matched
+            : true,
     target: (action) =>
-      action === 'renew' || action === 'menu' ? action : encode(action as 'dsr', subscriptionId),
+      action === 'renew' || action === 'menu'
+        ? action
+        : encode(action as 'dsr' | 'dxr' | 'rnwl', subscriptionId),
     values: { code: heldCode ?? '' },
   });
 }

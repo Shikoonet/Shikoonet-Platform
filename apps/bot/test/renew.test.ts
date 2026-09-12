@@ -154,6 +154,10 @@ async function makeService(
     expiresInDays?: number | null;
     volumeGb?: number | null;
     usedBytes?: number | null;
+    /** What the service remembers of its sale; null is every migrated row. */
+    planId?: number | null;
+    durationDays?: number | null;
+    planNameAtSale?: string;
   },
 ): Promise<number> {
   const row = await db
@@ -161,9 +165,9 @@ async function makeService(
       `INSERT INTO subscriptions
          (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
           remote_username, subscription_url, volume_gb, used_bytes,
-          status, purchased_at, expires_at, notify)
-       VALUES (?1, ?2, ?3, 'سرویس قدیمی', 1950000, ?4, ?5, ?6, ?7,
-               'ACTIVE', now(), ?8, '{"time":true}'::jsonb)
+          status, purchased_at, expires_at, notify, plan_id, duration_days)
+       VALUES (?1, ?2, ?3, ?9, 1950000, ?4, ?5, ?6, ?7,
+               'ACTIVE', now(), ?8, '{"time":true}'::jsonb, ?10, ?11)
        RETURNING id`,
     )
     .bind(
@@ -177,6 +181,9 @@ async function makeService(
       fields.expiresInDays === undefined || fields.expiresInDays === null
         ? null
         : new Date(NOW_MS + fields.expiresInDays * DAY).toISOString(),
+      fields.planNameAtSale ?? 'سرویس قدیمی',
+      fields.planId ?? null,
+      fields.durationDays ?? null,
     )
     .first<{ id: number }>();
   if (!row) throw new Error('renew fixture failed');
@@ -312,6 +319,97 @@ describe('choosing what to renew', () => {
     for (const offer of offers) {
       expect(offer.callback_data).toMatch(new RegExp(`^rord:${subId}:\\d+$`));
     }
+  });
+
+  /**
+   * Straight to the plan the service was sold under — Sam, 2026-09-11: «باید
+   * همونجا redirect بشه به پلن متناسب همون اکانتش».
+   *
+   * The screen after picking a service used to be the panel's whole flat
+   * list, because the plan a migrated service was sold under is gone for half
+   * of them. That is still true of those; for a service that DOES remember —
+   * `plan_id` is written on every fresh sale and every renewal — the list was
+   * eight buttons hiding the one that mattered. So: one button when the plan
+   * is known, the list when it is not, and «پلن‌های دیگر» to reach the list
+   * either way.
+   */
+  it('offers the plan the service was sold under, alone, with a way to the rest', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const sold = await planId('sim-vip-1m-50');
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-m`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      planId: sold,
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
+
+    const buttons = out.replies[0]?.keyboard?.flat() ?? [];
+    const offers = buttons.filter((b) => b.callback_data?.startsWith('rord:'));
+    expect(offers.map((b) => b.callback_data)).toEqual([`rord:${subId}:${sold}`]);
+    expect(buttons.map((b) => b.callback_data)).toContain(`rnwl:${subId}`);
+    expect(out.replies[0]?.text).toContain('۵۰ گیگ');
+  });
+
+  it('finds the plan by size and length when the sale forgot it — but only an unambiguous one', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    // 20 GB / 30 days is one plan on this panel; 50 GB / 30 days is two.
+    const twenty = await planId('sim-vip-1m-20');
+    const unique = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-u`,
+      username: `u_${telegramId}_u`,
+      expiresInDays: 5,
+      volumeGb: 20,
+      durationDays: 30,
+    });
+    const ambiguous = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-x`,
+      username: `u_${telegramId}_x`,
+      expiresInDays: 5,
+      volumeGb: 50,
+      durationDays: 30,
+    });
+
+    const one = await handleUpdate(db, press(updateId, telegramId, `rnw:${unique}`));
+    const oneOffers = (one.replies[0]?.keyboard?.flat() ?? []).filter((b) =>
+      b.callback_data?.startsWith('rord:'),
+    );
+    expect(oneOffers.map((b) => b.callback_data)).toEqual([`rord:${unique}:${twenty}`]);
+
+    const many = await handleUpdate(db, press(updateId + 1, telegramId, `rnw:${ambiguous}`));
+    const buttons = many.replies[0]?.keyboard?.flat() ?? [];
+    const offers = buttons.filter((b) => b.callback_data?.startsWith('rord:'));
+    // Two plans fit; guessing one would be choosing the customer's money for
+    // them. The whole list, and no «other plans» button — this IS the list.
+    expect(offers.length).toBeGreaterThan(1);
+    expect(buttons.map((b) => b.callback_data)).not.toContain(`rnwl:${ambiguous}`);
+  });
+
+  it('«پلن‌های دیگر» opens the whole list, and a code taken off keeps the one plan', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const sold = await planId('sim-vip-1m-50');
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-l`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      planId: sold,
+    });
+
+    const all = await handleUpdate(db, press(updateId, telegramId, `rnwl:${subId}`));
+    const offers = (all.replies[0]?.keyboard?.flat() ?? []).filter((b) =>
+      b.callback_data?.startsWith('rord:'),
+    );
+    expect(offers.length).toBeGreaterThan(1);
+
+    const back = await handleUpdate(db, press(updateId + 1, telegramId, `dxr:${subId}`));
+    const again = (back.replies[0]?.keyboard?.flat() ?? []).filter((b) =>
+      b.callback_data?.startsWith('rord:'),
+    );
+    expect(again.map((b) => b.callback_data)).toEqual([`rord:${subId}:${sold}`]);
   });
 
   it('does not promise to keep remaining time a service no longer has', async () => {
