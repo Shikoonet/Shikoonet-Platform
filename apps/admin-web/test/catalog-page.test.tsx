@@ -54,6 +54,8 @@ function service(
     oncePerUser: false,
     groupIds,
     rowIndex: null,
+    badge: null,
+    buttonStyle: null,
     panel: PANEL,
     configs: configs.map((cfName, i) => ({
       id: id * 100 + i,
@@ -108,6 +110,8 @@ vi.mock('../src/api.js', async () => {
       catalog: (p: unknown) => catalog(p),
       panelGroups: (id: number) => panelGroups(id),
       productCategories: async () => ({ ok: true, items: [] }),
+      // The service form carries a `BadgeField` since 0061, and it asks this.
+      emojiPacks: async () => ({ ok: true, customEmoji: false, packs: [] }),
     },
   };
 });

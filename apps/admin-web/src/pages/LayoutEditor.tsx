@@ -28,16 +28,33 @@
 import { useEffect, useState } from 'react';
 import { stripCustomEmoji, MAX_CATALOG_ROWS, MAX_ROW_WIDTH, groupIntoRows } from '@shikoo/contracts';
 import { ButtonGrid, GRID_HELP, type GridChip } from './ButtonGrid.js';
-import { api, ApiError, type LayoutItem, type LayoutScope } from '../api.js';
+import { BadgeField, badgeValue } from './BadgeField.js';
+import { api, ApiError, type ButtonStyle, type LayoutItem, type LayoutScope } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
 export interface LayoutButton {
   id: number;
+  /** The name alone; the badge is drawn in front of it by the board. */
   label: string;
   /** A second line on the chip — a price, or why it is not on sale. */
   hint?: string | null;
   rowIndex: number | null;
+  /** What the bot draws before the name, and the button's colour — both editable on the board. */
+  badge?: string | null;
+  buttonStyle?: ButtonStyle | null;
+}
+
+/** The three colours as this panel paints them — see `BotContentPages`. */
+const STYLE_TOKENS: Record<ButtonStyle, string> = {
+  primary: 'var(--accent)',
+  success: 'var(--success)',
+  danger: 'var(--danger)',
+};
+
+export interface BadgePatch {
+  badge: string | null;
+  buttonStyle: ButtonStyle | null;
 }
 
 function message(e: unknown): string {
@@ -54,7 +71,13 @@ type Rows = LayoutButton[][];
 function toChip(b: LayoutButton): GridChip {
   // The preview draws what the bot sends, so a custom emoji shows as its
   // fallback glyph rather than as the tag it is stored in.
-  return { key: String(b.id), label: stripCustomEmoji(b.label), hint: b.hint };
+  const badge = b.badge ? `${stripCustomEmoji(b.badge)} ` : '';
+  return {
+    key: String(b.id),
+    label: `${badge}${stripCustomEmoji(b.label)}`,
+    hint: b.hint,
+    tint: b.buttonStyle ? STYLE_TOKENS[b.buttonStyle] : null,
+  };
 }
 
 export function LayoutEditor({
@@ -62,6 +85,7 @@ export function LayoutEditor({
   items,
   screenText,
   onSaved,
+  editBadge,
 }: {
   scope: LayoutScope;
   /** The WHOLE screen, in its saved order. A partial list is refused by the server. */
@@ -69,12 +93,20 @@ export function LayoutEditor({
   /** The message the bot sends above these buttons, so the frame is the real screen. */
   screenText: string;
   onSaved: () => void;
+  /**
+   * How to write one button's badge and colour, when this board offers to.
+   * The board knows every button of the screen, so making an admin leave it
+   * to colour one was a round trip for nothing (Sam, 2026-09-11). Absent on
+   * boards whose buttons have no badge to edit.
+   */
+  editBadge?: (id: number, patch: BadgePatch) => Promise<void>;
 }) {
   const w = useAdminWriteProps();
   const [rows, setRows] = useState<Rows>(() => groupIntoRows(items));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [picked, setPicked] = useState<number | null>(null);
 
   // Reloading when the screen's contents change — a product added, a category
   // renamed — rather than keeping edits across it. Unsaved positions for rows
@@ -111,11 +143,8 @@ export function LayoutEditor({
     return <p className="empty">این صفحه هنوز دکمه‌ای ندارد.</p>;
   }
 
-  if (items.length === 0) {
-    return <p className="empty">این صفحه هنوز دکمه‌ای ندارد.</p>;
-  }
-
   const byId = new Map(items.map((b) => [String(b.id), b]));
+  const pickedItem = picked === null ? undefined : byId.get(String(picked));
 
   return (
     <div className="arrange">
@@ -128,12 +157,26 @@ export function LayoutEditor({
           setDone(null);
         }}
         screenText={screenText}
+        onSelect={editBadge ? (key) => setPicked(Number(key)) : undefined}
       />
 
       <div className="arrange__side">
         <p className="muted" style={{ margin: 0 }}>
           {GRID_HELP}
+          {editBadge && ' روی یک دکمه کلیک کنید تا نشان و رنگش را همین‌جا عوض کنید.'}
         </p>
+
+        {editBadge && pickedItem && (
+          <BadgeEditor
+            key={pickedItem.id}
+            item={pickedItem}
+            onSave={async (patch) => {
+              await editBadge(pickedItem.id, patch);
+              onSaved();
+            }}
+            onClose={() => setPicked(null)}
+          />
+        )}
 
         {err && <div className="alert alert-error">{err}</div>}
         {done && <div className="alert alert-ok">{done}</div>}
@@ -175,6 +218,64 @@ export function LayoutEditor({
           {count(rows.length)} ردیف · حداکثر {count(MAX_ROW_WIDTH)} دکمه در هر ردیف و{' '}
           {count(MAX_CATALOG_ROWS)} ردیف در کل صفحه.
         </p>
+      </div>
+    </div>
+  );
+}
+
+/** One button's badge and colour, edited on the board and written by the caller. */
+function BadgeEditor({
+  item,
+  onSave,
+  onClose,
+}: {
+  item: LayoutButton;
+  onSave: (patch: BadgePatch) => Promise<void>;
+  onClose: () => void;
+}) {
+  const w = useAdminWriteProps();
+  const [badge, setBadge] = useState(item.badge ?? '');
+  const [style, setStyle] = useState<ButtonStyle | null>(item.buttonStyle ?? null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const name = stripCustomEmoji(item.label);
+
+  return (
+    <div className="card arrange__badge">
+      <BadgeField
+        id={`arrange-badge-${item.id}`}
+        label={`بج دکمهٔ «${name}»`}
+        value={badge}
+        onChange={setBadge}
+        style={style}
+        onStyleChange={setStyle}
+        preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name}`}
+      />
+      {err && <div className="alert alert-error">{err}</div>}
+      <div className="row-actions" style={{ justifyContent: 'flex-start' }}>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            setErr(null);
+            try {
+              await onSave({ badge: badgeValue(badge), buttonStyle: style });
+              onClose();
+            } catch (e) {
+              setErr(message(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+          {...w}
+        >
+          ذخیرهٔ دکمه
+        </button>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
       </div>
     </div>
   );

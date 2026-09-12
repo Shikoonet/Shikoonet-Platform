@@ -196,20 +196,20 @@ export interface CatalogProduct {
    */
   providerName: string;
   /**
-   * The badge of this service's ONE config, or null when it has several.
+   * The service's own badge (`products.badge`, since 0061) — or, when it has
+   * none, the badge of its ONE config.
    *
-   * `products` has no badge column and does not need one. A service holding a
-   * single purchasable config IS that config — `handleCategory` collapses right
-   * past the price screen for it and opens the plan directly — so this button
-   * is that plan's button, and it wears that plan's badge. A service holding
-   * three has three answers and therefore none: its badges appear one screen
-   * down, on the buttons they belong to.
+   * The fallback is older than the column. A service holding a single
+   * purchasable config IS that config — `handleCategory` collapses right past
+   * the price screen for it and opens the plan directly — so this button is
+   * that plan's button, and it wears that plan's badge. On a migrated shop
+   * every legacy row is one service with one config, so without the fallback
+   * the tier screen was the one catalogue screen that drew neither badge nor
+   * colour, and a badge typed on «محصولات» had no button to land on.
    *
-   * Without this the tier screen was the one catalogue screen that drew neither
-   * badge nor colour, and on a migrated shop it is the screen an operator
-   * actually looks at: every legacy row imported as one service with one config
-   * under it, so a badge typed on «محصولات» had no button to land on and the
-   * panel said nothing about why.
+   * The column came on 2026-09-11, when «several configs, therefore no badge»
+   * stopped being an answer: the tier screen is exactly where «💎 الماس» beside
+   * «🥇 طلایی» is wanted, and five plans under a tier is the common case.
    */
   badge: string | null;
   /** The same rule, for the colour. See `badge` above. */
@@ -264,7 +264,8 @@ export async function productsForUser(
               p.name              AS name,
               pr.name             AS provider_name,
               p.row_index         AS row_index,
-              -- The one config's badge and colour, and only when there is one.
+              -- The service's own badge and colour; failing that, the one
+              -- config's, and only when there is one.
               --
               -- COUNT(*) is the number of PURCHASABLE configs here, counted
               -- under the same predicate and the same joins as
@@ -273,8 +274,8 @@ export async function productsForUser(
               -- that branch the group holds a single row, so MIN() is that
               -- row's value; with more than one it is NULL and the button
               -- draws exactly as it did before.
-              CASE WHEN COUNT(*) = 1 THEN MIN(pl.badge) END        AS badge,
-              CASE WHEN COUNT(*) = 1 THEN MIN(pl.button_style) END AS button_style
+              COALESCE(p.badge,        CASE WHEN COUNT(*) = 1 THEN MIN(pl.badge) END)        AS badge,
+              COALESCE(p.button_style, CASE WHEN COUNT(*) = 1 THEN MIN(pl.button_style) END) AS button_style
          FROM products p
          JOIN product_plans pl          ON pl.product_id = p.id
          JOIN provisioning_providers pr ON pr.id = p.provider_id

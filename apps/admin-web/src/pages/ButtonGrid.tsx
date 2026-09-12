@@ -114,12 +114,15 @@ export function ButtonGrid({
   rows,
   onChange,
   screenText,
+  onSelect,
 }: {
   rows: GridRows;
   /** The whole board, after a move. The caller decides what to do with it. */
   onChange: (next: GridRows) => void;
   /** The message the bot sends above these buttons, so the frame is the real screen. */
   screenText: string;
+  /** A chip was clicked — not moved, picked. Optional: most boards only arrange. */
+  onSelect?: ((key: string) => void) | undefined;
 }) {
   const w = useAdminWriteProps();
   const [dragging, setDragging] = useState<string | null>(null);
@@ -212,6 +215,7 @@ export function ButtonGrid({
                     setOver({ row: r, col: c, asNewRow: false });
                   }}
                   onKeyDown={(e) => key(e, b.key)}
+                  onClick={onSelect ? () => onSelect(b.key) : undefined}
                   {...w}
                 >
                   <span>{b.label}</span>
