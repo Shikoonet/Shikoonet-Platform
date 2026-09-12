@@ -140,7 +140,7 @@ test('a volume code is stored with its gigabytes and listed as what it gives', a
 
   const fa = new Intl.NumberFormat('fa-IR');
   const listed = page.locator('#main-content table').locator(`tr:has-text("${VOL}")`);
-  await expect(listed).toContainText('حجم اضافه');
+  await expect(listed).toContainText('حجم · ');
   await expect(listed).toContainText(`+${fa.format(30)} گیگ`);
 });
 
@@ -175,7 +175,7 @@ test('the list says what each code is, in the digits the panel uses', async ({ p
   const fa = new Intl.NumberFormat('fa-IR');
 
   const pct = table.locator(`tr:has-text("${PCT}")`);
-  await expect(pct).toContainText('درصدی');
+  await expect(pct).toContainText('پول · درصد از قیمت');
   await expect(pct).toContainText(`${fa.format(15)}٪`);
   // Used against the ceiling, not a bare number: «۰» alone says nothing about
   // how many are left.

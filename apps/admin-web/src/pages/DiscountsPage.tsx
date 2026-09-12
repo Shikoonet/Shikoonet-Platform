@@ -22,12 +22,24 @@ import { useAdminWriteProps } from '../role.js';
 
 const PAGE_SIZE = 25;
 
+// Two families, and the label says which BEFORE it says how much: a «۲۰٪»
+// that comes off the price and a «۲۰٪» that goes onto the volume looked the
+// same in the list until Sam asked which was which (2026-09-12).
 const KIND_FA: Record<string, string> = {
-  GIFT_BALANCE: 'شارژ کیف پول',
-  PERCENT_OFF: 'درصدی',
-  AMOUNT_OFF: 'مبلغ ثابت',
-  BONUS_GB: 'حجم اضافه (گیگ)',
-  BONUS_PERCENT: 'حجم اضافه (درصد)',
+  GIFT_BALANCE: 'پول · شارژ کیف پول',
+  PERCENT_OFF: 'پول · درصد از قیمت',
+  AMOUNT_OFF: 'پول · مبلغ ثابت از قیمت',
+  BONUS_GB: 'حجم · گیگ اضافه',
+  BONUS_PERCENT: 'حجم · درصد اضافه',
+};
+
+/** One sentence under the kind picker: what the customer actually gets. */
+const KIND_HINT: Record<string, string> = {
+  PERCENT_OFF: 'قیمت پلن به همین درصد کم می‌شود؛ حجم همان است.',
+  AMOUNT_OFF: 'این مبلغ از قیمت پلن کم می‌شود؛ حجم همان است.',
+  GIFT_BALANCE: 'مشتری چیزی نمی‌خرد — این مبلغ به کیف پولش اضافه می‌شود.',
+  BONUS_GB: 'قیمت عوض نمی‌شود؛ این‌قدر گیگ روی حجم پلن اضافه می‌شود (۱۰ گیگ + ۳۰ = ۴۰ گیگ).',
+  BONUS_PERCENT: 'قیمت عوض نمی‌شود؛ حجم پلن به همین درصد بیشتر می‌شود (۱۰ گیگ + ۲۰٪ = ۱۲ گیگ).',
 };
 
 const STATE_FA: Record<string, string> = {
@@ -448,12 +460,17 @@ function CreateForm({ onDone }: { onDone: () => void }) {
             value={kind}
             onChange={(e) => setKind(e.target.value)}
           >
-            <option value="PERCENT_OFF">درصدی</option>
-            <option value="AMOUNT_OFF">مبلغ ثابت</option>
-            <option value="GIFT_BALANCE">شارژ کیف پول</option>
-            <option value="BONUS_GB">حجم اضافه (گیگ)</option>
-            <option value="BONUS_PERCENT">حجم اضافه (درصد)</option>
+            <optgroup label="از قیمت کم می‌کند">
+              <option value="PERCENT_OFF">درصد از قیمت</option>
+              <option value="AMOUNT_OFF">مبلغ ثابت از قیمت</option>
+              <option value="GIFT_BALANCE">شارژ کیف پول</option>
+            </optgroup>
+            <optgroup label="به حجم اضافه می‌کند — قیمت همان می‌ماند">
+              <option value="BONUS_GB">گیگ اضافه</option>
+              <option value="BONUS_PERCENT">درصد اضافه به حجم</option>
+            </optgroup>
           </select>
+          <p className="muted small" data-testid="kind-hint" style={{ margin: '.35rem 0 0' }}>{KIND_HINT[kind]}</p>
         </div>
         {isPercent ? (
           <div>
