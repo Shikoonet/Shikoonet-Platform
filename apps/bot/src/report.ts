@@ -31,10 +31,24 @@ import type { D1Database } from '@shikoo/database';
 import { tehranDateStringFromMs, tehranDayBoundsFromDate } from '@shikoo/domain';
 import { enqueue } from './notify.js';
 import { loadShopSettings } from './settings.js';
+import { volumeText } from './menu.js';
 import { formatToman } from './money.js';
 
 /** How many resellers the ranking names, matching the legacy's `LIMIT 3`. */
 const TOP_RESELLERS = 3;
+
+/**
+ * How many nights back the sweep looks for a report it never sent.
+ *
+ * A bot down for three days used to lose two reports for good: only yesterday
+ * was ever asked about, and yesterday moves on. The `report:<date>` key is
+ * what makes catching up safe — a night already queued is found and the walk
+ * stops there — so this is the cap on how far a comeback reaches, not a
+ * schedule. A week: longer than any outage that has happened, short enough
+ * that a shop does not get a month of nights at once.
+ */
+const CATCH_UP_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface DayTotals {
   sales: number;
@@ -234,14 +248,21 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
     // decision, because it also has to say what a TRIAL counts as.
     lines.push('', '🖥 فروش نو به تفکیک لوکیشن');
     for (const p of panels) {
-      lines.push(`• ${p.name}: ${p.count} سرویس — ${toman(p.irr)} تومان — ${p.gb} گیگ`);
+      // `volumeText`, not the raw sum: three panels' worth of numeric(12,3)
+      // adds up to «1500.5», and the one formatter every customer screen uses
+      // is the one the admin's screen should use too.
+      lines.push(`• ${p.name}: ${p.count} سرویس — ${toman(p.irr)} تومان — ${volumeText(p.gb)}`);
     }
   }
 
   if (resellers.length > 0) {
     lines.push('', '🏅 نمایندگان برتر امروز');
     for (const r of resellers) {
-      lines.push(`• ${r.username ? '@' + r.username : r.telegramId}: ${toman(r.irr)} تومان`);
+      // A reseller with no @username is named as a person, not as a bare
+      // number in a leaderboard — «7462913» beside «@shop_ali» reads as a row
+      // that lost its name.
+      const who = r.username ? '@' + r.username : `کاربر ${r.telegramId}`;
+      lines.push(`• ${who}: ${toman(r.irr)} تومان`);
     }
   }
 
@@ -249,7 +270,7 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
 }
 
 /**
- * Queues yesterday's report, once.
+ * Queues yesterday's report, once — and any night before it that was missed.
  *
  * Called from the poll loop, so it is asked roughly every twenty-five seconds
  * and must be cheap when there is nothing to do — which is why the dedupe key
@@ -281,20 +302,38 @@ export async function sweepDailyReport(db: D1Database, now: number = Date.now())
 
   // Yesterday in Tehran: the most recent day that is entirely over. Reporting
   // on today would be a partial day whose number changes every time you look.
-  const dateStr = tehranDateStringFromMs(now - 24 * 60 * 60 * 1000);
-  const key = `report:${dateStr}`;
+  //
+  // And the nights before it that were never sent. The walk stops at the first
+  // night that was — on an ordinary morning that is yesterday itself, so the
+  // common case is still one primary-key hit — and a walk that finds nothing
+  // in the whole window is a shop that has never sent a report, not one that
+  // was down for a week: it is owed yesterday, not seven zero-filled nights.
+  const missing: string[] = [];
+  for (let back = 1; back <= CATCH_UP_DAYS; back++) {
+    const dateStr = tehranDateStringFromMs(now - back * DAY_MS);
+    const already = await db
+      .prepare(`SELECT 1 AS x FROM bot_notifications WHERE dedupe_key = ?1`)
+      .bind(`report:${dateStr}`)
+      .first<{ x: number }>();
+    if (already) break;
+    missing.push(dateStr);
+  }
+  if (missing.length === CATCH_UP_DAYS) missing.length = 1;
+  if (missing.length === 0) return false;
 
-  const already = await db
-    .prepare(`SELECT 1 AS x FROM bot_notifications WHERE dedupe_key = ?1`)
-    .bind(key)
-    .first<{ x: number }>();
-  if (already) return false;
-
-  const text = await buildDailyReport(db, dateStr);
-  // «🌙 گزارش شبانه». Null until somebody makes the topics, and null is a
-  // message in the group's General topic — exactly where it goes today.
-  await db.withSession((tx) =>
-    enqueue(tx, { dedupeKey: key, chatId, text, threadId: reportTopics.reportnight }),
-  );
+  // Oldest first, so the channel reads in order.
+  for (const dateStr of missing.reverse()) {
+    const text = await buildDailyReport(db, dateStr);
+    // «🌙 گزارش شبانه». Null until somebody makes the topics, and null is a
+    // message in the group's General topic — exactly where it goes today.
+    await db.withSession((tx) =>
+      enqueue(tx, {
+        dedupeKey: `report:${dateStr}`,
+        chatId,
+        text,
+        threadId: reportTopics.reportnight,
+      }),
+    );
+  }
   return true;
 }

@@ -209,6 +209,81 @@ describe('the daily report', () => {
       (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:')),
     ).toHaveLength(0);
   });
+
+  /**
+   * A missed night is made up — issue #179.
+   *
+   * Only yesterday was ever asked about, so a bot down for three days lost two
+   * reports for good. The `report:<date>` key already made a catch-up safe;
+   * nothing did one.
+   */
+  it('catches up the nights it missed, oldest first, and stops at the last one sent', async () => {
+    setReportChatIdFallback(CHANNEL);
+    // The night before the outage was sent as usual.
+    const lastSent = '2026-08-14';
+    await db
+      .prepare(
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+         VALUES (?1, ?2, 'sent earlier', 'SENT')`,
+      )
+      .bind(`report:${lastSent}`, CHANNEL)
+      .run();
+
+    // The loop's first look after three days down: 08-15, 08-16 and 08-17 are
+    // all owed, and 08-14 is where the walk must stop.
+    expect(await sweepDailyReport(db)).toBe(true);
+    const queued = (await pendingNotifications())
+      .filter((n) => n.dedupeKey.startsWith('report:'))
+      .map((n) => n.dedupeKey);
+    expect(queued).toEqual(['report:2026-08-15', 'report:2026-08-16', 'report:2026-08-17']);
+
+    // And once, like the ordinary night.
+    expect(await sweepDailyReport(db)).toBe(false);
+  });
+
+  it('owes a shop that has never sent a report yesterday, not a week', async () => {
+    setReportChatIdFallback(CHANNEL);
+    // Nothing in `bot_notifications` at all — `beforeEach` saw to that — which
+    // is a first run, not an outage. Seven zero-filled nights would be noise.
+    expect(await sweepDailyReport(db)).toBe(true);
+    const queued = (await pendingNotifications())
+      .filter((n) => n.dedupeKey.startsWith('report:'))
+      .map((n) => n.dedupeKey);
+    expect(queued).toEqual([`report:${DAY}`]);
+  });
+
+  it('adds the panel gigabytes up with the shop’s own formatter', async () => {
+    const { start } = tehranDayBoundsFromDate(DAY);
+    // Two 10 GB services and one of 1000.5 — a sum the raw number prints as
+    // «1020.5 گیگ» and every customer screen prints as «1,020.5 گیگ».
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-gb-panel' });
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-gb-panel' });
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-gb-panel' });
+    await db
+      .prepare(`UPDATE subscriptions SET volume_gb = 1000.5 WHERE public_id = ?1`)
+      .bind(`reps${seq}`)
+      .run();
+
+    const text = await buildDailyReport(db, DAY);
+
+    expect(text).toMatch(/zz-gb-panel[^\n]*1,020\.5 گیگ/);
+    expect(text).not.toContain('1020.5');
+  });
+
+  it('names a reseller with no @username as a person, not a bare number', async () => {
+    const { start } = tehranDayBoundsFromDate(DAY);
+    const { telegramId } = await completedOrder({
+      kind: 'NEW_PURCHASE',
+      irr: 3_000_000,
+      atMs: start + 60_000,
+      reseller: true,
+    });
+    await db.prepare(`UPDATE users SET username = NULL WHERE telegram_id = ?1`).bind(telegramId).run();
+
+    const text = await buildDailyReport(db, DAY);
+
+    expect(text).toContain(`• کاربر ${telegramId}: 300,000 تومان`);
+  });
 });
 
 /**
