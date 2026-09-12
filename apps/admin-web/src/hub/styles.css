@@ -316,7 +316,6 @@
 }
 
 
-
 @media (max-width: 1023px) {
   .shikoonet-header__bar {
     grid-template-columns: 1fr auto;
@@ -330,11 +329,6 @@
 .operator-menu {
   position: relative;
 }
-
-
-
-
-
 
 
 /* === Unified date control === */
@@ -522,8 +516,7 @@
   min-width: 0;
 }
 
-.compact-empty,
-.payments-empty {
+.compact-empty {
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -536,12 +529,7 @@
   border-radius: var(--radius-sm);
 }
 
-.payments-empty--inline {
-  margin: var(--space-sm) 0 0;
-}
-
-.compact-empty__mark,
-.payments-empty__mark {
+.compact-empty__mark {
   color: var(--success);
   font-weight: 700;
 }
@@ -678,23 +666,6 @@
   .payments-header__actions {
     width: 100%;
   }}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 /* === Bot verified metrics + table === */
@@ -1234,15 +1205,25 @@
     grid-template-columns: 1fr;
   }}
 
-/* === Account usage ranking === */
-.account-usage-ranking {
+.metrics-strip--four {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+@media (max-width: 960px) {
+  .metrics-strip--four {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* === حساب‌ها و کارت‌ها — the one table on «آمار مالی» === */
+.fin-table-wrap {
   padding: var(--space-md);
   background: var(--surface-muted);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
 }
 
-.account-usage-ranking__header {
+.fin-table__header {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -1251,30 +1232,106 @@
   margin-bottom: var(--space-sm);
 }
 
-.account-usage-ranking__title {
+.fin-table__header p {
   margin: 0;
+  font-size: 0.75rem;
+}
+
+/* The only thing on the page allowed to be wider than the phone. */
+.fin-table__scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.fin-table {
+  width: 100%;
+  min-width: 56rem;
+  border-collapse: collapse;
   font-size: 0.8125rem;
-  font-weight: 700;
+}
+
+.fin-table th,
+.fin-table td {
+  padding: 0.55rem 0.6rem;
+  text-align: right;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.fin-table thead th {
+  font-size: 0.6875rem;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.fin-table__name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.fin-table__name small,
+.fin-table__num small {
+  display: block;
+  font-size: 0.6875rem;
+  margin-top: 0.1rem;
+}
+
+.fin-table__num {
+  white-space: nowrap;
+}
+
+.fin-table__num--zero {
+  color: var(--text-muted);
+}
+
+.fin-table__account {
+  background: var(--surface-elevated);
+}
+
+.fin-table__account--orphans th {
+  padding-top: 0.9rem;
+}
+
+.fin-table__card .fin-table__name {
+  padding-inline-start: 1.75rem;
+  font-weight: 400;
   color: var(--text-secondary);
 }
 
-.account-usage-ranking__cols {
-  display: none;
-  gap: 1rem;
-  font-size: 0.6875rem;
-  text-transform: uppercase;
+.fin-table__card-mask {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8125rem;
   letter-spacing: 0.04em;
+  display: inline-block;
 }
 
-@media (min-width: 720px) {
-  .account-usage-ranking__cols {
-    display: grid;
-    grid-template-columns: 1fr auto auto;
-    gap: 2rem;
-    min-width: 12rem;
-  }}
+.fin-table__tag {
+  display: inline-block;
+  margin-inline-start: 0.5rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  color: var(--warning);
+  background: var(--warning-soft);
+  cursor: help;
+}
+
+.fin-table__total th,
+.fin-table__total td {
+  border-top: 2px solid var(--border-mid);
+  border-bottom: 0;
+  background: var(--gold-muted);
+  font-weight: 700;
+}
+
+.fin-table__foot {
+  margin: var(--space-sm) 0 0;
+  font-size: 0.75rem;
+}
+
 
 /* === Hub list rows === */
 .hub-list {
@@ -1510,80 +1567,6 @@
   color: var(--text-muted);
 }
 
-.account-usage-row {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-md);
-  padding: 0.6rem 0;
-  border-bottom: 1px solid var(--border);
-  transition: background-color 120ms ease;
-}
-
-.account-usage-row:last-child {
-  border-bottom: 0;
-}
-
-.account-usage-row:hover {
-  background: var(--surface-muted);
-  margin: 0 calc(-1 * var(--space-md));
-  padding-inline: var(--space-md);
-  border-radius: var(--radius-sm);
-}
-
-.account-usage-row__rank {
-  flex-shrink: 0;
-  width: 1.75rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  padding-top: 0.1rem;
-}
-
-.account-usage-row__body {
-  flex: 1;
-  min-width: 0;
-}
-
-.account-usage-row__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.35rem 1rem;
-  width: 100%;
-}
-
-.account-usage-row__label {
-  font-size: 0.9rem;
-  font-weight: 500;
-}
-
-.account-usage-row__purchases {
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-}
-
-.account-usage-row__balance {
-  font-size: 0.85rem;
-  font-weight: 600;
-  margin-inline-start: auto;
-}
-
-.account-usage-row__bar-track {
-  width: 100%;
-  height: 0.3rem;
-  margin-top: 0.4rem;
-  background: var(--surface-muted);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.account-usage-row__bar-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 999px;
-}
 
 /* === Sales trend (minimal) === */
 .sales-trend {
@@ -1921,14 +1904,6 @@
   cursor: pointer;
 }
 
-.account-usage-row {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 0.5rem 1rem;
-  padding: 0.55rem 0;
-  border-bottom: 1px solid var(--border, #eee);
-}
 
 .visually-hidden {
   position: absolute;
@@ -2353,29 +2328,6 @@
   font-size: 0.8rem;
 }
 
-.account-usage-row__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.35rem 1rem;
-  width: 100%;
-}
-
-.account-usage-row__bar-track {
-  width: 100%;
-  height: 0.35rem;
-  margin-top: 0.35rem;
-  background: rgba(148, 163, 184, 0.25);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.account-usage-row__bar-fill {
-  height: 100%;
-  background: var(--accent, #2563eb);
-  border-radius: 999px;
-}
 
 .notification-bell__counts--scoped {
   grid-template-columns: 1fr 1fr;
@@ -3867,47 +3819,6 @@
   color: #fff;
 }
 
-/*
- * The six rolling windows on a card row.
- *
- * A fixed six-column grid rather than flex-wrap: the point of showing all six
- * is comparing one card against the one above it, and columns that reflow at a
- * different width per row destroy exactly that. On a narrow screen it scrolls
- * sideways inside its own box rather than pushing the page.
- */
-.card-activity {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(3.2rem, 1fr));
-  gap: 0.25rem 0.5rem;
-  margin: 0.45rem 0 0;
-  overflow-x: auto;
-}
-
-.card-activity__cell {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.1rem;
-}
-
-.card-activity__label {
-  font-size: 0.68rem;
-  color: var(--muted, #94a3b8);
-  white-space: nowrap;
-}
-
-.card-activity__value {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-
-/* A quiet window is still a reading, so it stays legible rather than hidden. */
-.card-activity__value--zero {
-  font-weight: 400;
-  opacity: 0.45;
-}
-
 /* The payments pager. Centred rather than pinned to one side because the
    panel is RTL and a control that changes side with the writing direction is
    one more thing to keep in step for no gain. */
@@ -3944,12 +3855,6 @@
 /* Takings beside the purchase count on a card row. Tabular figures so the
    amounts line up down the list, which is the whole reason to put money in a
    column rather than in a sentence. */
-.account-usage-row__takings {
-  font-size: 13px;
-  color: var(--muted, #667085);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
 
 /* «نماینده» on a payment row. Warm rather than alarming: a reseller payment is
    a good thing, it just answers a different question from a personal one. */
