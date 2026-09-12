@@ -12,7 +12,7 @@
  * database ended up holding rather than against a return value.
  */
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { runMirzabotMatching } from '../src/integrations/mirzabot.js';
@@ -134,6 +134,15 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+// The last test above leaves the mode ON, and the row is shared with every
+// other file on this database: `mirzabot-integration.test.ts` then fulfils
+// where it expects a suspect, in whichever order vitest happens to pick.
+afterAll(async () => {
+  await env.DB.prepare(
+    `DELETE FROM settings WHERE scope = 'pay' AND key = 'continuity_mode'`,
+  ).run();
 });
 
 describe('a claim arriving while the shop is in NORMAL mode', () => {
