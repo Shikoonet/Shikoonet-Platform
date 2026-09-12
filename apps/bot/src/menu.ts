@@ -1107,13 +1107,22 @@ export function bonusLabel(
   planVolumeGb: number | null,
 ): string | null {
   if (planVolumeGb === null) return null;
-  if (code.kind === 'BONUS_GB') return `+${trimGb(Number(code.bonus_gb ?? 0))} گیگ`;
+  // «+۳۰ گیگ — جمعاً ۶۰ گیگ»: what the code adds, then what the customer ends
+  // up with. The total is the number that reaches the panel, so it is said.
+  if (code.kind === 'BONUS_GB') {
+    const add = Number(code.bonus_gb ?? 0);
+    return `+${trimGb(add)} گیگ — جمعاً ${trimGb(round3(planVolumeGb + add))} گیگ`;
+  }
   if (code.kind === 'BONUS_PERCENT') {
     const pct = Number(code.percent ?? 0);
-    const total = Math.round((planVolumeGb * (1 + pct / 100)) * 1000) / 1000;
-    return `+${trimGb(pct)}٪ حجم (${trimGb(total)} گیگ)`;
+    const total = round3(planVolumeGb * (1 + pct / 100));
+    return `+${trimGb(pct)}٪ حجم — جمعاً ${trimGb(total)} گیگ`;
   }
   return null;
+}
+
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
 }
 
 function trimGb(n: number): string {
