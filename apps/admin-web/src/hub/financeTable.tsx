@@ -13,6 +13,14 @@
  * the tiles use — so the total is the server's, not a sum of the rows shown.
  * Every number follows the page's range. The rolling windows are gone; the
  * range picker is the window.
+ *
+ * And the rows must be able to REACH that total. On 2026-09-13 Sam read
+ * «جمع همه ۲۹۱ میلیون» over three rows that summed to thirty: the other 261
+ * million sat on thirteen accounts he had switched off, plus one deposit that
+ * resolved to no account, and the table listed accounts in service only. So
+ * switched-off accounts now follow the live ones under their own heading, and
+ * money that reached no account gets the last row before the total. A total
+ * the rows cannot add up to is a number nobody can check.
  */
 
 import type { Cache } from './query.js';
@@ -111,6 +119,7 @@ function AccountRow({ a, cards }: { a: AccountAnalyticsItem; cards: CardAnalytic
           <strong>{accountLabel(a)}</strong>
           <small className="muted">
             {a.bankName}
+            {!a.active && ' · غیرفعال'}
             {a.status !== 'ACTIVE' && ` · ${a.status}`}
           </small>
         </th>
@@ -180,6 +189,11 @@ export function FinanceTable({
     byAccount.set(c.accountId, list);
   }
   const gap = cards.data.distribution.gap;
+  // `active === false`, not `!active`: a response from before the flag
+  // existed (a cached one, an older server) still lists live accounts only.
+  const live = accounts.data.items.filter((a) => a.active !== false);
+  const archived = accounts.data.items.filter((a) => a.active === false);
+  const nowhere = accounts.data.unaccounted ?? { bankInflowIrr: 0, bankInflowCount: 0, unassignedIncomeIrr: 0, unassignedIncomeCount: 0 };
 
   return (
     <section className="fin-table-wrap" aria-label="حساب‌ها و کارت‌ها">
@@ -199,14 +213,32 @@ export function FinanceTable({
               <th scope="col">تایید ربات</th>
               <th scope="col">تایید دستی</th>
               <th scope="col">نمایندگی</th>
-              <th scope="col">تخصیص‌نیافته</th>
+              {/* Not «تخصیص‌نیافته»: a sale verified by hand without a bank
+                  row leaves its deposit here, and that read as an error until
+                  the column said what it counts — deposits nothing consumed. */}
+              <th scope="col">واریزیِ وصل‌نشده</th>
               <th scope="col">موجودی فعلی</th>
             </tr>
           </thead>
           <tbody>
-            {accounts.data.items.map((a) => (
+            {live.map((a) => (
               <AccountRow key={a.accountId} a={a} cards={byAccount.get(a.accountId) ?? []} />
             ))}
+            {archived.length > 0 && (
+              <>
+                <tr className="fin-table__account fin-table__account--orphans">
+                  <th scope="row" className="fin-table__name" colSpan={8}>
+                    <strong>حساب‌های غیرفعال</strong>
+                    <small className="muted">
+                      خاموش شده‌اند و ربات کارتی از آن‌ها نمی‌دهد — پولی که به آن‌ها رسیده همین‌جاست
+                    </small>
+                  </th>
+                </tr>
+                {archived.map((a) => (
+                  <AccountRow key={a.accountId} a={a} cards={byAccount.get(a.accountId) ?? []} />
+                ))}
+              </>
+            )}
             {orphans.length > 0 && (
               <>
                 <tr className="fin-table__account fin-table__account--orphans">
@@ -219,6 +251,23 @@ export function FinanceTable({
                   <CardRow key={c.cardDigits} c={c} />
                 ))}
               </>
+            )}
+            {nowhere.bankInflowCount > 0 && (
+              <tr className="fin-table__account fin-table__account--orphans">
+                <th scope="row" className="fin-table__name">
+                  <strong>واریزی بدون حساب</strong>
+                  <small className="muted">
+                    پیامک به هیچ حسابی نرسید — در «تراکنش‌ها» حسابش را تعیین کنید
+                  </small>
+                </th>
+                <Money irr={nowhere.bankInflowIrr} n={nowhere.bankInflowCount} />
+                <Blank />
+                <Blank />
+                <Blank />
+                <Blank />
+                <Money irr={nowhere.unassignedIncomeIrr} n={nowhere.unassignedIncomeCount} />
+                <Blank />
+              </tr>
             )}
           </tbody>
           {analytics && (

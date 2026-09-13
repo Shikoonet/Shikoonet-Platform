@@ -248,6 +248,68 @@ describe('GET /api/v1/analytics', () => {
     expect(body.items[0]!.primaryDeviceDisplayName).toBe('Analytics Device');
   });
 
+  it('lists the accounts that were switched off, and the money that reached no account, so the rows add up to the total', async () => {
+    /*
+     * Staging, 2026-09-13, measured through the API: «جمع همه» said
+     * 291,130,212 toman over 685 deposits; the three rows on screen summed to
+     * 29,820,550. The other 261 million sat on thirteen accounts Sam had
+     * switched off on 2026-09-03 (`active = 0`) and one deposit that resolved
+     * to no account at all. The total counted them; the table did not. A total
+     * the rows cannot reach is a number nobody can check.
+     */
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO financial_accounts
+       (id, bank_name, display_name, owner_label, account_type, active, status, account_hint,
+        parser_configuration, created_at, updated_at)
+       VALUES ('acc-off','Melli','Switched Off',NULL,'CARD',0,'ACTIVE','7007','{}',?1,?1)`,
+    )
+      .bind(now)
+      .run();
+    try {
+      await seedTx('tx-on', { amount: 1_000_000 });
+      await seedTx('tx-off-1', { amount: 2_000_000 });
+      await seedTx('tx-off-2', { amount: 3_000_000 });
+      await seedTx('tx-nowhere', { amount: 4_000_000 });
+      await baseEnv.DB.prepare(
+        `UPDATE transaction_candidates SET financial_account_id = 'acc-off' WHERE id IN ('tx-off-1','tx-off-2')`,
+      ).run();
+      await baseEnv.DB.prepare(
+        `UPDATE transaction_candidates SET financial_account_id = NULL WHERE id = 'tx-nowhere'`,
+      ).run();
+
+      const [accounts, page] = await Promise.all([
+        app.fetch(new Request('https://x/api/v1/accounts/analytics?range=all'), envAs()),
+        app.fetch(new Request('https://x/api/v1/analytics?range=all'), envAs()),
+      ]);
+      const body = (await accounts.json()) as {
+        items: Array<{ accountId: string; active: boolean; bankInflowIrr: number; bankInflowCount: number }>;
+        unaccounted: { bankInflowIrr: number; bankInflowCount: number };
+        totals: { totalActiveAccounts: number };
+      };
+      const total = (await page.json()) as { bankInflowIrr: number };
+
+      const off = body.items.find((i) => i.accountId === 'acc-off');
+      expect(off).toMatchObject({ active: false, bankInflowIrr: 5_000_000, bankInflowCount: 2 });
+      expect(body.items.find((i) => i.accountId === ACCOUNT)).toMatchObject({ active: true });
+      expect(body.unaccounted).toEqual({
+        bankInflowIrr: 4_000_000,
+        bankInflowCount: 1,
+        unassignedIncomeIrr: 4_000_000,
+        unassignedIncomeCount: 1,
+      });
+      // The rows reach the total — the whole point.
+      const rows = body.items.reduce((s, i) => s + i.bankInflowIrr, 0) + body.unaccounted.bankInflowIrr;
+      expect(rows).toBe(total.bankInflowIrr);
+      expect(total.bankInflowIrr).toBe(10_000_000);
+      // The «N از M حساب» tile still counts accounts in service, not the archive.
+      expect(body.totals.totalActiveAccounts).toBe(1);
+    } finally {
+      await baseEnv.DB.prepare(`DELETE FROM transaction_candidates WHERE financial_account_id = 'acc-off'`).run();
+      await baseEnv.DB.prepare(`DELETE FROM financial_accounts WHERE id = 'acc-off'`).run();
+    }
+  });
+
   it('does not show Infinity when previous period is zero', () => {
     expect(computePercentChange(100, 0, '7d')).toEqual({ kind: 'new' });
     expect(computePercentChange(0, 0, 'all')).toEqual({ kind: 'all_time' });
