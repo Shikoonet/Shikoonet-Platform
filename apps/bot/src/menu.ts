@@ -33,6 +33,7 @@
  */
 
 import { encode } from './callback.js';
+import { MAX_MESSAGE_LENGTH } from './telegram.js';
 import type { CatalogCategory, CatalogPlan, CatalogProduct, TrialPanel } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
@@ -152,6 +153,7 @@ export let ACTION_UNSUPPORTED = DEFAULT_TEXTS.raw('ACTION_UNSUPPORTED');
  */
 export let SERVICE_DETAIL_NO_LINK = DEFAULT_TEXTS.raw('SERVICE_DETAIL_NO_LINK');
 export let CONFIRM_REVOKE = DEFAULT_TEXTS.raw('CONFIRM_REVOKE');
+export let WITHDRAW_CONFIRM = DEFAULT_TEXTS.raw('WITHDRAW_CONFIRM');
 export let ADDON_NOT_A_NUMBER = DEFAULT_TEXTS.raw('ADDON_NOT_A_NUMBER');
 export let ASK_ACCOUNT_NAME = DEFAULT_TEXTS.raw('ASK_ACCOUNT_NAME');
 export let ACCOUNT_NAME_REFUSED = DEFAULT_TEXTS.raw('ACCOUNT_NAME_REFUSED');
@@ -278,6 +280,7 @@ export function applyContent(content: BotContent): void {
   ACTION_UNSUPPORTED = t.raw('ACTION_UNSUPPORTED');
   SERVICE_DETAIL_NO_LINK = t.raw('SERVICE_DETAIL_NO_LINK');
   CONFIRM_REVOKE = t.raw('CONFIRM_REVOKE');
+  WITHDRAW_CONFIRM = t.raw('WITHDRAW_CONFIRM');
   ADDON_NOT_A_NUMBER = t.raw('ADDON_NOT_A_NUMBER');
   ASK_ACCOUNT_NAME = t.raw('ASK_ACCOUNT_NAME');
   ACCOUNT_NAME_REFUSED = t.raw('ACCOUNT_NAME_REFUSED');
@@ -706,9 +709,25 @@ function usersTariffText(limit: number | null): string {
  */
 export function tariff(plans: readonly CatalogPlan[], discountPercent = 0): string {
   const table = tariffTable(plans, discountPercent);
-  return table === ''
-    ? TEXTS_NOW.render('TARIFF_EMPTY')
-    : `${TEXTS_NOW.render('TARIFF_TITLE')}\n\n${table}`;
+  if (table === '') return TEXTS_NOW.render('TARIFF_EMPTY');
+  const title = TEXTS_NOW.render('TARIFF_TITLE');
+  // One message, whole services. Telegram's limit is 4096 UTF-16 units and
+  // `telegram.ts` clamps anything longer mid-line with «…» — a price list cut
+  // in the middle of a number. Instead, whole service blocks are dropped from
+  // the end and the customer is told the shop has more (issue #180).
+  const more = TEXTS_NOW.render('TARIFF_MORE');
+  const budget = MAX_MESSAGE_LENGTH - title.length - 2 - more.length - 2;
+  if (table.length <= budget + more.length + 2) return `${title}\n\n${table}`;
+  const blocks = table.split('\n\n');
+  const kept: string[] = [];
+  let used = 0;
+  for (const block of blocks) {
+    const cost = block.length + (kept.length > 0 ? 2 : 0);
+    if (used + cost > budget) break;
+    kept.push(block);
+    used += cost;
+  }
+  return `${title}\n\n${kept.join('\n\n')}\n\n${more}`;
 }
 
 /** Back to where the customer came from — a price list has nothing to press. */
@@ -799,7 +818,7 @@ function durationText(days: number | null): string {
  * screen «نامحدود» is the thing the customer is choosing between, and an empty
  * slot there reads as a plan whose volume nobody filled in.
  */
-function volumeText(gb: number | null): string {
+export function volumeText(gb: number | null): string {
   if (gb === null) return 'نامحدود';
   // `numeric(12,3)` arrives as a number; 50.000 must draw as «50 گیگ».
   const shown = Number.isInteger(gb) ? gb : Number(gb.toFixed(3));
@@ -1596,8 +1615,58 @@ export function paymentConfirmed(publicId: string): string {
   ].join('\n');
 }
 
-export function afterPaidMenu(): InlineKeyboard {
-  return buildMenu('afterPaid', layout('afterPaid'));
+/**
+ * The chrome under every payment-side screen.
+ *
+ * With an order id, it carries «پرداختی نکردم» for that order — drawn under
+ * `paidRecorded` and `paidAlready`, where the customer has just been told
+ * their tap opened a claim and may be looking at a tap they did not mean.
+ * Without one there is nothing to withdraw, and the row is dropped.
+ */
+export function afterPaidMenu(orderId?: number): InlineKeyboard {
+  return buildMenu('afterPaid', layout('afterPaid'), {
+    applies: (action) => action !== 'unpd' || orderId !== undefined,
+    target: (action) => (action === 'unpd' ? encode('unpd', orderId) : action),
+  });
+}
+
+/** The question before «پرداختی نکردم» does anything. `unpd2` says yes; «پرداخت کردم» says no. */
+export function withdrawConfirmMenu(orderId: number): InlineKeyboard {
+  return buildMenu('withdrawConfirm', layout('withdrawConfirm'), {
+    target: (action) => encode(action as 'unpd2', orderId),
+  });
+}
+
+/**
+ * «پرداختی نکردم» accepted: the same invoice, back in front of the customer.
+ *
+ * The card and the amount are printed again rather than pointed at — the
+ * screen this replaces was the one that said «ثبت شد», and the invoice with
+ * the card on it may be several messages up.
+ */
+export function invoiceReopened(
+  publicId: string,
+  totalIrr: number,
+  cardDigits: string,
+  cardHolder: string | null,
+): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('PAID_WITHDRAWN_TITLE'),
+    '',
+    t.render('CHECKOUT_ORDER_ID', { id: publicId }),
+    t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
+    '',
+    ...checkoutTail(cardDigits, cardHolder),
+  ].join('\n');
+}
+
+/** «پرداختی نکردم» refused: something is on the claim, so a person decides. */
+export function paidHasEvidence(publicId: string): string {
+  const t = TEXTS_NOW;
+  return [t.raw('PAID_HAS_EVIDENCE'), '', t.render('PAID_TRACKING_ID', { id: publicId })].join(
+    '\n',
+  );
 }
 
 /**
@@ -2369,12 +2438,20 @@ export function renewMatched(
   return `${renewIntro(service, mode, now, 'matched')}\n\n${planDetail(plan, price, applied)}`;
 }
 
+/** Renewal plans per screen — the same page size «سرویس های من» uses. */
+export const RENEW_PLANS_PER_PAGE = SERVICES_PER_PAGE;
+
 /**
  * One row per plan, each carrying BOTH the service and the plan.
  *
  * `matched` means the list is ONE plan — the one the service was sold under —
  * and «پلن‌های دیگر» is drawn so the rest are one tap away. Over the full list
  * that button would lead to the screen it is on, so it is not drawn.
+ *
+ * Paged (issue #180): a renewal is offered everything the panel sells, and a
+ * panel with sixty plans was sixty rows — Telegram refuses the keyboard past
+ * a hundred buttons and the whole message with it. `page` is 1-based and
+ * clamped, so a stale button never draws an empty screen.
  */
 export function renewPlanMenu(
   subscriptionId: number,
@@ -2382,8 +2459,12 @@ export function renewPlanMenu(
   discountPercent = 0,
   heldCode?: string | null,
   matched = false,
+  page = 1,
 ): InlineKeyboard {
-  const keyboard: InlineKeyboard = plans.map((plan) => {
+  const pages = Math.max(1, Math.ceil(plans.length / RENEW_PLANS_PER_PAGE));
+  const at = Math.min(Math.max(1, page), pages);
+  const shown = plans.slice((at - 1) * RENEW_PLANS_PER_PAGE, at * RENEW_PLANS_PER_PAGE);
+  const keyboard: InlineKeyboard = shown.map((plan) => {
     const price = priceForUser(plan.priceIrr, discountPercent);
     // The listed price stays the listed price while a code is held: which plan
     // the code applies to is not known until one is chosen, and a button that
@@ -2406,6 +2487,16 @@ export function renewPlanMenu(
       },
     ];
   });
+  if (pages > 1) {
+    const row: InlineKeyboard[number] = [];
+    if (at > 1) {
+      row.push({ text: TEXTS_NOW.raw('PAGING_PREV'), callback_data: encode('rnwl', subscriptionId, at - 1) });
+    }
+    if (at < pages) {
+      row.push({ text: TEXTS_NOW.raw('PAGING_NEXT'), callback_data: encode('rnwl', subscriptionId, at + 1) });
+    }
+    keyboard.push(row);
+  }
   return withChrome(keyboard, 'renewPlans', {
     applies: (action) =>
       action === 'dxr'

@@ -77,10 +77,18 @@ async function loadSalesMetrics(
          COALESCE(SUM(c.expected_amount_irr), 0) AS sales_amount_irr,
          COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED' THEN c.id END) AS bot_count,
          COALESCE(SUM(CASE WHEN m.status = 'AUTO_VERIFIED' THEN c.expected_amount_irr ELSE 0 END), 0) AS bot_amount_irr,
-         COUNT(DISTINCT CASE WHEN m.status = 'CONFIRMED' THEN c.id END) AS manual_count,
-         COALESCE(SUM(CASE WHEN m.status = 'CONFIRMED' THEN c.expected_amount_irr ELSE 0 END), 0) AS manual_amount_irr
+         -- Not «m.status = 'CONFIRMED'»: a VERIFIED claim with no match row at
+         -- all (imported, or verified by a route that writes none) is still a
+         -- sale a person stood behind, and counting it here is what keeps
+         -- bot + manual equal to the total. Issue #223.
+         COUNT(DISTINCT CASE WHEN m.status IS DISTINCT FROM 'AUTO_VERIFIED' THEN c.id END) AS manual_count,
+         COALESCE(SUM(CASE WHEN m.status IS DISTINCT FROM 'AUTO_VERIFIED' THEN c.expected_amount_irr ELSE 0 END), 0) AS manual_amount_irr
        FROM payment_claims c
-       JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_SUBQUERY})
+       -- LEFT: the claim's own status decides whether it is a sale; the match
+       -- row only says who verified it. The card view (loadCardAnalytics)
+       -- always read it this way, and the two disagreed on staging by every
+       -- sale the shop had. Issue #223.
+       LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_SUBQUERY})
        WHERE ${where}`,
     )
     .bind(...binds)
@@ -115,7 +123,7 @@ async function loadSalesTrend(
     .prepare(
       `SELECT c.expected_amount_irr, ${VERIFIED_AT} AS verified_at
        FROM payment_claims c
-       JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_SUBQUERY})
+       LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_SUBQUERY})
        WHERE ${where}`,
     )
     .bind(...binds)
@@ -525,9 +533,11 @@ export async function loadCardAnalytics(
                                   THEN c.id END) AS bot_count,
               COALESCE(SUM(CASE WHEN m.status = 'AUTO_VERIFIED'${rangeFilter}
                                 THEN c.expected_amount_irr END), 0) AS bot_amount_irr,
-              COUNT(DISTINCT CASE WHEN m.status = 'CONFIRMED'${rangeFilter}
+              -- «Not the bot» rather than «CONFIRMED», so a verified claim with
+              -- no match row counts as manual here as it does in the totals.
+              COUNT(DISTINCT CASE WHEN c.id IS NOT NULL AND m.status IS DISTINCT FROM 'AUTO_VERIFIED'${rangeFilter}
                                   THEN c.id END) AS manual_count,
-              COALESCE(SUM(CASE WHEN m.status = 'CONFIRMED'${rangeFilter}
+              COALESCE(SUM(CASE WHEN c.id IS NOT NULL AND m.status IS DISTINCT FROM 'AUTO_VERIFIED'${rangeFilter}
                                 THEN c.expected_amount_irr END), 0) AS manual_amount_irr,
               COUNT(DISTINCT CASE WHEN c.id IS NOT NULL${rangeFilter}
                                   THEN c.customer_reference END) AS unique_customers,
@@ -627,8 +637,8 @@ export async function loadCardAnalytics(
               COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED' THEN c.id END) AS bot_count,
               COALESCE(SUM(CASE WHEN m.status = 'AUTO_VERIFIED'
                                 THEN c.expected_amount_irr END), 0) AS bot_amount_irr,
-              COUNT(DISTINCT CASE WHEN m.status = 'CONFIRMED' THEN c.id END) AS manual_count,
-              COALESCE(SUM(CASE WHEN m.status = 'CONFIRMED'
+              COUNT(DISTINCT CASE WHEN m.status IS DISTINCT FROM 'AUTO_VERIFIED' THEN c.id END) AS manual_count,
+              COALESCE(SUM(CASE WHEN m.status IS DISTINCT FROM 'AUTO_VERIFIED'
                                 THEN c.expected_amount_irr END), 0) AS manual_amount_irr,
               COUNT(DISTINCT c.customer_reference) AS unique_customers
          FROM payment_claims c

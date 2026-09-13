@@ -28,13 +28,33 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { tehranDateStringFromMs, tehranDayBoundsFromDate } from '@shikoo/domain';
+import { tehranAdjacentDay, tehranDateStringFromMs, tehranDayBoundsFromDate } from '@shikoo/domain';
 import { enqueue } from './notify.js';
 import { loadShopSettings } from './settings.js';
+import { volumeText } from './menu.js';
 import { formatToman } from './money.js';
 
 /** How many resellers the ranking names, matching the legacy's `LIMIT 3`. */
 const TOP_RESELLERS = 3;
+
+/**
+ * How many nights back the sweep looks for a report it never sent.
+ *
+ * A bot down for three days used to lose two reports for good: only yesterday
+ * was ever asked about, and yesterday moves on. The `report:<date>` key is
+ * what makes catching up safe — a night already queued is simply not queued
+ * again — so this is the cap on how far a comeback reaches, not a schedule. A
+ * week: longer than any outage that has happened, short enough that a shop
+ * does not get a month of nights at once. An outage longer than this loses
+ * the nights beyond it.
+ *
+ * A shop that has never sent a report gets the whole window on its first
+ * morning — seven mostly-empty nights, once. That is deliberate: telling
+ * «never sent» from «down a week» needs a scan of every notification ever
+ * written, on every cycle for a week, to save one screenful of zeros on the
+ * day the bot is installed.
+ */
+const CATCH_UP_DAYS = 7;
 
 interface DayTotals {
   sales: number;
@@ -110,13 +130,19 @@ async function perPanel(
   db: D1Database,
   start: number,
   end: number,
-): Promise<{ name: string; count: number; irr: number; gb: number }[]> {
+): Promise<{ name: string; count: number; irr: number; gb: number | null; unmetered: number }[]> {
   const { results } = await db
     .prepare(
+      // volume_gb is NULL for an unmetered service, and sum() skips it — so the
+      // sum is the METERED gigabytes, NULL when every service sold here was
+      // unmetered, and the count beside it says how many the sum leaves out.
+      // Folding NULL to 0 here used to print «0 گیگ» for a panel that sold two
+      // unlimited services.
       `SELECT s.provider_name_at_sale AS name,
               count(*)::int           AS n,
               COALESCE(sum(s.price_irr), 0)  AS irr,
-              COALESCE(sum(s.volume_gb), 0)  AS gb
+              sum(s.volume_gb)               AS gb,
+              count(*) FILTER (WHERE s.volume_gb IS NULL)::int AS unmetered
          FROM subscriptions s
          -- LEFT, so a subscription carried over by the import — which has no
          -- order at all — still counts. What the join is here for is the one
@@ -132,12 +158,13 @@ async function perPanel(
         ORDER BY irr DESC`,
     )
     .bind(start, end)
-    .all<{ name: string | null; n: number; irr: number; gb: number }>();
+    .all<{ name: string | null; n: number; irr: number; gb: number | null; unmetered: number }>();
   return (results ?? []).map((r) => ({
     name: r.name ?? '—',
     count: r.n,
     irr: Number(r.irr),
-    gb: Number(r.gb),
+    gb: r.gb === null ? null : Number(r.gb),
+    unmetered: r.unmetered,
   }));
 }
 
@@ -234,14 +261,25 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
     // decision, because it also has to say what a TRIAL counts as.
     lines.push('', '🖥 فروش نو به تفکیک لوکیشن');
     for (const p of panels) {
-      lines.push(`• ${p.name}: ${p.count} سرویس — ${toman(p.irr)} تومان — ${p.gb} گیگ`);
+      // `volumeText`, not the raw sum: three panels' worth of numeric(12,3)
+      // adds up to «1500.5», and the one formatter every customer screen uses
+      // is the one the admin's screen should use too. Its «نامحدود» is the
+      // all-unmetered panel; a mixed one says how many the sum leaves out.
+      const mixed = p.gb !== null && p.unmetered > 0 ? ` + ${p.unmetered} نامحدود` : '';
+      lines.push(
+        `• ${p.name}: ${p.count} سرویس — ${toman(p.irr)} تومان — ${volumeText(p.gb)}${mixed}`,
+      );
     }
   }
 
   if (resellers.length > 0) {
     lines.push('', '🏅 نمایندگان برتر امروز');
     for (const r of resellers) {
-      lines.push(`• ${r.username ? '@' + r.username : r.telegramId}: ${toman(r.irr)} تومان`);
+      // A reseller with no @username is named as a person, not as a bare
+      // number in a leaderboard — «7462913» beside «@shop_ali» reads as a row
+      // that lost its name.
+      const who = r.username ? '@' + r.username : `کاربر ${r.telegramId}`;
+      lines.push(`• ${who}: ${toman(r.irr)} تومان`);
     }
   }
 
@@ -249,20 +287,20 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
 }
 
 /**
- * Queues yesterday's report, once.
+ * Queues yesterday's report, once — and any night before it that was missed.
  *
  * Called from the poll loop, so it is asked roughly every twenty-five seconds
- * and must be cheap when there is nothing to do — which is why the dedupe key
- * is checked before the report is built rather than after. Building it is six
- * aggregate queries; asking whether it exists is one primary-key hit.
+ * and must be cheap when there is nothing to do — which is why the dedupe keys
+ * are checked before any report is built rather than after. Building one is
+ * six aggregate queries; asking which of seven exist is one index read.
  *
  * The key is the Tehran date, so the day the report covers is what makes it
  * unique. A restart, an overlapping sweep, or two pollers during a rolling
  * deploy all produce the same key and `ON CONFLICT DO NOTHING` keeps one.
  *
- * Returns whether a report was queued, which is what the caller logs.
+ * Returns the nights it queued, oldest first — usually none, usually one.
  */
-export async function sweepDailyReport(db: D1Database, now: number = Date.now()): Promise<boolean> {
+export async function sweepDailyReport(db: D1Database, now: number = Date.now()): Promise<string[]> {
   // One question, one answer — and this time the environment is inside the
   // answer rather than beside it.
   //
@@ -277,24 +315,39 @@ export async function sweepDailyReport(db: D1Database, now: number = Date.now())
   // No channel configured is not an error — the legacy skips the send the same
   // way, and a shop that does not want the report should not be paying for six
   // aggregate queries a night to not send it.
-  if (chatId === null) return false;
+  if (chatId === null) return [];
 
   // Yesterday in Tehran: the most recent day that is entirely over. Reporting
   // on today would be a partial day whose number changes every time you look.
-  const dateStr = tehranDateStringFromMs(now - 24 * 60 * 60 * 1000);
-  const key = `report:${dateStr}`;
-
-  const already = await db
-    .prepare(`SELECT 1 AS x FROM bot_notifications WHERE dedupe_key = ?1`)
-    .bind(key)
-    .first<{ x: number }>();
-  if (already) return false;
-
-  const text = await buildDailyReport(db, dateStr);
-  // «🌙 گزارش شبانه». Null until somebody makes the topics, and null is a
-  // message in the group's General topic — exactly where it goes today.
-  await db.withSession((tx) =>
-    enqueue(tx, { dedupeKey: key, chatId, text, threadId: reportTopics.reportnight }),
+  //
+  // And the nights before it that were never sent. One question for the whole
+  // window rather than a walk that stops at the first night found: a walk
+  // cannot see a hole behind a night that WAS sent — the deploy morning, when
+  // the old code had queued one night mid-outage — and every absent key in the
+  // window is a night the channel is owed. Oldest first, so it reads in order.
+  const yesterday = tehranDateStringFromMs(now - 24 * 60 * 60 * 1000);
+  const window = Array.from({ length: CATCH_UP_DAYS }, (_, i) =>
+    tehranAdjacentDay(yesterday, i - (CATCH_UP_DAYS - 1)),
   );
-  return true;
+  const { results } = await db
+    .prepare(`SELECT dedupe_key FROM bot_notifications WHERE dedupe_key = ANY(?1)`)
+    .bind(window.map((d) => `report:${d}`))
+    .all<{ dedupe_key: string }>();
+  const sent = new Set((results ?? []).map((r) => r.dedupe_key));
+  const missing = window.filter((d) => !sent.has(`report:${d}`));
+
+  for (const dateStr of missing) {
+    const text = await buildDailyReport(db, dateStr);
+    // «🌙 گزارش شبانه». Null until somebody makes the topics, and null is a
+    // message in the group's General topic — exactly where it goes today.
+    await db.withSession((tx) =>
+      enqueue(tx, {
+        dedupeKey: `report:${dateStr}`,
+        chatId,
+        text,
+        threadId: reportTopics.reportnight,
+      }),
+    );
+  }
+  return missing;
 }

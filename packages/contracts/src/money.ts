@@ -19,3 +19,18 @@
  * too — a ceiling raised until it stops catching typos should go red.
  */
 export const MAX_SINGLE_PAYMENT_IRR = 100_000_000;
+
+/**
+ * Every amount a customer can be asked to transfer is a whole number of
+ * Toman — ten Rials. Auto-verify compares the bank's figure against ours
+ * exactly, so a price of 1,950,005 IRR (195,000.5 Toman) is one no transfer
+ * can ever equal, and every purchase at it would go to manual review for
+ * ever. Until 2026-09-12 this held only because every writer happened to
+ * multiply by ten (issue #195); a zod `.refine` at each hand-typed money
+ * field is where it is checked now.
+ */
+export const IRR_PER_TOMAN = 10;
+export function isWholeToman(irr: number): boolean {
+  return Number.isInteger(irr) && irr % IRR_PER_TOMAN === 0;
+}
+export const NOT_WHOLE_TOMAN = 'a price must be a whole number of Toman';

@@ -59,7 +59,27 @@ const post = (path: string, body: unknown, email = ADMIN) =>
     envAs(email),
   );
 
-const get = (path: string, email = ADMIN) => app.request(path, {}, envAs(email));
+const LIST = '/api/v1/admin/revenue-adjustments';
+
+/**
+ * Every list and export read is scoped to this suite's own rows — issue #118.
+ *
+ * The route filters its totals and its breakdown the same way it filters its
+ * rows (`ledgerWhere`), so `q=<PREFIX>` makes the arithmetic below hold on a
+ * database that also carries an imported ledger, instead of refusing to run
+ * there. A read that names its own `q` keeps it; a per-row route is left alone.
+ * The `lifetime` figure is the whole ledger by design, so the one test that
+ * asserts it measures a difference rather than an absolute.
+ */
+function scoped(path: string): string {
+  const rest = path.startsWith(LIST) ? path.slice(LIST.length) : null;
+  if (rest === null || (rest.startsWith('/') && !rest.startsWith('/export.csv'))) return path;
+  if (/[?&]q=/.test(path)) return path;
+  if (path.endsWith('?')) return `${path}q=${PREFIX}`;
+  return `${path}${path.includes('?') ? '&' : '?'}q=${PREFIX}`;
+}
+
+const get = (path: string, email = ADMIN) => app.request(scoped(path), {}, envAs(email));
 
 const patch = (path: string, body: unknown, email = ADMIN) =>
   app.request(
@@ -112,39 +132,16 @@ async function purge(): Promise<void> {
 }
 
 /**
- * Empty the ledger — after proving there is nothing here but this suite's rows.
+ * Clear this suite's own rows, and only those.
  *
- * The totals below are over the WHOLE ledger by design, so a row this file did
- * not write is counted in every one of them. That is why this used to be
- * `DELETE FROM revenue_adjustments` with no WHERE at all, and on a machine
- * holding an imported dump it took all 239 production ledger rows with it —
- * issue #46, in a `beforeEach`, silently, every run.
- *
- * Deleting only `${PREFIX}%` is not enough on its own: the assertions would
- * then count the imported rows and fail in ways that read as bugs in the code
- * under test. So the refusal comes first and says which database this is. A
- * suite that cannot be isolated should stop, not guess — and stopping is
- * strictly better than the silent version, because the answer («run the gate
- * against a second database») is one line away instead of one restore away.
- *
- * Making these assertions scope themselves — every read filtered to
- * `q=${PREFIX}` so the suite measures only its own rows — is the real repair
- * and is issue #118.
+ * This used to be `DELETE FROM revenue_adjustments` with no WHERE, and on a
+ * machine holding an imported dump it took all 239 production ledger rows
+ * with it — issue #46. It then became a refusal to run beside foreign rows at
+ * all (the totals were over the whole ledger). Since every read is scoped
+ * through `scoped()` above, foreign rows no longer reach an assertion, and
+ * the suite runs on a database that also holds an import (issue #118).
  */
 async function emptyLedger(): Promise<void> {
-  const foreign = await baseEnv.DB.prepare(
-    `SELECT count(*)::int AS n FROM revenue_adjustments WHERE note IS NULL OR note NOT LIKE ?1`,
-  )
-    .bind(`${PREFIX}%`)
-    .first<{ n: number }>();
-  if ((foreign?.n ?? 0) > 0) {
-    throw new Error(
-      `revenue_adjustments holds ${foreign?.n} row(s) this suite did not write. ` +
-        `Its totals are over the whole ledger, so it cannot run here without ` +
-        `destroying them — see issue #46. Point DATABASE_URL at a second, empty ` +
-        `database and run the gate there.`,
-    );
-  }
   await baseEnv.DB.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
@@ -338,9 +335,11 @@ describe('writing a line', () => {
       REVIEWER,
     );
     expect(res.status).toBe(403);
-    const n = await baseEnv.DB.prepare(`SELECT COUNT(*)::int AS n FROM revenue_adjustments`).first<{
-      n: number;
-    }>();
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM revenue_adjustments WHERE note LIKE ?1`,
+    )
+      .bind(`${PREFIX}%`)
+      .first<{ n: number }>();
     expect(n?.n).toBe(0);
   });
 
@@ -418,21 +417,27 @@ describe('the totals', () => {
    * position and never moves.
    */
   it('follow the filter, while the lifetime figure stays the shop position', async () => {
-    await add(100_000, 'EXPENSE', 'w-a');
-    await add(50_000, 'MANUAL_INCOME', 'w-b');
-
-    const body = (await (await get('/api/v1/admin/revenue-adjustments?kind=EXPENSE')).json()) as {
+    type Body = {
       items: unknown[];
       totals: { expensesIrr: number; manualIncomeIrr: number; netIrr: number };
       lifetime: { expensesIrr: number; manualIncomeIrr: number; netIrr: number };
     };
+    // The books before this test wrote anything: on a database that also
+    // holds an imported ledger, `lifetime` is that ledger too, so what is
+    // asserted is how far this test moved it — not where it stands.
+    const before = (await (await get('/api/v1/admin/revenue-adjustments?kind=EXPENSE')).json()) as Body;
+
+    await add(100_000, 'EXPENSE', 'w-a');
+    await add(50_000, 'MANUAL_INCOME', 'w-b');
+
+    const body = (await (await get('/api/v1/admin/revenue-adjustments?kind=EXPENSE')).json()) as Body;
     expect(body.items).toHaveLength(1);
     // The rows on screen, added up.
     expect(body.totals.expensesIrr).toBe(-1_000_000);
     expect(body.totals.manualIncomeIrr).toBe(0);
     // The books, unmoved by looking at them through a filter.
-    expect(body.lifetime.manualIncomeIrr).toBe(500_000);
-    expect(body.lifetime.netIrr).toBe(-500_000);
+    expect(body.lifetime.manualIncomeIrr - before.lifetime.manualIncomeIrr).toBe(500_000);
+    expect(body.lifetime.netIrr - before.lifetime.netIrr).toBe(-500_000);
   });
 
   /**
@@ -771,13 +776,14 @@ describe('reading the ledger', () => {
     // Beside, not inside: `shopStats.revenueIrr` is the bot's «آمار» screen as
     // well, and it means completed sales on both. The legacy panel splits it
     // the same way (`panel/index.php:28`).
+    type Overview = { revenueIrr: number; revenueAdjustmentIrr: number };
+    // The overview is the whole ledger by design, so — as with `lifetime` —
+    // this measures how far one line moved it, not where it stands.
+    const before = (await (await get('/api/v1/admin/overview')).json()) as Overview;
     await add(100_000, 'EXPENSE', 'overview');
 
-    const body = (await (await get('/api/v1/admin/overview')).json()) as {
-      revenueIrr: number;
-      revenueAdjustmentIrr: number;
-    };
-    expect(body.revenueAdjustmentIrr).toBe(-1_000_000);
+    const body = (await (await get('/api/v1/admin/overview')).json()) as Overview;
+    expect(body.revenueAdjustmentIrr - before.revenueAdjustmentIrr).toBe(-1_000_000);
     // Whatever the sales figure is, the adjustment is not already in it.
     const sales = await baseEnv.DB.prepare(
       `SELECT COALESCE(SUM(total_irr), 0) AS n FROM orders WHERE status = 'COMPLETED'`,

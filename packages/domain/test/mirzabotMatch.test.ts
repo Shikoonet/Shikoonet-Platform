@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { AUTO_MATCH_MAX_TIME_DELTA_MS, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
+import {
+  AUTO_MATCH_MAX_TIME_DELTA_MS,
+  FULFILLED_RECONCILE_MAX_TIME_DELTA_MS,
+  WAITING_TIMEOUT_MS,
+} from '@shikoo/contracts';
 import {
   evaluateClaimForAutoVerification,
   evaluateMirzabotGroup,
@@ -67,40 +71,53 @@ describe('PHASE 6 — decision test matrix', () => {
   });
 
   /**
-   * The same claim, at the delay the state actually occurs at — and it does NOT
-   * reconcile.
+   * The same claim, at the delay the state actually occurs at.
    *
    * The test above uses `tx()`, whose credit lands twenty seconds after the
    * click. That is a delay a `FULFILLED_UNRECONCILED` claim essentially never
-   * sees, because the only two ways into that status are a manual fulfilment
-   * and Continuity mode, and Continuity mode is switched on BECAUSE the SMS
-   * relay is down. Its credits arrive when the relay comes back — as a backlog,
+   * sees: the only two ways into that status are a manual fulfilment and
+   * Continuity mode, and Continuity mode is switched on BECAUSE the SMS relay
+   * is down. Its credits arrive when the relay comes back — as a backlog,
    * hours later.
    *
-   * So the existing test is true and silent about the case that matters, which
-   * is the shape CLAUDE.md rule 9 describes: a probe on the easy data reports
-   * healthy and the real data behaves differently.
-   *
-   * This pins what actually happens, and it is deliberately NOT a fix.
-   * `|bank_timestamp − paid_clicked_at| ≤ 300000ms` is one of the money rules
-   * that must not be broken, so the reconciliation queue is drained by a person
-   * pressing «تایید انتخاب‌شده‌ها» (#135) rather than by widening it here.
-   *
-   * If that decision is ever revisited, this test fails first and says so.
+   * Until 2026-09-12 this test pinned the opposite: the five-minute rule was
+   * held for every claim, so the continuity queue could only be drained by a
+   * person (#135), and in practice it never drained (#134). Sam's decision:
+   * a delivered claim gets its own, wider window; the five-minute rule stays
+   * for every claim that has NOT been delivered — the test after this one.
    */
-  it('does NOT auto-reconcile a delivered claim whose credit arrives three hours later', () => {
+  it('auto-reconciles a delivered claim whose credit arrives three hours later', () => {
     const THREE_HOURS = 3 * 60 * 60_000;
     const d = decide(claim({ status: 'FULFILLED_UNRECONCILED' }), [
       tx({ bankTimestamp: BASE_MS + THREE_HOURS }),
     ]);
 
-    expect(d.decision).toBe('SUGGEST');
-    expect(d.reason).toBe('OUTSIDE_AUTO_MATCH_WINDOW');
+    expect(d.decision).toBe('AUTO_VERIFY');
+    expect(d.reason).toBe('UNIQUE_EXACT_MATCH');
+    expect(d.transactionId).toBe('t1');
     expect(d.diagnostics.timeDeltaMs).toBe(THREE_HOURS);
-    // The credit IS found — it is refused, not missing. That distinction is
-    // what tells an operator there is a transaction to attach rather than a
-    // customer to suspect, and it is why the row says so out loud now.
-    expect(d.transactionId).toBeNull();
+  });
+
+  it('the wider window is only for a delivered claim, and it too has an edge', () => {
+    const THREE_HOURS = 3 * 60 * 60_000;
+    // Not delivered: the five-minute rule, untouched.
+    const pending = decide(claim(), [tx({ bankTimestamp: BASE_MS + THREE_HOURS })]);
+    expect(pending.decision).toBe('SUGGEST');
+    expect(pending.reason).toBe('OUTSIDE_AUTO_MATCH_WINDOW');
+
+    // Delivered, but the credit is older than the relay could plausibly owe.
+    const stale = decide(claim({ status: 'FULFILLED_UNRECONCILED' }), [
+      tx({ bankTimestamp: BASE_MS + FULFILLED_RECONCILE_MAX_TIME_DELTA_MS + 1_000 }),
+    ]);
+    expect(stale.decision).toBe('SUGGEST');
+    expect(stale.reason).toBe('OUTSIDE_AUTO_MATCH_WINDOW');
+
+    // Exactness is not relaxed with the window: a different amount, hours
+    // later, is still not this claim's money.
+    const wrongAmount = decide(claim({ status: 'FULFILLED_UNRECONCILED' }), [
+      tx({ bankTimestamp: BASE_MS + THREE_HOURS, amountIrr: 1_000_010 }),
+    ]);
+    expect(wrongAmount.decision).not.toBe('AUTO_VERIFY');
   });
 
   it('TEST 2 delta 4m59s → AUTO_VERIFY', () => {

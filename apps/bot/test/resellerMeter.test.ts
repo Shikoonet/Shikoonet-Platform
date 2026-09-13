@@ -146,8 +146,9 @@ let panelId: number;
  * `sync.test.ts` repoints `sim-vip` at a fake host, and this file used to do
  * the same. That leaves `sim-vip` carrying `base_url = 'https://meter.test'`
  * and a secret ref only this process holds — the bot suites share one database
- * and run in one worker, so the next file to reach for that panel inherits it.
- * `ensureCatalog()` puts `kind` back and touches neither of the other two.
+ * and run in one worker, so the next file to reach for that panel inherits it
+ * until the next `ensureCatalog()` puts the fixture's own address and ref back
+ * (it converges all three since #182; it used to put back `kind` alone).
  *
  * So this suite creates its own provider and leaves every seeded row alone.
  * Cheaper than an `afterAll` that restores fields, and it cannot forget.

@@ -228,6 +228,11 @@ describe('creating a code', () => {
     );
   });
 
+  it('refuses an amount that is not a whole number of Toman', async () => {
+    // Issue #195 — the same rule as a plan price, for the same reason.
+    expect((await create(gift(`${PREFIX}rial`, { amountIrr: 500_005 }))).status).toBe(400);
+  });
+
   it('refuses an amount above the ceiling', async () => {
     expect((await create(gift(`${PREFIX}max`, { amountIrr: MAX_SINGLE_PAYMENT_IRR }))).status).toBe(
       201,

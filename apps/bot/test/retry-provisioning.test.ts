@@ -237,10 +237,16 @@ const ACTOR = { actorEmail: 'sam@example.com', actorRole: 'ADMIN' };
 beforeAll(async () => {
   await ensureCatalog();
   process.env[ENV_KEY] = 'admin:secret';
+  // The fixture panel only. This had no WHERE, and turned every panel in the
+  // shared database — other suites' leftovers included — into an unwired
+  // pasarguard. Harmless while the shop sold from such a panel; since #182 it
+  // does not, and a later suite comparing the price list against its own
+  // reading of the tables found a plan the shop had rightly stopped listing.
   await db
     .prepare(
       `UPDATE provisioning_providers
-          SET base_url = 'https://panel.test', kind = 'pasarguard', secret_ref = NULL`,
+          SET base_url = 'https://panel.test', kind = 'pasarguard', secret_ref = NULL
+        WHERE code = 'sim-vip'`,
     )
     .run();
 });
