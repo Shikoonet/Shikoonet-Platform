@@ -15,6 +15,7 @@ function plan(over: Partial<CatalogPlan> & { planId: number }): CatalogPlan {
   return {
     productId: 1,
     productName: 'الماس',
+    productKind: 'vpn',
     planName: '',
     priceIrr: 1_000_000,
     durationDays: 30,

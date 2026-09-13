@@ -1209,6 +1209,7 @@ function navigationParent(raw: string | undefined): string | null {
     case 'rnw':
       return 'renew';
     case 'rnwl':
+    case 'rnwp':
     case 'dsr':
     case 'dxr':
       return withId('rnw');
@@ -1696,7 +1697,7 @@ async function handleRenewalCode(
     );
   }
   await ask(tx, user.id, 'coder:held', { subscriptionId, code: check.code.code }, screenOf(session));
-  const plans = await plansOnPanel(tx, user.id, service.provider_id);
+  const plans = await plansOnPanel(tx, user.id, service.provider_id, service.family);
   return answer(
     menu.discountHeldForRenewal(check.code.code),
     menu.renewPlanMenu(service.id, plans, user.discount_percent, check.code.code),
@@ -1781,25 +1782,46 @@ async function renewPlansScreen(
   all: boolean,
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
   page = 1,
+  /** One tier's plans («rnwp»): the switch the customer asked to see. */
+  productId: number | null = null,
 ): Promise<HandleOutcome> {
-  const plans = await plansOnPanel(tx, user.id, service.provider_id);
+  // Same panel AND same kind. The panel keeps the account; the kind keeps a
+  // VPN renewal out of the Spotify shelf if one panel ever sells both.
+  const plans = await plansOnPanel(tx, user.id, service.provider_id, service.family);
   if (plans.length === 0) {
     return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
   }
   const mode = renewModeFor(service.provider_config ?? {});
   const now = Date.now();
-  const match = all ? null : matchingRenewalPlan(service, plans);
-  if (match === null) {
+  const heldName = await heldRenewalName(tx, user.id, service.id);
+  // The tiers: every product these plans belong to, in the admin's order.
+  // Built from the list already fetched rather than from `productsForUser`,
+  // which applies the new-account cap — and a renewal creates no account.
+  const tiers = [...new Map(plans.map((p) => [p.productId, p.productName]))].map(
+    ([id, name]) => ({ productId: id, name }),
+  );
+  if (productId !== null) {
+    const inTier = plans.filter((p) => p.productId === productId);
+    if (inTier.length === 0) return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
     return screen(
       menu.renewIntro(service, mode, now),
-      menu.renewPlanMenu(
-        service.id,
-        plans,
-        user.discount_percent,
-        await heldRenewalName(tx, user.id, service.id),
-        false,
-        page,
-      ),
+      menu.renewPlanMenu(service.id, inTier, user.discount_percent, heldName, false, null),
+    );
+  }
+  const match = all ? null : matchingRenewalPlan(service, plans);
+  if (match === null) {
+    // The whole list (`all`), or no plan to point at and one tier: the flat,
+    // paged list. No plan to point at and several tiers — a trial, a migrated
+    // service, a sale whose plan is gone — the tiers, and the customer picks.
+    if (all || tiers.length <= 1) {
+      return screen(
+        menu.renewIntro(service, mode, now),
+        menu.renewPlanMenu(service.id, plans, user.discount_percent, heldName, false, page),
+      );
+    }
+    return screen(
+      menu.renewIntro(service, mode, now, 'tier'),
+      menu.renewPlanMenu(service.id, [], user.discount_percent, heldName, false, 1, tiers),
     );
   }
   // One plan is known, so — unlike the list, where the plan a code applies to
@@ -1808,14 +1830,19 @@ async function renewPlansScreen(
   const price = priceForUser(match.priceIrr, user.discount_percent);
   const held = await heldRenewalCode(tx, user, service.id, match, price.totalIrr);
   const applied = held ? { code: held.code.code, discountIrr: held.discountIrr } : null;
+  // The matched plan is a confirmation; the OTHER tiers are the switch. With
+  // one tier there is nothing to switch to and «پلن‌های دیگر» stands instead.
+  const others = tiers.filter((t) => t.productId !== match.productId);
   return screen(
     menu.renewMatched(service, mode, now, match, price, applied),
     menu.renewPlanMenu(
       service.id,
       [match],
       user.discount_percent,
-      await heldRenewalName(tx, user.id, service.id),
+      heldName,
       true,
+      1,
+      tiers.length > 1 ? others : [],
     ),
   );
 }
@@ -2800,7 +2827,8 @@ async function handleCallback(
     }
 
     case 'rnw':
-    case 'rnwl': {
+    case 'rnwl':
+    case 'rnwp': {
       if (action.id === undefined) return IGNORED;
       const service = await renewableForUserById(tx, user.id, action.id);
       if (!service) return screen(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
@@ -2814,6 +2842,7 @@ async function handleCallback(
         action.action === 'rnwl',
         screen,
         action.action === 'rnwl' ? (action.id2 ?? 1) : 1,
+        action.action === 'rnwp' ? (action.id2 ?? null) : null,
       );
     }
 
@@ -2855,6 +2884,13 @@ async function handleCallback(
       // one panel being used to extend an expensive service on another.
       if (!plan || plan.providerId !== service.provider_id) {
         return screen(menu.PLAN_GONE, menu.afterPaidMenu());
+      }
+      // Same panel is not enough: a panel may sell more than one KIND of
+      // thing, and a Spotify plan does not extend a VPN account whatever the
+      // button said. The list never offers one; this is the button that is
+      // not from the list.
+      if (plan.productKind !== service.family) {
+        return screen(menu.RENEW_WRONG_FAMILY, menu.afterPaidMenu());
       }
       const listed = priceForUser(plan.priceIrr, user.discount_percent);
       const held = await heldRenewalCode(tx, user, service.id, plan, listed.totalIrr);

@@ -442,6 +442,8 @@ export interface CatalogPlan {
   userLimit: number | null;
   providerId: number;
   providerName: string;
+  /** `products.kind` — what kind of thing this sells. Renewal never crosses it. */
+  productKind: string;
   /**
    * The panel's «روش ساخت نام کاربری», raw.
    *
@@ -486,6 +488,7 @@ interface PlanRow {
   plan_id: number;
   product_id: number;
   product_name: string;
+  product_kind: string;
   plan_name: string;
   badge: string | null;
   button_style: ButtonStyle | null;
@@ -506,6 +509,7 @@ const PLAN_COLUMNS = `
   pl.id           AS plan_id,
   p.id            AS product_id,
   p.name          AS product_name,
+  p.kind          AS product_kind,
   pl.name         AS plan_name,
   pl.badge        AS badge,
   pl.button_style AS button_style,
@@ -544,6 +548,7 @@ function toPlan(row: PlanRow): CatalogPlan {
     planId: row.plan_id,
     productId: row.product_id,
     productName: row.product_name,
+    productKind: row.product_kind,
     planName: row.plan_name,
     badge: row.badge,
     buttonStyle: row.button_style,
@@ -624,14 +629,20 @@ export async function plansOnPanel(
   db: Db,
   userId: number,
   providerId: number,
+  /**
+   * `products.kind` to stay inside — a renewal passes the service's own
+   * `family`, so a VPN account on a panel that also sells Spotify is never
+   * offered Spotify. Omitted, the whole panel.
+   */
+  kind: string | null = null,
 ): Promise<CatalogPlan[]> {
   const rows = await db
     .prepare(
       `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
-        WHERE pr.id = ?2 AND ${PURCHASABLE}
+        WHERE pr.id = ?2 AND (?3::text IS NULL OR p.kind = ?3) AND ${PURCHASABLE}
         ORDER BY p.sort_order, pl.sort_order, pl.price_irr`,
     )
-    .bind(userId, providerId)
+    .bind(userId, providerId, kind)
     .all<PlanRow>();
   return rows.results.map(toPlan);
 }

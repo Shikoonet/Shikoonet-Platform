@@ -21,7 +21,15 @@ import * as menu from '../src/menu.js';
 import { provisionPaidOrders } from '../src/provision.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db, pendingNotifications } from './helpers/env.js';
-import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
+import {
+  categoryIdOfProduct,
+  ensureCatalog,
+  makeCustomer,
+  planId,
+  planIdsIn,
+  productId,
+  providerId,
+} from './helpers/shop.js';
 import { invalidateShopSettings } from '../src/settings.js';
 import { creditRenewalCashback } from '../src/wallet.js';
 import { formatToman } from '../src/money.js';
@@ -311,7 +319,8 @@ describe('choosing what to renew', () => {
       expiresInDays: 5,
     });
 
-    const out = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
+    // The flat list — `rnw` on this multi-tier panel now answers with tiers.
+    const out = await handleUpdate(db, press(updateId, telegramId, `rnwl:${subId}`));
 
     const buttons = out.replies[0]?.keyboard?.flat() ?? [];
     const offers = buttons.filter((b) => b.callback_data?.startsWith('rord:'));
@@ -333,7 +342,17 @@ describe('choosing what to renew', () => {
    * is known, the list when it is not, and «پلن‌های دیگر» to reach the list
    * either way.
    */
-  it('offers the plan the service was sold under, alone, with a way to the rest', async () => {
+  it('offers the plan the service was sold under, alone — and the other tiers as the way to switch', async () => {
+    /*
+     * Sam, 2026-09-13: «الان سرویس vpn یک ماهه الماس داره، باید بتونه
+     * سرویس‌اش رو تبدیل هم بکنه، مثلا الماس رو بکنه تیتانیوم یا معمولی».
+     *
+     * Until today the matched screen hid everything else behind «پلن‌های
+     * دیگر» — a flat, paged list of every plan on the panel, labelled by
+     * product and price. The switch was possible and invisible. Now the
+     * OTHER tiers stand under the matched plan, one row each, and the flat
+     * list is not offered — the tiers are the rest.
+     */
     const { updateId, telegramId } = ids();
     const userId = await makeCustomer(telegramId);
     const sold = await planId('sim-vip-1m-50');
@@ -347,9 +366,15 @@ describe('choosing what to renew', () => {
     const out = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
 
     const buttons = out.replies[0]?.keyboard?.flat() ?? [];
-    const offers = buttons.filter((b) => b.callback_data?.startsWith('rord:'));
-    expect(offers.map((b) => b.callback_data)).toEqual([`rord:${subId}:${sold}`]);
-    expect(buttons.map((b) => b.callback_data)).toContain(`rnwl:${subId}`);
+    const data = buttons.map((b) => b.callback_data);
+    const offers = data.filter((d) => d?.startsWith('rord:'));
+    expect(offers).toEqual([`rord:${subId}:${sold}`]);
+    const tiers = data.filter((d) => d?.startsWith('rnwp:'));
+    expect(tiers.length).toBeGreaterThanOrEqual(2);
+    // Its own tier is not a switch.
+    expect(tiers).not.toContain(`rnwp:${subId}:${await productId('sim-vip-1m-50')}`);
+    expect(tiers).toContain(`rnwp:${subId}:${await productId('sim-vip-platinum')}`);
+    expect(data).not.toContain(`rnwl:${subId}`);
     expect(out.replies[0]?.text).toContain('۵۰ گیگ');
   });
 
@@ -381,11 +406,139 @@ describe('choosing what to renew', () => {
 
     const many = await handleUpdate(db, press(updateId + 1, telegramId, `rnw:${ambiguous}`));
     const buttons = many.replies[0]?.keyboard?.flat() ?? [];
-    const offers = buttons.filter((b) => b.callback_data?.startsWith('rord:'));
+    const data = buttons.map((b) => b.callback_data);
     // Two plans fit; guessing one would be choosing the customer's money for
-    // them. The whole list, and no «other plans» button — this IS the list.
-    expect(offers.length).toBeGreaterThan(1);
-    expect(buttons.map((b) => b.callback_data)).not.toContain(`rnwl:${ambiguous}`);
+    // them. No plan is pointed at: the tiers, and the customer picks. No
+    // «other plans» button either — the tiers ARE the rest.
+    expect(data.filter((d) => d?.startsWith('rord:'))).toEqual([]);
+    expect(data.filter((d) => d?.startsWith('rnwp:')).length).toBeGreaterThan(1);
+    expect(data).not.toContain(`rnwl:${ambiguous}`);
+    expect(many.replies[0]?.text).toContain('سطح سرویس را انتخاب کنید');
+  });
+
+  it('a two-tier panel offers the tiers, a one-tier panel offers the sizes', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const onVip = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-t1`,
+      username: `u_${telegramId}_t1`,
+      expiresInDays: 5,
+    });
+    const onGold = await makeService(userId, otherPanelId, {
+      publicId: `ren-${telegramId}-t2`,
+      username: `u_${telegramId}_t2`,
+      expiresInDays: 5,
+    });
+
+    const vip = (await handleUpdate(db, press(updateId, telegramId, `rnw:${onVip}`))).replies[0];
+    const vipData = vip?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    expect(vipData.filter((d) => d?.startsWith('rnwp:')).length).toBeGreaterThanOrEqual(2);
+    expect(vipData.filter((d) => d?.startsWith('rord:'))).toEqual([]);
+
+    // sim-gold sells one product: a row of one tier is not a choice, so the
+    // sizes come straight away, as they always did.
+    const gold = (await handleUpdate(db, press(updateId + 1, telegramId, `rnw:${onGold}`)))
+      .replies[0];
+    const goldData = gold?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    expect(goldData.filter((d) => d?.startsWith('rnwp:'))).toEqual([]);
+    expect(goldData.filter((d) => d?.startsWith('rord:')).length).toBeGreaterThan(0);
+  });
+
+  it('a trial goes straight to the tiers, and renewing into پلاتینیوم sends its groups', async () => {
+    /*
+     * Sam, 2026-09-13: «اگر اکانتش تست بوده و میخواد تمدید کنه بتونه تبدیل
+     * کنه به الماس یا معمولی». A trial remembers no plan (`plan_id` NULL, no
+     * `duration_days`, name «سرویس تست»), so nothing matches and the tiers
+     * are what it sees. The second half pins what `renew()` already did:
+     * the account keeps its name and the new tier's `group_ids` go with the
+     * renewal, which is what a tier IS on the panel.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-tr`,
+      username: `u_${telegramId}`,
+      expiresInDays: 1,
+      volumeGb: 1,
+      durationDays: null,
+      planNameAtSale: menu.TRIAL_SERVICE_NAME,
+    });
+    const platinum = await productId('sim-vip-platinum');
+
+    const first = (await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`))).replies[0];
+    const firstData = first?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    expect(firstData).toContain(`rnwp:${subId}:${platinum}`);
+    expect(firstData.filter((d) => d?.startsWith('rord:'))).toEqual([]);
+
+    const tier = (await handleUpdate(db, press(updateId + 1, telegramId, `rnwp:${subId}:${platinum}`)))
+      .replies[0];
+    const offers = tier?.keyboard?.flat().map((b) => b.callback_data).filter((d) => d?.startsWith('rord:')) ?? [];
+    const platinumPlans = await planIdsIn('sim-vip-platinum');
+    expect(offers.sort()).toEqual(platinumPlans.map((id) => `rord:${subId}:${id}`).sort());
+
+    const thirty = platinumPlans[0]!;
+    await handleUpdate(db, press(updateId + 2, telegramId, `rord:${subId}:${thirty}`));
+    await markPaid(userId);
+    const panel = fakePanel({
+      [`u_${telegramId}`]: { expire: new Date(NOW_MS + 1 * DAY).toISOString(), data_limit: 1 * GIB },
+    });
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts[0]?.username).toBe(`u_${telegramId}`);
+    expect(panel.puts[0]?.body['group_ids']).toEqual([6, 7]);
+    expect((await subscriptionRow(subId))?.plan_id).toBe(thirty);
+  });
+
+  it('a VPN service is never offered a Spotify product, even on its own panel', async () => {
+    /*
+     * Sam, 2026-09-13: «خیلی مهمه که کاربر رو به بخش درست هدایت کنه؛ سرویس
+     * vpn میخواد تمدید کنه، یک دفعه نفرسته به بخش spotify». The list is
+     * panel-scoped, and a panel is one KIND of thing in production — but
+     * nothing said so, and a Spotify product filed under a VPN panel was
+     * listed for renewal and accepted at `rord`. Now the service's kind
+     * bounds the list, and the button that is not from the list is refused.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-f`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+    });
+    // Not `sim-…`: the seed prunes unknown `sim-` products on its next run.
+    const code = `renew-spotify-${telegramId}`;
+    const product = await db
+      .prepare(
+        `INSERT INTO products (code, name, kind, category_id, provider_id, status, sort_order, attrs)
+         VALUES (?1, 'اسپاتیفای روی پنل VPN', 'spotify', ?2, ?3, 'ACTIVE', 99, '{}')
+         RETURNING id`,
+      )
+      .bind(code, await categoryIdOfProduct('sim-vip-1m-50'), panelId)
+      .first<{ id: number }>();
+    const plan = await db
+      .prepare(
+        `INSERT INTO product_plans (product_id, name, price_irr, duration_days, volume_gb, user_limit, status, sort_order)
+         VALUES (?1, 'اسپاتیفای ۱ ماهه', 100000, 30, NULL, 1, 'ACTIVE', 1) RETURNING id`,
+      )
+      .bind(product!.id)
+      .first<{ id: number }>();
+    try {
+      const listed = (await handleUpdate(db, press(updateId, telegramId, `rnwl:${subId}`))).replies[0];
+      const data = listed?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+      expect(data).not.toContain(`rord:${subId}:${plan!.id}`);
+      expect(data.some((d) => d?.startsWith('rord:'))).toBe(true);
+
+      const forced = (await handleUpdate(db, press(updateId + 1, telegramId, `rord:${subId}:${plan!.id}`)))
+        .replies[0];
+      expect(forced?.text).toBe(menu.RENEW_WRONG_FAMILY);
+      const orders = await db
+        .prepare(`SELECT COUNT(*)::int AS n FROM orders WHERE user_id = ?1 AND kind = 'RENEWAL'`)
+        .bind(userId)
+        .first<{ n: number }>();
+      expect(orders?.n).toBe(0);
+    } finally {
+      await db.prepare(`DELETE FROM products WHERE code = ?1`).bind(code).run();
+    }
   });
 
   it('«پلن‌های دیگر» opens the whole list, and a code taken off keeps the one plan', async () => {
@@ -676,6 +829,70 @@ describe('applying it', () => {
       .bind(target.order.publicId)
       .first<{ n: number }>();
     expect(n?.n).toBe(0);
+  });
+
+  it('an exhausted service with days left is usable the moment ADD lands, and keeps the days', async () => {
+    /*
+     * Sam, 2026-09-13: «اگر حجمش تموم شده بود ولی زمان پلن مونده بود، بتونه
+     * بلافاصله پلن جدید رو با زمان جدید و حجم جدید بگیره». Nothing waits for
+     * the old expiry: the quota grows the moment the PUT lands. On an ADD
+     * panel the five days left are kept on top of the thirty.
+     */
+    await setPanelConfig(panelId, {
+      Methodextend: 'اضافه شدن زمان و حجم به ماه بعد',
+      status_extend: 'on_extend',
+    });
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-x1`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      volumeGb: 50,
+      usedBytes: 50 * GIB,
+    });
+    await handleUpdate(db, press(updateId, telegramId, `rord:${subId}:${await planId('sim-vip-1m-50')}`));
+    await markPaid(userId);
+    const panel = fakePanel({
+      [`u_${telegramId}`]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts[0]?.body['data_limit']).toBe(100 * GIB);
+    expect(panel.puts[0]?.body['expire']).toBe((NOW_MS + 35 * DAY) / 1000);
+    const sub = await subscriptionRow(subId);
+    expect(sub?.status).toBe('ACTIVE');
+    expect(Date.parse(sub!.expires_at!)).toBe(NOW_MS + 35 * DAY);
+  });
+
+  it('…and on RESET it is usable too, at the cost of the days that were left', async () => {
+    // RESET: the month starts again from now with the new quota and a zeroed
+    // counter. The five days are gone — that is what this panel's setting
+    // promises, and `renewIntro` says so on the screen before the order.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-x2`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      volumeGb: 50,
+      usedBytes: 50 * GIB,
+    });
+    await handleUpdate(db, press(updateId, telegramId, `rord:${subId}:${await planId('sim-vip-1m-50')}`));
+    await markPaid(userId);
+    const panel = fakePanel({
+      [`u_${telegramId}`]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.resets).toContain(`u_${telegramId}`);
+    expect(panel.puts[0]?.body['data_limit']).toBe(50 * GIB);
+    expect(panel.puts[0]?.body['expire']).toBe((NOW_MS + 30 * DAY) / 1000);
+    const sub = await subscriptionRow(subId);
+    expect(sub?.used_bytes).toBe(0);
+    expect(sub?.status).toBe('ACTIVE');
   });
 
   it('ADD keeps the days already paid for and grows the quota', async () => {
