@@ -305,6 +305,42 @@ describe('settling a verified payment', () => {
       payment: 'AWAITING_REVIEW',
     });
   });
+
+  /**
+   * The sweep's SELECT runs outside its transaction. An operator re-opening
+   * the manual verification in that gap («wrong transaction linked») used to
+   * lose: the payment went PAID and the order was delivered on a claim that
+   * now said PENDING — and if the operator then rejected it, on one that said
+   * REJECTED. The guard is in the UPDATE, so the sweep re-asks the claim at
+   * the moment it writes. Its mirror lives in `reopenMirzabotManualVerification`,
+   * which refuses once the payment is PAID; the two cannot both be true.
+   */
+  it('does not settle a claim that was re-opened after the sweep selected it', async () => {
+    const sale = await buyAndClaim('sim-shop-spotify');
+    await hubVerifies(sale.paymentPublicId);
+
+    const raced: typeof db = Object.create(db, {
+      withSession: {
+        value: async (fn: Parameters<typeof db.withSession>[0]) => {
+          await db
+            .prepare(
+              `UPDATE payment_claims SET status = 'PENDING', updated_at = ?2
+                WHERE external_order_id = ?1 AND status = 'VERIFIED'`,
+            )
+            .bind(`shikoo:${sale.paymentPublicId}`, Date.now())
+            .run();
+          return db.withSession(fn);
+        },
+      },
+    });
+
+    expect(await settleVerifiedPayments(raced)).toBe(0);
+    expect(await statuses(sale.orderId, sale.paymentPublicId)).toEqual({
+      order: 'AWAITING_PAYMENT',
+      payment: 'AWAITING_REVIEW',
+    });
+    expect((await pendingNotifications()).filter((n) => n.chatId === sale.telegramId)).toHaveLength(0);
+  });
 });
 
 /**
@@ -370,11 +406,14 @@ describe('a claim delivered before the money was proven', () => {
 
     // One message owed, not two: the customer is told once that their payment
     // landed, whatever route it took to get there.
+    // The customer's own message, by its key — the operators' report topic gets
+    // its own row on the same payment whenever a report chat is configured,
+    // and one other test file leaves one configured.
     const owed = await db
       .prepare(
-        `SELECT COUNT(*)::int AS n FROM bot_notifications WHERE dedupe_key LIKE ?1`,
+        `SELECT COUNT(*)::int AS n FROM bot_notifications WHERE dedupe_key = ?1`,
       )
-      .bind(`%${f.paymentPublicId}%`)
+      .bind(`settle:${f.paymentPublicId}`)
       .first<{ n: number }>();
     expect(owed?.n).toBe(1);
   });
@@ -395,8 +434,8 @@ describe('a claim delivered before the money was proven', () => {
     const after = await statuses(f.orderId, f.paymentPublicId);
     expect(after.payment).toBe('PAID');
     const owed = await db
-      .prepare(`SELECT COUNT(*)::int AS n FROM bot_notifications WHERE dedupe_key LIKE ?1`)
-      .bind(`%${f.paymentPublicId}%`)
+      .prepare(`SELECT COUNT(*)::int AS n FROM bot_notifications WHERE dedupe_key = ?1`)
+      .bind(`settle:${f.paymentPublicId}`)
       .first<{ n: number }>();
     expect(owed?.n).toBe(1);
   });

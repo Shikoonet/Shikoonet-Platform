@@ -158,10 +158,18 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
         // The money genuinely arrived, so the payment is paid whatever state the
         // order is in. Guarded on the old status so a concurrent sweep — or this
         // one running twice — settles it exactly once.
+        // And guarded on the claim still saying so: the sweep's SELECT above ran
+        // outside this transaction, and an operator's reopen can land in
+        // between. The reopen refuses once this row is PAID; this refuses once
+        // the claim is no longer VERIFIED. Whichever commits first wins, and
+        // the two can never both be true.
         const paid = await tx
           .prepare(
             `UPDATE payments SET status = 'PAID', updated_at = now()
-                     WHERE id = ?1 AND status <> 'PAID'`,
+                     WHERE id = ?1 AND status <> 'PAID'
+                       AND EXISTS (SELECT 1 FROM payment_claims c
+                                    WHERE c.external_order_id = ('shikoo:' || payments.public_id)
+                                      AND c.status IN ('VERIFIED','FULFILLED_UNRECONCILED'))`,
           )
           .bind(row.payment_id)
           .run();

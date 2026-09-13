@@ -237,6 +237,52 @@ describe('reopen manual verification API', () => {
     expect(claim?.status).not.toBe('VERIFIED');
   });
 
+  /**
+   * This bot's own claim (`shikoo:`), approved by hand and then settled by the
+   * bot's sweep: the payment is PAID and the order is on its way to delivery.
+   * Re-opening now would say «not paid» about a service the customer has,
+   * drop the sale from the finance figures and hand the deposit back to the
+   * matcher. The wrong approval is undone from the customer's side instead.
+   */
+  it('refuses to reopen once the shop has settled the payment', async () => {
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT INTO payment_claims
+         (id, external_order_id, customer_reference, expected_amount_irr, target_financial_account_id,
+          submitted_at, source_system, metadata_json, status, paid_clicked_at, receipt_submitted_at,
+          suspect_reason, suspect_metadata_json, created_at, updated_at)
+       VALUES ('c-settled', 'shikoo:pub-settled', 'tg-1', ?1, ?2, ?3, 'MIRZABOT', '{}', 'PENDING',
+               ?3, ?3, 'AMBIGUOUS_CLAIMS', '{}', ?4, ?4)`,
+    )
+      .bind(AMOUNT, ACCOUNT, BASE_MS, now)
+      .run();
+    await seedTx('t-settled');
+    expect((await approve('c-settled', 't-settled')).status).toBe(200);
+
+    await baseEnv.DB.prepare(`DELETE FROM payments WHERE public_id = 'pub-settled'`).run();
+    await baseEnv.DB.prepare(
+      `INSERT INTO payments (public_id, amount_irr, method, status, created_at)
+       VALUES ('pub-settled', ?1, 'CARD_TO_CARD', 'PAID', now())`,
+    )
+      .bind(AMOUNT)
+      .run();
+
+    const resp = await reopen('c-settled');
+    expect(resp.status).toBe(409);
+    expect(await resp.json()).toEqual({ ok: false, error: 'already_settled' });
+    const claim = await baseEnv.DB.prepare(
+      `SELECT status FROM payment_claims WHERE id = 'c-settled'`,
+    ).first<{ status: string }>();
+    expect(claim?.status).toBe('VERIFIED');
+
+    // The same claim before the sweep got to it reopens as before.
+    await baseEnv.DB.prepare(
+      `UPDATE payments SET status = 'AWAITING_REVIEW' WHERE public_id = 'pub-settled'`,
+    ).run();
+    expect((await reopen('c-settled')).status).toBe(200);
+    await baseEnv.DB.prepare(`DELETE FROM payments WHERE public_id = 'pub-settled'`).run();
+  });
+
   it('does not mark bot auto verified as reopen eligible', async () => {
     await seedClaim('c-auto');
     await seedTx('t-auto');

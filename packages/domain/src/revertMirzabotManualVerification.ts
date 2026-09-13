@@ -30,6 +30,7 @@ export type ReopenManualVerificationFailure =
   | 'AUTO_VERIFIED_NOT_REVERTABLE'
   | 'NO_REVERT_SNAPSHOT'
   | 'ALREADY_REOPENED'
+  | 'ALREADY_SETTLED'
   | 'REASON_REQUIRED'
   | 'TRANSACTION_NOT_RELEASEABLE';
 
@@ -37,7 +38,7 @@ export type ReopenManualVerificationFailure =
 export type RevertManualVerificationFailure =
   | Exclude<
       ReopenManualVerificationFailure,
-      'REASON_REQUIRED' | 'TRANSACTION_NOT_RELEASEABLE' | 'ALREADY_REOPENED'
+      'REASON_REQUIRED' | 'TRANSACTION_NOT_RELEASEABLE' | 'ALREADY_REOPENED' | 'ALREADY_SETTLED'
     >
   | 'ALREADY_REVERTED';
 
@@ -472,17 +473,39 @@ export async function reopenMirzabotManualVerification(
   const now = Date.now();
   const restoredMetadata = stripRevertSnapshotFromMetadata(claim.metadata_json);
 
+  /**
+   * Not once the shop has acted on it. For this bot's own claims (`shikoo:`)
+   * the settle sweep turns VERIFIED into a PAID payment and a PAID order, and
+   * the provisioning sweep delivers it — so after that point the claim is no
+   * longer where the money's truth lives. Re-opening it would say «not paid»
+   * about a service the customer already has, drop the sale out of every
+   * finance figure, and hand the deposit back to the matcher as unassigned
+   * income. A wrong approval that already delivered is undone from the
+   * customer's side — revoke the service, adjust the wallet — not by
+   * un-saying the payment. Guarded in the statement, so a settlement racing
+   * this reopen cannot slip between a check and the write.
+   */
   const claimUpdate = await db
     .prepare(
       `UPDATE payment_claims
          SET status = 'PENDING', suspect_reason = NULL, suspect_metadata_json = '{}',
              metadata_json = ?2, updated_at = ?3
-       WHERE id = ?1 AND status = 'VERIFIED'`,
+       WHERE id = ?1 AND status = 'VERIFIED'
+         AND NOT EXISTS (SELECT 1 FROM payments p
+                          WHERE ('shikoo:' || p.public_id) = payment_claims.external_order_id
+                            AND p.status = 'PAID')`,
     )
     .bind(args.claimId, restoredMetadata, now)
     .run();
   if ((claimUpdate.meta?.changes ?? 0) === 0) {
-    return { ok: false, error: 'ALREADY_REOPENED' };
+    const settled = await db
+      .prepare(
+        `SELECT 1 AS one FROM payments p
+          WHERE ('shikoo:' || p.public_id) = ?1 AND p.status = 'PAID'`,
+      )
+      .bind(claim.external_order_id)
+      .first<{ one: number }>();
+    return { ok: false, error: settled ? 'ALREADY_SETTLED' : 'ALREADY_REOPENED' };
   }
 
   const batch = [];
@@ -556,7 +579,7 @@ export async function revertMirzabotManualVerification(
   });
   if (!result.ok) {
     const error =
-      result.error === 'ALREADY_REOPENED'
+      result.error === 'ALREADY_REOPENED' || result.error === 'ALREADY_SETTLED'
         ? 'ALREADY_REVERTED'
         : result.error === 'REASON_REQUIRED' || result.error === 'TRANSACTION_NOT_RELEASEABLE'
           ? 'NO_REVERT_SNAPSHOT'
