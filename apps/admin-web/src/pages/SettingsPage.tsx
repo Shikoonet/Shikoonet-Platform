@@ -812,10 +812,19 @@ function SettingField({
   const id = `set-${row.scope}-${row.key}`;
   const raw = row.value === null || row.value === undefined ? '' : String(row.value);
   const [draft, setDraft] = useState(raw);
+  const [seeded, setSeeded] = useState(raw);
 
   // Re-seeded when the row is reloaded, so a save that the server normalised
   // shows what the server kept rather than what was typed.
-  useEffect(() => setDraft(raw), [raw]);
+  //
+  // During render, not in an effect. A mount effect is deferred past paint,
+  // and a pick that landed before it ran was overwritten by it — the effect's
+  // `setDraft('')` queued behind the click's `setDraft(next)` and won. On a
+  // loaded CI runner that window is real (issue #168); this has none.
+  if (seeded !== raw) {
+    setSeeded(raw);
+    setDraft(raw);
+  }
 
   if (row.secret) {
     return (
