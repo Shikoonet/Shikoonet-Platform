@@ -1766,6 +1766,14 @@ export const api = {
     return req<{ ok: boolean }>(`/products/${id}`, { method: 'DELETE' });
   },
 
+  /** Every config of `id` moves under `into`; `id` is gone. Same panel, same kind. */
+  mergeProduct(id: number, into: number) {
+    return req<{ ok: boolean; moved: number }>(`/products/${id}/merge`, {
+      method: 'POST',
+      body: JSON.stringify({ into }),
+    });
+  },
+
   productCategories() {
     return req<{ ok: boolean; items: CategoryRow[] }>('/product-categories');
   },

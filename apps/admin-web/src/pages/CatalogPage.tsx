@@ -267,6 +267,13 @@ export function CatalogPage() {
        */
       key={editing.id}
       service={editing}
+      // Where its configs could move: same panel, same kind, on this page.
+      siblings={rows.filter(
+        (s) =>
+          s.id !== editing.id &&
+          kindOf(s) === kindOf(editing) &&
+          (s.panel?.id ?? null) === (editing.panel?.id ?? null),
+      )}
       panels={panels}
       categories={categories}
       onCategoryAdded={() => void loadCategories()}
@@ -2303,6 +2310,7 @@ function NewServiceCard({
 
 function ServiceDrawer({
   service,
+  siblings,
   panels,
   categories,
   onCategoryAdded,
@@ -2311,6 +2319,7 @@ function ServiceDrawer({
   onGone,
 }: {
   service: ServiceRow;
+  siblings: ServiceRow[];
   panels: ProviderOption[];
   categories: CategoryRow[];
   onCategoryAdded: () => void;
@@ -2398,6 +2407,24 @@ function ServiceDrawer({
     } catch (e) {
       if (isInUse(e)) setRefused({ detail: e.detail ?? '' });
       else setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // «ادغام»: this service's configs go under another one on the same panel
+  // and this one goes away. The legacy shop sold one service per price; this
+  // is how an admin folds those back into the tier they belong to.
+  const [mergeInto, setMergeInto] = useState('');
+  async function merge() {
+    const into = Number(mergeInto);
+    if (!into) return;
+    begin();
+    try {
+      await api.mergeProduct(service.id, into);
+      onGone();
+    } catch (e) {
+      setErr(message(e));
     } finally {
       setBusy(false);
     }
@@ -2591,6 +2618,38 @@ function ServiceDrawer({
         «غیرفعال» سرویس را از ربات برمی‌دارد و تاریخچهٔ فروش دست‌نخورده می‌ماند. حذف فقط وقتی
         انجام می‌شود که هیچ سفارشی و هیچ اشتراکی به آن وصل نباشد.
       </p>
+      {siblings.length > 0 && (
+        <div className="row-actions" style={{ marginBlockStart: 12 }}>
+          <label htmlFor="svc-merge">ادغام در سرویس دیگرِ همین پنل:</label>
+          <select
+            id="svc-merge"
+            className="form-control"
+            value={mergeInto}
+            onChange={(e) => setMergeInto(e.target.value)}
+            {...w}
+          >
+            <option value="">— انتخاب سرویس —</option>
+            {siblings.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} ({count(s.configs.length)} کانفیگ)
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={busy || mergeInto === ''}
+            onClick={() => void merge()}
+            {...w}
+          >
+            ادغام
+          </button>
+          <span className="muted">
+            کانفیگ‌های این سرویس زیر آن سرویس می‌روند و این سرویس حذف می‌شود؛ سفارش‌ها و اشتراک‌ها
+            همراه کانفیگ می‌مانند.
+          </span>
+        </div>
+      )}
     </div>
   );
 }

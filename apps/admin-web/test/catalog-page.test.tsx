@@ -107,6 +107,7 @@ const catalog = vi.fn(async (_params: unknown): Promise<Record<string, unknown>>
 }));
 const panelGroups = vi.fn(async (_id: number) => GROUPS);
 const setProductStatus = vi.fn(async (_id: number, _status: string) => ({ ok: true, status: 'HIDDEN' }));
+const mergeProduct = vi.fn(async (_id: number, _into: number) => ({ ok: true, moved: 1 }));
 
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
@@ -116,6 +117,7 @@ vi.mock('../src/api.js', async () => {
       catalog: (p: unknown) => catalog(p),
       panelGroups: (id: number) => panelGroups(id),
       setProductStatus: (id: number, status: string) => setProductStatus(id, status),
+      mergeProduct: (id: number, into: number) => mergeProduct(id, into),
       productCategories: async () => ({ ok: true, items: [] }),
       // The service form carries a `BadgeField` since 0061, and it asks this.
       emojiPacks: async () => ({ ok: true, customEmoji: false, packs: [] }),
@@ -176,6 +178,23 @@ describe('the service editor belongs to one service', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'ویرایش سرویس' })[0]!);
     expect(nameBox().value).toBe('طلایی');
     expect(first.contains(nameBox())).toBe(false);
+  });
+
+  it('can fold the service into another one on the same panel, and that is one POST', async () => {
+    // Sam, 2026-09-13: the legacy shop's «one service per price», folded back
+    // into the tier from the editor. Only same-panel services are offered.
+    draw();
+    await screen.findByText('طلایی');
+    fireEvent.click((await screen.findAllByRole('button', { name: 'ویرایش سرویس' }))[1]!);
+    const into = screen.getByLabelText('ادغام در سرویس دیگرِ همین پنل:') as HTMLSelectElement;
+    const offered = [...into.options].map((o) => o.textContent);
+    expect(offered.join(' ')).toContain('پلاتینیوم');
+    expect(offered.join(' ')).not.toContain('طلایی');
+    fireEvent.change(into, { target: { value: '8' } });
+    fireEvent.click(screen.getByRole('button', { name: 'ادغام' }));
+    await waitFor(() => expect(mergeProduct).toHaveBeenCalledWith(9, 8));
+    // Gone: the list is asked again.
+    await waitFor(() => expect(catalog.mock.calls.length).toBeGreaterThan(1));
   });
 });
 

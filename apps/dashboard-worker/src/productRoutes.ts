@@ -1973,6 +1973,79 @@ export function registerProductRoutes(
     return c.json({ ok: true });
   });
 
+  // --- fold one service into another --------------------------------------
+
+  /**
+   * Every config of service A moves under service B, a discount code scoped
+   * to A now names B, and A is gone. One transaction.
+   *
+   * Why this exists: the legacy shop was panel-first — a «panel» there IS the
+   * tier («🥇سرویس تیتانیوم - مولتی لوکیشن🎯») and every price was its own
+   * `product` row. The importer folds those into one service per panel since
+   * #210, but a catalogue imported BEFORE that carries one service per price,
+   * and the importer never rewrites a row it already wrote. Sam, 2026-09-13,
+   * on staging: «۳ تا پنل سرویس تیتانیوم غلطه، باید این کانفیگها زیر مجموعهٔ
+   * تیتانیوم باشن نه اینکه هر کدوم برای خودشون یک سرویس باشن».
+   *
+   * Same panel and same kind, or refused: a config delivers through its
+   * service's panel and groups, and a VPN config filed under a Spotify
+   * service would be sold as one. Orders and subscriptions point at the
+   * config, not the service, so the sale history follows the config.
+   */
+  app.post('/api/v1/admin/products/:id/merge', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    const body = z
+      .object({ into: z.number().int().positive() })
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const into = body.data.into;
+    if (into === id) return c.json({ ok: false, error: 'invalid_body', detail: 'same service' }, 400);
+
+    const SEL = `SELECT id, code, name, kind, provider_id, sort_order FROM products WHERE id = ?1`;
+    type P = { id: number; code: string; name: string; kind: string; provider_id: number | null; sort_order: number };
+    const src = await c.env.DB.prepare(SEL).bind(id).first<P>();
+    const dst = await c.env.DB.prepare(SEL).bind(into).first<P>();
+    if (!src || !dst) return c.json({ ok: false, error: 'not_found' }, 404);
+    if (src.provider_id !== dst.provider_id || src.kind !== dst.kind) {
+      return c.json(
+        { ok: false, error: 'different_shelf', detail: 'هر دو سرویس باید روی یک پنل و از یک نوع باشند.' },
+        409,
+      );
+    }
+
+    // ponytail: the moved configs keep the SOURCE service's position, so a
+    // catalogue folded in legacy order stays in legacy order; a merge of two
+    // hand-made services lands them after the target's own by that number.
+    const [moved, codes] = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE product_plans SET product_id = ?2, sort_order = ?3, updated_at = now()
+          WHERE product_id = ?1 RETURNING id`,
+      ).bind(id, into, src.sort_order),
+      c.env.DB.prepare(`UPDATE discount_codes SET product_id = ?2 WHERE product_id = ?1 RETURNING id`).bind(
+        id,
+        into,
+      ),
+      c.env.DB.prepare(`DELETE FROM products WHERE id = ?1`).bind(id),
+    ]);
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.product_merged',
+      'PRODUCT',
+      String(id),
+      { code: src.code, name: src.name, plans: moved?.results.length ?? 0 },
+      { into, code: dst.code, name: dst.name, discount_codes: codes?.results.length ?? 0 },
+      null,
+    );
+    return c.json({ ok: true, moved: moved?.results.length ?? 0 });
+  });
+
   // --- add a plan to a product --------------------------------------------
 
   app.post('/api/v1/admin/products/:id/plans', async (c) => {
