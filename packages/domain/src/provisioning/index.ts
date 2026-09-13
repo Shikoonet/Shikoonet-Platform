@@ -54,6 +54,22 @@ export function isAutomated(kind: string): boolean {
 }
 
 /**
+ * The kinds that reach a panel, for a WHERE clause.
+ *
+ * `isAutomated` is the answer in TypeScript; this is the same answer for SQL,
+ * built from the same map so the two cannot disagree. The bot's `PURCHASABLE`
+ * and the dashboard's `SELLABLE` both ask «does this kind need an address and
+ * a credential before it can deliver?», and a list of kinds spelled again in
+ * either would be a fourth copy of what `ADAPTERS` already decides.
+ *
+ * Safe to interpolate: every element is a literal off this file's own adapters.
+ */
+export const AUTOMATED_KINDS_SQL = [...ADAPTERS.keys()]
+  .filter((kind) => kind !== manualAdapter.kind)
+  .map((kind) => `'${kind}'`)
+  .join(', ');
+
+/**
  * Renewal is per panel, and the setting arrived with the migration.
  *
  * `provisioning_providers.config` keeps every legacy column the schema did not

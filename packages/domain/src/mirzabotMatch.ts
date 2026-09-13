@@ -13,6 +13,7 @@
 
 import {
   AUTO_MATCH_MAX_TIME_DELTA_MS,
+  FULFILLED_RECONCILE_MAX_TIME_DELTA_MS,
   MIRZABOT_SOURCE,
   WAITING_TIMEOUT_MS,
 } from '@shikoo/contracts';
@@ -72,7 +73,22 @@ export interface MirzabotEvaluationOptions {
   /** Wall clock used to decide WAIT vs «no transfer found». */
   now?: number;
   maxDeltaMs?: number;
+  /** For a `FULFILLED_UNRECONCILED` claim; see FULFILLED_RECONCILE_MAX_TIME_DELTA_MS. */
+  fulfilledMaxDeltaMs?: number;
   waitingTimeoutMs?: number;
+}
+
+/**
+ * Which window a claim is measured against. A claim the shop already
+ * delivered is reconciling a backlog, not racing a customer's transfer —
+ * issue #134.
+ */
+function windowFor(
+  claim: MirzabotClaimCandidate,
+  maxDeltaMs: number,
+  fulfilledMaxDeltaMs: number,
+): number {
+  return claim.status === 'FULFILLED_UNRECONCILED' ? fulfilledMaxDeltaMs : maxDeltaMs;
 }
 
 function waitingAnchorMs(claim: MirzabotClaimCandidate): number {
@@ -177,12 +193,14 @@ function buildClaimEdges(
   claim: MirzabotClaimCandidate,
   transactions: MirzabotTxCandidate[],
   maxDeltaMs: number,
+  fulfilledMaxDeltaMs: number,
 ): ClaimEdges {
   const precondition = claimPreconditionFailure(claim);
   const edges: ClaimEdges = { claim, precondition, eligible: [], rejections: [] };
   if (precondition) return edges;
+  const window = windowFor(claim, maxDeltaMs, fulfilledMaxDeltaMs);
   for (const tx of transactions) {
-    const r = evaluateEdge(claim, tx, maxDeltaMs);
+    const r = evaluateEdge(claim, tx, window);
     if (r.eligible) {
       edges.eligible.push({ tx, timeDeltaMs: r.timeDeltaMs });
     } else if (r.rejection !== 'NOT_A_CANDIDATE') {
@@ -252,6 +270,7 @@ export function evaluateMirzabotGroup(
   opts: MirzabotEvaluationOptions = {},
 ): MirzabotDecision[] {
   const maxDeltaMs = opts.maxDeltaMs ?? AUTO_MATCH_MAX_TIME_DELTA_MS;
+  const fulfilledMaxDeltaMs = opts.fulfilledMaxDeltaMs ?? FULFILLED_RECONCILE_MAX_TIME_DELTA_MS;
   const now = opts.now ?? Date.now();
 
   const seen = new Set<string>();
@@ -261,7 +280,9 @@ export function evaluateMirzabotGroup(
     return true;
   });
 
-  const allEdges = uniqueClaims.map((c) => buildClaimEdges(c, transactions, maxDeltaMs));
+  const allEdges = uniqueClaims.map((c) =>
+    buildClaimEdges(c, transactions, maxDeltaMs, fulfilledMaxDeltaMs),
+  );
 
   // Claims contending for each transaction, across the whole group.
   const claimsPerTx = new Map<string, string[]>();

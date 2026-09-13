@@ -14,7 +14,7 @@
  * PLAN's status instead and threw the panel's away.
  *
  * WHAT THIS ANSWERS, AND WHAT IT DOES NOT. `PURCHASABLE` in
- * `apps/bot/src/catalog.ts` has six conditions. Two of them — `resellers_only`
+ * `apps/bot/src/catalog.ts` has seven conditions. Two of them — `resellers_only`
  * and `once_per_user` — depend on WHO is asking, and an admin screen has no
  * customer in hand. Those two are deliberately absent here: «فقط نماینده» is a
  * decision the operator made and the screens already show it, while everything
@@ -28,6 +28,8 @@
  *     p.status  = 'ACTIVE'   ·  the service
  *     pl.status = 'ACTIVE'   ·  the config
  *     pr.capacity > live     ·  the panel's ceiling
+ *     panel wired            ·  an address and a credential, for the kinds
+ *                               that reach a panel at all (#182)
  *
  * plus one case SQL cannot have — a product with no panel at all, which the
  * LEFT JOIN lets through and delivery then cannot fulfil.
@@ -68,6 +70,18 @@ export interface SellableFacts {
     capacity?: number | null;
     /** Live subscriptions on this panel — ACTIVE and ON_HOLD, as the bot counts them. */
     liveSubscriptions?: number | null;
+    /**
+     * Whether this kind logs in to a panel to deliver — `isAutomated` on the
+     * server, carried as `hasGroups` on every catalogue row. Required, for the
+     * reason `category` is: a screen that cannot say must fail to compile
+     * rather than quietly answer the old question. A shelf or a hand-delivered
+     * kind is false, and the two facts below are then not asked of it.
+     */
+    reachesAPanel: boolean;
+    /** `provisioning_providers.base_url`. Only read when `reachesAPanel`. */
+    baseUrl?: string | null;
+    /** `secret_ref` or a sealed `provider_secrets` row. Only read when `reachesAPanel`. */
+    hasCredential?: boolean;
   } | null;
 }
 
@@ -76,6 +90,7 @@ export type NotSellable =
   | { kind: 'NO_CATEGORY' }
   | { kind: 'NO_PANEL' }
   | { kind: 'PANEL_OFF'; panel: string }
+  | { kind: 'PANEL_UNWIRED'; panel: string }
   | { kind: 'PANEL_FULL'; panel: string; capacity: number; live: number }
   | { kind: 'PRODUCT_OFF'; status: string }
   | { kind: 'PLAN_OFF'; status: string };
@@ -108,6 +123,11 @@ export function whyNotSellable(facts: SellableFacts): NotSellable[] {
     out.push({ kind: 'NO_PANEL' });
   } else if (panel.status !== 'ACTIVE') {
     out.push({ kind: 'PANEL_OFF', panel: panel.name });
+  } else if (panel.reachesAPanel && (!panel.baseUrl || !panel.hasCredential)) {
+    // Before the ceiling: a panel nobody can log in to has no ceiling worth
+    // reporting. Falsy rather than null, the way the adapter reads them — an
+    // empty address is no address.
+    out.push({ kind: 'PANEL_UNWIRED', panel: panel.name });
   } else if (
     // NULL capacity is unlimited — the legacy 'unlimited' string became NULL in
     // the migration, so a missing number must never read as a ceiling of zero.
@@ -162,6 +182,8 @@ export function notSellableFa(reason: NotSellable): string {
       return 'پنل ندارد، پس هیچ‌چیزی برای تحویل نیست.';
     case 'PANEL_OFF':
       return `پنل «${reason.panel}» خاموش است و از خرید و تمدید برداشته شده.`;
+    case 'PANEL_UNWIRED':
+      return `پنل «${reason.panel}» آدرس یا اعتبارنامه ندارد، پس سفارشی از آن تحویل نمی‌شود و از فروشگاه برداشته شده.`;
     case 'PANEL_FULL':
       return `پنل «${reason.panel}» به سقفش رسیده — ${faDigits(reason.live)} اشتراک زنده از ${faDigits(reason.capacity)}.`;
     case 'PRODUCT_OFF':
@@ -182,6 +204,8 @@ export function notSellableShortFa(reason: NotSellable): string {
       return 'بدون پنل';
     case 'PANEL_OFF':
       return 'پنل خاموش';
+    case 'PANEL_UNWIRED':
+      return 'پنل وصل نیست';
     case 'PANEL_FULL':
       return 'پنل پر است';
     case 'PRODUCT_OFF':

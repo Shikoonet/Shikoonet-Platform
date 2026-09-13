@@ -77,6 +77,9 @@ function SellState({ row, onGo }: { row: PlanRow; onGo: (id: 'catalog', search?:
           status: row.provider.status ?? 'DISABLED',
           capacity: row.provider.capacity,
           liveSubscriptions: row.provider.liveSubscriptions,
+          reachesAPanel: row.provider.hasGroups,
+          baseUrl: row.provider.baseUrl,
+          hasCredential: row.provider.hasCredential,
         }
       : null,
   });

@@ -24,6 +24,7 @@
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { whyNotSellable, isSellable, type SellableFacts } from '@shikoo/contracts';
+import { isAutomated } from '@shikoo/domain';
 import { assertSchema, db } from './helpers/env.js';
 import { handleUpdate } from '../src/handle.js';
 
@@ -60,6 +61,14 @@ async function makeShop(
     liveSubscriptions?: number;
     withPanel?: boolean;
     categoryActive?: boolean;
+    /**
+     * 'marzban' unless said otherwise — a kind with NO adapter, which falls to
+     * manual and is never asked for an address. The cases about wiring say
+     * 'pasarguard', the one kind that is.
+     */
+    kind?: string;
+    baseUrl?: string | null;
+    secretRef?: string | null;
   } = {},
 ): Promise<Shop> {
   const withPanel = opts.withPanel ?? true;
@@ -69,10 +78,18 @@ async function makeShop(
   if (withPanel) {
     const provider = await db
       .prepare(
-        `INSERT INTO provisioning_providers (code, name, kind, status, capacity)
-         VALUES (?1, ?2, 'marzban', ?3, ?4) RETURNING id`,
+        `INSERT INTO provisioning_providers (code, name, kind, status, capacity, base_url, secret_ref)
+         VALUES (?1, ?2, ?5, ?3, ?4, ?6, ?7) RETURNING id`,
       )
-      .bind(`${PREFIX}${label}`, panelName, opts.panelStatus ?? 'ACTIVE', opts.capacity ?? null)
+      .bind(
+        `${PREFIX}${label}`,
+        panelName,
+        opts.panelStatus ?? 'ACTIVE',
+        opts.capacity ?? null,
+        opts.kind ?? 'marzban',
+        opts.baseUrl ?? null,
+        opts.secretRef ?? null,
+      )
       .first<{ id: number }>();
     providerId = Number(provider!.id);
 
@@ -140,6 +157,10 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
       `SELECT pl.status AS plan_status, p.status AS product_status,
               cat.name AS category_name, cat.active AS category_active,
               pr.name AS panel_name, pr.status AS panel_status, pr.capacity,
+              pr.kind AS panel_kind, pr.base_url AS panel_base_url,
+              -- Both spellings, as PANEL_HAS_SECRET counts them.
+              (NULLIF(pr.secret_ref, '') IS NOT NULL
+               OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id)) AS panel_has_secret,
               (SELECT COUNT(*)::int FROM subscriptions s
                 WHERE s.provider_id = pr.id AND s.status IN ('ACTIVE','ON_HOLD')) AS live
          FROM product_plans pl
@@ -157,6 +178,9 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
       panel_name: string | null;
       panel_status: string | null;
       capacity: number | null;
+      panel_kind: string | null;
+      panel_base_url: string | null;
+      panel_has_secret: boolean | null;
       live: number | null;
     }>();
   return {
@@ -174,6 +198,11 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
             status: row!.panel_status,
             capacity: row!.capacity === null ? null : Number(row!.capacity),
             liveSubscriptions: Number(row!.live ?? 0),
+            // The way the routes fill `hasGroups`: from the adapter registry,
+            // not from a list of kinds this file keeps.
+            reachesAPanel: isAutomated(row!.panel_kind ?? ''),
+            baseUrl: row!.panel_base_url,
+            hasCredential: Boolean(row!.panel_has_secret),
           },
   };
 }
@@ -328,6 +357,31 @@ describe('what the dashboard says is on sale, and what the bot sells', () => {
     expect(whyNotSellable(await factsOf(shop))).toEqual([
       { kind: 'PANEL_OFF', panel: shop.panelName },
     ]);
+  });
+
+  it('agrees a panel the bot cannot log in to sells nothing — and a shelf still does', async () => {
+    // #182. The bot refuses in SQL; the dashboard has to name it, and the fix
+    // is on «مدیریت پنل‌ها», not on this row. Three shapes: a pasarguard panel
+    // with an address and no credential, the same panel wired, and a kind with
+    // no adapter — which falls to manual and is never asked for either.
+    const unwired = await makeShop('unwired', { kind: 'pasarguard', baseUrl: 'https://x.test' });
+    expect(await agree(unwired)).toEqual({ dashboard: false, bot: false });
+    expect(whyNotSellable(await factsOf(unwired))).toEqual([
+      { kind: 'PANEL_UNWIRED', panel: unwired.panelName },
+    ]);
+    // An empty address is no address, the way the adapter reads it.
+    const blank = await makeShop('blank-url', { kind: 'pasarguard', baseUrl: '', secretRef: 'x' });
+    expect(await agree(blank)).toEqual({ dashboard: false, bot: false });
+
+    const wired = await makeShop('wired', {
+      kind: 'pasarguard',
+      baseUrl: 'https://x.test',
+      secretRef: 'zz-sellable-wired',
+    });
+    expect(await agree(wired)).toEqual({ dashboard: true, bot: true });
+
+    const shelf = await makeShop('shelf', { kind: 'manual' });
+    expect(await agree(shelf)).toEqual({ dashboard: true, bot: true });
   });
 
   it('agrees a panel at its ceiling sells nothing more', async () => {

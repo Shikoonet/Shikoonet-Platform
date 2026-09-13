@@ -500,14 +500,40 @@ export function invalidateShopSettings(): void {
 }
 
 /**
+ * How long one refusal keeps the markup out of every screen.
+ *
+ * A REST, not a switch. Until 2026-09-12 a refusal wrote `custom_emoji=false`
+ * into `settings`, and nothing ever wrote `true` back: the shop stayed plain
+ * until an admin noticed and assigned an emoji again. That was designed for the
+ * one refusal the doc names — an owner without Premium — and it was tripped on
+ * a shop whose owner HAS it. The send path cannot tell those apart: it reads
+ * any 400 that a plain retry survives as «no Premium», because Telegram does
+ * not document the sentence it uses, so a 400 from any other cause took the
+ * feature down for good. Sam saw it on 2026-09-12: «بعد از چند وقت ایموجی‌های
+ * پریمیوم کار نمی‌کنه، یک ایموژی جدید اضافه می‌کنم دوباره همه کار می‌کنه».
+ *
+ * So the reaction is bounded now. A shop whose owner really has no Premium
+ * pays one refused send per rest instead of one per screen, which is what the
+ * switch-off was for; a shop that was refused for any other reason gets its
+ * emoji back by itself. The cause is still in the log, on the same line it
+ * always was — `telegram.custom_emoji_refused` carries Telegram's description.
+ */
+export const CUSTOM_EMOJI_PAUSE_MS = 15 * 60_000;
+
+/** Wall-clock time until which rich sends are off. In memory: this bot is the only sender. */
+let customEmojiPausedUntil = 0;
+
+/**
  * Enables custom emoji after an admin assigns one inside the bot.
  *
  * Choosing a premium emoji is itself an explicit opt-in. Leaving the switch
  * off stores the tagged label but makes the next content refresh replace it
  * with its ordinary fallback glyph, so the assignment appears to vanish.
  * Telegram still has the last word: if the bot is not entitled to send the
- * emoji, the send path falls back safely and `disableCustomEmoji` turns this
- * switch off again.
+ * emoji, the send path falls back safely and `pauseCustomEmoji` rests the
+ * feature for a while. An admin choosing an emoji ends that rest early — the
+ * round trip is the one honest test of the feature, and it has to be allowed to
+ * run right now.
  */
 export async function enableCustomEmoji(db: Db): Promise<void> {
   await db
@@ -517,31 +543,27 @@ export async function enableCustomEmoji(db: Db): Promise<void> {
     )
     .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key)
     .run();
+  resumeCustomEmoji();
+}
+
+/** Ends a rest now. For the admin's round trip above, and for tests. */
+export function resumeCustomEmoji(): void {
+  customEmojiPausedUntil = 0;
   invalidateShopSettings();
   invalidateBotContent();
 }
 
 /**
- * Switches custom emoji off because Telegram refused one.
+ * Rests custom emoji because Telegram refused one.
  *
  * Called from the send path's fallback, so it must not throw: the customer's
- * message has already gone out plain and the only thing left is to stop trying.
- * A shop that turns this on without the owner having Premium loses the emoji,
- * not the bot.
+ * message has already gone out plain and the only thing left is to stop trying
+ * for a while. The setting itself is not touched — it still says what the
+ * admin chose, and the panel keeps showing it.
  */
-export async function disableCustomEmoji(db: Db): Promise<void> {
-  try {
-    await db
-      .prepare(
-        `INSERT INTO settings (scope, key, value) VALUES (?1, ?2, 'false'::jsonb)
-         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value, updated_at = now()`,
-      )
-      .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key)
-      .run();
-    log.warn('settings.custom_emoji_disabled');
-  } catch (err) {
-    log.error('settings.custom_emoji_write_failed', {}, err);
-  }
+export function pauseCustomEmoji(now = Date.now()): void {
+  customEmojiPausedUntil = now + CUSTOM_EMOJI_PAUSE_MS;
+  log.warn('settings.custom_emoji_paused', { minutes: CUSTOM_EMOJI_PAUSE_MS / 60_000 });
   invalidateShopSettings();
   // The wording is cached with the stripping decision baked in, so both caches
   // have to go or the next thirty seconds keep sending the markup that was
@@ -777,7 +799,7 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       // The difference is deliberate: those describe a shop that has been
       // selling for years, this one describes a Premium subscription the bot
       // cannot verify it has.
-      customEmoji: text(CUSTOM_EMOJI_SETTING.key) === 'true',
+      customEmoji: text(CUSTOM_EMOJI_SETTING.key) === 'true' && now >= customEmojiPausedUntil,
       // Validated on the way OUT as well as on the way in. The panel refuses a
       // bad template, but this row is reachable by hand and by a restore, and
       // the failure mode of trusting it is «{prise}» drawn on a button to a

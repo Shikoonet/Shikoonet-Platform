@@ -18,7 +18,7 @@ import { beat } from './heartbeat.js';
 import { run } from './poll.js';
 import { acquirePollerLock } from './singleton.js';
 import { createTelegramApi, TELEGRAM_API_BASE } from './telegram.js';
-import { disableCustomEmoji, peekReportTopic, setReportChatIdFallback } from './settings.js';
+import { pauseCustomEmoji, peekReportTopic, setReportChatIdFallback } from './settings.js';
 import { watchBotToken } from './tokenWatch.js';
 
 /** Module level, so the two handlers below the entry point log the same way. */
@@ -121,8 +121,9 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
     token,
     baseUrl: process.env.TELEGRAM_API_BASE ?? TELEGRAM_API_BASE,
     // There is no API that says whether the bot's owner has Telegram Premium,
-    // so the bot learns it by being refused once and then stops asking.
-    onCustomEmojiRefused: () => disableCustomEmoji(db),
+    // so the bot learns it by being refused — and rests, rather than stops:
+    // it cannot tell that refusal from any other 400, so it asks again later.
+    onCustomEmojiRefused: () => pauseCustomEmoji(),
   });
 
   // The bot's own username, learned rather than configured, so the referral

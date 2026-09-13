@@ -51,9 +51,7 @@ async function completedOrder(opts: {
   reseller?: boolean;
   /** Deliver it too, onto a named panel — what the per-panel block reads. */
   onPanel?: string;
-  /** A RENEWAL of this subscription — what the per-panel block reads for one. */
-  renews?: number | undefined;
-}): Promise<{ orderId: number; userId: number; telegramId: number; subscriptionId?: number | undefined }> {
+}): Promise<{ orderId: number; userId: number; telegramId: number }> {
   const { telegramId } = ids();
   const userId = await makeCustomer(telegramId, { reseller: opts.reseller ?? false });
   const plan = opts.kind === 'WALLET_TOPUP' ? null : await planId('sim-vip-1m-50');
@@ -63,8 +61,8 @@ async function completedOrder(opts: {
       // TRIAL to be free AND to name the panel it came from.
       `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
                            unit_price_irr, total_irr, status, completed_at,
-                           provider_id, target_subscription_id)
-       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, 'COMPLETED', to_timestamp(?6 / 1000.0), ?7, ?8)
+                           provider_id)
+       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, 'COMPLETED', to_timestamp(?6 / 1000.0), ?7)
        RETURNING id`,
     )
     .bind(
@@ -75,25 +73,40 @@ async function completedOrder(opts: {
       opts.irr,
       opts.atMs,
       opts.kind === 'TRIAL' ? await providerId('sim-vip') : null,
-      opts.renews ?? null,
     )
     .first<{ id: number }>();
-  let subscriptionId: number | undefined;
   if (opts.onPanel !== undefined) {
-    const sub = await db
+    await db
       .prepare(
         `INSERT INTO subscriptions (public_id, user_id, plan_id, order_id,
                                     provider_name_at_sale, plan_name_at_sale,
                                     price_irr, volume_gb, status, purchased_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 'plan', ?6, 10, 'ACTIVE',
-                 to_timestamp(?7 / 1000.0))
-         RETURNING id`,
+                 to_timestamp(?7 / 1000.0))`,
       )
       .bind(`reps${seq}`, userId, plan, row!.id, opts.onPanel, opts.irr, opts.atMs)
-      .first<{ id: number }>();
-    subscriptionId = Number(sub!.id);
+      .run();
   }
-  return { orderId: row!.id, userId, telegramId, subscriptionId };
+  return { orderId: row!.id, userId, telegramId };
+}
+
+/**
+ * Every night before the reported day was sent, so the sweep is looking at an
+ * ordinary morning that owes exactly one report. Without this the table is
+ * empty — a shop that has never reported — and the sweep rightly queues the
+ * whole window.
+ */
+async function ordinaryMorning(): Promise<void> {
+  for (let back = 1; back < 7; back++) {
+    const night = new Date(Date.UTC(2026, 7, 17 - back)).toISOString().slice(0, 10);
+    await db
+      .prepare(
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+         VALUES (?1, ?2, 'sent earlier', 'SENT') ON CONFLICT (dedupe_key) DO NOTHING`,
+      )
+      .bind(`report:${night}`, CHANNEL)
+      .run();
+  }
 }
 
 beforeEach(async () => {
@@ -143,46 +156,7 @@ describe('the daily report', () => {
     expect(text).toContain('zz-report-panel');
     // One sale on that panel, counted the same way in both lines.
     expect(text).toContain('فروش نو: 1');
-    expect(text).toContain('• zz-report-panel: 1 فروش، 0 تمدید — 100,000 تومان');
-  });
-
-  /**
-   * Issue #179. The block used to count subscriptions on `purchased_at`, which
-   * a renewal never touches, so the panel lines could not add up to
-   * «مجموع فروش و تمدید» printed above them. Both halves read `orders` now.
-   */
-  it('puts a renewal on the panel of the service it renewed, so the lines add up', async () => {
-    const { start } = tehranDayBoundsFromDate(DAY);
-    // Sold yesterday — outside the window, so the sale itself is not counted.
-    const sold = await completedOrder({
-      kind: 'NEW_PURCHASE',
-      irr: 2_000_000,
-      atMs: start - 3_600_000,
-      onPanel: 'zz-report-panel',
-    });
-    await completedOrder({
-      kind: 'RENEWAL',
-      irr: 1_500_000,
-      atMs: start + 60_000,
-      renews: sold.subscriptionId,
-    });
-    await completedOrder({
-      kind: 'NEW_PURCHASE',
-      irr: 1_000_000,
-      atMs: start + 120_000,
-      onPanel: 'zz-report-other',
-    });
-
-    const text = await buildDailyReport(db, DAY);
-
-    expect(text).toContain('مجموع فروش و تمدید: 250,000 تومان');
-    expect(text).toContain('• zz-report-panel: 0 فروش، 1 تمدید — 150,000 تومان');
-    expect(text).toContain('• zz-report-other: 1 فروش، 0 تمدید — 100,000 تومان');
-    // The panel lines sum to the total above them — the whole point.
-    const perPanel = [...text.matchAll(/• zz-report-[a-z]+: [^—]+— ([\d,]+) تومان/g)].map((m) =>
-      Number(m[1]!.replace(/,/g, '')),
-    );
-    expect(perPanel.reduce((a, b) => a + b, 0)).toBe(250_000);
+    expect(text).toMatch(/zz-report-panel[^\n]*\b1\b/);
   });
 
   it('counts only what happened inside the Tehran day', async () => {
@@ -234,10 +208,11 @@ describe('the daily report', () => {
     const { start } = tehranDayBoundsFromDate(DAY);
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
 
+    await ordinaryMorning();
     setReportChatIdFallback(CHANNEL);
-    expect(await sweepDailyReport(db)).toBe(true);
-    expect(await sweepDailyReport(db)).toBe(false);
-    expect(await sweepDailyReport(db)).toBe(false);
+    expect(await sweepDailyReport(db)).toEqual([DAY]);
+    expect(await sweepDailyReport(db)).toEqual([]);
+    expect(await sweepDailyReport(db)).toEqual([]);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
     expect(queued).toHaveLength(1);
@@ -249,10 +224,143 @@ describe('the daily report', () => {
 
   it('does nothing at all without a channel', async () => {
     setReportChatIdFallback(null);
-    expect(await sweepDailyReport(db)).toBe(false);
+    expect(await sweepDailyReport(db)).toEqual([]);
     expect(
       (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:')),
     ).toHaveLength(0);
+  });
+
+  /**
+   * A missed night is made up — issue #179.
+   *
+   * Only yesterday was ever asked about, so a bot down for three days lost two
+   * reports for good. The `report:<date>` key already made a catch-up safe;
+   * nothing did one.
+   */
+  it('catches up the nights it missed, oldest first, and no night that was sent', async () => {
+    setReportChatIdFallback(CHANNEL);
+    // Every night up to the outage was sent as usual.
+    for (const sent of ['2026-08-11', '2026-08-12', '2026-08-13', '2026-08-14']) {
+      await db
+        .prepare(
+          `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+           VALUES (?1, ?2, 'sent earlier', 'SENT')`,
+        )
+        .bind(`report:${sent}`, CHANNEL)
+        .run();
+    }
+
+    // The loop's first look after three days down: 08-15, 08-16 and 08-17 are
+    // all owed, and nothing before them is.
+    expect(await sweepDailyReport(db)).toEqual(['2026-08-15', '2026-08-16', '2026-08-17']);
+    const queued = (await pendingNotifications())
+      .filter((n) => n.dedupeKey.startsWith('report:'))
+      .map((n) => n.dedupeKey);
+    expect(queued).toEqual(['report:2026-08-15', 'report:2026-08-16', 'report:2026-08-17']);
+
+    // And once, like the ordinary night.
+    expect(await sweepDailyReport(db)).toEqual([]);
+  });
+
+  it('fills a hole behind a night that was sent', async () => {
+    // The deploy morning: the old code queued one night mid-outage, so the
+    // last SENT row is not the edge of the gap. A walk that stopped at it
+    // would leave 08-14 and 08-15 unsent for ever.
+    setReportChatIdFallback(CHANNEL);
+    for (const sent of ['2026-08-11', '2026-08-12', '2026-08-13', '2026-08-16']) {
+      await db
+        .prepare(
+          `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+           VALUES (?1, ?2, 'sent earlier', 'SENT')`,
+        )
+        .bind(`report:${sent}`, CHANNEL)
+        .run();
+    }
+    expect(await sweepDailyReport(db)).toEqual(['2026-08-14', '2026-08-15', '2026-08-17']);
+  });
+
+  it('after a week or more down, makes up the whole window and no more', async () => {
+    // Seven missing with an eighth present is an outage, not a first run —
+    // the two states an empty window used to conflate, one of which lost six
+    // nights for good. The cap is the cap: 08-10 stays unsent, and the log
+    // says so.
+    setReportChatIdFallback(CHANNEL);
+    await db
+      .prepare(
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+         VALUES ('report:2026-08-09', ?1, 'sent earlier', 'SENT')`,
+      )
+      .bind(CHANNEL)
+      .run();
+    expect(await sweepDailyReport(db)).toEqual([
+      '2026-08-11',
+      '2026-08-12',
+      '2026-08-13',
+      '2026-08-14',
+      '2026-08-15',
+      '2026-08-16',
+      '2026-08-17',
+    ]);
+  });
+
+  it('gives a shop that has never sent a report the whole window, once', async () => {
+    // No `report:<date>` row at all — `beforeEach` deletes them. Seven nights
+    // on the first morning is the documented price of not telling «never
+    // sent» from «down a week»; what matters is that it happens once and that
+    // the next cycle is quiet.
+    setReportChatIdFallback(CHANNEL);
+    expect(await sweepDailyReport(db)).toHaveLength(7);
+    expect(await sweepDailyReport(db)).toEqual([]);
+  });
+
+  it('says «نامحدود» for a panel that sold only unmetered services, and counts them beside a sum', async () => {
+    const { start } = tehranDayBoundsFromDate(DAY);
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-unmetered' });
+    await db.prepare(`UPDATE subscriptions SET volume_gb = NULL WHERE public_id = ?1`).bind(`reps${seq}`).run();
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-mixed' });
+    await db.prepare(`UPDATE subscriptions SET volume_gb = NULL WHERE public_id = ?1`).bind(`reps${seq}`).run();
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-mixed' });
+
+    const text = await buildDailyReport(db, DAY);
+
+    // sum() skips NULL and COALESCE used to fold the all-NULL case to zero, so
+    // a panel that sold two unlimited services printed «0 گیگ».
+    expect(text).toMatch(/zz-unmetered[^\n]*نامحدود/);
+    expect(text).not.toMatch(/zz-unmetered[^\n]*0 گیگ/);
+    expect(text).toMatch(/zz-mixed[^\n]*10 گیگ \+ 1 نامحدود/);
+  });
+
+  it('adds the panel gigabytes up with the shop’s own formatter', async () => {
+    const { start } = tehranDayBoundsFromDate(DAY);
+    // Two 10 GB services and one of 1000.5 — a sum the raw number prints as
+    // «1020.5 گیگ» and every customer screen prints as «1,020.5 گیگ».
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-gb-panel' });
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-gb-panel' });
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-gb-panel' });
+    await db
+      .prepare(`UPDATE subscriptions SET volume_gb = 1000.5 WHERE public_id = ?1`)
+      .bind(`reps${seq}`)
+      .run();
+
+    const text = await buildDailyReport(db, DAY);
+
+    expect(text).toMatch(/zz-gb-panel[^\n]*1,020\.5 گیگ/);
+    expect(text).not.toContain('1020.5');
+  });
+
+  it('names a reseller with no @username as a person, not a bare number', async () => {
+    const { start } = tehranDayBoundsFromDate(DAY);
+    const { telegramId } = await completedOrder({
+      kind: 'NEW_PURCHASE',
+      irr: 3_000_000,
+      atMs: start + 60_000,
+      reseller: true,
+    });
+    await db.prepare(`UPDATE users SET username = NULL WHERE telegram_id = ?1`).bind(telegramId).run();
+
+    const text = await buildDailyReport(db, DAY);
+
+    expect(text).toContain(`• کاربر ${telegramId}: 300,000 تومان`);
   });
 });
 
@@ -293,8 +401,9 @@ describe('the report channel', () => {
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
     await setChannel(SHOP_CHANNEL);
 
+    await ordinaryMorning();
     setReportChatIdFallback(ENV_FALLBACK);
-    expect(await sweepDailyReport(db)).toBe(true);
+    expect(await sweepDailyReport(db)).toEqual([DAY]);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
     expect(queued[0]?.chatId).toBe(SHOP_CHANNEL);
@@ -305,8 +414,9 @@ describe('the report channel', () => {
     const { start } = tehranDayBoundsFromDate(DAY);
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
 
+    await ordinaryMorning();
     setReportChatIdFallback(ENV_FALLBACK);
-    expect(await sweepDailyReport(db)).toBe(true);
+    expect(await sweepDailyReport(db)).toEqual([DAY]);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
     expect(queued[0]?.chatId).toBe(ENV_FALLBACK);

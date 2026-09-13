@@ -18,9 +18,23 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { MIRZABOT_SOURCE, RECEIPT_FILE_ID, storedReceipt } from '@shikoo/contracts';
+import {
+  MIRZABOT_SOURCE,
+  RECEIPT_FILE_ID,
+  storedReceipt,
+  type RejectionReason,
+} from '@shikoo/contracts';
 import type { D1DatabaseSession } from '@shikoo/database';
-import { fulfilMirzabotClaimWithoutPayment, readContinuityMode } from '@shikoo/domain';
+import {
+  fulfilMirzabotClaimWithoutPayment,
+  NO_TRANSFER_REASONS,
+  readContinuityMode,
+} from '@shikoo/domain';
+import { newPublicId } from './order.js';
+import type { OwnedOrder } from './owned.js';
+
+/** Written on `payments.reject_reason` and into the audit row, from the same enum the operator's rejections use. */
+const WITHDRAWN: RejectionReason = 'CUSTOMER_WITHDREW';
 
 export interface CheckoutPayment {
   publicId: string;
@@ -354,6 +368,151 @@ export async function recordPaidClick(
   return inserted.meta.changes === 0
     ? { outcome: 'already', publicId: payment.public_id }
     : { outcome: 'claimed', publicId: payment.public_id };
+}
+
+export type WithdrawResult =
+  /** The claim is closed and the same invoice is open again. */
+  | ({ outcome: 'withdrawn' } & CheckoutPayment)
+  /** Nothing was under review, but an invoice is open — a second tap, or a redelivery. */
+  | ({ outcome: 'open' } & CheckoutPayment)
+  /** Something is on the claim — a receipt, or a deposit the matcher has seen — so a person owns it now. */
+  | { outcome: 'evidence'; publicId: string }
+  /** Nothing of theirs to take back, and no invoice to put back. */
+  | { outcome: 'none' };
+
+/**
+ * «پرداختی نکردم» — the customer takes back a «پرداخت کردم» they pressed by
+ * mistake.
+ *
+ * Issue #199: one tap opened a claim, and every exit from that state was shut
+ * for a reason of its own — the expiry sweep skips an order under review, the
+ * wallet refuses an order somebody says they paid by card, and `place()` hands
+ * the same order back. Until an operator rejected a claim with no receipt on
+ * it, the customer could not buy that plan by any route.
+ *
+ * This is the customer's own version of `POST /suspects/:id/reject`, and it
+ * does the same three writes for the same reason that route gives: the claim,
+ * the payment beneath it — or the expiry guard keeps protecting an order whose
+ * payment was just withdrawn — and an audit row. Then one more: a fresh
+ * PENDING payment on the SAME card and amount, so the invoice the customer is
+ * holding — every copy of it still live in the chat — stays true. Without it,
+ * «پرداخت کردم» on an older copy would answer «سفارش پیدا نشد» to somebody
+ * who had just transferred to the card printed on it, and re-entering the plan
+ * would rotate a different card under them. The order itself is not touched.
+ *
+ * Only a claim with NOTHING on it may be withdrawn. Two things count as
+ * something, and both are guarded in the statement rather than above it, so
+ * evidence that arrives between the read and the write still wins:
+ *
+ *   - a receipt: the customer says money moved.
+ *   - a suspect reason other than «no transaction»: the MATCHER says money
+ *     moved and could not settle it — the amount was off, the account was off,
+ *     two claims fit one transfer. For this bot's claims that is what a found
+ *     deposit looks like: `recordMirzabotSuspect` stamps the reason and leaves
+ *     the status PENDING, and MATCH_SUGGESTED is written only by an operator.
+ *
+ * A REJECTED claim has no way back (`state.ts`), which is why the button that
+ * reaches here asks first.
+ *
+ * Takes the order already locked — `lockOrderForUser`, the same lock
+ * `recordPaidClick` takes and for the same reason: the expiry sweep and the
+ * wallet path both decide on this order, and neither may see half of this.
+ */
+export async function withdrawPaidClick(
+  tx: D1DatabaseSession,
+  userId: number,
+  order: OwnedOrder,
+  telegramId: number,
+  now: number = Date.now(),
+): Promise<WithdrawResult> {
+  const payment = await tx
+    .prepare(
+      `SELECT id, public_id, amount_irr, assigned_card_number, assigned_card_name, status
+         FROM payments
+        WHERE order_id = ?1 AND user_id = ?2 AND status IN ('PENDING', 'AWAITING_REVIEW')
+        ORDER BY created_at DESC
+        LIMIT 1`,
+    )
+    .bind(order.id, userId)
+    .first<{
+      id: number;
+      public_id: string;
+      amount_irr: number;
+      assigned_card_number: string | null;
+      assigned_card_name: string | null;
+      status: string;
+    }>();
+  if (!payment?.assigned_card_number) return { outcome: 'none' };
+  const checkout: CheckoutPayment = {
+    publicId: payment.public_id,
+    amountIrr: payment.amount_irr,
+    cardDigits: payment.assigned_card_number,
+    cardHolder: payment.assigned_card_name,
+    claimed: false,
+  };
+  if (payment.status === 'PENDING') return { outcome: 'open', ...checkout };
+
+  const claim = await tx
+    .prepare(
+      `UPDATE payment_claims
+          SET status = 'REJECTED', updated_at = ?2
+        WHERE external_order_id = ?1
+          AND status = 'PENDING'
+          AND receipt_url_or_r2_key IS NULL
+          AND (suspect_reason IS NULL OR suspect_reason IN ${NO_TRANSFER_REASONS})
+      RETURNING id`,
+    )
+    .bind(`shikoo:${payment.public_id}`, now)
+    .first<{ id: string }>();
+  if (!claim) return { outcome: 'evidence', publicId: payment.public_id };
+
+  await tx
+    .prepare(
+      `UPDATE payments SET status = 'REJECTED', reject_reason = ?2, updated_at = now()
+        WHERE id = ?1`,
+    )
+    .bind(payment.id, WITHDRAWN)
+    .run();
+  // The invoice, back as it was. No rotation: the card printed on the message
+  // the customer is looking at is the card this row must name.
+  const reissued = await tx
+    .prepare(
+      `INSERT INTO payments
+         (public_id, user_id, order_id, amount_irr, method, status,
+          assigned_card_number, assigned_card_name, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 'CARD_TO_CARD', 'PENDING', ?5, ?6, now(), now())
+       RETURNING public_id`,
+    )
+    .bind(
+      newPublicId(),
+      userId,
+      order.id,
+      payment.amount_irr,
+      payment.assigned_card_number,
+      payment.assigned_card_name,
+    )
+    .first<{ public_id: string }>();
+  // SYSTEM, as every row this bot writes: the CHECK on actor_role has no word
+  // for a customer, and who pressed the button is in after_json.
+  await tx
+    .prepare(
+      `INSERT INTO audit_logs
+         (id, actor_email, actor_role, action, entity_type, entity_id,
+          before_json, after_json, reason, created_at)
+       VALUES (?1, NULL, 'SYSTEM', 'claim.rejected', 'CLAIM', ?2,
+               ?3::text, ?4::text, ?5, ?6)`,
+    )
+    .bind(
+      randomUUID(),
+      claim.id,
+      JSON.stringify({ status: 'PENDING' }),
+      JSON.stringify({ status: 'REJECTED', reason: WITHDRAWN, telegramUserId: String(telegramId) }),
+      'the customer pressed «پرداختی نکردم» on a claim with nothing on it',
+      now,
+    )
+    .run();
+
+  return { outcome: 'withdrawn', ...checkout, publicId: reissued!.public_id };
 }
 
 export type ReceiptResult =

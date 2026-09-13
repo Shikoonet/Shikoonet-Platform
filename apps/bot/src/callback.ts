@@ -60,11 +60,16 @@ export const CALLBACK_ACTIONS = [
   //         CUSTOMER_TEXT order with no text after its own order id, which is
   //         the generated name the customer is agreeing to here.
   'paid', // <orderId> — the customer says they have paid
+  'unpd', // <orderId> — «پرداختی نکردم»: they pressed `paid` by mistake. Asks
+  //         first — the answer closes a claim and there is no reopening one.
+  'unpd2', // <orderId> — do it. Closes their own claim, and only while nothing
+  //         is on it — no receipt, no deposit the matcher has seen — and puts
+  //         the same invoice back in front of them. #199.
   'mine', // [page] — the services this customer already owns
   'sub', // <subscriptionId> — one owned service, with its link
   'renew', // [page] — the services that can be extended
   'rnw', // <subscriptionId> — the plan this service was sold under, or the list
-  'rnwl', // <subscriptionId> — the whole list, when `rnw` showed one plan
+  'rnwl', // <subscriptionId>[:page] — the whole list, paged (issue #180)
   'rord', // <subscriptionId>:<planId> — extend that service with that plan
   // ── admin only, and the guard is in the handler ──────────────────────────
   //
@@ -143,7 +148,7 @@ const ActionSchema = z.enum(CALLBACK_ACTIONS);
  * yet" is not a property anybody can rely on, and an action's arity is part of
  * its shape in the same way its name is.
  */
-const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord', 'emjb']);
+const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord', 'emjb', 'rnwl']);
 
 /**
  * Telegram's limit is 64 bytes. Our longest is `order:<bigint>` — well inside

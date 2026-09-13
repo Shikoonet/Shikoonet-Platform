@@ -60,10 +60,16 @@ interface ProviderSpec {
   capacity: number | null;
   status?: 'ACTIVE' | 'DISABLED';
   /**
-   * The shop refuses to sell from a pasarguard panel with no address or no
-   * credential (issue #182), so the simulated one carries both. The address
-   * is never dialled — every provisioning test injects its own fetch — and
-   * the ref only names an environment variable nobody has to set.
+   * Where the panel is and how the bot signs in, for the one kind that has a
+   * real adapter. The shop refuses to sell from a pasarguard panel missing
+   * either (bot catalog.ts, PURCHASABLE) — a paid order it cannot deliver is
+   * worse than a button never drawn — so a fixture panel without them is not
+   * shaped like production, and every catalogue test would see an empty shop.
+   *
+   * The credential is a name only: it resolves through the PANEL_<REF>
+   * environment variable, exactly as in production, so no test ever reaches a
+   * real panel by accident — an unset variable fails the login, it does not
+   * reach out.
    */
   baseUrl?: string;
   secretRef?: string;
@@ -120,7 +126,7 @@ const PROVIDERS: ProviderSpec[] = [
     kind: 'pasarguard',
     capacity: 500,
     baseUrl: 'https://panel.test',
-    secretRef: 'PANEL_SIM_VIP',
+    secretRef: 'sim-vip',
   },
   { code: 'sim-gold', name: '🥈 سرویس طلایی (شبیه‌سازی)', kind: 'hiddify', capacity: 200 },
   // Fulfilled by hand. The one adapter that cannot fail for a network reason,
@@ -137,6 +143,8 @@ const PROVIDERS: ProviderSpec[] = [
     kind: 'pasarguard',
     capacity: null,
     status: 'DISABLED',
+    baseUrl: 'https://panel.test',
+    secretRef: 'sim-off',
   },
 ];
 
@@ -343,28 +351,22 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
         // to 'pasarguard', every already-seeded database kept the old value —
         // and 'marzban' has no adapter, so the panel silently became a manual
         // one. Nothing would have said so.
-        // Address and credential ref are only FILLED, never overwritten: the
-        // test box wires the real test panel into this row (wire-test-panel.ts),
-        // and a re-seed must not point it back at a placeholder.
-        `INSERT INTO provisioning_providers
-           (code, name, kind, status, capacity, sort_order, base_url, secret_ref)
+        //
+        // base_url and secret_ref converge for the same reason. A suite that
+        // nulls them to stage a dead panel, or points sim-vip at its own fake
+        // host, leaves that state behind in the shared database, and the next
+        // file's ensureCatalog is what puts the shop back. (seed:sim wipes the
+        // table first, so nothing an operator wired survives a re-seed either
+        // way — sim/README.md says to re-point the panels after seeding.)
+        `INSERT INTO provisioning_providers (code, name, kind, status, capacity, sort_order,
+                                             base_url, secret_ref)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT (code) DO UPDATE SET
            name = EXCLUDED.name, kind = EXCLUDED.kind, status = EXCLUDED.status,
            capacity = EXCLUDED.capacity, sort_order = EXCLUDED.sort_order,
-           base_url = COALESCE(provisioning_providers.base_url, EXCLUDED.base_url),
-           secret_ref = COALESCE(provisioning_providers.secret_ref, EXCLUDED.secret_ref)`,
+           base_url = EXCLUDED.base_url, secret_ref = EXCLUDED.secret_ref`,
       )
-      .bind(
-        p.code,
-        p.name,
-        p.kind,
-        p.status ?? 'ACTIVE',
-        p.capacity,
-        i,
-        p.baseUrl ?? null,
-        p.secretRef ?? null,
-      )
+      .bind(p.code, p.name, p.kind, p.status ?? 'ACTIVE', p.capacity, i, p.baseUrl ?? null, p.secretRef ?? null)
       .run();
     const row = await db
       .prepare(`SELECT id FROM provisioning_providers WHERE code = ?1`)

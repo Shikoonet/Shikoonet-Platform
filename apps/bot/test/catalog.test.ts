@@ -614,38 +614,6 @@ describe('the panel cap', () => {
     expect(await sellsFrom(vip)).toBe(true);
   });
 
-  /**
-   * Issue #182. A pasarguard panel with no address or no credential fails its
-   * login with retryable=false — after the money is taken. The trial list
-   * already refused such a panel; the shop did not.
-   */
-  it('does not sell from a panel the bot could not log in to', async () => {
-    const before = await db
-      .prepare(`SELECT base_url, secret_ref FROM provisioning_providers WHERE id = ?1`)
-      .bind(vip)
-      .first<{ base_url: string | null; secret_ref: string | null }>();
-    expect(before!.base_url).not.toBeNull();
-    expect(await sellsFrom(vip)).toBe(true);
-    try {
-      await db
-        .prepare(`UPDATE provisioning_providers SET base_url = NULL WHERE id = ?1`)
-        .bind(vip)
-        .run();
-      expect(await sellsFrom(vip)).toBe(false);
-      await db
-        .prepare(`UPDATE provisioning_providers SET base_url = ?2, secret_ref = NULL WHERE id = ?1`)
-        .bind(vip, before!.base_url)
-        .run();
-      expect(await sellsFrom(vip)).toBe(false);
-    } finally {
-      await db
-        .prepare(`UPDATE provisioning_providers SET base_url = ?2, secret_ref = ?3 WHERE id = ?1`)
-        .bind(vip, before!.base_url, before!.secret_ref)
-        .run();
-    }
-    expect(await sellsFrom(vip)).toBe(true);
-  });
-
   it('does not touch renewals — a full panel still renews what it already sold', async () => {
     /*
      * This test asserted `SELECT count(*) FROM provisioning_providers WHERE
@@ -754,5 +722,87 @@ describe('a shelf made from the dashboard is something a customer can buy', () =
     // No panel address, no volume, no user limit — none of which is a fault on
     // a shelf, and none of which may quietly remove it from sale.
     expect(buyable?.volumeGb).toBeNull();
+  });
+});
+
+/**
+ * A panel the bot cannot log in to is not for sale — issue #182.
+ *
+ * `trialPanelsForUser` refused such a panel from the day it was written; the
+ * shop did not, so a customer could pay for an account on a panel with no
+ * address, watch the order FAIL with `retryable: false`, and — on a card
+ * payment — wait for a person to give the money back. The shelf suite directly
+ * above is the other half of the rule: a manual panel has no address by
+ * design, and the same clause must leave it alone.
+ */
+describe('a panel the bot cannot reach is not for sale', () => {
+  let customer: number;
+  let vip: number;
+  let wired: { base_url: string | null; secret_ref: string | null };
+
+  beforeAll(async () => {
+    await ensureCatalog();
+    customer = await makeCustomer(811_201);
+    vip = await providerId('sim-vip');
+    const row = await db
+      .prepare(`SELECT base_url, secret_ref FROM provisioning_providers WHERE id = ?1`)
+      .bind(vip)
+      .first<{ base_url: string | null; secret_ref: string | null }>();
+    wired = row!;
+  });
+
+  // Both restored here and not on the happy path: a sealed row that will not
+  // open wins over the environment in `credentialsFor` and throws, so one
+  // failed assertion in this file would take every later suite that
+  // provisions on sim-vip down with it, and nothing would point back here.
+  afterAll(async () => {
+    await db.prepare(`DELETE FROM provider_secrets WHERE provider_id = ?1`).bind(vip).run();
+    await db
+      .prepare(`UPDATE provisioning_providers SET base_url = ?2, secret_ref = ?3 WHERE id = ?1`)
+      .bind(vip, wired.base_url, wired.secret_ref)
+      .run();
+  });
+
+  it('vanishes from the list and from the sale when the credential or the address is gone', async () => {
+    const plan = await planId('sim-vip-1m-50');
+    expect(await purchasablePlan(db, customer, plan)).not.toBeNull();
+
+    await db
+      .prepare(`UPDATE provisioning_providers SET secret_ref = NULL WHERE id = ?1`)
+      .bind(vip)
+      .run();
+
+    // The list — and the gate behind it, which is the one that takes money.
+    // `callback_data` is unsigned, so hiding the button is not enough.
+    expect(await productsForUser(db, customer, vip)).toHaveLength(0);
+    expect(await purchasablePlan(db, customer, plan)).toBeNull();
+    // A renewal reaches the same panel, so it is refused too.
+    expect(await purchasablePlan(db, customer, plan, true)).toBeNull();
+
+    // The other spelling of «has a credential»: a sealed row in
+    // provider_secrets, which is how the dashboard wires a panel today.
+    await db
+      .prepare(
+        `INSERT INTO provider_secrets (provider_id, sealed, key_id)
+         VALUES (?1, 'not-a-real-seal', 'test')
+         ON CONFLICT (provider_id) DO NOTHING`,
+      )
+      .bind(vip)
+      .run();
+    expect(await purchasablePlan(db, customer, plan)).not.toBeNull();
+
+    // The address half of the clause, pinned on its own: a credential with
+    // nowhere to send it is the same dead order.
+    await db
+      .prepare(`UPDATE provisioning_providers SET base_url = NULL WHERE id = ?1`)
+      .bind(vip)
+      .run();
+    expect(await purchasablePlan(db, customer, plan)).toBeNull();
+    // And an empty string is no address, the way marzban.ts reads it.
+    await db
+      .prepare(`UPDATE provisioning_providers SET base_url = '' WHERE id = ?1`)
+      .bind(vip)
+      .run();
+    expect(await purchasablePlan(db, customer, plan)).toBeNull();
   });
 });
