@@ -52,7 +52,6 @@ import { StatsPage } from './pages/StatsPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
 import { BulkPage } from './pages/BulkPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
-import { ProductsPage } from './pages/ProductsPage.js';
 import { CategoriesPage } from './pages/CategoriesPage.js';
 import { PanelsPage } from './pages/PanelsPage.js';
 import { ContentPage } from './pages/ContentPage.js';
@@ -119,8 +118,6 @@ function Body({
       return <BulkPage />;
     case 'catalog':
       return <CatalogPage />;
-    case 'products':
-      return <ProductsPage onGo={go} />;
     case 'categories':
       return <CategoriesPage />;
     case 'panels':

@@ -24,6 +24,8 @@
  * renderer rather than against a rule restated here.
  */
 
+import { PRODUCT_KIND_FIELDS, type ConfigField, type ProductKind } from './productKinds.js';
+
 const FA = new Intl.NumberFormat('fa-IR');
 
 /** What a config is, in the three fields `product_plans` actually stores. */
@@ -64,8 +66,16 @@ function users(limit: number | null): string {
  * The order is the legacy's, because these customers have been reading it for
  * years: how long, then how much, then how many.
  */
-export function configName(shape: ConfigShape): string {
-  return [duration(shape.durationDays), volume(shape.volumeGb), users(shape.userLimit)].join(
-    ' - ',
-  );
+/**
+ * Composed from the parts this KIND of service has — a Spotify config has
+ * no volume, so its name does not say «نامحدود» about one. Only ever a
+ * suggestion for a config being typed; a stored name is never rewritten.
+ */
+export function configName(shape: ConfigShape, kind: ProductKind = 'vpn'): string {
+  const part: Record<ConfigField, () => string> = {
+    durationDays: () => duration(shape.durationDays),
+    volumeGb: () => volume(shape.volumeGb),
+    userLimit: () => users(shape.userLimit),
+  };
+  return PRODUCT_KIND_FIELDS[kind].map((f) => part[f]()).join(' - ');
 }

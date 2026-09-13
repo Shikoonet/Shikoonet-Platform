@@ -45,19 +45,19 @@ import {
 } from '@shikoo/contracts';
 import { checkNameEmoji } from './customEmojiNames.js';
 import { AUTOMATED_KINDS_SQL, NOT_A_SHELF, isAutomated } from '@shikoo/domain';
+import { PRODUCT_KINDS, fieldsNotForKind } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 import { PANEL_HAS_SECRET } from './panelRoutes.js';
 import { faNum } from './fa.js';
 
 const PAGE_SIZE_MAX = 100;
 
-/** The `kind` values `products.kind`'s CHECK constraint allows. */
-const PRODUCT_KINDS = ['vpn', 'ai_account', 'spotify', 'manual', 'other'] as const;
 const STATUSES = ['ACTIVE', 'HIDDEN', 'DISABLED'] as const;
 
 const ListQuery = z.object({
   q: z.string().trim().max(64).optional(),
   status: z.enum(['ACTIVE', 'HIDDEN', 'DISABLED']).optional(),
+  kind: z.enum(PRODUCT_KINDS).optional(),
   providerId: z.coerce.number().int().positive().optional(),
   categoryId: z.coerce.number().int().positive().optional(),
   /**
@@ -208,6 +208,27 @@ function attrsSql(entries: { key: string; param: number }[]): string {
        END`,
     'attrs',
   )}`;
+}
+
+/**
+ * The plan body, refused where it names a field this KIND of service has not.
+ *
+ * The form hides those fields; this is the trust boundary behind it. Only a
+ * field that is present AND set is refused — a legacy Spotify row carrying
+ * `volume_gb = 50` can be repriced without mentioning the volume, and can
+ * have it cleared with null. `fieldsNotForKind` in `@shikoo/contracts` is the
+ * one table the form, this refinement and `configName` all read.
+ */
+function planBodyFor<T extends z.ZodTypeAny>(schema: T, kind: string) {
+  return schema.superRefine((body, ctx) => {
+    for (const field of fieldsNotForKind(kind, body as Record<string, unknown>)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [field],
+        message: `${field} is not a field of a ${kind} config`,
+      });
+    }
+  });
 }
 
 const PlanPatch = z
@@ -575,6 +596,7 @@ interface ServiceRow {
   provider_capacity: number | null;
   provider_live: number | null;
   category_name: string | null;
+  category_active?: boolean | null;
 }
 
 interface ConfigRow {
@@ -582,6 +604,8 @@ interface ConfigRow {
   product_id: number;
   name: string;
   badge: string | null;
+  button_style: 'primary' | 'success' | 'danger' | null;
+  delivery_note: string | null;
   price_irr: number;
   duration_days: number | null;
   volume_gb: number | null;
@@ -609,8 +633,10 @@ async function configsFor(db: D1Database, productIds: number[]): Promise<ConfigR
   const holes = productIds.map((_, i) => `?${i + 1}`).join(', ');
   const rows = await db
     .prepare(
-      `SELECT pl.id, pl.product_id, pl.name, pl.badge, pl.price_irr, pl.duration_days, pl.volume_gb,
+      `SELECT pl.id, pl.product_id, pl.name, pl.badge, pl.button_style, pl.price_irr,
+              pl.duration_days, pl.volume_gb,
               pl.user_limit, pl.status, pl.sort_order, pl.row_index,
+              pl.attrs->>'delivery_note' AS delivery_note,
               (SELECT COUNT(*) FROM orders o WHERE o.plan_id = pl.id) AS orders_count
          FROM product_plans pl
         WHERE pl.product_id IN (${holes})
@@ -632,6 +658,8 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
     sortOrder: r.sort_order,
     categoryId: r.category_id,
     categoryName: r.category_name,
+    // `whyNotSellable` cannot say «دستهٔ … خاموش است» without it.
+    categoryActive: r.category_active ?? null,
     resellersOnly: r.resellers_only,
     oncePerUser: r.once_per_user,
     groupIds: r.group_ids,
@@ -685,6 +713,9 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
         id: cf.id,
         name: cf.name,
         badge: cf.badge,
+        buttonStyle: cf.button_style,
+        // This config's own words at delivery, over the service's.
+        deliveryNote: cf.delivery_note,
         priceIrr: Number(cf.price_irr),
         durationDays: cf.duration_days,
         // NULL is unmetered and 0 is a free gigabyte allowance. The flat route
@@ -1075,13 +1106,14 @@ export function registerProductRoutes(
     const parsed = ListQuery.safeParse({
       q: c.req.query('q') || undefined,
       status: c.req.query('status') || undefined,
+      kind: c.req.query('kind') || undefined,
       providerId: c.req.query('providerId') || undefined,
       categoryId: c.req.query('categoryId') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, status, providerId, categoryId, page, pageSize } = parsed.data;
+    const { q, status, kind, providerId, categoryId, page, pageSize } = parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -1091,6 +1123,10 @@ export function registerProductRoutes(
       // would quietly drop services that have exactly one disabled config.
       params.push(status);
       where.push(`p.status = ?${params.length}`);
+    }
+    if (kind) {
+      params.push(kind);
+      where.push(`p.kind = ?${params.length}`);
     }
     if (providerId) {
       params.push(providerId);
@@ -1115,11 +1151,21 @@ export function registerProductRoutes(
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
+    // Three counts for the header: services, their configs, and how many of
+    // those configs a customer could buy right now — the number «محصولات»
+    // used to show and this page did not, so the two headers disagreed.
     const totalRow = await c.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM products p ${whereSql}`,
+      `SELECT COUNT(DISTINCT p.id) AS n,
+              COUNT(pl.id) AS configs,
+              COUNT(pl.id) FILTER (WHERE ${SELLABLE}) AS sellable
+         FROM products p
+         LEFT JOIN product_plans pl ON pl.product_id = p.id
+         LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
+         LEFT JOIN product_categories cat ON cat.id = p.category_id
+         ${whereSql}`,
     )
       .bind(...params)
-      .first<{ n: number }>();
+      .first<{ n: number; configs: number; sellable: number }>();
 
     params.push(pageSize);
     const limitParam = params.length;
@@ -1143,7 +1189,7 @@ export function registerProductRoutes(
               pr.base_url AS provider_base_url,
               ${PANEL_HAS_SECRET} AS provider_has_secret,
               ${PANEL_CEILING},
-              cat.name AS category_name
+              cat.name AS category_name, cat.active AS category_active
          FROM products p
          LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
          LEFT JOIN product_categories cat ON cat.id = p.category_id
@@ -1164,7 +1210,9 @@ export function registerProductRoutes(
 
     return c.json({
       ok: true,
-      total: totalRow?.n ?? 0,
+      total: Number(totalRow?.n ?? 0),
+      configsTotal: Number(totalRow?.configs ?? 0),
+      sellableTotal: Number(totalRow?.sellable ?? 0),
       page,
       pageSize,
       items: rows.map((r) => shapeService(r, configs)),
@@ -1191,18 +1239,22 @@ export function registerProductRoutes(
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
-    const body = PlanPatch.safeParse(await c.req.json().catch(() => null));
+    const before = await c.env.DB.prepare(`${SELECT_PLAN} WHERE pl.id = ?1`)
+      .bind(id)
+      .first<PlanRow>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    // The row first: which fields are allowed depends on the KIND of service
+    // this config belongs to.
+    const body = planBodyFor(PlanPatch, before.product_kind).safeParse(
+      await c.req.json().catch(() => null),
+    );
     if (!body.success) {
       return c.json(
         { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
         400,
       );
     }
-
-    const before = await c.env.DB.prepare(`${SELECT_PLAN} WHERE pl.id = ?1`)
-      .bind(id)
-      .first<PlanRow>();
-    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -1932,7 +1984,14 @@ export function registerProductRoutes(
       return c.json({ ok: false, error: 'invalid_id' }, 400);
     }
 
-    const body = PlanCreate.safeParse(await c.req.json().catch(() => null));
+    const exists = await c.env.DB.prepare(`SELECT id, kind FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ id: number; kind: string }>();
+    if (!exists) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const body = planBodyFor(PlanCreate, exists.kind).safeParse(
+      await c.req.json().catch(() => null),
+    );
     if (!body.success) {
       return c.json(
         { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
@@ -1940,11 +1999,6 @@ export function registerProductRoutes(
       );
     }
     const p = body.data;
-
-    const exists = await c.env.DB.prepare(`SELECT id FROM products WHERE id = ?1`)
-      .bind(productId)
-      .first<{ id: number }>();
-    if (!exists) return c.json({ ok: false, error: 'not_found' }, 404);
 
     const row = await c.env.DB.prepare(
       `INSERT INTO product_plans

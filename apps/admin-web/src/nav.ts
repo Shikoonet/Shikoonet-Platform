@@ -52,7 +52,6 @@ export type PageId =
   | 'bulk'
   | 'orders'
   | 'catalog'
-  | 'products'
   | 'categories'
   | 'subscriptions'
   | 'transactions'
@@ -124,7 +123,6 @@ export const NAV: NavGroup[] = [
     items: [
       { id: 'panels', label: 'مدیریت پنل‌ها', icon: 'server' },
       { id: 'catalog', label: 'سرویس‌ها', icon: 'grid' },
-      { id: 'products', label: 'محصولات', icon: 'package' },
       { id: 'categories', label: 'دسته‌بندی‌ها', icon: 'grid' },
       { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket' },
       { id: 'stock', label: 'قفسهٔ انبار', icon: 'package' },
@@ -220,7 +218,6 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'banks',
   'devices',
   'catalog',
-  'products',
   'categories',
   'panels',
   // Counting the shelf is stock control; the accounts on it are not handed

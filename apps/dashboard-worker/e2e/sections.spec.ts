@@ -78,7 +78,9 @@ test('every section opens without a failed request, a thrown render or an error 
   // thirty `{ id:` entries.
   // 30 -> 31 on 2026-09-07 with «نمایندگان» — a new section, so the number
   // moved for the reason a number should. Counted off `nav.ts`.
-  expect(labels.length).toBe(31);
+  // 31 -> 30 on 2026-09-13: «محصولات» became «نمای جدولی» of «سرویس‌ها». One
+  // sidebar item fewer, for the reason a number should move.
+  expect(labels.length).toBe(30);
 
   for (const label of labels) {
     section = label;

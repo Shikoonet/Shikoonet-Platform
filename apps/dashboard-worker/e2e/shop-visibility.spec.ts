@@ -1,6 +1,11 @@
 /**
  * «چه چیزی واقعاً در فروشگاه دیده می‌شود» — pressed in a browser.
  *
+ * 2026-09-13: «محصولات» became «نمای جدولی» of «سرویس‌ها». The heading with
+ * the two counts and the «فروخته نمی‌شود» column are there now, under
+ * `/admin/catalog?view=table`; the «چیدمان در ربات» button that used to be
+ * walked from «محصولات» went with that page («دسته‌بندی‌ها» has its own).
+ *
  * On 2026-08-27 the dashboard said «۱۶ محصول، همه در فروشگاه» and the bot sold
  * three. Five of seven panels were switched off, so thirteen products could not
  * be delivered to anybody, and «محصولات» drew a green badge over every one of
@@ -62,24 +67,6 @@ function firstScreenSentence(page: Page) {
   return page.locator('p.muted').first();
 }
 
-test('the arrangement button works with no filter chosen, and lands on «دسته‌بندی‌ها»', async ({
-  page,
-}) => {
-  // The complaint was «دکمه چیدمان خرابه کار نمیکنه». It was `disabled` until a
-  // category was picked, and nothing on the screen said so — a button that is
-  // grey on arrival reads as broken, not as conditional. So the walk touches no
-  // filter at all: fresh page, straight to the button.
-  await page.goto('/admin/products');
-  await expect(page.locator('.page-head__title')).toHaveText('محصولات');
-
-  const arrange = page.getByRole('button', { name: 'چیدمان در ربات' });
-  await expect(arrange).toBeEnabled();
-  await arrange.click();
-
-  await expect(page.locator('.page-head__title')).toHaveText('دسته‌بندی‌ها');
-  expect(new URL(page.url()).pathname).toBe('/admin/categories');
-});
-
 /** «۱۳ محصول · ۱۰ قابل خرید» → `{ total: 13, sellable: 10 }`. */
 async function headCounts(page: Page): Promise<{ total: number; sellable: number }> {
   // Scoped to the heading. `page-head__sub` is also the class the table cells
@@ -90,9 +77,9 @@ async function headCounts(page: Page): Promise<{ total: number; sellable: number
 
   // Polled, not read once — and this is a real race, not a slow machine.
   //
-  // `ProductsPage` draws this heading unconditionally from state that starts at
-  // zero and is filled in when `api.products()` resolves, so between `goto` and
-  // the response the screen genuinely says «۰ محصول · ۰ قابل خرید». That parses
+  // `CatalogPage` draws this heading unconditionally from state that starts at
+  // zero and is filled in when `api.catalog()` resolves, so between `goto` and
+  // the response the screen genuinely says «۰ سرویس · ۰ قابل خرید». That parses
   // perfectly, so `innerText()` returned a well-formed WRONG answer and the
   // assertion below it failed with «expected >= 2, received 0» — which reads as
   // a broken shop rather than as a page that had not finished loading. It fired
@@ -106,7 +93,7 @@ async function headCounts(page: Page): Promise<{ total: number; sellable: number
   let counts: { total: number; sellable: number } | null = null;
   await expect(async () => {
     const text = await heading.innerText();
-    const total = text.match(/([۰-۹]+)\s*محصول/);
+    const total = text.match(/([۰-۹]+)\s*سرویس/);
     const sellable = text.match(/([۰-۹]+)\s*قابل خرید/);
     if (!total || !sellable) throw new Error(`heading did not carry both counts: «${text}»`);
     const parsed = { total: fa(total[1]!), sellable: fa(sellable[1]!) };
@@ -141,13 +128,13 @@ test('switching a panel off moves exactly its configs out of «قابل خرید
   });
   expect(onPanel, `«${ACCOUNTS_PANEL}» sells nothing — run seed:sim`).toBeGreaterThan(0);
 
-  await page.goto('/admin/products');
+  await page.goto('/admin/catalog?view=table');
   const before = await headCounts(page);
   expect(before.sellable).toBeGreaterThanOrEqual(onPanel);
 
   await setPanelStatus(ACCOUNTS_PANEL, 'DISABLED');
   try {
-    await page.goto('/admin/products');
+    await page.goto('/admin/catalog?view=table');
     const after = await headCounts(page);
     // Nothing was deleted — the shop still HAS them, it just cannot sell them.
     // That distinction is the entire point of carrying two numbers.
@@ -157,7 +144,7 @@ test('switching a panel off moves exactly its configs out of «قابل خرید
     await setPanelStatus(ACCOUNTS_PANEL, 'ACTIVE');
   }
 
-  await page.goto('/admin/products');
+  await page.goto('/admin/catalog?view=table');
   expect(await headCounts(page)).toEqual(before);
 });
 
@@ -166,9 +153,10 @@ test('a config on a switched-off panel says so, and says it in the shop’s voic
 }) => {
   await setPanelStatus(ACCOUNTS_PANEL, 'DISABLED');
   try {
-    await page.goto('/admin/products');
-    await page.locator('#prod-sellable').selectOption('no');
-    await page.getByRole('button', { name: 'جست‌وجو' }).click();
+    await page.goto('/admin/catalog?view=table');
+    // The panel filter, since the table has no «sellable» filter of its own:
+    // every row of the switched-off panel must now say so.
+    await page.locator('#cat-panel').selectOption({ label: ACCOUNTS_PANEL });
 
     const table = page.locator('table').first();
     await expect(table.getByText('فروخته نمی‌شود').first()).toBeVisible();

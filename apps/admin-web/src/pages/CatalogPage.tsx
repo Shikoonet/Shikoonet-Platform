@@ -40,7 +40,16 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { configName } from '@shikoo/contracts';
+import {
+  PRODUCT_KIND_FA,
+  PRODUCT_KIND_FIELDS,
+  configName,
+  isProductKind,
+  notSellableFa,
+  notSellableShortFa,
+  whyNotSellable,
+  type ProductKind,
+} from '@shikoo/contracts';
 import {
   api,
   ApiError,
@@ -61,20 +70,31 @@ import { useAdminWriteProps } from '../role.js';
 
 const PAGE_SIZE = 25;
 
-const STATUS_BADGE: Record<string, string> = {
-  ACTIVE: 'badge badge-active',
-  HIDDEN: 'badge badge-info',
-  DISABLED: 'badge badge-block',
-};
+/** `products.kind` as the row carries it, narrowed; anything unknown draws as VPN. */
+function kindOf(service: { kind: string }): ProductKind {
+  return isProductKind(service.kind) ? service.kind : 'vpn';
+}
 
-/** The `kind` values `products.kind` allows, in the operator's words. */
-const KIND_FA: Record<string, string> = {
-  vpn: 'وی‌پی‌ان',
-  ai_account: 'اکانت هوش مصنوعی',
-  spotify: 'اسپاتیفای',
-  manual: 'دستی',
-  other: 'سایر',
-};
+function kindFa(kind: string): string {
+  return isProductKind(kind) ? PRODUCT_KIND_FA[kind] : kind;
+}
+
+type View = 'cards' | 'table';
+
+/**
+ * The address of this screen — `?q=`, `?providerId=`, `?view=table` — kept in
+ * the URL bar so a filtered list can be bookmarked and «مدیریت پنل‌ها» can
+ * open the shop one panel feeds. `replaceState`, not `pushState`: a filter is
+ * not a page, and «back» should leave the screen, not undo a keystroke.
+ */
+function rememberInUrl(patch: Record<string, string | null>) {
+  const url = new URL(window.location.href);
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null || v === '') url.searchParams.delete(k);
+    else url.searchParams.set(k, v);
+  }
+  window.history.replaceState(null, '', url.toString());
+}
 
 const STATUSES: CatalogStatus[] = ['ACTIVE', 'HIDDEN', 'DISABLED'];
 
@@ -130,15 +150,20 @@ export function CatalogPage() {
    * two initialisers: no second notion of «which service is selected» to keep
    * in step with the filter that is already here.
    */
-  const initialQ = new URLSearchParams(window.location.search).get('q') ?? '';
+  const initial = new URLSearchParams(window.location.search);
+  const initialQ = initial.get('q') ?? '';
   const [q, setQ] = useState(initialQ);
   const [typed, setTyped] = useState(initialQ);
   const [status, setStatus] = useState('');
-  const [panelId, setPanelId] = useState('');
+  const [kind, setKind] = useState('');
+  const [categoryId, setCategoryId] = useState('');
+  const [panelId, setPanelId] = useState(initial.get('providerId') ?? '');
+  const [view, setView] = useState<View>(initial.get('view') === 'table' ? 'table' : 'cards');
+  const [configsTotal, setConfigsTotal] = useState(0);
+  const [sellableTotal, setSellableTotal] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [open, setOpen] = useState<number | null>(null);
   // One arrangement open at a time, like the config list above it: two phone
   // previews of two different screens side by side is a way to save the wrong one.
   const [arrangingId, setArrangingId] = useState<number | null>(null);
@@ -159,11 +184,15 @@ export function CatalogPage() {
         // and an absent filter is absent rather than present-and-empty.
         ...(q ? { q } : {}),
         ...(status ? { status } : {}),
+        ...(kind ? { kind } : {}),
+        ...(categoryId ? { categoryId: Number(categoryId) } : {}),
         ...(panelId ? { providerId: Number(panelId) } : {}),
       });
       setRows(data.items);
       setPanels(data.panels);
       setTotal(data.total);
+      setConfigsTotal(data.configsTotal ?? 0);
+      setSellableTotal(data.sellableTotal ?? 0);
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -182,7 +211,7 @@ export function CatalogPage() {
 
   useEffect(() => {
     void load();
-  }, [page, q, status, panelId]);
+  }, [page, q, status, kind, categoryId, panelId]);
 
   useEffect(() => {
     void loadCategories();
@@ -224,15 +253,19 @@ export function CatalogPage() {
   }
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const configCount = rows.reduce((n, r) => n + r.configs.length, 0);
 
   return (
     <>
       <div className="page-head">
         <div>
           <h2 className="page-head__title">سرویس‌ها</h2>
+          {/* Three numbers, and the third is the one that matters: «محصولات»
+              used to say «۱۰ قابل خرید» while this page said «۳۷ سرویس», and
+              an operator could not tell whether the two were about the same
+              shop. They were. Now there is one page and one sentence. */}
           <div className="page-head__sub">
-            {count(total)} سرویس · {count(configCount)} کانفیگ در این صفحه
+            {count(total)} سرویس · {count(configsTotal)} کانفیگ ·{' '}
+            <b>{count(sellableTotal)} قابل خرید</b>
           </div>
         </div>
         <button
@@ -247,10 +280,9 @@ export function CatalogPage() {
 
       <p className="muted" style={{ marginBlockStart: 0 }}>
         هر <b>سرویس</b> همان چیزی است که مشتری اول انتخاب می‌کند — پلاتینیوم، طلایی، معمولی — و
-        هر <b>کانفیگ</b> یک ردیف قیمت داخل آن. سرویس روی یک <b>گروهِ پنل</b> ساخته می‌شود و
-        همان گروه تعیین می‌کند مشتری چه کانفیگ‌هایی تحویل می‌گیرد. سرویسی که هیچ کانفیگی نداشته
-        باشد در ربات دیده نمی‌شود — و سرویسی که پنلش خاموش باشد هم، هرچقدر خودش درست باشد. ستون
-        «تحویل» می‌گوید کدام.
+        هر <b>کانفیگ</b> یک ردیف قیمت داخل آن. سرویس یک <b>نوع</b> دارد (VPN، اسپاتیفای، …) که
+        می‌گوید کانفیگش چه چیزهایی دارد: حجم فقط برای VPN معنا دارد. سرویسی که هیچ کانفیگی نداشته
+        باشد در ربات دیده نمی‌شود — و سرویسی که پنلش خاموش باشد هم. «تحویل» می‌گوید کدام.
       </p>
 
       {err && <div className="alert alert-error">{err}</div>}
@@ -309,6 +341,48 @@ export function CatalogPage() {
           </select>
         </div>
         <div>
+          <label className="form-label" htmlFor="cat-kind">
+            نوع
+          </label>
+          <select
+            id="cat-kind"
+            className="form-control"
+            value={kind}
+            onChange={(e) => {
+              setPage(1);
+              setKind(e.target.value);
+            }}
+          >
+            <option value="">همهٔ نوع‌ها</option>
+            {Object.entries(PRODUCT_KIND_FA).map(([k, fa]) => (
+              <option key={k} value={k}>
+                {fa}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="form-label" htmlFor="cat-category">
+            دسته
+          </label>
+          <select
+            id="cat-category"
+            className="form-control"
+            value={categoryId}
+            onChange={(e) => {
+              setPage(1);
+              setCategoryId(e.target.value);
+            }}
+          >
+            <option value="">همهٔ دسته‌ها</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
           <label className="form-label" htmlFor="cat-status">
             وضعیت سرویس
           </label>
@@ -332,46 +406,61 @@ export function CatalogPage() {
         <button type="submit" className="btn">
           جست‌وجو
         </button>
+        {/* The card/table switch «مدیریت پنل‌ها» already has. The table is the
+            one-row-per-price sheet an admin asked for on 2026-08-27 and got as
+            a second page, «محصولات», with its own words for the same things;
+            it is a VIEW of this list now, on the same editor. */}
+        <div className="view-toggle" role="group" aria-label="نمای نمایش">
+          <button
+            type="button"
+            className={`view-toggle__btn ${view === 'cards' ? 'active' : ''}`}
+            aria-pressed={view === 'cards'}
+            onClick={() => {
+              setView('cards');
+              rememberInUrl({ view: null });
+            }}
+          >
+            نمای کارت
+          </button>
+          <button
+            type="button"
+            className={`view-toggle__btn ${view === 'table' ? 'active' : ''}`}
+            aria-pressed={view === 'table'}
+            onClick={() => {
+              setView('table');
+              rememberInUrl({ view: 'table' });
+            }}
+          >
+            نمای جدولی
+          </button>
+        </div>
       </form>
 
-      <div className="table-wrap">
-        <table className="app-table">
-          <thead>
-            <tr>
-              <th>سرویس</th>
-              <th>پنل</th>
-              <th>گروه</th>
-              <th>تحویل</th>
-              <th>کانفیگ‌ها</th>
-              <th>مخاطب</th>
-              <th>وضعیت</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td className="empty" colSpan={8}>
-                  {loading ? '…' : 'هیچ سرویسی نیست. با «سرویس تازه» اولی را بسازید.'}
-                </td>
-              </tr>
-            )}
-            {rows.map((service) => (
-              <ServiceRows
-                key={service.id}
-                service={service}
-                data={service.panel ? groups[service.panel.id] : null}
-                open={open === service.id}
-                onToggle={() => setOpen(open === service.id ? null : service.id)}
-                onEdit={() => setEditing(service)}
-                arranging={arrangingId === service.id}
-                onArrange={() => setArrangingId(arrangingId === service.id ? null : service.id)}
-                onChanged={refresh}
-              />
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {rows.length === 0 && (
+        <p className="empty">
+          {loading ? '…' : 'هیچ سرویسی نیست. با «سرویس تازه» اولی را بسازید.'}
+        </p>
+      )}
+
+      {rows.length > 0 && view === 'cards' && (
+        <div className="svc-grid">
+          {rows.map((service) => (
+            <ServiceCard
+              key={service.id}
+              service={service}
+              data={service.panel ? groups[service.panel.id] : null}
+              onEdit={() => setEditing(service)}
+              arranging={arrangingId === service.id}
+              onArrange={() => setArrangingId(arrangingId === service.id ? null : service.id)}
+              onChanged={refresh}
+            />
+          ))}
+        </div>
+      )}
+
+      {rows.length > 0 && view === 'table' && (
+        <ConfigTable rows={rows} onEditService={(svc) => setEditing(svc)} onChanged={refresh} />
+      )}
 
       {pages > 1 && (
         <div className="pager">
@@ -611,11 +700,19 @@ function DeliveryCell({
   );
 }
 
-function ServiceRows({
+/**
+ * One service as a card: what it is, where it delivers, and its prices —
+ * all visible without a click.
+ *
+ * The head admin's complaint, 2026-09-13: «قیمت/وضعیت یک‌جا دیده نمی‌شود، کلیک
+ * زیاد می‌خواهد». On the row that came before this, every price sat behind
+ * «۱ کانفیگ ▼» and the status behind «ویرایش سرویس». So: the configs are
+ * chips with the price on them, the status is a select on the card, and one
+ * tap on a chip opens the editor under the card it belongs to.
+ */
+function ServiceCard({
   service,
   data,
-  open,
-  onToggle,
   onEdit,
   arranging,
   onArrange,
@@ -623,170 +720,127 @@ function ServiceRows({
 }: {
   service: ServiceRow;
   data: PanelGroups | null | undefined;
-  open: boolean;
-  onToggle: () => void;
   onEdit: () => void;
   arranging: boolean;
   onArrange: () => void;
   onChanged: () => void;
 }) {
-  return (
-    <>
-      <tr>
-        <td>
-          <div>{service.name}</div>
-          <div className="page-head__sub ltr">{service.code}</div>
-        </td>
-        <td>
-          {service.panel === null ? (
-            <span className="muted">بدون پنل</span>
-          ) : (
-            <>
-              <div>{service.panel.name}</div>
-              {/* `panel.status` has arrived on every row of this response since
-                  the route was written and was never drawn, so a service on a
-                  switched-off panel looked identical to a live one — in the very
-                  column named after the panel. */}
-              {service.panel.status !== 'ACTIVE' && (
-                <span className="badge badge-block">خاموش</span>
-              )}
-            </>
-          )}
-        </td>
-        <td>
-          <GroupCell service={service} data={data} />
-        </td>
-        <td>
-          <DeliveryCell service={service} data={data} />
-        </td>
-        <td>
-          <button type="button" className="btn btn-sm" onClick={onToggle}>
-            {count(service.configs.length)} کانفیگ {open ? '▲' : '▼'}
-          </button>
-        </td>
-        <td>
-          {service.resellersOnly ? (
-            <span className="badge badge-info">نماینده</span>
-          ) : (
-            <span className="badge">عادی</span>
-          )}
-        </td>
-        <td>
-          <span className={STATUS_BADGE[service.status] ?? 'badge'}>
-            {STATUS_FA[service.status] ?? service.status}
-          </span>
-        </td>
-        <td>
-          <div className="row-actions">
-            <button type="button" className="btn btn-sm" onClick={onEdit}>
-              ویرایش سرویس
-            </button>
-            {/* Arranging lives on the SERVICE since 2026-08-27. It was one
-                button per category, which named the screen the bot drew before
-                the service level: a category screen lists services now, and
-                the prices — the things this editor moves — are one step
-                further in, on this service's own screen. */}
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={service.configs.length < 2}
-              title={
-                service.configs.length < 2
-                  ? 'یک کانفیگ چیزی برای چیدن ندارد'
-                  : 'چیدمان کانفیگ‌های این سرویس در ربات'
-              }
-              onClick={onArrange}
-            >
-              {arranging ? 'بستن چیدمان' : 'چیدمان'}
-            </button>
-          </div>
-        </td>
-      </tr>
-      {arranging && (
-        <tr>
-          <td colSpan={8}>
-            <ArrangeService service={service} onSaved={onChanged} />
-          </td>
-        </tr>
-      )}
-      {open && (
-        <tr>
-          <td colSpan={8}>
-            <ConfigList service={service} onChanged={onChanged} />
-          </td>
-        </tr>
-      )}
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Configs
-// ---------------------------------------------------------------------------
-
-function ConfigList({ service, onChanged }: { service: ServiceRow; onChanged: () => void }) {
   const w = useAdminWriteProps();
   const [editing, setEditing] = useState<ConfigRow | null>(null);
   const [adding, setAdding] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const kind = kindOf(service);
+
+  async function setStatus(next: CatalogStatus) {
+    setErr(null);
+    try {
+      await api.setProductStatus(service.id, next);
+      onChanged();
+    } catch (e) {
+      setErr(message(e));
+    }
+  }
 
   return (
-    <div style={{ paddingBlock: 8 }}>
-      <table className="app-table">
-        <thead>
-          <tr>
-            <th>کانفیگ</th>
-            <th>قیمت</th>
-            <th>حجم</th>
-            <th>مدت</th>
-            <th>سقف کاربر</th>
-            <th>وضعیت</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {service.configs.length === 0 && (
-            <tr>
-              <td className="empty" colSpan={7}>
-                این سرویس هیچ کانفیگی ندارد، پس در ربات دیده نمی‌شود.
-              </td>
-            </tr>
-          )}
-          {service.configs.map((cf) => (
-            <tr key={cf.id}>
-              <td>{cf.name}</td>
-              <td>{toman(cf.priceIrr)}</td>
-              <td>{cf.volumeGb === null ? 'نامحدود' : `${count(cf.volumeGb)} گیگ`}</td>
-              <td>{cf.durationDays === null ? 'بدون انقضا' : `${count(cf.durationDays)} روز`}</td>
-              <td>{cf.userLimit === null ? 'بی‌سقف' : count(cf.userLimit)}</td>
-              <td>
-                <span className={STATUS_BADGE[cf.status] ?? 'badge'}>
-                  {STATUS_FA[cf.status] ?? cf.status}
-                </span>
-              </td>
-              <td>
-                <div className="row-actions">
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => setEditing(editing?.id === cf.id ? null : cf)}
-                  >
-                    ویرایش
-                  </button>
-                </div>
-              </td>
-            </tr>
+    <article className="card svc-card" data-service={service.id} aria-label={service.name}>
+      <header className="svc-card__head">
+        <div>
+          <h3 className="svc-card__name">
+            {service.name}
+            <span className="badge badge-info svc-card__kind">{kindFa(service.kind)}</span>
+            {service.resellersOnly && <span className="badge">فقط نماینده</span>}
+          </h3>
+          <div className="page-head__sub ltr">{service.code}</div>
+        </div>
+        {/* The one control «محصولات» could name and not repair: it deep-linked
+            here to change it. It is a select on the card now, and reads as
+            what it does — «فعال / پنهان / غیرفعال» — not as a status badge. */}
+        <select
+          className={`form-control svc-card__status svc-card__status--${service.status.toLowerCase()}`}
+          aria-label={`وضعیت «${service.name}»`}
+          value={service.status}
+          onChange={(e) => void setStatus(e.target.value as CatalogStatus)}
+          {...w}
+        >
+          {STATUSES.map((st) => (
+            <option key={st} value={st}>
+              {STATUS_FA[st]}
+            </option>
           ))}
-        </tbody>
-      </table>
+        </select>
+      </header>
+
+      {err && <div className="alert alert-error">{err}</div>}
+
+      <dl className="svc-card__facts">
+        <div>
+          <dt>پنل</dt>
+          <dd>
+            {service.panel === null ? (
+              <span className="muted">بدون پنل</span>
+            ) : (
+              <>
+                {service.panel.name}
+                {service.panel.status !== 'ACTIVE' && (
+                  <>
+                    {' '}
+                    <span className="badge badge-block">خاموش</span>
+                  </>
+                )}
+              </>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>گروه</dt>
+          <dd>
+            <GroupCell service={service} data={data} />
+          </dd>
+        </div>
+        <div>
+          <dt>تحویل</dt>
+          <dd>
+            <DeliveryCell service={service} data={data} />
+          </dd>
+        </div>
+      </dl>
+
+      <div className="svc-card__configs" aria-label={`کانفیگ‌های «${service.name}»`}>
+        {service.configs.length === 0 && (
+          <span className="muted">هیچ کانفیگی ندارد، پس در ربات دیده نمی‌شود.</span>
+        )}
+        {service.configs.map((cf) => (
+          <button
+            key={cf.id}
+            type="button"
+            className={`svc-chip${cf.status !== 'ACTIVE' ? ' svc-chip--off' : ''}${
+              editing?.id === cf.id ? ' svc-chip--open' : ''
+            }`}
+            title={cf.status === 'ACTIVE' ? 'ویرایش کانفیگ' : `${STATUS_FA[cf.status] ?? cf.status} — ویرایش`}
+            onClick={() => setEditing(editing?.id === cf.id ? null : cf)}
+          >
+            <span className="svc-chip__name">{cf.name}</span>
+            <b className="svc-chip__price">{toman(cf.priceIrr)}</b>
+          </button>
+        ))}
+        <button
+          type="button"
+          className="svc-chip svc-chip--add"
+          onClick={() => setAdding(!adding)}
+          {...w}
+        >
+          + کانفیگ
+        </button>
+      </div>
 
       {editing && (
         <ConfigDrawer
-          /* The third of the same. The row button switches straight from one
-             config to another without closing — `setEditing(editing?.id === cf.id
-             ? null : cf)` — which is exactly the transition a missing key gets
-             wrong. */
+          /* The row button switches straight from one config to another
+             without closing, which is exactly the transition a missing key
+             gets wrong. */
           key={editing.id}
           config={editing}
+          kind={kind}
           onClose={() => setEditing(null)}
           onChanged={onChanged}
           onGone={() => {
@@ -794,18 +848,6 @@ function ConfigList({ service, onChanged }: { service: ServiceRow; onChanged: ()
             onChanged();
           }}
         />
-      )}
-
-      {!adding && (
-        <button
-          type="button"
-          className="btn btn-sm"
-          style={{ marginBlockStart: 8 }}
-          onClick={() => setAdding(true)}
-          {...w}
-        >
-          + کانفیگ تازه
-        </button>
       )}
       {adding && (
         <NewConfigCard
@@ -817,7 +859,203 @@ function ConfigList({ service, onChanged }: { service: ServiceRow; onChanged: ()
           }}
         />
       )}
+
+      <footer className="row-actions svc-card__actions">
+        <button type="button" className="btn btn-sm" onClick={onEdit}>
+          ویرایش سرویس
+        </button>
+        {/* Arranging lives on the SERVICE since 2026-08-27: a category screen
+            lists services, and the prices this editor moves are one step in. */}
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={service.configs.length < 2}
+          title={
+            service.configs.length < 2
+              ? 'یک کانفیگ چیزی برای چیدن ندارد'
+              : 'چیدمان کانفیگ‌های این سرویس در ربات'
+          }
+          onClick={onArrange}
+        >
+          {arranging ? 'بستن چیدمان' : 'چیدمان'}
+        </button>
+      </footer>
+      {arranging && <ArrangeService service={service} onSaved={onChanged} />}
+    </article>
+  );
+}
+
+/**
+ * What the shop can do with this config — «در فروشگاه», or the reasons not.
+ *
+ * Carried over from «محصولات» unchanged in substance. One thing it no longer
+ * needs: a link to «the screen that owns the service status», because that
+ * screen is this one, and the status is on the card.
+ */
+function SellState({ service, config }: { service: ServiceRow; config: ConfigRow }) {
+  const reasons = whyNotSellable({
+    planStatus: config.status,
+    productStatus: service.status,
+    category:
+      service.categoryId === null
+        ? null
+        : { name: service.categoryName ?? '—', active: service.categoryActive ?? false },
+    panel: service.panel
+      ? {
+          name: service.panel.name ?? '—',
+          status: service.panel.status ?? 'DISABLED',
+          capacity: service.panel.capacity,
+          liveSubscriptions: service.panel.liveSubscriptions,
+          reachesAPanel: service.panel.hasGroups,
+          baseUrl: service.panel.baseUrl,
+          hasCredential: service.panel.hasCredential,
+        }
+      : null,
+  });
+  if (reasons.length === 0) return <span className="num--dim">در فروشگاه</span>;
+  return (
+    <div className="tone-orange" title={reasons.map(notSellableFa).join(' ')}>
+      <strong>فروخته نمی‌شود</strong>
+      <div className="page-head__sub">{reasons.map(notSellableShortFa).join(' · ')}</div>
     </div>
+  );
+}
+
+/**
+ * Every config on this page as one row each — the sheet «محصولات» was.
+ *
+ * Same response, same editor: a row's «ویرایش» opens the same `ConfigDrawer`
+ * a chip opens, under the table. A service with no config still gets a row,
+ * because a service that cannot be sold is the one an operator is hunting.
+ */
+function ConfigTable({
+  rows,
+  onEditService,
+  onChanged,
+}: {
+  rows: ServiceRow[];
+  onEditService: (service: ServiceRow) => void;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState<{ service: ServiceRow; config: ConfigRow } | null>(null);
+  const flat = rows.flatMap((service) =>
+    service.configs.length === 0
+      ? [{ service, config: null as ConfigRow | null }]
+      : service.configs.map((config) => ({ service, config: config as ConfigRow | null })),
+  );
+  return (
+    <>
+      <div className="table-wrap">
+        <table className="app-table svc-table">
+          <thead>
+            <tr>
+              <th>سرویس</th>
+              <th>کانفیگ</th>
+              <th>قیمت</th>
+              <th>مدت</th>
+              <th>حجم</th>
+              <th>کاربر</th>
+              <th>نوع</th>
+              <th>پنل</th>
+              <th>وضعیت</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {flat.map(({ service, config }) => {
+              const fields = PRODUCT_KIND_FIELDS[kindOf(service)];
+              return (
+                <tr key={config ? `c${config.id}` : `s${service.id}`}>
+                  <td>
+                    <div>{service.name}</div>
+                    <div className="page-head__sub ltr">{service.code}</div>
+                  </td>
+                  {config === null ? (
+                    <td colSpan={5} className="muted">
+                      هیچ کانفیگی ندارد، پس در ربات دیده نمی‌شود.
+                    </td>
+                  ) : (
+                    <>
+                      <td>{config.name}</td>
+                      <td className="tabular-nums">{toman(config.priceIrr)}</td>
+                      <td>
+                        {config.durationDays === null
+                          ? 'بدون انقضا'
+                          : `${count(config.durationDays)} روز`}
+                      </td>
+                      <td>
+                        {/* A dash, not «نامحدود», for a kind that has no volume:
+                            a Spotify seat is not an unlimited VPN. */}
+                        {!fields.includes('volumeGb')
+                          ? '—'
+                          : config.volumeGb === null
+                            ? 'نامحدود'
+                            : `${count(config.volumeGb)} گیگ`}
+                      </td>
+                      <td>
+                        {!fields.includes('userLimit')
+                          ? '—'
+                          : config.userLimit === null
+                            ? 'بی‌سقف'
+                            : count(config.userLimit)}
+                      </td>
+                    </>
+                  )}
+                  <td>{kindFa(service.kind)}</td>
+                  <td>
+                    {service.panel === null ? (
+                      <span className="muted">بدون پنل</span>
+                    ) : (
+                      <>
+                        {service.panel.name}
+                        {service.panel.status !== 'ACTIVE' && (
+                          <>
+                            {' '}
+                            <span className="badge badge-block">خاموش</span>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </td>
+                  <td>{config === null ? <span className="muted">—</span> : <SellState service={service} config={config} />}</td>
+                  <td>
+                    <div className="row-actions">
+                      {config !== null && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() =>
+                            setEditing(editing?.config.id === config.id ? null : { service, config })
+                          }
+                        >
+                          ویرایش
+                        </button>
+                      )}
+                      <button type="button" className="btn btn-sm" onClick={() => onEditService(service)}>
+                        سرویس
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {editing && (
+        <ConfigDrawer
+          key={editing.config.id}
+          config={editing.config}
+          kind={kindOf(editing.service)}
+          onClose={() => setEditing(null)}
+          onChanged={onChanged}
+          onGone={() => {
+            setEditing(null);
+            onChanged();
+          }}
+        />
+      )}
+    </>
   );
 }
 
@@ -833,7 +1071,7 @@ function ConfigList({ service, onChanged }: { service: ServiceRow; onChanged: ()
  * autofill that keeps overwriting what somebody just wrote is worse than no
  * autofill.
  */
-function useConfigDraft(initial?: ConfigRow) {
+function useConfigDraft(initial: ConfigRow | undefined, kind: ProductKind) {
   const [name, setName] = useState(initial?.name ?? '');
   const [touched, setTouched] = useState(initial !== undefined);
   const [priceToman, setPriceToman] = useState(
@@ -849,16 +1087,30 @@ function useConfigDraft(initial?: ConfigRow) {
     initial && initial.userLimit !== null ? String(initial.userLimit) : '',
   );
 
-  const shape = {
-    volumeGb: orNull(volume),
-    durationDays: orNull(days),
-    userLimit: orNull(users),
-  };
-  const suggested = configName(shape);
+  const fields = PRODUCT_KIND_FIELDS[kind];
+  // A field this kind has not is not sent at all — `undefined`, not null — so
+  // a legacy row that still carries one is left exactly as it was. Clearing
+  // it is a deliberate act on the row, not a side effect of repricing.
+  const shape: { volumeGb?: number | null; durationDays?: number | null; userLimit?: number | null } =
+    {};
+  if (fields.includes('volumeGb')) shape.volumeGb = orNull(volume);
+  if (fields.includes('durationDays')) shape.durationDays = orNull(days);
+  if (fields.includes('userLimit')) shape.userLimit = orNull(users);
+  const suggested = configName(
+    {
+      volumeGb: shape.volumeGb ?? null,
+      durationDays: shape.durationDays ?? null,
+      userLimit: shape.userLimit ?? null,
+    },
+    kind,
+  );
   // Nothing filled in yet is not a config anybody would name «بدون انقضا -
   // نامحدود - چند کاربر», so the box stays empty until there is something to
   // describe.
-  const described = volume !== '' || days !== '' || users !== '';
+  const described =
+    (fields.includes('volumeGb') && volume !== '') ||
+    (fields.includes('durationDays') && days !== '') ||
+    (fields.includes('userLimit') && users !== '');
 
   useEffect(() => {
     if (!touched && described) setName(suggested);
@@ -886,53 +1138,68 @@ function useConfigDraft(initial?: ConfigRow) {
     users,
     setUsers,
     shape,
+    fields,
   };
 }
 
 type Draft = ReturnType<typeof useConfigDraft>;
 
+/**
+ * The fields a config of THIS kind has, and the name they write for you.
+ *
+ * Which fields is `PRODUCT_KIND_FIELDS` — the same table the API refuses
+ * by and `configName` composes by. A Spotify config asks for a duration and
+ * seats and never for gigabytes; before 2026-09-13 every kind asked for all
+ * three and the operator was left to guess which ones meant anything.
+ */
 function ConfigFields({ idPrefix, draft }: { idPrefix: string; draft: Draft }) {
   return (
     <div className="filters">
-      <div>
-        <label className="form-label" htmlFor={`${idPrefix}-days`}>
-          مدت (روز)
-        </label>
-        <input
-          id={`${idPrefix}-days`}
-          className="form-control ltr"
-          type="number"
-          value={draft.days}
-          onChange={(e) => draft.setDays(e.target.value)}
-          placeholder="بدون انقضا"
-        />
-      </div>
-      <div>
-        <label className="form-label" htmlFor={`${idPrefix}-volume`}>
-          حجم (گیگ)
-        </label>
-        <input
-          id={`${idPrefix}-volume`}
-          className="form-control ltr"
-          type="number"
-          value={draft.volume}
-          onChange={(e) => draft.setVolume(e.target.value)}
-          placeholder="نامحدود"
-        />
-      </div>
-      <div>
-        <label className="form-label" htmlFor={`${idPrefix}-users`}>
-          سقف کاربر
-        </label>
-        <input
-          id={`${idPrefix}-users`}
-          className="form-control ltr"
-          type="number"
-          value={draft.users}
-          onChange={(e) => draft.setUsers(e.target.value)}
-          placeholder="بی‌سقف"
-        />
-      </div>
+      {draft.fields.includes('durationDays') && (
+        <div>
+          <label className="form-label" htmlFor={`${idPrefix}-days`}>
+            مدت (روز)
+          </label>
+          <input
+            id={`${idPrefix}-days`}
+            className="form-control ltr"
+            type="number"
+            value={draft.days}
+            onChange={(e) => draft.setDays(e.target.value)}
+            placeholder="بدون انقضا"
+          />
+        </div>
+      )}
+      {draft.fields.includes('volumeGb') && (
+        <div>
+          <label className="form-label" htmlFor={`${idPrefix}-volume`}>
+            حجم (گیگ)
+          </label>
+          <input
+            id={`${idPrefix}-volume`}
+            className="form-control ltr"
+            type="number"
+            value={draft.volume}
+            onChange={(e) => draft.setVolume(e.target.value)}
+            placeholder="نامحدود"
+          />
+        </div>
+      )}
+      {draft.fields.includes('userLimit') && (
+        <div>
+          <label className="form-label" htmlFor={`${idPrefix}-users`}>
+            سقف کاربر
+          </label>
+          <input
+            id={`${idPrefix}-users`}
+            className="form-control ltr"
+            type="number"
+            value={draft.users}
+            onChange={(e) => draft.setUsers(e.target.value)}
+            placeholder="بی‌سقف"
+          />
+        </div>
+      )}
       <div>
         <label className="form-label" htmlFor={`${idPrefix}-price`}>
           قیمت (تومان)
@@ -993,7 +1260,7 @@ function NewConfigCard({
   onCreated: () => void;
 }) {
   const w = useAdminWriteProps();
-  const draft = useConfigDraft();
+  const draft = useConfigDraft(undefined, kindOf(service));
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1008,9 +1275,7 @@ function NewConfigCard({
       await api.createPlan(service.id, {
         name: draft.name.trim() === '' ? draft.suggested : draft.name.trim(),
         priceIrr: draft.priceIrr,
-        durationDays: draft.shape.durationDays,
-        volumeGb: draft.shape.volumeGb,
-        userLimit: draft.shape.userLimit,
+        ...draft.shape,
       });
       onCreated();
     } catch (e) {
@@ -1046,19 +1311,27 @@ function NewConfigCard({
 
 function ConfigDrawer({
   config,
+  kind,
   onClose,
   onChanged,
   onGone,
 }: {
   config: ConfigRow;
+  /** The service's kind — which fields this config has. */
+  kind: ProductKind;
   onClose: () => void;
   onChanged: () => void;
   onGone: () => void;
 }) {
   const w = useAdminWriteProps();
-  const draft = useConfigDraft(config);
+  const draft = useConfigDraft(config, kind);
   const [sortOrder, setSortOrder] = useState(String(config.sortOrder));
   const [status, setStatus] = useState<string>(config.status);
+  // The three fields «محصولات» edited and this drawer did not, so an operator
+  // needed the other page for a badge. One editor now.
+  const [badge, setBadge] = useState(config.badge ?? '');
+  const [buttonStyle, setButtonStyle] = useState<ButtonStyle | null>(config.buttonStyle ?? null);
+  const [deliveryNote, setDeliveryNote] = useState(config.deliveryNote ?? '');
   const [err, setErr] = useState<string | null>(null);
   const [refused, setRefused] = useState<Refused>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -1083,13 +1356,23 @@ function ConfigDrawer({
       const patch: Parameters<typeof api.updatePlan>[1] = {};
       if (draft.name.trim() !== config.name) patch.name = draft.name.trim();
       if (draft.priceIrr !== config.priceIrr) patch.priceIrr = draft.priceIrr;
-      if (draft.shape.durationDays !== config.durationDays) {
+      // `undefined` is a field this kind has not: never compared, never sent.
+      if (draft.shape.durationDays !== undefined && draft.shape.durationDays !== config.durationDays) {
         patch.durationDays = draft.shape.durationDays;
       }
-      if (draft.shape.volumeGb !== config.volumeGb) patch.volumeGb = draft.shape.volumeGb;
-      if (draft.shape.userLimit !== config.userLimit) patch.userLimit = draft.shape.userLimit;
+      if (draft.shape.volumeGb !== undefined && draft.shape.volumeGb !== config.volumeGb) {
+        patch.volumeGb = draft.shape.volumeGb;
+      }
+      if (draft.shape.userLimit !== undefined && draft.shape.userLimit !== config.userLimit) {
+        patch.userLimit = draft.shape.userLimit;
+      }
       if (Number(sortOrder) !== config.sortOrder) patch.sortOrder = Number(sortOrder);
       if (status !== config.status) patch.status = status as CatalogStatus;
+      if (badgeValue(badge) !== (config.badge ?? null)) patch.badge = badgeValue(badge);
+      if (buttonStyle !== (config.buttonStyle ?? null)) patch.buttonStyle = buttonStyle;
+      if (deliveryNote.trim() !== (config.deliveryNote ?? '')) {
+        patch.deliveryNote = deliveryNote.trim() === '' ? null : deliveryNote.trim();
+      }
 
       if (Object.keys(patch).length === 0) {
         setDone('چیزی تغییر نکرده بود.');
@@ -1146,6 +1429,34 @@ function ConfigDrawer({
       {done && <div className="alert alert-info">{done}</div>}
 
       <ConfigFields idPrefix="cf" draft={draft} />
+      <div className="toolbar" style={{ borderBlockEnd: 'none', paddingBlockEnd: 0 }}>
+        <div className="grow">
+          <BadgeField
+            id="cf-badge"
+            value={badge}
+            onChange={setBadge}
+            style={buttonStyle}
+            onStyleChange={setButtonStyle}
+            preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${draft.name.trim() || config.name} — ${toman(
+              draft.priceIrr ?? config.priceIrr,
+            )}`}
+          />
+        </div>
+      </div>
+      <div className="grow">
+        <label className="form-label" htmlFor="cf-delivery">
+          متن تحویل این کانفیگ
+        </label>
+        <textarea
+          id="cf-delivery"
+          className="form-control"
+          rows={2}
+          maxLength={1000}
+          value={deliveryNote}
+          onChange={(e) => setDeliveryNote(e.target.value)}
+          placeholder="خالی: متن تحویل سرویس"
+        />
+      </div>
       <div className="filters">
         <div>
           <label className="form-label" htmlFor="cf-order">
@@ -1720,7 +2031,7 @@ function NewServiceCard({
   const [groupId, setGroupId] = useState('');
   const [groupName, setGroupName] = useState('');
   const [tags, setTags] = useState<string[]>([]);
-  const draft = useConfigDraft();
+  const draft = useConfigDraft(undefined, isProductKind(kind) ? kind : 'vpn');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1830,9 +2141,7 @@ function NewServiceCard({
         await api.createPlan(productId, {
           name: draft.name.trim() === '' ? draft.suggested : draft.name.trim(),
           priceIrr: draft.priceIrr,
-          durationDays: draft.shape.durationDays,
-          volumeGb: draft.shape.volumeGb,
-          userLimit: draft.shape.userLimit,
+          ...draft.shape,
         });
       } catch (e) {
         setErr(
@@ -1893,7 +2202,7 @@ function NewServiceCard({
             value={kind}
             onChange={(e) => setKind(e.target.value)}
           >
-            {Object.entries(KIND_FA).map(([k, fa]) => (
+            {Object.entries(PRODUCT_KIND_FA).map(([k, fa]) => (
               <option key={k} value={k}>
                 {fa}
               </option>
@@ -2135,7 +2444,7 @@ function ServiceDrawer({
             value={kind}
             onChange={(e) => setKind(e.target.value)}
           >
-            {Object.entries(KIND_FA).map(([k, fa]) => (
+            {Object.entries(PRODUCT_KIND_FA).map(([k, fa]) => (
               <option key={k} value={k}>
                 {fa}
               </option>
@@ -2203,7 +2512,7 @@ function ServiceDrawer({
         placeholder="مثلاً روش ورود، لینک راهنما، یا آی‌دی پشتیبانی — زیر سرویس برای مشتری فرستاده می‌شود."
       />
       <p className="muted" style={{ marginBlockStart: 4 }}>
-        زیر هر تحویلِ این سرویس فرستاده می‌شود. هر محصولی می‌تواند متن خودش را بگذارد و جای این
+        زیر هر تحویلِ این سرویس فرستاده می‌شود. هر کانفیگی می‌تواند متن خودش را بگذارد و جای این
         را بگیرد.
       </p>
 

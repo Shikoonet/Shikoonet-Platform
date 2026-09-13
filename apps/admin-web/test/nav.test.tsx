@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NAV, navItem, pageLabel, type PageId } from '../src/nav.js';
+import { pageFromPath } from '../src/route.js';
 import { App } from '../src/App.js';
 
 const ALL: PageId[] = NAV.flatMap((g) => g.items.map((i) => i.id));
@@ -63,7 +64,7 @@ describe('navigation', () => {
     for (const id of ['payments', 'today', 'transactions', 'expenses', 'accounts', 'banks', 'devices'] as const) {
       expect(groupOf(id), `${id} belongs with the money`).toBe('پول');
     }
-    for (const id of ['panels', 'catalog', 'products', 'categories', 'discounts', 'stock'] as const) {
+    for (const id of ['panels', 'catalog', 'categories', 'discounts', 'stock'] as const) {
       expect(groupOf(id), `${id} belongs with the catalogue`).toBe('کاتالوگ');
     }
     // The two «آمار» screens name different subjects and must be read side by
@@ -116,11 +117,9 @@ describe('navigation', () => {
       // screen. See `bot-subset.test.ts`.
       'bulk',
       'catalog',
-      // «محصولات» and «دسته‌بندی‌ها», 2026-08-27. The flat price list the panel
-      // being replaced calls «محصولات», and the category table that has been in
-      // the schema since 0002 with no screen at all — which stopped being
-      // harmless the day the bot's first screen became the category list.
-      'products',
+      // «دسته‌بندی‌ها», 2026-08-27: the category table that has been in the
+      // schema since 0002 with no screen at all. («محصولات» arrived the same
+      // day and left on 2026-09-13 — it is a view of «سرویس‌ها» now.)
       'categories',
       'panels',
       'discounts',
@@ -305,5 +304,13 @@ describe('a section and its page agree on the name', () => {
     await open('orders');
     await waitFor(() => expect(document.title).toContain(pageLabel('orders')));
     expect(document.title).not.toContain(pageLabel('customers'));
+  });
+});
+
+describe('the address «محصولات» still opens the shop', () => {
+  it('/admin/products lands on «سرویس‌ها»', () => {
+    // A view of one page since 2026-09-13; the bookmarks did not get the memo.
+    expect(pageFromPath('/products')).toBe('catalog');
+    expect(pageFromPath('/catalog')).toBe('catalog');
   });
 });

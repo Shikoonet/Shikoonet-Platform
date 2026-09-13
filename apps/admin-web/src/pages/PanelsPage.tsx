@@ -1748,7 +1748,7 @@ function PanelCard({
   onEdit: () => void;
   onDelete: () => void;
   onToggle: () => void;
-  /** Open «محصولات» filtered to this panel — the shop this panel feeds. */
+  /** Open «سرویس‌ها» filtered to this panel — the shop this panel feeds. */
   onShowProducts: (panelId: number) => void;
   busy: boolean;
 }) {
@@ -1827,9 +1827,9 @@ function PanelCard({
               type="button"
               className="btn-link"
               onClick={() => onShowProducts(panel.id)}
-              title={`محصول‌های «${panel.name}» در «محصولات»`}
+              title={`کانفیگ‌های «${panel.name}» در «سرویس‌ها»`}
             >
-              {count(panel.planCount)} محصول
+              {count(panel.planCount)} کانفیگ
             </button>{' '}
             · {count(panel.productCount)} سرویس · {count(panel.liveSubscriptions)} اشتراک زنده
             {panel.capacity !== null && ` · سقف ${count(panel.capacity)}`}
@@ -1850,7 +1850,7 @@ function PanelCard({
   );
 }
 
-export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) => void }) {
+export function PanelsPage({ onGo }: { onGo: (id: 'catalog', search?: string) => void }) {
   const [rows, setRows] = useState<PanelItem[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -1919,7 +1919,7 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
         `«${p.name}» را غیرفعال می‌کنید.
 
 ` +
-          `• ${count(p.planCount)} محصول از فروشگاه برداشته می‌شوند و در ربات دیده نمی‌شوند.
+          `• ${count(p.planCount)} کانفیگ از فروشگاه برداشته می‌شوند و در ربات دیده نمی‌شوند.
 ` +
           (p.liveSubscriptions > 0
             ? `• ${count(p.liveSubscriptions)} اشتراک زنده دارد؛ فروخته‌شده‌ها پاک نمی‌شوند و تمدیدشان بسته می‌شود.
@@ -2011,7 +2011,7 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
               onEdit={() => openEditor(p)}
               onDelete={() => setDeleting(p)}
               onToggle={() => void toggleStatus(p)}
-              onShowProducts={(id) => onGo('products', `?providerId=${id}`)}
+              onShowProducts={(id) => onGo('catalog', `?view=table&providerId=${id}`)}
             />
           ))}
         </div>

@@ -45,7 +45,7 @@ function message(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.code === 'forbidden') return 'برای این کار دسترسی ادمین لازم است.';
     if (e.code === 'duplicate_name') return e.detail ?? 'دسته‌بندی دیگری با این نام هست.';
-    if (e.code === 'in_use') return e.detail ?? 'محصولی در این دسته‌بندی هست.';
+    if (e.code === 'in_use') return e.detail ?? 'سرویسی در این دسته‌بندی هست.';
     return e.detail ?? e.code;
   }
   return e instanceof Error ? e.message : String(e);
@@ -107,7 +107,7 @@ export function CategoriesPage() {
       r.active &&
       r.planCount > 0 &&
       !window.confirm(
-        `«${r.name}» خاموش شود؟ ${count(r.planCount)} محصول از فروشگاه برداشته می‌شوند. ` +
+        `«${r.name}» خاموش شود؟ ${count(r.planCount)} کانفیگ از فروشگاه برداشته می‌شوند. ` +
           'هیچ‌کدام حذف نمی‌شوند — دوباره روشن کنید و برمی‌گردند.',
       )
     ) {
@@ -134,7 +134,7 @@ export function CategoriesPage() {
         <div>
           <h2 className="page-head__title">دسته‌بندی‌ها</h2>
           <div className="page-head__sub">
-            {count(inShop.length)} در فروشگاه از {count(rows.length)} · {count(products)} محصول ·{' '}
+            {count(inShop.length)} در فروشگاه از {count(rows.length)} · {count(products)} سرویس ·{' '}
             <strong className={sellable === 0 ? 'tone-danger' : ''}>
               {count(sellable)} قابل خرید
             </strong>
@@ -218,7 +218,7 @@ export function CategoriesPage() {
           ) : (
             <>
               هیچ دسته‌بندی‌ای چیز خریدنی ندارد، پس فروشگاه در ربات خالی است. معمولاً یعنی پنل‌ها
-              خاموش‌اند — «محصولات» می‌گوید کدام.
+              خاموش‌اند — «سرویس‌ها» می‌گوید کدام.
             </>
           )}
         </p>
@@ -253,7 +253,7 @@ export function CategoriesPage() {
                       and the bot draws one button per. `productsCount` counts
                       SERVICES and belongs in the two sentences about deleting
                       and switching off, not beside this one. */}
-                  {count(r.planCount)} محصول ·{' '}
+                  {count(r.planCount)} کانفیگ ·{' '}
                   <strong className={r.sellableCount === 0 ? 'tone-danger' : ''}>
                     {count(r.sellableCount)} قابل خرید
                   </strong>
@@ -271,8 +271,8 @@ export function CategoriesPage() {
                   <strong>در ربات دیده نمی‌شود</strong>
                   <div className="page-head__sub">
                     {r.planCount === 0
-                      ? 'محصولی ندارد.'
-                      : 'هیچ‌کدام از محصولاتش قابل خرید نیست — معمولاً یعنی پنلشان خاموش است.'}
+                      ? 'کانفیگی ندارد.'
+                      : 'هیچ‌کدام از کانفیگ‌هایش قابل خرید نیست — معمولاً یعنی پنلشان خاموش است.'}
                   </div>
                 </div>
               )}
@@ -475,7 +475,7 @@ function EditCard({
         preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || row.name}`}
       />
       <div className="cat-card__meta">
-        <span>{count(row.planCount)} محصول</span>
+        <span>{count(row.planCount)} کانفیگ</span>
       </div>
       <div className="cat-card__actions">
         <button type="submit" className="btn btn-sm btn-primary" disabled={name.trim() === ''} {...w}>
