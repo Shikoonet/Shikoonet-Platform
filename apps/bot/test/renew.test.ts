@@ -367,13 +367,15 @@ describe('choosing what to renew', () => {
 
     const buttons = out.replies[0]?.keyboard?.flat() ?? [];
     const data = buttons.map((b) => b.callback_data);
-    const offers = data.filter((d) => d?.startsWith('rord:'));
-    expect(offers).toEqual([`rord:${subId}:${sold}`]);
-    const tiers = data.filter((d) => d?.startsWith('rnwp:'));
-    expect(tiers.length).toBeGreaterThanOrEqual(2);
-    // Its own tier is not a switch.
-    expect(tiers).not.toContain(`rnwp:${subId}:${await productId('sim-vip-1m-50')}`);
-    expect(tiers).toContain(`rnwp:${subId}:${await productId('sim-vip-platinum')}`);
+    // The matched plan first, as the confirmation.
+    expect(data[0]).toBe(`rord:${subId}:${sold}`);
+    // Then the OTHER tiers. A tier of one plan is that plan's row (the buy
+    // flow's «a list of one is not a choice»); a tier of several is a door.
+    expect(data).toContain(`rord:${subId}:${await planId('sim-vip-1m-20')}`);
+    expect(data).toContain(`rnwp:${subId}:${await productId('sim-vip-platinum')}`);
+    // Its own tier is not a switch, and the sold plan appears once.
+    expect(data.filter((d) => d === `rord:${subId}:${sold}`)).toHaveLength(1);
+    expect(data).not.toContain(`rnwp:${subId}:${await productId('sim-vip-1m-50')}`);
     expect(data).not.toContain(`rnwl:${subId}`);
     expect(out.replies[0]?.text).toContain('۵۰ گیگ');
   });
@@ -399,19 +401,20 @@ describe('choosing what to renew', () => {
     });
 
     const one = await handleUpdate(db, press(updateId, telegramId, `rnw:${unique}`));
-    const oneOffers = (one.replies[0]?.keyboard?.flat() ?? []).filter((b) =>
-      b.callback_data?.startsWith('rord:'),
-    );
-    expect(oneOffers.map((b) => b.callback_data)).toEqual([`rord:${unique}:${twenty}`]);
+    const oneData = one.replies[0]?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    // The match leads, as the confirmation; the other tiers follow it.
+    expect(oneData[0]).toBe(`rord:${unique}:${twenty}`);
+    expect(one.replies[0]?.text).toContain('پلن متناسب با سرویس شما');
 
     const many = await handleUpdate(db, press(updateId + 1, telegramId, `rnw:${ambiguous}`));
     const buttons = many.replies[0]?.keyboard?.flat() ?? [];
     const data = buttons.map((b) => b.callback_data);
     // Two plans fit; guessing one would be choosing the customer's money for
-    // them. No plan is pointed at: the tiers, and the customer picks. No
+    // them. Nothing is pointed at as «the» plan: the tiers, and the customer
+    // picks — one-plan tiers as their plan row, پلاتینیوم as a door. No
     // «other plans» button either — the tiers ARE the rest.
-    expect(data.filter((d) => d?.startsWith('rord:'))).toEqual([]);
-    expect(data.filter((d) => d?.startsWith('rnwp:')).length).toBeGreaterThan(1);
+    expect(data).toContain(`rnwp:${ambiguous}:${await productId('sim-vip-platinum')}`);
+    expect(data).toContain(`rord:${ambiguous}:${await planId('sim-vip-1m-50')}`);
     expect(data).not.toContain(`rnwl:${ambiguous}`);
     expect(many.replies[0]?.text).toContain('سطح سرویس را انتخاب کنید');
   });
@@ -432,8 +435,10 @@ describe('choosing what to renew', () => {
 
     const vip = (await handleUpdate(db, press(updateId, telegramId, `rnw:${onVip}`))).replies[0];
     const vipData = vip?.keyboard?.flat().map((b) => b.callback_data) ?? [];
-    expect(vipData.filter((d) => d?.startsWith('rnwp:')).length).toBeGreaterThanOrEqual(2);
-    expect(vipData.filter((d) => d?.startsWith('rord:'))).toEqual([]);
+    // The multi-plan tier is a door; the one-plan tiers are their plan rows.
+    expect(vipData).toContain(`rnwp:${onVip}:${await productId('sim-vip-platinum')}`);
+    expect(vipData).toContain(`rord:${onVip}:${await planId('sim-vip-1m-20')}`);
+    expect(vip?.text).toContain('سطح سرویس را انتخاب کنید');
 
     // sim-gold sells one product: a row of one tier is not a choice, so the
     // sizes come straight away, as they always did.
@@ -468,7 +473,8 @@ describe('choosing what to renew', () => {
     const first = (await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`))).replies[0];
     const firstData = first?.keyboard?.flat().map((b) => b.callback_data) ?? [];
     expect(firstData).toContain(`rnwp:${subId}:${platinum}`);
-    expect(firstData.filter((d) => d?.startsWith('rord:'))).toEqual([]);
+    // No plan is «the matching plan» for a trial — the text says pick a tier.
+    expect(first?.text).toContain('سطح سرویس را انتخاب کنید');
 
     const tier = (await handleUpdate(db, press(updateId + 1, telegramId, `rnwp:${subId}:${platinum}`)))
       .replies[0];
@@ -559,10 +565,10 @@ describe('choosing what to renew', () => {
     expect(offers.length).toBeGreaterThan(1);
 
     const back = await handleUpdate(db, press(updateId + 1, telegramId, `dxr:${subId}`));
-    const again = (back.replies[0]?.keyboard?.flat() ?? []).filter((b) =>
-      b.callback_data?.startsWith('rord:'),
-    );
-    expect(again.map((b) => b.callback_data)).toEqual([`rord:${subId}:${sold}`]);
+    const again = back.replies[0]?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    // The matched screen again: its plan first, the other tiers under it.
+    expect(again[0]).toBe(`rord:${subId}:${sold}`);
+    expect(back.replies[0]?.text).toContain('پلن متناسب با سرویس شما');
   });
 
   it('does not promise to keep remaining time a service no longer has', async () => {
