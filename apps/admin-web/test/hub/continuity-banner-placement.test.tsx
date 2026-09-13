@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ContinuityBanner, ContinuityButton } from '../../src/hub/ContinuityBanner.js';
 import { App } from '../../src/App.js';
 import { RoleProvider } from '../../src/role.js';
@@ -78,11 +78,29 @@ describe('what an ADMIN can do from the strip', () => {
       .spyOn(api, 'setContinuityMode')
       .mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof api.setContinuityMode>>);
     const onChanged = vi.fn(async () => {});
-    draw(<ContinuityBanner state={{ ...ON, expiresAt: Date.now() + 32 * 60_000 }} onChanged={onChanged} />);
-    expect(screen.getByText(/32 دقیقه باقی مانده/)).toBeTruthy();
+    // Only the interval is faked; Date.now stays the spy from beforeEach.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    draw(
+      <ContinuityBanner
+        state={{ ...ON, expiresAt: Date.now() + 32 * 60_000 + 7_000 }}
+        onChanged={onChanged}
+      />,
+    );
+    // A clock with seconds, and one that moves: the strip re-reads Date.now()
+    // every second, so a pinned clock that jumps 5s shows 5s less.
+    expect(screen.getByText('32:07')).toBeTruthy();
+    vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000 + 5_000);
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(screen.getByText('32:02')).toBeTruthy();
+    vi.useRealTimers();
     fireEvent.click(screen.getByRole('button', { name: 'لغو حالت تداوم' }));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(setContinuityMode).toHaveBeenCalledWith({ active: false });
+  });
+
+  it('shows the hour once there is one', () => {
+    draw(<ContinuityBanner state={{ ...ON, expiresAt: Date.now() + 3_600_000 }} onChanged={noop} />);
+    expect(screen.getByText('1:00:00')).toBeTruthy();
   });
 });
 

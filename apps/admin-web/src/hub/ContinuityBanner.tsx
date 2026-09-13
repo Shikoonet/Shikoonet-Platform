@@ -46,12 +46,21 @@ const DURATIONS = [
   { label: '۶ ساعت', ms: 6 * 60 * 60 * 1000 },
 ];
 
+/**
+ * `59:32` or `1:00:00` — a clock, not a sentence. Sam asked for the seconds
+ * (2026-09-13); «۵۹ دقیقه» rounded up and sat still for a minute at a time.
+ */
 function remaining(expiresAt: number | null, now: number): string {
   if (expiresAt === null) return '';
   const left = expiresAt - now;
   if (left <= 0) return 'در حال پایان';
-  const mins = Math.ceil(left / 60000);
-  return mins >= 60 ? `${Math.floor(mins / 60)} ساعت و ${mins % 60} دقیقه` : `${mins} دقیقه`;
+  const total = Math.ceil(left / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
 }
 
 export interface ContinuityView {
@@ -135,11 +144,12 @@ export function ContinuityBanner({ state, onChanged }: { state: State | null; on
 
   // Only the countdown needs a clock, and only while it is on screen. It used
   // to be re-read inside the poll that fetches the mode, which tied how often
-  // «۵۹ دقیقه» ticks to how often the server is asked.
+  // the strip ticked to how often the server is asked. One tick a second: the
+  // strip shows seconds now.
   const live = state?.mode === 'CONTINUITY';
   useEffect(() => {
     if (!live) return;
-    const t = setInterval(() => setNow(Date.now()), 30_000);
+    const t = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(t);
   }, [live]);
 
@@ -150,7 +160,18 @@ export function ContinuityBanner({ state, onChanged }: { state: State | null; on
       <strong>حالت تداوم فعال است</strong>
       <span>
         سفارش‌های تازه بدون تایید بانکی تحویل می‌شوند و در صف تطبیق می‌مانند
-        {state.expiresAt !== null && ` — ${remaining(state.expiresAt, now)} باقی مانده`}
+        {state.expiresAt !== null && (
+          <>
+            {' — '}
+            {/* The region is `role="status"`; a digit that changes every
+                second must not be read aloud every second. `aria-live="off"`
+                on the descendant silences exactly this span. */}
+            <span className="continuity-banner__left" dir="ltr" aria-live="off">
+              {remaining(state.expiresAt, now)}
+            </span>{' '}
+            باقی مانده
+          </>
+        )}
       </span>
       {/* `dir="auto"`: both of these are values a person typed or an address,
           and a latin one dropped into the RTL flow was drawn in a different
