@@ -224,6 +224,9 @@ export interface ConfigRow {
   id: number;
   name: string;
   badge: string | null;
+  buttonStyle: ButtonStyle | null;
+  /** This config's own words at delivery, over the service's. */
+  deliveryNote: string | null;
   priceIrr: number;
   /** null is unmetered. Zero is a real, free allowance — not the same thing. */
   volumeGb: number | null;
@@ -253,6 +256,8 @@ export interface ServiceRow {
   sortOrder: number;
   categoryId: number | null;
   categoryName: string | null;
+  /** `whyNotSellable` cannot say «دستهٔ … خاموش است» without it. */
+  categoryActive: boolean | null;
   resellersOnly: boolean;
   oncePerUser: boolean;
   /** null when this service does not choose, and the panel's default applies. */
@@ -1687,6 +1692,7 @@ export const api = {
   catalog(params: {
     q?: string;
     status?: string;
+    kind?: string;
     providerId?: number;
     categoryId?: number;
     page?: number;
@@ -1712,10 +1718,14 @@ export const api = {
     // therefore arranging every service in the shop, and nothing said so. The
     // `invalid_query` beside it was the loud half of the same call; this was
     // the quiet half, and the quiet half is the one that would have shipped.
+    if (params.kind) qs.set('kind', params.kind);
     if (params.categoryId) qs.set('categoryId', String(params.categoryId));
     return req<{
       ok: boolean;
       total: number;
+      /** Configs under the services matched, and how many a customer could buy now. */
+      configsTotal: number;
+      sellableTotal: number;
       page: number;
       pageSize: number;
       items: ServiceRow[];

@@ -25,6 +25,7 @@ export * from './cardActivity.js';
 export * from './historyRange.js';
 export * from './sellable.js';
 export * from './configName.js';
+export * from './productKinds.js';
 export * from './receipt.js';
 export * from './channelPost.js';
 export * from './cronJobs.js';

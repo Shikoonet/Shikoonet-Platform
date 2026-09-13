@@ -13,9 +13,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
-import { ProductsPage } from '../src/pages/ProductsPage.js';
+import { CatalogPage } from '../src/pages/CatalogPage.js';
 import { CategoriesPage } from '../src/pages/CategoriesPage.js';
-import type { CategoryRow, PanelRef, PlanRow } from '../src/api.js';
+import type { CategoryRow, PanelRef, ServiceRow } from '../src/api.js';
 
 const LIVE: PanelRef = {
   id: 1,
@@ -54,48 +54,53 @@ const SHELF: PanelRef = {
   hasCredential: false,
 };
 
-function plan(
+function service(
   id: number,
   name: string,
-  provider: PanelRef | null,
+  panel: PanelRef | null,
   status = 'ACTIVE',
   productStatus = 'ACTIVE',
-): PlanRow {
+): ServiceRow {
   return {
-    id,
-    name,
-    badge: null,
-    buttonStyle: null,
+    id: id * 10,
+    code: `svc-${id}`,
+    name: `سرویس ${id}`,
+    kind: 'vpn',
+    status: productStatus,
+    description: null,
     deliveryNote: null,
-    productDeliveryNote: null,
-    priceIrr: 1_000_000,
-    durationDays: 30,
-    volumeGb: 10,
-    userLimit: null,
-    status,
-    sortOrder: id,
-    rowIndex: null,
-    product: {
-      id: id * 10,
-      code: `svc-${id}`,
-      name: `سرویس ${id}`,
-      kind: 'vpn',
-      status: productStatus,
-      description: null,
-      sortOrder: 0,
-      categoryId: 1,
-      resellersOnly: false,
-      oncePerUser: false,
-      groupIds: null,
-    },
-    provider,
+    sortOrder: 0,
+    categoryId: 1,
     categoryName: 'سرویس‌ها',
     categoryActive: true,
-    ordersCount: 0,
+    resellersOnly: false,
+    oncePerUser: false,
+    groupIds: null,
+    rowIndex: null,
+    badge: null,
+    buttonStyle: null,
+    panel,
+    configs: [
+      {
+        id,
+        name,
+        badge: null,
+        buttonStyle: null,
+        deliveryNote: null,
+        priceIrr: 1_000_000,
+        durationDays: 30,
+        volumeGb: 10,
+        userLimit: null,
+        status,
+        sortOrder: id,
+        rowIndex: null,
+        ordersCount: 0,
+      },
+    ],
   };
 }
 
-const products = vi.fn();
+const catalog = vi.fn();
 const productCategories = vi.fn();
 
 vi.mock('../src/api.js', async () => {
@@ -103,9 +108,11 @@ vi.mock('../src/api.js', async () => {
   return {
     ...actual,
     api: {
-      products: (p: unknown) => products(p),
+      catalog: (p: unknown) => catalog(p),
       productCategories: () => productCategories(),
-      catalog: async () => ({ items: [] }),
+      // A live panel is asked for its groups; the verdicts here do not depend on the answer.
+      panelGroups: async () => ({ ok: true, selected: [], available: [], plans: [], inherit: [] }),
+      emojiPacks: async () => ({ ok: true, customEmoji: false, packs: [] }),
     },
   };
 });
@@ -127,130 +134,101 @@ function category(over: Partial<CategoryRow>): CategoryRow {
 }
 
 beforeEach(() => {
-  products.mockReset();
+  catalog.mockReset();
   productCategories.mockReset();
   productCategories.mockResolvedValue({ ok: true, items: [] });
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe('«محصولات» says what the shop can do with a row', () => {
-  const onGo = vi.fn();
-
-  async function draw(items: PlanRow[], sellableTotal: number) {
-    products.mockResolvedValue({
+/**
+ * «محصولات» became «نمای جدولی» of «سرویس‌ها» on 2026-09-13. Same verdicts,
+ * same column; the page that owned the service's status is now the page
+ * these rows are on, so the link to it went away with the reason for it.
+ */
+describe('«نمای جدولی» says what the shop can do with a row', () => {
+  async function draw(items: ServiceRow[], sellableTotal: number) {
+    catalog.mockResolvedValue({
       ok: true,
       total: items.length,
+      configsTotal: items.length,
       sellableTotal,
       page: 1,
       pageSize: 25,
       items,
-      providers: [],
+      panels: [],
     });
+    window.history.replaceState({}, '', '/?view=table');
     render(
       <RoleProvider role="ADMIN">
-        <ProductsPage onGo={onGo} />
+        <CatalogPage />
       </RoleProvider>,
     );
-    await waitFor(() => expect(products).toHaveBeenCalled());
+    await waitFor(() => expect(catalog).toHaveBeenCalled());
   }
+
+  afterEach(() => window.history.replaceState({}, '', '/'));
 
   /**
    * The table, not the page.
    *
-   * «فروخته نمی‌شود» and «در فروشگاه» are also the two options of the filter
-   * this screen gained, so a page-wide query matches the dropdown and passes
-   * whatever the table drew — the exact shape of test that would have missed the
-   * original bug.
+   * «فروخته نمی‌شود» and «در فروشگاه» could also appear in a filter, so a
+   * page-wide query would pass whatever the table drew — the exact shape of
+   * test that would have missed the original bug.
    */
   const table = () => within(screen.getByRole('table'));
 
   it('prints the count that matters beside the count that does not', async () => {
     // «۱۶ محصول» said nothing while three were on sale. Both numbers, always.
-    await draw([plan(1, 'زنده', LIVE), plan(2, 'مرده', OFF)], 1);
-    await waitFor(() => expect(screen.getByText(/۲ محصول/)).toBeTruthy());
+    await draw([service(1, 'زنده', LIVE), service(2, 'مرده', OFF)], 1);
+    await waitFor(() => expect(screen.getByText(/۲ سرویس/)).toBeTruthy());
     expect(screen.getByText(/۱ قابل خرید/)).toBeTruthy();
   });
 
   it('names the panel as the reason, not the row', async () => {
-    // The fix for a row on a dead panel is «go and switch a panel on», and the
-    // row's own status is ACTIVE and says nothing about it.
-    await draw([plan(2, 'مرده', OFF)], 0);
+    await draw([service(2, 'مرده', OFF)], 0);
     await waitFor(() => expect(table().getByText('فروخته نمی‌شود')).toBeTruthy());
     expect(table().getByText('پنل خاموش')).toBeTruthy();
   });
 
   it('names a full panel, which no screen could say before', async () => {
-    await draw([plan(3, 'روی پنل پر', FULL)], 0);
+    await draw([service(3, 'روی پنل پر', FULL)], 0);
     await waitFor(() => expect(table().getByText('پنل پر است')).toBeTruthy());
   });
 
   it('names a panel the bot cannot log in to, and leaves a shelf alone', async () => {
-    // The bot stopped selling from such a panel (#182); a screen that kept
-    // saying «در فروشگاه» about it would be the 2026-08-27 gap again.
-    await draw([plan(4, 'روی پنل بی‌اعتبارنامه', UNWIRED), plan(5, 'روی قفسه', SHELF)], 1);
+    await draw([service(4, 'روی پنل بی‌اعتبارنامه', UNWIRED), service(5, 'روی قفسه', SHELF)], 1);
     await waitFor(() => expect(table().getByText('پنل وصل نیست')).toBeTruthy());
     expect(table().getByText('در فروشگاه')).toBeTruthy();
   });
 
   it('says «در فروشگاه» only when a customer could really buy it', async () => {
-    await draw([plan(1, 'زنده', LIVE)], 1);
+    await draw([service(1, 'زنده', LIVE)], 1);
     await waitFor(() => expect(table().getByText('در فروشگاه')).toBeTruthy());
     expect(table().queryByText('فروخته نمی‌شود')).toBeNull();
   });
 
   it('names the CATEGORY as the reason when the shelf is the thing that is off', async () => {
-    /**
-     * The one reason on this screen the operator cannot see from the row.
-     *
-     * Every other verdict here has something visibly wrong with the row or its
-     * panel. A switched-off category leaves the config ACTIVE, the product
-     * ACTIVE and the panel live — three green things and a product nobody can
-     * buy — so if this screen does not name the category, the operator has no
-     * way to reach the fix from the screen that shows the symptom.
-     *
-     * The fixture is otherwise the same healthy row as «در فروشگاه» above, on
-     * purpose: `categoryActive` is the ONLY difference between the two tests,
-     * so a pass here cannot be coming from anything else.
-     */
-    await draw([{ ...plan(6, 'زیر دستهٔ خاموش', LIVE), categoryActive: false }], 0);
+    // Three green things and a product nobody can buy — the one reason the
+    // row itself shows nothing of. `categoryActive` is the ONLY difference
+    // from the healthy row above.
+    await draw([{ ...service(6, 'زیر دستهٔ خاموش', LIVE), categoryActive: false }], 0);
     await waitFor(() => expect(table().getByText('فروخته نمی‌شود')).toBeTruthy());
     expect(table().getByText('دسته خاموش')).toBeTruthy();
     expect(table().queryByText('در فروشگاه')).toBeNull();
   });
 
   it('names both faults when a row has two', async () => {
-    await draw([plan(4, 'هم پنهان هم روی پنل مرده', OFF, 'HIDDEN')], 0);
+    await draw([service(4, 'هم پنهان هم روی پنل مرده', OFF, 'HIDDEN')], 0);
     await waitFor(() => expect(table().getByText(/پنل خاموش · پنهان/)).toBeTruthy());
   });
 
-  /**
-   * The reason this screen could name and not repair.
-   *
-   * `api.setProductStatus` is called only from «سرویس‌ها», and this screen's own
-   * edit dialog shows «در فروشگاه» already ticked — that field is the CONFIG's
-   * status, and the config really is ACTIVE. So the operator saves, nothing
-   * happens, and the screen has said nothing about why.
-   *
-   * The link is asserted by where it GOES, not by its text: landing on
-   * «سرویس‌ها» with the search box already holding this service's name is what
-   * makes the sentence actionable, and an assertion on the label alone would
-   * pass for a button that went nowhere.
-   */
-  it('offers a way to the screen that owns the service status', async () => {
-    await draw([plan(5, 'کانفیگ زنده', LIVE, 'ACTIVE', 'HIDDEN')], 0);
+  it('opens the service editor from the row for the fault only the service can fix', async () => {
+    // «سرویس پنهان» used to send the operator to another page. The page is
+    // this one; the row's «سرویس» opens the editor that owns the status.
+    await draw([service(5, 'کانفیگ زنده', LIVE, 'ACTIVE', 'HIDDEN')], 0);
     await waitFor(() => expect(table().getByText('سرویس پنهان')).toBeTruthy());
-
-    fireEvent.click(table().getByRole('button', { name: /باز کردن «سرویس 5» در سرویس‌ها/ }));
-    expect(onGo).toHaveBeenCalledWith('catalog', `?q=${encodeURIComponent('سرویس 5')}`);
-  });
-
-  it('does not offer it for a fault that screen cannot fix either', async () => {
-    // A dead panel is «go and switch a panel on», which is «مدیریت پنل‌ها» and
-    // not «سرویس‌ها». A link that appears for every refusal is a link nobody
-    // reads the label of.
-    await draw([plan(6, 'روی پنل مرده', OFF)], 0);
-    await waitFor(() => expect(table().getByText('پنل خاموش')).toBeTruthy());
-    expect(table().queryByRole('button', { name: /در سرویس‌ها/ })).toBeNull();
+    fireEvent.click(table().getByRole('button', { name: 'سرویس' }));
+    expect((screen.getByLabelText('نام سرویس') as HTMLInputElement).value).toBe('سرویس 5');
   });
 });
 

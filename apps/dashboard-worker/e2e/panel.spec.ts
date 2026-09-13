@@ -59,7 +59,9 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   // thirty `{ id:` entries.
   // 30 -> 31 on 2026-09-07 with «نمایندگان» — a new section, so the number
   // moved for the reason a number should. Counted off `nav.ts`.
-  expect(labels.length).toBe(31);
+  // 31 -> 30 on 2026-09-13: «محصولات» became «نمای جدولی» of «سرویس‌ها». One
+  // sidebar item fewer, for the reason a number should move.
+  expect(labels.length).toBe(30);
 
   for (const label of labels) {
     const name = label.trim();

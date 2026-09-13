@@ -95,7 +95,11 @@ const WITHHELD = [
  * never reach this database, so there is no name on that screen to withhold.
  * All three writes behind it are ADMIN-only in the route.
  */
-const OFFERED_TO_A_READER = 21;
+/*
+ * Twenty on 2026-09-13. «محصولات» is a view of «سرویس‌ها» now — the reader
+ * lost a sidebar item, not a screen.
+ */
+const OFFERED_TO_A_READER = 20;
 
 async function signInAsReader(page: Page): Promise<void> {
   await page.goto(`${BASE}/admin/`);
@@ -105,7 +109,7 @@ async function signInAsReader(page: Page): Promise<void> {
   await expect(page.locator('.sidebar-link.active')).toBeVisible();
 }
 
-test('a reader is offered twenty-one sections of thirty-one, and the count is read off the screen', async ({
+test('a reader is offered twenty sections of thirty, and the count is read off the screen', async ({
   page,
 }) => {
   await signInAsReader(page);

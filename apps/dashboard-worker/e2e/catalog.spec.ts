@@ -88,15 +88,11 @@ test.afterAll(async () => {
  * reaches it.
  */
 /**
- * The configs table that opens under a service.
- *
- * Found by being NESTED, not by its header. `table:has(th…)` matches the outer
- * table too — a table that contains this one also contains its header — so that
- * locator resolved to two elements and every row lookup landed on the service
- * row above, pressing «ویرایش سرویس» instead of «ویرایش».
+ * The card of one service, since 2026-09-13 — one per service, its configs as
+ * chips on it. Found by the card's accessible name, which is the service's.
  */
-function configs(page: Page) {
-  return page.locator('#main-content td table');
+function card(page: Page, serviceName: string) {
+  return page.locator('.svc-card', { has: page.locator('.svc-card__name', { hasText: serviceName }) }).first();
 }
 
 async function openConfig(page: Page) {
@@ -107,42 +103,47 @@ async function openConfig(page: Page) {
   await page.locator('#cat-q').fill(CONFIG_NAME);
   await page.getByRole('button', { name: 'جست‌وجو' }).click();
 
-  const row = page.locator(`tbody tr:has-text("${serviceName}")`).first();
-  await expect(row).toBeVisible();
-  // The count of configs is the toggle. A service that is a row rather than a
-  // repeated sub-line is what this whole screen was rebuilt for.
-  await row.getByRole('button', { name: /کانفیگ/ }).click();
-
-  // Inside the nested table, not merely "a row containing that text". In this
-  // shop the two names are usually the SAME string — the importer wrote
-  // `product.name_product` into both `products.name` and `product_plans.name`,
-  // so a loose match finds the service row first and presses «ویرایش سرویس».
-  const configRow = configs(page).locator(`tbody tr:has-text("${CONFIG_NAME}")`).first();
-  await expect(configRow).toBeVisible();
-  await configRow.getByRole('button', { name: 'ویرایش' }).click();
-  await expect(page.locator('#cf-price')).toBeVisible();
+  const svc = card(page, serviceName);
+  await expect(svc).toBeVisible();
+  // The chip IS the config: one tap, the editor opens under the card. In this
+  // shop the service and its only config are usually called the same thing —
+  // the importer wrote `product.name_product` into both columns — so the chip
+  // is found inside the chip strip, not by its text on the page.
+  await svc.locator('.svc-chip', { hasText: CONFIG_NAME }).first().click();
+  await expect(svc.locator('#cf-price')).toBeVisible();
 }
 
-test('a service is a row, and its configs are inside it rather than beside it', async ({ page }) => {
-  const { serviceName } = await config();
+test('a service is a card, with its prices on it and no click', async ({ page }) => {
+  const { serviceName, priceIrr } = await config();
   await page.goto('/admin/catalog');
   await page.locator('#cat-q').fill(CONFIG_NAME);
   await page.getByRole('button', { name: 'جست‌وجو' }).click();
 
+  const svc = card(page, serviceName);
+  await expect(svc).toBeVisible();
+  // The price is on the chip before anything is pressed — the head admin's
+  // complaint on 2026-09-13 was that it took two clicks to see one.
+  const chip = svc.locator('.svc-chip', { hasText: CONFIG_NAME }).first();
+  await expect(chip).toBeVisible();
+  await expect(chip.locator('.svc-chip__price')).toContainText(
+    new Intl.NumberFormat('fa-IR').format(Math.trunc(priceIrr / 10)),
+  );
+  // Nothing to edit yet.
+  await expect(svc.locator('#cf-price')).toHaveCount(0);
+  await chip.click();
+  await expect(svc.locator('#cf-price')).toBeVisible();
+});
+
+test('«نمای جدولی» lists one row per config, and the address remembers it', async ({ page }) => {
+  const { serviceName } = await config();
+  await page.goto('/admin/catalog?view=table');
+  await page.locator('#cat-q').fill(CONFIG_NAME);
+  await page.getByRole('button', { name: 'جست‌وجو' }).click();
   const row = page.locator(`tbody tr:has-text("${serviceName}")`).first();
   await expect(row).toBeVisible();
-  // Closed, there is no config list on the screen at all. On the old screen it
-  // WAS the screen, and the service was a grey line under each of its rows.
-  //
-  // Asserted on the nested table rather than on the config's name, because in
-  // this shop the service and its only config are called the same thing: the
-  // importer wrote `product.name_product` into both columns. That coincidence
-  // is exactly what made the old screen readable-looking and useless.
-  await expect(configs(page)).toHaveCount(0);
-
-  await row.getByRole('button', { name: /کانفیگ/ }).click();
-  await expect(configs(page)).toHaveCount(1);
-  await expect(configs(page).locator('tbody tr').first()).toBeVisible();
+  await expect(row).toContainText(CONFIG_NAME);
+  await row.getByRole('button', { name: 'ویرایش' }).click();
+  await expect(page.locator('#cf-price')).toBeVisible();
 });
 
 test('a price typed in Toman is stored in Rial, and the ledger says who changed it', async ({
@@ -247,9 +248,9 @@ test('a service with no panel is listed and says it cannot be sold', async ({ pa
     await page.locator('#cat-q').fill(name);
     await page.getByRole('button', { name: 'جست‌وجو' }).click();
 
-    const row = page.locator(`tbody tr:has-text("${name}")`).first();
-    await expect(row).toBeVisible();
-    await expect(row).toContainText('بدون پنل');
+    const svc = card(page, name);
+    await expect(svc).toBeVisible();
+    await expect(svc).toContainText('بدون پنل');
   } finally {
     await withDb(async (d) => {
       await d.prepare(`DELETE FROM products WHERE code = ?1`).bind(name).run();

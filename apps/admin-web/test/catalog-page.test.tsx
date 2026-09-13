@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
 import { CatalogPage } from '../src/pages/CatalogPage.js';
 import type { PanelGroups, PanelRef, ServiceRow } from '../src/api.js';
@@ -50,6 +50,7 @@ function service(
     sortOrder: id,
     categoryId: null,
     categoryName: null,
+    categoryActive: null,
     resellersOnly: false,
     oncePerUser: false,
     groupIds,
@@ -61,6 +62,8 @@ function service(
       id: id * 100 + i,
       name: cfName,
       badge: null,
+      buttonStyle: null,
+      deliveryNote: null,
       priceIrr: 1_000_000 * (i + 1),
       volumeGb: 10 * (i + 1),
       durationDays: 30,
@@ -92,15 +95,18 @@ const GROUPS: PanelGroups = {
   inherit: [],
 };
 
-const catalog = vi.fn(async (_params: unknown) => ({
+const catalog = vi.fn(async (_params: unknown): Promise<Record<string, unknown>> => ({
   ok: true,
   total: SERVICES.length,
+  configsTotal: 5,
+  sellableTotal: 4,
   page: 1,
   pageSize: 25,
   items: SERVICES,
   panels: [PANEL],
 }));
 const panelGroups = vi.fn(async (_id: number) => GROUPS);
+const setProductStatus = vi.fn(async (_id: number, _status: string) => ({ ok: true, status: 'HIDDEN' }));
 
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
@@ -109,6 +115,7 @@ vi.mock('../src/api.js', async () => {
     api: {
       catalog: (p: unknown) => catalog(p),
       panelGroups: (id: number) => panelGroups(id),
+      setProductStatus: (id: number, status: string) => setProductStatus(id, status),
       productCategories: async () => ({ ok: true, items: [] }),
       // The service form carries a `BadgeField` since 0061, and it asks this.
       emojiPacks: async () => ({ ok: true, customEmoji: false, packs: [] }),
@@ -127,8 +134,14 @@ function draw() {
 beforeEach(() => {
   catalog.mockClear();
   panelGroups.mockClear();
+  setProductStatus.mockClear();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  // The view toggle writes `?view=` into the address, and jsdom keeps one
+  // address for the whole file.
+  window.history.replaceState({}, '', '/');
+});
 
 describe('the service editor belongs to one service', () => {
   /**
@@ -158,12 +171,8 @@ describe('the service editor belongs to one service', () => {
   });
 });
 
-describe('the address «محصولات» sends people to', () => {
+describe('a deep link opens filtered', () => {
   /**
-   * The other half of the link. «محصولات» can name «سرویسش پنهان است» and not
-   * repair it, so it offers a button here — and a button that lands on an
-   * unfiltered list of every service is the same dead end one screen later.
-   *
    * The search box is the address rather than a new «selected service» notion,
    * because it is already the thing that narrows this list; a second selector
    * would be a second state to keep in step with it. The assertion is that the
@@ -184,28 +193,55 @@ describe('the address «محصولات» sends people to', () => {
 });
 
 describe('the catalogue screen', () => {
-  it('draws one row per service, not one per config', async () => {
+  it('draws one card per service, with every price on it and no click', async () => {
+    /*
+     * The head admin, 2026-09-13: «قیمت یک‌جا دیده نمی‌شود، کلیک زیاد می‌خواهد».
+     * Before, the configs sat behind «۳ کانفیگ ▼» — a price was two clicks
+     * away. Now they are chips on the card, and the card count is the service
+     * count: the code sub-line appears once per service and never on a chip.
+     */
     draw();
     await waitFor(() => expect(screen.getByText('svc-8')).toBeTruthy());
-
-    // Counted on the code sub-line, which appears exactly once per service row
-    // and never on a config. Four configs across two services: row-per-plan
-    // would be four rows, row-per-service is two.
     expect(screen.getAllByText(/^svc-/)).toHaveLength(SERVICES.length);
-
-    // The configs are NOT on screen until the service is opened.
-    expect(screen.queryByText('۱ ماهه - ۲۰ گیگ')).toBeNull();
-  });
-
-  it('opens a service onto its own configs', async () => {
-    draw();
-    const toggle = await screen.findByRole('button', { name: /۳ کانفیگ/ });
-    fireEvent.click(toggle);
-
-    await waitFor(() => expect(screen.getByText('۱ ماهه - ۲۰ گیگ')).toBeTruthy());
+    expect(screen.getByText('۱ ماهه - ۲۰ گیگ')).toBeTruthy();
     expect(screen.getByText('۱ ماهه - ۳۰ گیگ')).toBeTruthy();
     // Prices are Toman on screen and Rial on the wire.
     expect(screen.getByText('۲۰۰٬۰۰۰ تومان')).toBeTruthy();
+    // And the header counts the shop, not the page.
+    expect(screen.getByText(/۴ قابل خرید/)).toBeTruthy();
+  });
+
+  it('opens a config editor from its chip, under its own card', async () => {
+    draw();
+    const chip = await screen.findByRole('button', { name: /۱ ماهه - ۲۰ گیگ/ });
+    fireEvent.click(chip);
+    const price = screen.getByLabelText('قیمت (تومان)') as HTMLInputElement;
+    expect(price.value).toBe('200000');
+    expect(chip.closest('.svc-card')!.contains(price)).toBe(true);
+  });
+
+  it('switches a service off from the card, with no drawer', async () => {
+    draw();
+    const status = (await screen.findByLabelText('وضعیت «پلاتینیوم»')) as HTMLSelectElement;
+    fireEvent.change(status, { target: { value: 'HIDDEN' } });
+    await waitFor(() => expect(setProductStatus).toHaveBeenCalledWith(8, 'HIDDEN'));
+  });
+
+  it('draws the flat sheet on «نمای جدولی» — one row per config, same prices', async () => {
+    /*
+     * The one-row-per-price table an admin asked for on 2026-08-27 and got as a
+     * second page («محصولات») with its own words for the same things. A view
+     * now, on the same response and the same editor.
+     */
+    draw();
+    await screen.findByText('svc-8');
+    fireEvent.click(screen.getByRole('button', { name: 'نمای جدولی' }));
+    const table = within(screen.getByRole('table'));
+    // Five configs across three services: five rows, each naming its service.
+    expect(table.getAllByText(/^svc-/)).toHaveLength(5);
+    expect(table.getByText('۲۰۰٬۰۰۰ تومان')).toBeTruthy();
+    fireEvent.click(table.getAllByRole('button', { name: 'ویرایش' })[1]!);
+    expect((screen.getByLabelText('قیمت (تومان)') as HTMLInputElement).value).toBe('200000');
   });
 
   it('names the group rather than printing its id', async () => {
@@ -237,7 +273,7 @@ describe('the catalogue screen', () => {
     // the column whose whole job is to say whether a customer receives anything.
     draw();
     const row = await screen.findByText('همه‌کاره');
-    const cell = () => row.closest('tr')!.querySelectorAll('td')[3]!;
+    const cell = () => row.closest('.svc-card')!.querySelector('.svc-card__facts')!;
 
     // Every assertion inside the wait, for the same reason as the test above:
     // the group names come from a second fetch, and the row exists before they
@@ -300,6 +336,20 @@ describe('a delivery route that has no groups', () => {
     // Asserted after the row is on screen, so this cannot pass merely by being
     // checked before the effect had a chance to run.
     expect(panelGroups).not.toHaveBeenCalled();
+  });
+
+  it('asks a Spotify config for a duration and seats, never for gigabytes', async () => {
+    /*
+     * Sam, 2026-09-13: «spotify حجم استفاده ندارد». The form drew all three
+     * fields for every kind; the kind's own list draws it now, and the API
+     * refuses what the form would not have asked for (products.test.ts).
+     */
+    draw();
+    await screen.findByText('svc-20');
+    fireEvent.click(screen.getByRole('button', { name: '+ کانفیگ' }));
+    expect(screen.getByLabelText('مدت (روز)')).toBeTruthy();
+    expect(screen.getByLabelText('سقف کاربر')).toBeTruthy();
+    expect(screen.queryByLabelText('حجم (گیگ)')).toBeNull();
   });
 });
 

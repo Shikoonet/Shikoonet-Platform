@@ -33,6 +33,9 @@ const BASE = (import.meta.env?.BASE_URL ?? '/').replace(/\/+$/, '');
 export function pageFromPath(path: string): PageId {
   const rest = path.startsWith(BASE) ? path.slice(BASE.length) : path;
   const first = rest.replace(/^\/+/, '').split('/')[0] ?? '';
+  // «محصولات» became a view of «سرویس‌ها» on 2026-09-13. The bookmarks and
+  // the links in old chats still say /products; they open the same shop.
+  if (first === 'products') return 'catalog';
   return isPageId(first) ? first : 'dashboard';
 }
 

@@ -296,6 +296,78 @@ describe('POST /api/v1/admin/products/plans/:id', () => {
     expect(JSON.parse(logs[0]!.after_json).price_irr).toBe(1_800_000);
   });
 
+  /*
+   * Sam, 2026-09-13: «spotify حجم استفاده ندارد». The form hides the field;
+   * this is the boundary behind the form. `PRODUCT_KIND_FIELDS` in
+   * `@shikoo/contracts` is the one table both read.
+   */
+  describe('a field the kind of service does not have', () => {
+    async function spotify(label: string, volumeGb: number | null = null) {
+      const made = await makeCatalog(label, { volumeGb });
+      await baseEnv.DB.prepare(`UPDATE products SET kind = 'spotify' WHERE id = ?1`)
+        .bind(made.productId)
+        .run();
+      return made;
+    }
+
+    it('refuses a volume on a Spotify config, on create and on patch', async () => {
+      const { productId, planId } = await spotify('kind-refuse');
+      const created = await app.request(
+        `/api/v1/admin/products/${productId}/plans`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ name: 'اسپاتیفای', priceIrr: 1_000_000, durationDays: 30, volumeGb: 50 }),
+        },
+        envAs(ADMIN),
+      );
+      expect(created.status).toBe(400);
+      expect(((await created.json()) as { detail: string }).detail).toContain('volumeGb');
+
+      const patched = await patch(planId, { volumeGb: 20 });
+      expect(patched.status).toBe(400);
+      expect((await planRow(planId))!.volume_gb).toBeNull();
+    });
+
+    it('lets a legacy Spotify row with a stored volume be repriced without mentioning it', async () => {
+      const { planId } = await spotify('kind-legacy', 50);
+      const res = await patch(planId, { priceIrr: 1_200_000 });
+      expect(res.status).toBe(200);
+      const row = (await planRow(planId))!;
+      expect(Number(row.price_irr)).toBe(1_200_000);
+      // Untouched, not erased: the patch said nothing about it.
+      expect(Number(row.volume_gb)).toBe(50);
+    });
+
+    it('lets that stored volume be cleared with null', async () => {
+      const { planId } = await spotify('kind-clear', 50);
+      const res = await patch(planId, { volumeGb: null });
+      expect(res.status).toBe(200);
+      expect((await planRow(planId))!.volume_gb).toBeNull();
+    });
+
+    it('still takes every field on a manual shelf', async () => {
+      const { productId } = await makeCatalog('kind-manual');
+      await baseEnv.DB.prepare(`UPDATE products SET kind = 'manual' WHERE id = ?1`)
+        .bind(productId)
+        .run();
+      const created = await app.request(
+        `/api/v1/admin/products/${productId}/plans`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: 'دستی',
+            priceIrr: 1_000_000,
+            durationDays: 30,
+            volumeGb: 5,
+            userLimit: 2,
+          }),
+        },
+        envAs(ADMIN),
+      );
+      expect(created.status).toBe(201);
+    });
+  });
+
   it('leaves fields the patch did not mention alone', async () => {
     const { planId } = await makeCatalog('partial', { priceIrr: 900_000, durationDays: 60 });
     await patch(planId, { status: 'HIDDEN' });
