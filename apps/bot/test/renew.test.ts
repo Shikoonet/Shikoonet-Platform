@@ -342,16 +342,17 @@ describe('choosing what to renew', () => {
    * is known, the list when it is not, and «پلن‌های دیگر» to reach the list
    * either way.
    */
-  it('offers the plan the service was sold under, alone — and the other tiers as the way to switch', async () => {
+  it('offers the plan the service was sold under, alone — and one door to the family’s section', async () => {
     /*
      * Sam, 2026-09-13: «الان سرویس vpn یک ماهه الماس داره، باید بتونه
      * سرویس‌اش رو تبدیل هم بکنه، مثلا الماس رو بکنه تیتانیوم یا معمولی».
+     * And, after the first cut put every tier inline under the matched plan:
+     * «علاوه بر نمایش تمدید همین سرویس، یک دکمه باشه که بفرسته سمت بخش
+     * vpnها که اگر خواست پلن دیگه‌ای رو انتخاب کنه».
      *
-     * Until today the matched screen hid everything else behind «پلن‌های
-     * دیگر» — a flat, paged list of every plan on the panel, labelled by
-     * product and price. The switch was possible and invisible. Now the
-     * OTHER tiers stand under the matched plan, one row each, and the flat
-     * list is not offered — the tiers are the rest.
+     * So: the matched plan, and ONE button named for the family that opens
+     * its section — the tiers on a multi-tier panel, the sizes on a one-tier
+     * one. No tier rows on the matched screen.
      */
     const { updateId, telegramId } = ids();
     const userId = await makeCustomer(telegramId);
@@ -367,17 +368,25 @@ describe('choosing what to renew', () => {
 
     const buttons = out.replies[0]?.keyboard?.flat() ?? [];
     const data = buttons.map((b) => b.callback_data);
-    // The matched plan first, as the confirmation.
+    // The matched plan first, as the confirmation — and the only plan.
     expect(data[0]).toBe(`rord:${subId}:${sold}`);
-    // Then the OTHER tiers. A tier of one plan is that plan's row (the buy
-    // flow's «a list of one is not a choice»); a tier of several is a door.
-    expect(data).toContain(`rord:${subId}:${await planId('sim-vip-1m-20')}`);
-    expect(data).toContain(`rnwp:${subId}:${await productId('sim-vip-platinum')}`);
-    // Its own tier is not a switch, and the sold plan appears once.
-    expect(data.filter((d) => d === `rord:${subId}:${sold}`)).toHaveLength(1);
-    expect(data).not.toContain(`rnwp:${subId}:${await productId('sim-vip-1m-50')}`);
-    expect(data).not.toContain(`rnwl:${subId}`);
+    expect(data.filter((d) => d?.startsWith('rord:') || d?.startsWith('rnwp:'))).toEqual([
+      `rord:${subId}:${sold}`,
+    ]);
+    // Then the door, named for the family.
+    const door = buttons.find((b) => b.callback_data === `rnwl:${subId}`);
+    expect(door?.text).toBe('🛍 پلن‌های دیگر VPN');
     expect(out.replies[0]?.text).toContain('۵۰ گیگ');
+
+    // The door opens the family's section: this panel has two tiers, so the
+    // tiers — the multi-plan one as a door, the one-plan ones as their rows —
+    // and the sold plan's own tier among them.
+    const section = await handleUpdate(db, press(updateId + 1, telegramId, `rnwl:${subId}`));
+    const inside = section.replies[0]?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    expect(inside).toContain(`rnwp:${subId}:${await productId('sim-vip-platinum')}`);
+    expect(inside).toContain(`rord:${subId}:${await planId('sim-vip-1m-20')}`);
+    expect(inside).toContain(`rord:${subId}:${sold}`);
+    expect(section.replies[0]?.text).toContain('سطح سرویس را انتخاب کنید');
   });
 
   it('finds the plan by size and length when the sale forgot it — but only an unambiguous one', async () => {
@@ -559,15 +568,16 @@ describe('choosing what to renew', () => {
     });
 
     const all = await handleUpdate(db, press(updateId, telegramId, `rnwl:${subId}`));
-    const offers = (all.replies[0]?.keyboard?.flat() ?? []).filter((b) =>
-      b.callback_data?.startsWith('rord:'),
+    const offers = (all.replies[0]?.keyboard?.flat() ?? []).filter(
+      (b) => b.callback_data?.startsWith('rord:') || b.callback_data?.startsWith('rnwp:'),
     );
     expect(offers.length).toBeGreaterThan(1);
 
     const back = await handleUpdate(db, press(updateId + 1, telegramId, `dxr:${subId}`));
     const again = back.replies[0]?.keyboard?.flat().map((b) => b.callback_data) ?? [];
-    // The matched screen again: its plan first, the other tiers under it.
+    // The matched screen again: its plan first, the door under it.
     expect(again[0]).toBe(`rord:${subId}:${sold}`);
+    expect(again).toContain(`rnwl:${subId}`);
     expect(back.replies[0]?.text).toContain('پلن متناسب با سرویس شما');
   });
 

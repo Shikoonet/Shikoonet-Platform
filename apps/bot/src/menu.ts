@@ -2479,6 +2479,8 @@ export function renewPlanMenu(
    * the same kind; its row opens that product's plans.
    */
   tiers: readonly { productId: number; name: string; only?: CatalogPlan | null }[] = [],
+  /** The service's kind, in Persian — «پلن‌های دیگر VPN» names where the door goes. */
+  family = '',
 ): InlineKeyboard {
   // ponytail: one tier's plans on one screen. Page it if a tier ever holds
   // more than the keyboard allows; the largest today has three.
@@ -2542,15 +2544,16 @@ export function renewPlanMenu(
         : action === 'dsr'
           ? heldCode == null
           : action === 'rnwl'
-            ? // «پلن‌های دیگر» reaches the rest when the matched plan is the
-              // only thing shown; with tiers on screen, the tiers ARE the rest.
-              matched && tiers.length === 0
+            ? // The door to the family's section, under the one matched plan.
+              // Sam, 2026-09-13: «علاوه بر نمایش تمدید همین سرویس، یک دکمه باشه
+              // که بفرسته سمت بخش vpnها» — one button, not the tiers inline.
+              matched
             : true,
     target: (action) =>
       action === 'renew' || action === 'menu'
         ? action
         : encode(action as 'dsr' | 'dxr' | 'rnwl', subscriptionId),
-    values: { code: heldCode ?? '' },
+    values: { code: heldCode ?? '', family },
   });
 }
 

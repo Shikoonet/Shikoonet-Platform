@@ -22,6 +22,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { PRODUCT_KIND_FA, isProductKind } from '@shikoo/contracts';
 import {
   CUSTOMER_NAME_MAX,
   extraBoundsFor,
@@ -1820,10 +1821,11 @@ async function renewPlansScreen(
   }
   const match = all ? null : matchingRenewalPlan(service, plans);
   if (match === null) {
-    // The whole list (`all`), or no plan to point at and one tier: the flat,
-    // paged list. No plan to point at and several tiers — a trial, a migrated
-    // service, a sale whose plan is gone — the tiers, and the customer picks.
-    if (all || tiers.length <= 1) {
+    // The family's section: with one tier, the flat paged list of sizes; with
+    // several — a trial, a migrated service, a sale whose plan is gone, or
+    // the door under a matched plan («پلن‌های دیگر VPN») — the tiers, and
+    // the customer picks.
+    if (tiers.length <= 1) {
       return screen(
         menu.renewIntro(service, mode, now),
         menu.renewPlanMenu(service.id, plans, user.discount_percent, heldName, false, page),
@@ -1840,9 +1842,9 @@ async function renewPlansScreen(
   const price = priceForUser(match.priceIrr, user.discount_percent);
   const held = await heldRenewalCode(tx, user, service.id, match, price.totalIrr);
   const applied = held ? { code: held.code.code, discountIrr: held.discountIrr } : null;
-  // The matched plan is a confirmation; the OTHER tiers are the switch. With
-  // one tier there is nothing to switch to and «پلن‌های دیگر» stands instead.
-  const others = tiers.filter((t) => t.productId !== match.productId);
+  // The matched plan is a confirmation; the switch is ONE door to the
+  // family's section, not the tiers inline — Sam, 2026-09-13, after seeing
+  // five priced rows under the confirmation on the test bot.
   return screen(
     menu.renewMatched(service, mode, now, match, price, applied),
     menu.renewPlanMenu(
@@ -1852,7 +1854,8 @@ async function renewPlansScreen(
       heldName,
       true,
       1,
-      tiers.length > 1 ? others : [],
+      [],
+      PRODUCT_KIND_FA[isProductKind(service.family) ? service.family : 'other'],
     ),
   );
 }
