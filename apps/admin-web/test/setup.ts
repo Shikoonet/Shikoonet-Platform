@@ -54,6 +54,22 @@ afterEach(() => {
   }
 }
 
+// happy-dom ships no `confirm`/`alert`/`prompt`. vitest 3 let `vi.spyOn`
+// invent the method; vitest 4 refuses to spy on undefined. So the dialogs
+// exist here with the answer a test that forgot to mock them should get —
+// «no» — and every test that means «yes» says so with `mockReturnValue`.
+if (typeof window !== 'undefined') {
+  for (const [name, value] of [
+    ['confirm', () => false],
+    ['alert', () => undefined],
+    ['prompt', () => null],
+  ] as const) {
+    if (typeof (window as unknown as Record<string, unknown>)[name] !== 'function') {
+      Object.defineProperty(window, name, { configurable: true, writable: true, value });
+    }
+  }
+}
+
 if (typeof navigator !== 'undefined') {
   Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
 }

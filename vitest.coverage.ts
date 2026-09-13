@@ -100,12 +100,42 @@ export interface CoverageFloor {
  * If this happens a third time, the answer is not another point: it is to
  * measure coverage across the workspace in one run, so a test can cover code
  * in the package it actually belongs to.
+ *
+ * ## Re-measured 2026-09-13: vitest 4 counts differently, the tests did not change
+ *
+ * Every floor below was reset on the day `vitest` went 3.2.7 → 4.1.11
+ * (issue #201, a dependabot advisory on the mocker). Not one test was added,
+ * removed or changed for it — the whole workspace ran green under both — so
+ * a figure that moved, moved because the RULER moved:
+ *
+ *   - v8 coverage is remapped through the AST now (the 3.x `v8-to-istanbul`
+ *     is gone). A «branch» is every `??`, `?.`, ternary and default value,
+ *     not only `if`/`case`; a «statement» is an AST statement, not a byte
+ *     range. Denominators changed on both sides.
+ *   - A file under `coverage.include` that no test in THIS package imports
+ *     used to count as 0 statements and 0/0 = 100% branches and functions.
+ *     It now counts its real functions and branches, all uncovered. That is
+ *     the honest number, and it is what dragged `contracts` from 93 to 41:
+ *     `money.ts`, `botKeyboard.ts`, `receipt.ts`, `sellable.ts` have tests,
+ *     but in the bot and the worker, not here.
+ *
+ *                       statements   branches   functions
+ *   sms-parser             83.58       71.40      92.51
+ *   domain                 61.44       52.35      66.11
+ *   contracts              45.48       41.13      41.93
+ *
+ * Rounded down, as before; the tolerance stays under one point. The two
+ * packages whose money branches this file exists for did not lose a test:
+ * sms-parser rose on every axis, and domain's branch figure went from
+ * 957/1133 to 1024/1956 — more branches SEEN, the same code exercised.
+ * `include: ['src/**']` is kept on purpose: a parser that stops being
+ * imported must still show up as uncovered, not vanish from the report.
  */
 export const COVERAGE_FLOORS: Record<string, CoverageFloor> = {
   '@shikoo/sms-parser': {
-    statements: 81,
-    branches: 70,
-    functions: 89,
+    statements: 83,
+    branches: 71,
+    functions: 92,
     note:
       'Every bank SMS enters the platform through here, and so does every ' +
       'one-time password. A branch that stops being taken is either a bank ' +
@@ -114,11 +144,11 @@ export const COVERAGE_FLOORS: Record<string, CoverageFloor> = {
       'which is a password reaching the database.',
   },
   '@shikoo/domain': {
-    // 52 until 2026-08-29 — see the note above for why this moved and what
-    // would have to be true for it to move again.
-    statements: 51,
-    branches: 81,
-    functions: 63,
+    // 52 until 2026-08-29, 51 until 2026-09-13 — see the two notes above for
+    // why each moved and what would have to be true for it to move again.
+    statements: 61,
+    branches: 52,
+    functions: 66,
     note:
       'Auto-verification, the settlement state machine, the seal and TOTP. ' +
       'The statement figure is low because the provisioning adapters only ' +
@@ -127,8 +157,9 @@ export const COVERAGE_FLOORS: Record<string, CoverageFloor> = {
   },
   '@shikoo/contracts': {
     statements: null, // a 1700-line table of default strings — see below
-    branches: 93,
-    functions: 81,
+    // 93 / 81 until 2026-09-13; the drop is the ruler, not the tests — above.
+    branches: 41,
+    functions: 41,
     note:
       'checkOverride, parseEnvName, the custom-emoji escape and the keyboard ' +
       'layout rules. Statements are NOT gated: the figure is 2.58% and that ' +
