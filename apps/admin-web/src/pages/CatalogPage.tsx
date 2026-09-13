@@ -254,6 +254,31 @@ export function CatalogPage() {
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+  const serviceEditor = editing && (
+    <ServiceDrawer
+      /*
+       * Same defect as «مدیریت پنل‌ها», same repair — see PanelsPage's
+       * `openedAs`. Every field below is seeded by `useState(service.name)`
+       * and that initialiser runs once per mount, so opening service B over
+       * an open service A kept A's values in the form and saved them
+       * against B's id. Here the id is enough: nothing turns this drawer
+       * into the editor for a service it just created, so the key never
+       * changes underneath one flow.
+       */
+      key={editing.id}
+      service={editing}
+      panels={panels}
+      categories={categories}
+      onCategoryAdded={() => void loadCategories()}
+      onClose={() => setEditing(null)}
+      onChanged={refresh}
+      onGone={() => {
+        setEditing(null);
+        refresh();
+      }}
+    />
+  );
+
   return (
     <>
       <div className="page-head">
@@ -449,7 +474,10 @@ export function CatalogPage() {
               key={service.id}
               service={service}
               data={service.panel ? groups[service.panel.id] : null}
-              onEdit={() => setEditing(service)}
+              onEdit={() => setEditing(editing?.id === service.id ? null : service)}
+              // Under the card, like a config's editor — Sam, 2026-09-13:
+              // «روی ویرایش میزنی میره آخر صفحه یک بخش باز میکنه … اینم ایراده».
+              editor={editing?.id === service.id ? serviceEditor : null}
               arranging={arrangingId === service.id}
               onArrange={() => setArrangingId(arrangingId === service.id ? null : service.id)}
               onChanged={refresh}
@@ -486,30 +514,9 @@ export function CatalogPage() {
         </div>
       )}
 
-      {editing && (
-        <ServiceDrawer
-          /*
-           * Same defect as «مدیریت پنل‌ها», same repair — see PanelsPage's
-           * `openedAs`. Every field below is seeded by `useState(service.name)`
-           * and that initialiser runs once per mount, so opening service B over
-           * an open service A kept A's values in the form and saved them
-           * against B's id. Here the id is enough: nothing turns this drawer
-           * into the editor for a service it just created, so the key never
-           * changes underneath one flow.
-           */
-          key={editing.id}
-          service={editing}
-          panels={panels}
-          categories={categories}
-          onCategoryAdded={() => void loadCategories()}
-          onClose={() => setEditing(null)}
-          onChanged={refresh}
-          onGone={() => {
-            setEditing(null);
-            refresh();
-          }}
-        />
-      )}
+      {/* In the table view there is no card to open it under, so it opens
+          under the table — the one place the page has. */}
+      {editing && view === 'table' && serviceEditor}
     </>
   );
 }
@@ -714,11 +721,14 @@ function ServiceCard({
   service,
   data,
   onEdit,
+  editor,
   arranging,
   onArrange,
   onChanged,
 }: {
   service: ServiceRow;
+  /** The service's own editor, open — drawn under the card, where the click was. */
+  editor: React.ReactNode;
   data: PanelGroups | null | undefined;
   onEdit: () => void;
   arranging: boolean;
@@ -862,7 +872,7 @@ function ServiceCard({
 
       <footer className="row-actions svc-card__actions">
         <button type="button" className="btn btn-sm" onClick={onEdit}>
-          ویرایش سرویس
+          {editor ? 'بستن ویرایش' : 'ویرایش سرویس'}
         </button>
         {/* Arranging lives on the SERVICE since 2026-08-27: a category screen
             lists services, and the prices this editor moves are one step in. */}
@@ -880,6 +890,7 @@ function ServiceCard({
           {arranging ? 'بستن چیدمان' : 'چیدمان'}
         </button>
       </footer>
+      {editor}
       {arranging && <ArrangeService service={service} onSaved={onChanged} />}
     </article>
   );

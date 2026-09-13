@@ -164,10 +164,18 @@ describe('the service editor belongs to one service', () => {
     fireEvent.click(edits[0]!);
     const nameBox = () => screen.getByLabelText('نام سرویس') as HTMLInputElement;
     await waitFor(() => expect(nameBox().value).toBe('پلاتینیوم'));
+    // Under its own card — Sam, 2026-09-13: «روی ویرایش میزنی میره آخر صفحه
+    // یک بخش باز میکنه … اینم ایراده» — and the button now closes it.
+    const first = edits[0]!.closest('.svc-card')!;
+    expect(first.contains(nameBox())).toBe(true);
+    expect(first.querySelector('.svc-card__actions')!.textContent).toContain('بستن ویرایش');
 
     // Without closing the first — the transition a missing key gets wrong.
-    fireEvent.click(screen.getAllByRole('button', { name: 'ویرایش سرویس' })[1]!);
+    // The first card's button reads «بستن ویرایش» now, so the next «ویرایش
+    // سرویس» is the second card's.
+    fireEvent.click(screen.getAllByRole('button', { name: 'ویرایش سرویس' })[0]!);
     expect(nameBox().value).toBe('طلایی');
+    expect(first.contains(nameBox())).toBe(false);
   });
 });
 
