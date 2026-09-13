@@ -36,7 +36,9 @@ import type { D1Database } from '@shikoo/database';
 import {
   MAX_CATALOG_ROWS,
   MAX_SINGLE_PAYMENT_IRR,
+  NOT_WHOLE_TOMAN,
   checkCatalogLayout,
+  isWholeToman,
   labelMarkupProblem,
   renderedLabelLength,
   type CatalogLayoutProblem,
@@ -167,7 +169,7 @@ const PLAN_FIELDS = {
   name: z.string().trim().min(1).max(120),
   badge: BADGE,
   buttonStyle: BUTTON_STYLE,
-  priceIrr: z.number().int().min(0).max(MAX_SINGLE_PAYMENT_IRR),
+  priceIrr: z.number().int().min(0).max(MAX_SINGLE_PAYMENT_IRR).refine(isWholeToman, NOT_WHOLE_TOMAN),
   durationDays: z.number().int().positive().max(3650).nullable(),
   volumeGb: z.number().min(0).max(100_000).nullable(),
   userLimit: z.number().int().positive().max(10_000).nullable(),

@@ -93,7 +93,8 @@ async function seedClaim(
   id: string,
   txId: string,
   opts: {
-    matchStatus: 'AUTO_VERIFIED' | 'CONFIRMED';
+    /** `null`: a VERIFIED claim that carries no match row at all (issue #223). */
+    matchStatus: 'AUTO_VERIFIED' | 'CONFIRMED' | null;
     reviewedAt: number;
     amount?: number;
     /** The card the customer was told to pay into — `payment_claims.card_digits`. */
@@ -120,6 +121,7 @@ async function seedClaim(
       opts.customerReference ?? 'u1',
     )
     .run();
+  if (opts.matchStatus === null) return;
   await baseEnv.DB.prepare(
     `INSERT INTO reconciliation_matches
        (id, transaction_candidate_id, payment_claim_id, score, matching_reasons_json,
@@ -154,6 +156,64 @@ describe('GET /api/v1/analytics', () => {
     expect(body.sales.amountIrr).toBe(AMOUNT * 2);
     expect(body.botAutoVerified.count).toBe(1);
     expect(body.manualVerified.count).toBe(1);
+  });
+
+  /**
+   * Issue #223. On staging every verified sale sat on a card with no
+   * `reconciliation_matches` row, and the page total said 0 beside a card
+   * row saying 669,000. One definition of «a verified sale» for both: the
+   * claim's own status. A claim nobody's match row explains is counted as
+   * verified by a person, so bot + manual still equals the total.
+   */
+  it('counts a VERIFIED claim that carries no match row, the same way the card view does', async () => {
+    const CARD = '6104339900001111';
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
+       VALUES ('pc-1111', ?1, ?2, ?3)`,
+    )
+      .bind(ACCOUNT, CARD, Date.now())
+      .run();
+    await seedTx('tx-nomatch', { ts: BASE });
+    await seedClaim('c-nomatch', 'tx-nomatch', {
+      matchStatus: null,
+      reviewedAt: BASE,
+      amount: 6_690_000,
+      cardDigits: CARD,
+    });
+    await seedTx('tx-auto2', { ts: BASE + 60_000 });
+    await seedClaim('c-auto2', 'tx-auto2', {
+      matchStatus: 'AUTO_VERIFIED',
+      reviewedAt: BASE + 60_000,
+      amount: 1_000_000,
+      cardDigits: CARD,
+    });
+
+    const total = (await (
+      await app.fetch(new Request('https://x/api/v1/analytics?range=all'), envAs())
+    ).json()) as {
+      sales: { count: number; amountIrr: number };
+      botAutoVerified: { count: number; amountIrr: number };
+      manualVerified: { count: number; amountIrr: number };
+      trend: Array<{ salesAmountIrr: number }>;
+    };
+    expect(total.sales).toEqual({ count: 2, amountIrr: 7_690_000, amountChange: expect.anything(), countChange: expect.anything() });
+    expect(total.botAutoVerified).toEqual({ count: 1, amountIrr: 1_000_000 });
+    expect(total.manualVerified).toEqual({ count: 1, amountIrr: 6_690_000 });
+    expect(total.trend.reduce((s, b) => s + b.salesAmountIrr, 0)).toBe(7_690_000);
+
+    const cards = (await (
+      await app.fetch(new Request('https://x/api/v1/cards/analytics?range=all'), envAs())
+    ).json()) as { items: Array<{ cardDigits: string; takingsIrr: number; botAmountIrr: number; manualAmountIrr: number }> };
+    const card = cards.items.find((i) => i.cardDigits === CARD)!;
+    expect(card).toMatchObject({ takingsIrr: 7_690_000, botAmountIrr: 1_000_000, manualAmountIrr: 6_690_000 });
+
+    const accounts = (await (
+      await app.fetch(new Request('https://x/api/v1/accounts/analytics?range=all'), envAs())
+    ).json()) as { items: Array<{ accountId: string; salesAmountIrr: number; manualAmountIrr: number }> };
+    expect(accounts.items.find((a) => a.accountId === ACCOUNT)).toMatchObject({
+      salesAmountIrr: 7_690_000,
+      manualAmountIrr: 6_690_000,
+    });
   });
 
   it('uses latest balance_irr per account', async () => {

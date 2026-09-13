@@ -258,12 +258,14 @@ describe('POST /api/v1/admin/customers/:id/wallet', () => {
     expect(await ledgerSum(id)).toBe(-1_000_000);
   });
 
-  it('lets a corrected amount through instead of swallowing it', async () => {
-    // The failure this catches: an admin types 500,000, sees the mistake before
-    // it lands, corrects it to 5,000,000 and submits again. The form keeps the
-    // key it generated when it opened, so with the amount outside the key the
-    // second submit is a silent no-op — the response says the money moved, and
-    // it did, at the wrong number. Nothing anywhere reports a problem.
+  it('refuses a second amount on the same key, and says so', async () => {
+    // Issue #196, Sam's call. Two sequences reach the same database state and
+    // differ only in intent: (a) a typo that landed, then a correction on the
+    // same open form; (b) a lost response, then a retry with a corrected
+    // figure. With the amount inside the key both credited twice — 5,500,000
+    // for an operator who meant 5,000,000, silently. With it outside, the
+    // second submit is refused and the operator is told something already
+    // landed; the correction is a fresh decision and needs a fresh key.
     const { id } = await makeCustomer('adj_corrected');
     const send = (amountIrr: number) =>
       app.request(
@@ -279,14 +281,24 @@ describe('POST /api/v1/admin/customers/:id/wallet', () => {
     const typo = (await (await send(500_000)).json()) as { applied: boolean };
     const fixed = (await (await send(5_000_000)).json()) as { applied: boolean };
     expect(typo.applied).toBe(true);
-    expect(fixed.applied).toBe(true);
-    expect(await entryCount(id)).toBe(2);
+    expect(fixed.applied).toBe(false);
+    expect(await entryCount(id)).toBe(1);
+    expect(await ledgerSum(id)).toBe(500_000);
 
-    // And the double-submit this key exists for still collapses.
-    const again = (await (await send(5_000_000)).json()) as { applied: boolean };
-    expect(again.applied).toBe(false);
-    expect(await entryCount(id)).toBe(2);
-    expect(await ledgerSum(id)).toBe(5_500_000);
+    // A fresh key is a fresh decision, and goes through.
+    const reopened = (await (
+      await app.request(
+        `/api/v1/admin/customers/${id}/wallet`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ amountIrr: 4_500_000, note: 'refund', idempotencyKey: 'form-open-9913' }),
+        },
+        envAs(ADMIN),
+      )
+    ).json()) as { applied: boolean };
+    expect(reopened.applied).toBe(true);
+    expect(await ledgerSum(id)).toBe(5_000_000);
   });
 
   it('writes down the balance its own entry produced, not a passer-by’s', async () => {
