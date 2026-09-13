@@ -62,7 +62,17 @@ export type BroadcastAudience =
   | { kind: 'all' }
   | { kind: 'never_bought' }
   | { kind: 'service_ended' }
-  | { kind: 'provider'; providerId: number };
+  | { kind: 'provider'; providerId: number }
+  /**
+   * Exactly one person, named by Telegram id.
+   *
+   * Not a marketing audience — a proving one. The smallest real audience the
+   * shop had was a panel with 47 people, so a forwarded post could never be
+   * tried on somebody before it went to thousands (issue #94). With this the
+   * rehearsal, the count, the queue and the send are the same code the real
+   * announcement uses, pointed at one chat.
+   */
+  | { kind: 'customer'; telegramId: number };
 
 /**
  * The audience as a SQL predicate, written once so the preview and the send
@@ -146,6 +156,11 @@ export function audienceSql(
                    AND s.provider_id = ?${from})`,
         params: [audience.providerId],
       };
+
+    case 'customer':
+      // One row or none. The outer `u.status = 'ACTIVE'` still applies, so a
+      // blocked customer is «nobody» here too, and the preview says so.
+      return { sql: `AND u.telegram_id = ?${from}`, params: [audience.telegramId] };
   }
 }
 

@@ -254,6 +254,31 @@ describe('the audience on a broadcast', () => {
     expect(await got(broadcastId, never)).toBe(false);
   });
 
+  /**
+   * One person, by Telegram id — the proving audience (issue #94). The same
+   * queue and the same count, pointed at a single chat, so a forwarded post can
+   * be seen arriving before it goes to fifteen thousand people.
+   */
+  it('reaches exactly the one customer named by Telegram id, and nobody else', async () => {
+    const promised = await reach(`audience=customer&telegramId=${tgOf('bought')}`);
+    expect(promised).toBe(1);
+    const { queued, broadcastId } = await send({ kind: 'customer', telegramId: tgOf('bought') });
+    expect(queued).toBe(1);
+    expect(await got(broadcastId, bought)).toBe(true);
+    for (const id of [never, ended, endedButAlsoLive, onPanelA]) {
+      expect(await got(broadcastId, id)).toBe(false);
+    }
+    // An id nobody has is «nobody», and the send refuses like any empty audience.
+    expect(await reach('audience=customer&telegramId=424242424242')).toBe(0);
+    // And a malformed one is refused rather than read as «all».
+    const bad = await app.request(
+      '/api/v1/admin/bulk/reach?audience=customer&telegramId=abc',
+      {},
+      envAs(),
+    );
+    expect(bad.status).toBe(400);
+  });
+
   it('still reaches everybody when nothing is said about the audience', async () => {
     const { broadcastId } = await send(undefined);
     for (const id of [never, bought, ended, endedButAlsoLive, onPanelA]) {

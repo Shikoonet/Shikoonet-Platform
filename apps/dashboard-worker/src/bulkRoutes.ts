@@ -139,6 +139,8 @@ const Audience = z
     z.object({ kind: z.literal('never_bought') }).strict(),
     z.object({ kind: z.literal('service_ended') }).strict(),
     z.object({ kind: z.literal('provider'), providerId: z.number().int().positive() }).strict(),
+    // A Telegram id is at most 52 bits today; `safe` is the honest ceiling.
+    z.object({ kind: z.literal('customer'), telegramId: z.number().int().positive().safe() }).strict(),
   ])
   .default({ kind: 'all' });
 
@@ -154,6 +156,10 @@ function audienceFromQuery(url: URL): BroadcastAudience | null {
   if (kind === 'provider') {
     const id = Number(url.searchParams.get('providerId'));
     return Number.isSafeInteger(id) && id > 0 ? { kind: 'provider', providerId: id } : null;
+  }
+  if (kind === 'customer') {
+    const id = Number(url.searchParams.get('telegramId'));
+    return Number.isSafeInteger(id) && id > 0 ? { kind: 'customer', telegramId: id } : null;
   }
   return kind === 'all' || kind === 'never_bought' || kind === 'service_ended'
     ? { kind }
