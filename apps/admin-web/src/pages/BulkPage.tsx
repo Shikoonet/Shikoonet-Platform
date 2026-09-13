@@ -80,6 +80,9 @@ const AUDIENCES = [
   ['never_bought', 'استارت زده و هیچ خریدی نکرده'],
   ['service_ended', 'سرویسش تمام شده و سرویس فعالی ندارد'],
   ['provider', 'سرویس فعال روی یک پنل مشخص دارد'],
+  // Last, and worded as what it is for: the same send, to one chat, so a post
+  // can be seen arriving before it goes to everybody (issue #94).
+  ['customer', 'فقط یک مشتری — برای آزمایش، با آی‌دی تلگرام'],
 ] as const;
 
 function message(e: unknown): string {
@@ -98,6 +101,24 @@ function message(e: unknown): string {
 
 function newId(): string {
   return crypto.randomUUID();
+}
+
+/**
+ * The audience as the server takes it, or `null` while its picker is still
+ * empty — «کاربران یک پنل» with no panel chosen is not an audience yet, and
+ * counting it as «all» would be the wrong number under the right label. The
+ * same for one customer with no id typed.
+ */
+function audienceFor(
+  kind: BroadcastAudience['kind'],
+  panel: string,
+  telegramId: string,
+): BroadcastAudience | null {
+  if (kind === 'provider') return panel === '' ? null : { kind, providerId: Number(panel) };
+  if (kind === 'customer') {
+    return /^[1-9][0-9]{0,15}$/.test(telegramId) ? { kind, telegramId: Number(telegramId) } : null;
+  }
+  return { kind };
 }
 
 export function BulkPage() {
@@ -134,6 +155,7 @@ export function BulkPage() {
    */
   const [audienceKind, setAudienceKind] = useState<BroadcastAudience['kind']>('all');
   const [audiencePanel, setAudiencePanel] = useState('');
+  const [audienceTelegramId, setAudienceTelegramId] = useState('');
   const [messageReach, setMessageReach] = useState<number | null>(null);
   /** Which count request is the current one; see `loadMessageReach`. */
   const reachSeq = useRef(0);
@@ -233,17 +255,11 @@ export function BulkPage() {
    */
   const post = parseChannelPostLink(postLink);
 
-  /**
-   * The audience as the server takes it, or `null` while the panel picker is
-   * still empty — «کاربران یک پنل» with no panel chosen is not an audience yet,
-   * and counting it as «all» would be the wrong number under the right label.
-   */
-  const audience: BroadcastAudience | null =
-    audienceKind !== 'provider'
-      ? { kind: audienceKind }
-      : audiencePanel === ''
-        ? null
-        : { kind: 'provider', providerId: Number(audiencePanel) };
+  const audience: BroadcastAudience | null = audienceFor(
+    audienceKind,
+    audiencePanel,
+    audienceTelegramId,
+  );
 
   const contentReady = messageKind === 'text' ? trimmed !== '' : post !== null;
   const messageReady = contentReady && audience !== null && (messageReach ?? 0) > 0;
@@ -254,14 +270,8 @@ export function BulkPage() {
    * rebuilt on every render and would make this loop for ever.
    */
   useEffect(() => {
-    void loadMessageReach(
-      audienceKind !== 'provider'
-        ? { kind: audienceKind }
-        : audiencePanel === ''
-          ? null
-          : { kind: 'provider', providerId: Number(audiencePanel) },
-    );
-  }, [audienceKind, audiencePanel]);
+    void loadMessageReach(audienceFor(audienceKind, audiencePanel, audienceTelegramId));
+  }, [audienceKind, audiencePanel, audienceTelegramId]);
 
   // Digits only, like the amount above. For FIXED the operator types Toman and
   // the panel converts once; for PERCENT the number is a percent and must not
@@ -491,13 +501,35 @@ export function BulkPage() {
               </select>
             </div>
           )}
+          {audienceKind === 'customer' && (
+            <div>
+              <label className="form-label" htmlFor="bulk-audience-telegram-id">
+                آی‌دی تلگرام مشتری
+              </label>
+              {/* The numeric id, not a @username: the queue is keyed on
+                  `users.telegram_id`, and a username can change or be absent.
+                  The count below is what confirms the id names somebody. */}
+              <input
+                id="bulk-audience-telegram-id"
+                className="form-control"
+                inputMode="numeric"
+                dir="ltr"
+                placeholder="مثلاً 111713193"
+                value={audienceTelegramId}
+                disabled={busy}
+                onChange={(e) => setAudienceTelegramId(e.target.value.replace(/[^0-9]/g, ''))}
+              />
+            </div>
+          )}
         </div>
         {/* The number, before the press and not after. An audience an operator
             believed was a hundred people and is fifteen thousand has to be
             visible here. */}
         <p className="muted">
           {audience === null
-            ? 'اول پنل را انتخاب کنید.'
+            ? audienceKind === 'customer'
+              ? 'آی‌دی تلگرام مشتری را بنویسید.'
+              : 'اول پنل را انتخاب کنید.'
             : messageReach === null
               ? 'در حال شمردن…'
               : messageReach === 0
@@ -717,7 +749,9 @@ export function BulkPage() {
             {audienceLabel}
             {audienceKind === 'provider'
               ? `: ${(panels ?? []).find((p) => String(p.id) === audiencePanel)?.name ?? ''}`
-              : ''}
+              : audienceKind === 'customer'
+                ? `: ${audienceTelegramId}`
+                : ''}
             .
           </p>
           {messageKind === 'text' ? (

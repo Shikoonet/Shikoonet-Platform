@@ -30,6 +30,8 @@ const REACH: Record<string, number> = {
   service_ended: 196,
   'provider:7': 2288,
   'provider:9': 0,
+  'customer:111713193': 1,
+  'customer:5': 0,
 };
 
 beforeEach(() => {
@@ -48,7 +50,13 @@ beforeEach(() => {
       if (u.includes('/bulk/reach')) {
         const q = new URL(u, 'https://x').searchParams;
         const kind = q.get('audience') ?? 'all';
-        asked.push(kind === 'provider' ? `provider:${q.get('providerId')}` : kind);
+        asked.push(
+          kind === 'provider'
+            ? `provider:${q.get('providerId')}`
+            : kind === 'customer'
+              ? `customer:${q.get('telegramId')}`
+              : kind,
+        );
         const answer = REACH[asked[asked.length - 1]!] ?? 0;
         if (holdReach !== null) {
           const wait = new Promise<number>((resolve) => {
@@ -196,6 +204,32 @@ describe('choosing who hears a broadcast', () => {
 
     await waitFor(() => expect(sent.length).toBeGreaterThan(0));
     expect(sent[0]!.body['audience']).toEqual({ kind: 'provider', providerId: 7 });
+  });
+
+  it('sends to one customer by Telegram id, and not before an id is typed', async () => {
+    // The proving audience (issue #94): the same send, to one chat. Nothing is
+    // counted or sendable until a plausible id is there, and an id that names
+    // nobody is refused the way an empty panel is.
+    const picker = await open();
+    fireEvent.change(picker, { target: { value: 'customer' } });
+    expect(go().disabled).toBe(true);
+    expect(within(messageCard()).getByText('آی‌دی تلگرام مشتری را بنویسید.')).toBeTruthy();
+
+    const id = within(messageCard()).getByLabelText('آی‌دی تلگرام مشتری') as HTMLInputElement;
+    fireEvent.change(id, { target: { value: '5' } });
+    await waitFor(() => expect(asked).toContain('customer:5'));
+    await waitFor(() => expect(within(messageCard()).getByText(/هیچ‌کس در این گروه نیست/)).toBeTruthy());
+    expect(go().disabled).toBe(true);
+
+    fireEvent.change(id, { target: { value: '111713193' } });
+    await waitFor(() => expect(go().disabled).toBe(false));
+    fireEvent.click(go());
+    const dialog = screen.getByRole('group', { name: 'پیام همگانی فرستاده شود؟' });
+    expect(within(dialog).getByText(/111713193/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'تایید' }));
+
+    await waitFor(() => expect(sent.length).toBeGreaterThan(0));
+    expect(sent[0]!.body['audience']).toEqual({ kind: 'customer', telegramId: 111713193 });
   });
 
   it('still defaults to everybody, which is what it did before', async () => {

@@ -1041,7 +1041,8 @@ export type BroadcastAudience =
   | { kind: 'all' }
   | { kind: 'never_bought' }
   | { kind: 'service_ended' }
-  | { kind: 'provider'; providerId: number };
+  | { kind: 'provider'; providerId: number }
+  | { kind: 'customer'; telegramId: number };
 
 export interface PanelItem {
   id: number;
@@ -2051,6 +2052,7 @@ export const api = {
   bulkReach(audience: BroadcastAudience = { kind: 'all' }) {
     const q = new URLSearchParams({ audience: audience.kind });
     if (audience.kind === 'provider') q.set('providerId', String(audience.providerId));
+    if (audience.kind === 'customer') q.set('telegramId', String(audience.telegramId));
     return req<{ ok: boolean; reach: number }>(`/bulk/reach?${q.toString()}`);
   },
 
