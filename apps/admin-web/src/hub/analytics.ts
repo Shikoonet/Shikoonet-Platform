@@ -46,6 +46,8 @@ export interface AccountAnalyticsItem {
   bankName: string;
   accountHint: string | null;
   status: string;
+  /** Switched off in «بانک‌ها». Its money still counts; its row sits under the archive heading. */
+  active: boolean;
   mappedCards: number;
   currentBalanceIrr: number | null;
   balanceAsOf: number | null;
@@ -90,6 +92,13 @@ export interface AccountAnalyticsResponse {
     uneven: boolean;
   };
   items: AccountAnalyticsItem[];
+  /** Deposits that resolved to no account — in the total, owned by no row. */
+  unaccounted: {
+    bankInflowIrr: number;
+    bankInflowCount: number;
+    unassignedIncomeIrr: number;
+    unassignedIncomeCount: number;
+  };
 }
 
 export interface CardAnalyticsItem {

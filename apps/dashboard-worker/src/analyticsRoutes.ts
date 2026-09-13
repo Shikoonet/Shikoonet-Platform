@@ -147,11 +147,21 @@ async function loadSalesTrend(
     }));
 }
 
-async function loadAccountBalances(db: D1Database, now: number) {
+/**
+ * Every account in service — or, for the table, every account there is.
+ *
+ * The tiles count accounts in service: «N از M حساب» is about balances the
+ * shop can still spend from. The table is about where money went, and money
+ * does not leave an account because the account was switched off: on staging
+ * (2026-09-13) thirteen switched-off accounts held 261 of the 291 million the
+ * total reported, and the table showed the other three. `includeInactive` is
+ * the table asking for the rest; the tiles never pass it.
+ */
+async function loadAccountBalances(db: D1Database, now: number, includeInactive = false) {
   const rows = await db
     .prepare(
       `SELECT fa.id, fa.display_name, fa.owner_label, fa.bank_name, fa.account_hint, fa.status,
-              bal.balance_irr, bal.bank_timestamp
+              fa.active, bal.balance_irr, bal.bank_timestamp
        FROM financial_accounts fa
        LEFT JOIN (
          SELECT t.financial_account_id, t.balance_irr, t.bank_timestamp,
@@ -162,9 +172,10 @@ async function loadAccountBalances(db: D1Database, now: number) {
          FROM transaction_candidates t
          WHERE t.balance_irr IS NOT NULL
        ) bal ON bal.financial_account_id = fa.id AND bal.rn = 1
-       WHERE fa.active = 1 AND fa.status = 'ACTIVE'
-       ORDER BY fa.display_name ASC`,
+       WHERE (?1 = 1 OR (fa.active = 1 AND fa.status = 'ACTIVE'))
+       ORDER BY fa.active DESC, fa.display_name ASC`,
     )
+    .bind(includeInactive ? 1 : 0)
     .all<{
       id: string;
       display_name: string;
@@ -172,17 +183,25 @@ async function loadAccountBalances(db: D1Database, now: number) {
       bank_name: string;
       account_hint: string | null;
       status: string;
+      active: number | boolean;
       balance_irr: number | null;
       bank_timestamp: number | null;
     }>();
 
   let totalKnownIrr = 0;
   let knownAccounts = 0;
+  let totalActiveAccounts = 0;
   const accounts = (rows.results ?? []).map((r) => {
+    const active = r.active === true || r.active === 1;
     const hasBalance = r.balance_irr != null;
-    if (hasBalance) {
-      totalKnownIrr += r.balance_irr!;
-      knownAccounts += 1;
+    // The tile arithmetic stays about accounts in service, whichever set was
+    // asked for — an archived account's last balance is not money to spend.
+    if (active && r.status === 'ACTIVE') {
+      totalActiveAccounts += 1;
+      if (hasBalance) {
+        totalKnownIrr += r.balance_irr!;
+        knownAccounts += 1;
+      }
     }
     return {
       accountId: r.id,
@@ -191,6 +210,7 @@ async function loadAccountBalances(db: D1Database, now: number) {
       bankName: r.bank_name,
       accountHint: r.account_hint,
       status: r.status,
+      active,
       currentBalanceIrr: hasBalance ? r.balance_irr : null,
       balanceAsOf: r.bank_timestamp,
       balanceFreshness: balanceFreshness(r.bank_timestamp, now),
@@ -200,14 +220,15 @@ async function loadAccountBalances(db: D1Database, now: number) {
   return {
     totalKnownIrr,
     knownAccounts,
-    totalActiveAccounts: accounts.length,
+    totalActiveAccounts,
     accounts,
   };
 }
 
 async function loadAccountBankInflow(
   db: D1Database,
-  accountId: string,
+  /** `null`: deposits that resolved to no account — the ones no row would own. */
+  accountId: string | null,
   start: number | null,
   end: number | null,
 ) {
@@ -221,7 +242,7 @@ async function loadAccountBankInflow(
     .prepare(
       `SELECT COALESCE(SUM(t.amount_irr), 0) AS amount_irr, COUNT(*) AS count
        FROM transaction_candidates t
-       WHERE t.financial_account_id = ?1 AND ${BANK_INCOME_TX_WHERE}${rangeFilter}`,
+       WHERE t.financial_account_id IS NOT DISTINCT FROM ?1 AND ${BANK_INCOME_TX_WHERE}${rangeFilter}`,
     )
     .bind(...binds)
     .first<{ amount_irr: number; count: number }>();
@@ -230,7 +251,8 @@ async function loadAccountBankInflow(
 
 async function loadAccountUnassignedIncome(
   db: D1Database,
-  accountId: string,
+  /** `null`: deposits that resolved to no account — the ones no row would own. */
+  accountId: string | null,
   start: number | null,
   end: number | null,
 ) {
@@ -244,7 +266,7 @@ async function loadAccountUnassignedIncome(
     .prepare(
       `SELECT COALESCE(SUM(t.amount_irr), 0) AS amount_irr, COUNT(*) AS count
        FROM transaction_candidates t
-       WHERE t.financial_account_id = ?1 AND ${INCOME_TX_WHERE}${rangeFilter}`,
+       WHERE t.financial_account_id IS NOT DISTINCT FROM ?1 AND ${INCOME_TX_WHERE}${rangeFilter}`,
     )
     .bind(...binds)
     .first<{ amount_irr: number; count: number }>();
@@ -376,8 +398,8 @@ export async function loadAccountAnalytics(
   day?: string | null,
 ) {
   const { start, end } = historyRangeBounds(range, now, day);
-  const balanceData = await loadAccountBalances(db, now);
-  const [cardCounts, deviceObservations, devicesLookup] = await Promise.all([
+  const balanceData = await loadAccountBalances(db, now, true);
+  const [cardCounts, deviceObservations, devicesLookup, nowhereInflow, nowhereUnassigned] = await Promise.all([
     db
       .prepare(
         `SELECT financial_account_id, COUNT(*) AS n
@@ -386,6 +408,8 @@ export async function loadAccountAnalytics(
       .all<{ financial_account_id: string; n: number }>(),
     loadAccountDeviceObservations(db),
     loadDevicesLookup(db),
+    loadAccountBankInflow(db, null, start, end),
+    loadAccountUnassignedIncome(db, null, start, end),
   ]);
   const cardsByAccount = new Map(
     (cardCounts.results ?? []).map((r) => [r.financial_account_id, r.n]),
@@ -406,6 +430,7 @@ export async function loadAccountAnalytics(
       bankName: acc.bankName,
       accountHint: acc.accountHint,
       status: acc.status,
+      active: acc.active,
       mappedCards: cardsByAccount.get(acc.accountId) ?? 0,
       currentBalanceIrr: acc.currentBalanceIrr,
       balanceAsOf: acc.balanceAsOf,
@@ -433,12 +458,15 @@ export async function loadAccountAnalytics(
   }
 
   items.sort((a, b) => {
+    // In service first; the archive is a footnote under them.
+    if (a.active !== b.active) return a.active ? -1 : 1;
     if (b.purchaseCount !== a.purchaseCount) return b.purchaseCount - a.purchaseCount;
     if (b.salesAmountIrr !== a.salesAmountIrr) return b.salesAmountIrr - a.salesAmountIrr;
     return a.accountId.localeCompare(b.accountId);
   });
 
-  const purchaseCounts = items.map((i) => i.purchaseCount);
+  // The spread is about the accounts the bot rotates between, not the archive.
+  const purchaseCounts = items.filter((i) => i.active).map((i) => i.purchaseCount);
   const distribution = salesDistribution(purchaseCounts);
   const maxPurchases = Math.max(...purchaseCounts, 1);
 
@@ -454,6 +482,14 @@ export async function loadAccountAnalytics(
       average: Math.round(distribution.average * 10) / 10,
       max: distribution.max,
       uneven: distribution.uneven,
+    },
+    // Deposits with `financial_account_id IS NULL`: the total counts them and
+    // no account row can. Sent as its own bucket so the table can draw it.
+    unaccounted: {
+      bankInflowIrr: nowhereInflow.amountIrr,
+      bankInflowCount: nowhereInflow.count,
+      unassignedIncomeIrr: nowhereUnassigned.amountIrr,
+      unassignedIncomeCount: nowhereUnassigned.count,
     },
     items: items.map((i) => ({
       ...i,

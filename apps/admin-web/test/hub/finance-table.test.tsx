@@ -101,6 +101,7 @@ const ACCOUNTS = {
       bankName: 'ملی',
       accountHint: '6006',
       status: 'ACTIVE',
+      active: true,
       mappedCards: 2,
       currentBalanceIrr: 12_000_000,
       balanceAsOf: 1,
@@ -120,7 +121,40 @@ const ACCOUNTS = {
       resellerCount: 1,
       purchaseBarPercent: 100,
     },
+    {
+      accountId: 'acc-off',
+      displayName: 'حساب خاموش',
+      ownerLabel: null,
+      bankName: 'گردشگری',
+      accountHint: '7007',
+      status: 'ACTIVE',
+      active: false,
+      mappedCards: 0,
+      currentBalanceIrr: 6_000_000,
+      balanceAsOf: 1,
+      balanceFreshness: 'stale',
+      purchaseCount: 0,
+      salesCount: 0,
+      salesAmountIrr: 0,
+      botCount: 0,
+      botAmountIrr: 0,
+      manualCount: 0,
+      manualAmountIrr: 0,
+      bankInflowIrr: 80_000_000,
+      bankInflowCount: 40,
+      unassignedIncomeIrr: 80_000_000,
+      unassignedIncomeCount: 40,
+      resellerAmountIrr: 0,
+      resellerCount: 0,
+      purchaseBarPercent: 0,
+    },
   ],
+  unaccounted: {
+    bankInflowIrr: 665_000,
+    bankInflowCount: 1,
+    unassignedIncomeIrr: 665_000,
+    unassignedIncomeCount: 1,
+  },
 };
 
 // The server's totals — deliberately NOT the sum of the rows above, so a
@@ -205,6 +239,23 @@ describe('the accounts-and-cards table', () => {
     expect(cells[2]).toContain('۴٬۰۰۰٬۰۰۰ تومان');
     expect(cells[3]).toContain('۳٬۰۰۰٬۰۰۰ تومان');
     expect(cells[4]).toContain('۲٬۰۰۰٬۰۰۰ تومان');
+  });
+
+  it('lists a switched-off account under its own heading, and money that reached no account, so the rows can reach the total', async () => {
+    draw();
+    const heading = (await screen.findByText('حساب‌های غیرفعال')).closest('tr')!;
+    const off = screen.getByText('**** 7007 · حساب خاموش').closest('tr')!;
+    // Under the heading, not among the live accounts.
+    expect(heading.compareDocumentPosition(off) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(off.textContent).toContain('غیرفعال');
+    expect(off.textContent).toContain('۸٬۰۰۰٬۰۰۰ تومان');
+    expect(off.textContent).toContain('۴۰ تراکنش');
+    const nowhere = screen.getByText('واریزی بدون حساب').closest('tr')!;
+    expect(nowhere.textContent).toContain('۶۶٬۵۰۰ تومان');
+    expect(nowhere.textContent).toContain('۱ تراکنش');
+    // The live account is still first.
+    const live = screen.getByText('**** 6006 · پویان').closest('tr')!;
+    expect(live.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('lists a card the table no longer has, with the money that went to it', async () => {
