@@ -1797,8 +1797,18 @@ async function renewPlansScreen(
   // The tiers: every product these plans belong to, in the admin's order.
   // Built from the list already fetched rather than from `productsForUser`,
   // which applies the new-account cap — and a renewal creates no account.
-  const tiers = [...new Map(plans.map((p) => [p.productId, p.productName]))].map(
-    ([id, name]) => ({ productId: id, name }),
+  //
+  // A tier with ONE plan carries it: «a list of one is not a choice», the
+  // same collapse the buy flow makes. Walked on staging 2026-09-13: every
+  // tier of the migrated shop is one price, so without this each switch was
+  // a tap onto a screen with a single button.
+  const tiers = [...plans.reduce((m, p) => {
+    const t = m.get(p.productId) ?? { productId: p.productId, name: p.productName, only: null as CatalogPlan | null, n: 0 };
+    t.n += 1;
+    t.only = t.n === 1 ? p : null;
+    return m.set(p.productId, t);
+  }, new Map<number, { productId: number; name: string; only: CatalogPlan | null; n: number }>()).values()].map(
+    ({ productId, name, only }) => ({ productId, name, only }),
   );
   if (productId !== null) {
     const inTier = plans.filter((p) => p.productId === productId);

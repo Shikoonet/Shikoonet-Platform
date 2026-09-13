@@ -2478,7 +2478,7 @@ export function renewPlanMenu(
    * بتونه تبدیل کنه به الماس». A tier is a product on the same panel and of
    * the same kind; its row opens that product's plans.
    */
-  tiers: readonly { productId: number; name: string }[] = [],
+  tiers: readonly { productId: number; name: string; only?: CatalogPlan | null }[] = [],
 ): InlineKeyboard {
   // ponytail: one tier's plans on one screen. Page it if a tier ever holds
   // more than the keyboard allows; the largest today has three.
@@ -2519,6 +2519,20 @@ export function renewPlanMenu(
     keyboard.push(row);
   }
   for (const tier of tiers) {
+    // One plan in the tier: the row IS the plan, priced like any plan row —
+    // the tap that used to open a screen with a single button is gone.
+    if (tier.only) {
+      const price = priceForUser(tier.only.priceIrr, discountPercent);
+      const label = soldAs(tier.only.productName, tier.only.planName);
+      const quoted = price.discountIrr === 0 && nameMentionsPrice(label, tier.only.priceIrr);
+      keyboard.push([
+        {
+          text: quoted ? label : `${label} — ${formatToman(price.totalIrr)}`,
+          callback_data: encode('rord', subscriptionId, tier.only.planId),
+        },
+      ]);
+      continue;
+    }
     keyboard.push([{ text: tier.name, callback_data: encode('rnwp', subscriptionId, tier.productId) }]);
   }
   return withChrome(keyboard, 'renewPlans', {
