@@ -175,7 +175,7 @@ export function ContinuityBanner({ state, onChanged }: { state: State | null; on
             await onChanged();
           }}
         >
-          خاموش کن
+          لغو حالت تداوم
         </button>
       )}
     </div>

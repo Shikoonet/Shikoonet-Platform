@@ -473,11 +473,6 @@ function Shell({
           </button>
         </div>
       </header>
-      {/* Its own row, under the bar, because it is a STRIP. Inside the header's
-          flex row a paragraph of Persian opened its track to full content width
-          and starved the one next to it — the warning broke the navigation of
-          the screen it was warning about. */}
-      <ContinuityBanner state={continuity.state} onChanged={continuity.refresh} />
 
       {/* Mounted for every role, and filtered by the same predicate the
           sidebar uses — a palette that offered a section the server answers
@@ -547,6 +542,15 @@ function Shell({
       />
 
       <section id="main-content">
+        {/* Not in the header's flex row — there a paragraph of Persian opened
+            its track to full content width and starved the controls beside it.
+            And not the header's next sibling either: the header is `fixed`, so
+            the first thing in normal flow after it starts at y=0 — under it.
+            Measured on staging 2026-09-13 with continuity ON: the strip drew
+            at 0,0,1703,56 beneath a 64px header, countdown and «لغو» included,
+            and nobody could see any of it. `#main-content` is what carries the
+            header-height margin, so the strip goes first inside that. */}
+        <ContinuityBanner state={continuity.state} onChanged={continuity.refresh} />
         <div className="wrapper">
           {/* Above the page rather than over it: the panel has no modal, and
               inventing one for a three-field form would be the larger thing to

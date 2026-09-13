@@ -20,6 +20,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ContinuityBanner, ContinuityButton } from '../../src/hub/ContinuityBanner.js';
 import { App } from '../../src/App.js';
 import { RoleProvider } from '../../src/role.js';
+import { api } from '../../src/hub/api.js';
 
 const ON = {
   mode: 'CONTINUITY' as const,
@@ -67,7 +68,21 @@ describe('the strip and the button are two different things', () => {
       </RoleProvider>,
     );
     expect(screen.getByText('حالت تداوم فعال است')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'خاموش کن' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'لغو حالت تداوم' })).toBeNull();
+  });
+});
+
+describe('what an ADMIN can do from the strip', () => {
+  it('sees how long is left and can cancel, and cancelling is one POST of {active:false}', async () => {
+    const setContinuityMode = vi
+      .spyOn(api, 'setContinuityMode')
+      .mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof api.setContinuityMode>>);
+    const onChanged = vi.fn(async () => {});
+    draw(<ContinuityBanner state={{ ...ON, expiresAt: Date.now() + 32 * 60_000 }} onChanged={onChanged} />);
+    expect(screen.getByText(/32 دقیقه باقی مانده/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'لغو حالت تداوم' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(setContinuityMode).toHaveBeenCalledWith({ active: false });
   });
 });
 
@@ -136,8 +151,15 @@ describe('the strip is not in the controls row — the containment that starved 
     // THE assertion, in its new home.
     expect(container.querySelector('.app-header__tools .continuity-banner')).toBeNull();
     expect(container.querySelector('.app-header .continuity-banner')).toBeNull();
-    // A sibling of the header, not a descendant of it.
-    expect(container.querySelector('header.app-header + .continuity-banner')).not.toBeNull();
+    // And not the header's next sibling either — that was the 2026-09-08 home,
+    // and on staging (2026-09-13, continuity ON, measured with Playwright) it
+    // drew at y=0, height 56: exactly under a `position: fixed` header of 64.
+    // The strip existed, counted down, offered «لغو» — and nobody could see
+    // any of it. The header is fixed, so the first thing in normal flow after
+    // it starts at the top of the viewport; only `#main-content` carries the
+    // header-height margin. The strip goes inside that, first.
+    expect(container.querySelector('header.app-header + .continuity-banner')).toBeNull();
+    expect(container.querySelector('#main-content > .continuity-banner:first-child')).not.toBeNull();
     // And the row that would have been starved still exists to be measured.
     expect(container.querySelector('.app-header__tools')).not.toBeNull();
   });
