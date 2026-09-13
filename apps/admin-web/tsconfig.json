@@ -7,7 +7,7 @@
     "moduleResolution": "bundler",
     "noEmit": true,
     "allowImportingTsExtensions": false,
-    "types": ["vite/client"],
+    "types": ["vite/client", "node"],
     "paths": {
       "@shikoo/contracts": ["../../packages/contracts/src/index.ts"]
     }

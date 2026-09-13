@@ -80,8 +80,8 @@ function jsonRoutes(): Routes {
   };
 }
 
-function mockFetch(routes: Routes): ReturnType<typeof vi.fn> {
-  return vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+function mockFetch(routes: Routes): typeof fetch {
+  return vi.fn<typeof fetch>().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input.toString();
     const url = raw.startsWith('http') ? new URL(raw).pathname : (raw.split('?')[0] ?? raw);
     const method = (init?.method ?? 'GET').toUpperCase();

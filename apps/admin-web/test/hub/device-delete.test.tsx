@@ -93,8 +93,8 @@ function deleteDeviceResponse(id: string): Response {
   );
 }
 
-function mockFetch(routes: Record<string, Response | (() => Response)>): ReturnType<typeof vi.fn> {
-  return vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+function mockFetch(routes: Record<string, Response | (() => Response)>): typeof fetch {
+  return vi.fn<typeof fetch>().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input.toString();
     const url = raw.startsWith('http') ? new URL(raw).pathname : (raw.split('?')[0] ?? raw);
     const method = (init?.method ?? 'GET').toUpperCase();
