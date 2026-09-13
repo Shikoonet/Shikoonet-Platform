@@ -205,14 +205,36 @@ export async function verifyMirzabotClaim(
     mismatchReasons = encodeRevertSnapshotForMatch(snapshot);
   }
 
+  /**
+   * The claim was read unlocked, above. Between that read and this batch a
+   * rejection can land — an operator on the review screen, or the customer's
+   * own «پرداختی نکردم» (#221) — and the claim UPDATE below, guarded on status,
+   * would then touch nothing while the match row, the transaction and the
+   * notice all committed: a deposit consumed against a REJECTED claim that
+   * nothing could advance or re-match (issue #232).
+   *
+   * So the batch locks the claim first, and every consuming write is
+   * conditional on `CLAIM_LIVE` — the same status set the claim UPDATE uses.
+   * The batch is one transaction, so the lock holds until commit: a rejection
+   * that got in first makes every statement a no-op and `persisted` refuses;
+   * one that arrives later waits, re-checks its own status guard against
+   * VERIFIED, and updates nothing.
+   */
+  const CLAIM_LIVE = `EXISTS (SELECT 1 FROM payment_claims
+                              WHERE id = ?3
+                                AND status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED'))`;
   const statements = [
+    db
+      .prepare(`SELECT id FROM payment_claims WHERE id = ?1 FOR UPDATE`)
+      .bind(claim.id),
     db
       .prepare(
         `INSERT INTO reconciliation_matches
              (id, transaction_candidate_id, payment_claim_id, score,
               matching_reasons_json, mismatch_reasons_json, status,
               reviewed_by, reviewed_at, created_at, updated_at)
-           VALUES (?1, ?2, ?3, 1.0, ?4, ?5, ?6, ?7, ?8, ?8, ?8)
+           SELECT ?1, ?2, ?3, 1.0, ?4, ?5, ?6, ?7, ?8, ?8, ?8
+           WHERE ${CLAIM_LIVE}
            ON CONFLICT(transaction_candidate_id, payment_claim_id) DO UPDATE SET
              status = excluded.status,
              score = excluded.score,
@@ -227,21 +249,10 @@ export async function verifyMirzabotClaim(
     db
       .prepare(
         `UPDATE transaction_candidates SET status = 'APPROVED', updated_at = ?2
-           WHERE id = ?1 AND status NOT IN ('APPROVED','REJECTED','IGNORED')`,
+           WHERE id = ?1 AND status NOT IN ('APPROVED','REJECTED','IGNORED')
+             AND ${CLAIM_LIVE}`,
       )
-      .bind(tx.id, now),
-    db
-      .prepare(
-        // `reconciled_at` is stamped with COALESCE so a second reconciliation
-        // keeps the first one's timestamp: the moment the evidence arrived is a
-        // fact about the world, not about how many times this ran.
-        `UPDATE payment_claims
-             SET status = 'VERIFIED', suspect_reason = NULL, updated_at = ?2,
-                 reconciled_at = CASE WHEN fulfilled_at IS NOT NULL
-                                      THEN COALESCE(reconciled_at, ?2) ELSE reconciled_at END
-           WHERE id = ?1 AND status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')`,
-      )
-      .bind(claim.id, now),
+      .bind(tx.id, now, claim.id),
   ];
 
   /**
@@ -275,12 +286,30 @@ export async function verifyMirzabotClaim(
         .prepare(
           `INSERT INTO webhook_deliveries
              (id, event_type, payload_json, attempt_count, status, next_attempt_at)
-           VALUES (?1, 'PAYMENT_VERIFIED', ?2, 0, 'PENDING', ?3)
+           SELECT ?1, 'PAYMENT_VERIFIED', ?2, 0, 'PENDING', ?4
+           WHERE ${CLAIM_LIVE}
            ON CONFLICT (id) DO NOTHING`,
         )
-        .bind(eventId, JSON.stringify(payload), now),
+        .bind(eventId, JSON.stringify(payload), claim.id, now),
     );
   }
+
+  // Last, after the notice: `CLAIM_LIVE` reads the claim's status, and this
+  // is the statement that changes it.
+  statements.push(
+    db
+      .prepare(
+        // `reconciled_at` is stamped with COALESCE so a second reconciliation
+        // keeps the first one's timestamp: the moment the evidence arrived is a
+        // fact about the world, not about how many times this ran.
+        `UPDATE payment_claims
+             SET status = 'VERIFIED', suspect_reason = NULL, updated_at = ?2,
+                 reconciled_at = CASE WHEN fulfilled_at IS NOT NULL
+                                      THEN COALESCE(reconciled_at, ?2) ELSE reconciled_at END
+           WHERE id = ?1 AND status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')`,
+      )
+      .bind(claim.id, now),
+  );
 
   try {
     // No INSERT OR IGNORE: the partial unique indexes on CONFIRMED /
@@ -291,7 +320,9 @@ export async function verifyMirzabotClaim(
   }
 
   // The upsert's WHERE guard silently skips when another approval already
-  // consumed this pair; confirm the row really reached a consuming state.
+  // consumed this pair, and `CLAIM_LIVE` skips everything when the claim was
+  // rejected under us; confirm the row really reached a consuming state, and
+  // say which of the two it was.
   const persisted = await db
     .prepare(
       `SELECT id FROM reconciliation_matches
@@ -300,7 +331,15 @@ export async function verifyMirzabotClaim(
     )
     .bind(tx.id, claim.id)
     .first<{ id: string }>();
-  if (!persisted) return { ok: false, error: 'TRANSACTION_ALREADY_CONSUMED' };
+  if (!persisted) {
+    const after = await db
+      .prepare(`SELECT status FROM payment_claims WHERE id = ?1`)
+      .bind(claim.id)
+      .first<string>('status');
+    const stillLive =
+      after !== null && (ELIGIBLE_CLAIM_STATUSES.has(after) || after === 'FULFILLED_UNRECONCILED');
+    return { ok: false, error: stillLive ? 'TRANSACTION_ALREADY_CONSUMED' : 'CLAIM_NOT_ELIGIBLE' };
+  }
 
   return {
     ok: true,

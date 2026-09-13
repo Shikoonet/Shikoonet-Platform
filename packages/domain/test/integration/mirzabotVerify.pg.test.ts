@@ -13,6 +13,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createPostgresD1 } from '@shikoo/db';
+import type { D1Database, D1PreparedStatement } from '@shikoo/database';
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { verifyMirzabotClaim } from '../../src/mirzabotVerify.js';
 
@@ -205,6 +206,105 @@ describe('verifyMirzabotClaim on Postgres', () => {
       )
       .first<number>('n');
     expect(settled).toBe(1);
+  });
+
+  /**
+   * Issue #232. The claim is read without a lock and its status is checked in
+   * TypeScript; the batch's claim UPDATE is status-guarded but the match row,
+   * the transaction and the notice are not. A rejection that lands between
+   * the read and the batch — an operator on the review screen, or since #221
+   * the customer's own «پرداختی نکردم» — used to leave a deposit consumed
+   * against a REJECTED claim that nothing could ever advance or re-match.
+   *
+   * The window is milliseconds, so it is opened on purpose: the same `db`,
+   * with a `batch` that rejects the claim first and then runs the real batch.
+   */
+  it('refuses, and writes nothing, when the claim is rejected between its read and its batch', async () => {
+    const raced: D1Database = Object.create(db, {
+      batch: {
+        value: async (statements: D1PreparedStatement[]) => {
+          await db
+            .prepare(
+              `UPDATE payment_claims SET status = 'REJECTED', updated_at = ?2
+                 WHERE id = ?1 AND status = 'PENDING'`,
+            )
+            .bind('claim-1', NOW + 1)
+            .run();
+          return db.batch(statements);
+        },
+      },
+    });
+
+    const res = await verifyMirzabotClaim(raced, {
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
+      enqueueWebhook: true,
+    });
+
+    expect(res).toEqual({ ok: false, error: 'CLAIM_NOT_ELIGIBLE' });
+    expect(await claimStatus('claim-1')).toBe('REJECTED');
+    expect(await txStatus('tx-1')).toBe('PARSED');
+    expect(
+      await db.prepare(`SELECT COUNT(*)::int AS n FROM reconciliation_matches`).first<number>('n'),
+    ).toBe(0);
+    expect(
+      await db.prepare(`SELECT COUNT(*)::int AS n FROM webhook_deliveries`).first<number>('n'),
+    ).toBe(0);
+
+    // And the deposit is still free for the claim it actually belongs to.
+    const other = await verifyMirzabotClaim(db, {
+      claimId: 'claim-2',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
+    });
+    expect(other.ok).toBe(true);
+  });
+
+  /**
+   * The other order of the same race: the rejection is already in flight —
+   * it holds the claim row — when the verification's batch begins. Without the
+   * lock as the batch's first statement, the match row and the transaction
+   * would be written (the claim still reads PENDING to them), and only the
+   * claim UPDATE would wait, lose, and touch nothing.
+   */
+  it('waits for a rejection that holds the claim, and then refuses', async () => {
+    const rejecting = await pool.connect();
+    try {
+      await rejecting.query('BEGIN');
+      await rejecting.query(`SELECT id FROM payment_claims WHERE id = 'claim-1' FOR UPDATE`);
+
+      let settled = false;
+      const verifying = verifyMirzabotClaim(db, {
+        claimId: 'claim-1',
+        transactionId: 'tx-1',
+        mode: 'AUTO_VERIFIED',
+        enqueueWebhook: true,
+      }).then((r) => {
+        settled = true;
+        return r;
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      expect(settled).toBe(false);
+
+      await rejecting.query(
+        `UPDATE payment_claims SET status = 'REJECTED', updated_at = $1 WHERE id = 'claim-1'`,
+        [NOW + 1],
+      );
+      await rejecting.query('COMMIT');
+
+      expect(await verifying).toEqual({ ok: false, error: 'CLAIM_NOT_ELIGIBLE' });
+    } finally {
+      rejecting.release();
+    }
+    expect(await claimStatus('claim-1')).toBe('REJECTED');
+    expect(await txStatus('tx-1')).toBe('PARSED');
+    expect(
+      await db.prepare(`SELECT COUNT(*)::int AS n FROM reconciliation_matches`).first<number>('n'),
+    ).toBe(0);
+    expect(
+      await db.prepare(`SELECT COUNT(*)::int AS n FROM webhook_deliveries`).first<number>('n'),
+    ).toBe(0);
   });
 
   it('rejects a transaction on a different account', async () => {
