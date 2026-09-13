@@ -207,6 +207,16 @@ export interface RenewableSubscription {
    */
   plan_id: number | null;
   duration_days: number | null;
+  /**
+   * What KIND of thing this is — `products.kind`: vpn, spotify, ai_account…
+   *
+   * Read through the plan it was sold under when that is still known, and
+   * from the panel's own kind when it is not (every migrated row, every
+   * trial): a PasarGuard panel sells VPN, a `spotify` panel sells Spotify.
+   * Renewal offers only plans of the same kind — Sam, 2026-09-13: «سرویس
+   * VPN می‌خواد تمدید کنه، یک دفعه نفرسته به بخش spotify».
+   */
+  family: string;
   provider_id: number;
   provider_name: string;
   provider_kind: string;
@@ -236,6 +246,11 @@ const RENEWABLE = `
 const RENEWABLE_COLUMNS = `
   s.id, s.public_id, s.status, s.plan_name_at_sale, s.remote_username, s.expires_at,
   s.volume_gb, s.used_bytes, s.plan_id, s.duration_days,
+  COALESCE(
+    (SELECT p.kind FROM product_plans pl JOIN products p ON p.id = pl.product_id
+      WHERE pl.id = s.plan_id),
+    CASE WHEN pv.kind IN ('ai_account', 'spotify', 'manual') THEN pv.kind ELSE 'vpn' END
+  ) AS family,
   pv.id AS provider_id, pv.name AS provider_name, pv.kind AS provider_kind,
   pv.config AS provider_config
 `;

@@ -28,6 +28,7 @@ const PLAN: CatalogPlan = {
   planId: 42,
   productId: 7,
   productName: '۱ماهه - ۵۰ گیگ',
+  productKind: 'vpn',
   planName: '۱ماهه - ۵۰ گیگ',
   badge: null,
   buttonStyle: null,

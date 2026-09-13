@@ -162,6 +162,7 @@ export let CHOOSE_SERVICE_TO_RENEW = DEFAULT_TEXTS.raw('CHOOSE_SERVICE_TO_RENEW'
 export let RENEWAL_GONE = DEFAULT_TEXTS.raw('RENEWAL_GONE');
 export let RENEWAL_CLOSED = DEFAULT_TEXTS.raw('RENEWAL_CLOSED');
 export let NO_RENEWAL_PLAN = DEFAULT_TEXTS.raw('NO_RENEWAL_PLAN');
+export let RENEW_WRONG_FAMILY = DEFAULT_TEXTS.raw('RENEW_WRONG_FAMILY');
 export let WALLET_TOO_LITTLE = DEFAULT_TEXTS.raw('WALLET_TOO_LITTLE');
 export let DISCOUNT_TAKEN_OFF = DEFAULT_TEXTS.raw('DISCOUNT_TAKEN_OFF');
 export let ORDER_GONE = DEFAULT_TEXTS.raw('ORDER_GONE');
@@ -289,6 +290,7 @@ export function applyContent(content: BotContent): void {
   RENEWAL_GONE = t.raw('RENEWAL_GONE');
   RENEWAL_CLOSED = t.raw('RENEWAL_CLOSED');
   NO_RENEWAL_PLAN = t.raw('NO_RENEWAL_PLAN');
+  RENEW_WRONG_FAMILY = t.raw('RENEW_WRONG_FAMILY');
   WALLET_TOO_LITTLE = t.raw('WALLET_TOO_LITTLE');
   DISCOUNT_TAKEN_OFF = t.raw('DISCOUNT_TAKEN_OFF');
   ORDER_GONE = t.raw('ORDER_GONE');
@@ -2380,8 +2382,11 @@ export function renewIntro(
   service: { plan_name_at_sale: string; public_id: string; expires_at: string | null },
   mode: RenewMode,
   now: number,
-  /** The line that closes the intro: «choose a plan» over a list, «the matching plan» over one. */
-  closing: 'choose' | 'matched' = 'choose',
+  /**
+   * The line that closes the intro: «choose a plan» over a list, «the matching
+   * plan» over one, «choose a tier» over a row of tiers.
+   */
+  closing: 'choose' | 'matched' | 'tier' = 'choose',
 ): string {
   const t = TEXTS_NOW;
   const lines = [
@@ -2417,7 +2422,13 @@ export function renewIntro(
             t.raw('RENEW_MODE_ADD_VOLUME_RESET_TIME')
           : t.raw('RENEW_MODE_RESET'),
     '',
-    t.raw(closing === 'matched' ? 'RENEW_MATCHED_PLAN' : 'RENEW_CHOOSE_PLAN'),
+    t.raw(
+      closing === 'matched'
+        ? 'RENEW_MATCHED_PLAN'
+        : closing === 'tier'
+          ? 'RENEW_CHOOSE_TIER'
+          : 'RENEW_CHOOSE_PLAN',
+    ),
   );
   return lines.join('\n');
 }
@@ -2459,11 +2470,21 @@ export function renewPlanMenu(
   discountPercent = 0,
   heldCode?: string | null,
   matched = false,
-  page = 1,
+  /** `null`: one tier's plans on one screen, unpaged. */
+  page: number | null = 1,
+  /**
+   * The tiers the customer may switch to — one row each, after the plans.
+   * Sam, 2026-09-13: «الماس رو بکنه تیتانیوم یا معمولی؛ اگر اکانتش تست بوده
+   * بتونه تبدیل کنه به الماس». A tier is a product on the same panel and of
+   * the same kind; its row opens that product's plans.
+   */
+  tiers: readonly { productId: number; name: string }[] = [],
 ): InlineKeyboard {
-  const pages = Math.max(1, Math.ceil(plans.length / RENEW_PLANS_PER_PAGE));
-  const at = Math.min(Math.max(1, page), pages);
-  const shown = plans.slice((at - 1) * RENEW_PLANS_PER_PAGE, at * RENEW_PLANS_PER_PAGE);
+  // ponytail: one tier's plans on one screen. Page it if a tier ever holds
+  // more than the keyboard allows; the largest today has three.
+  const pages = page === null ? 1 : Math.max(1, Math.ceil(plans.length / RENEW_PLANS_PER_PAGE));
+  const at = page === null ? 1 : Math.min(Math.max(1, page), pages);
+  const shown = page === null ? plans : plans.slice((at - 1) * RENEW_PLANS_PER_PAGE, at * RENEW_PLANS_PER_PAGE);
   const keyboard: InlineKeyboard = shown.map((plan) => {
     const price = priceForUser(plan.priceIrr, discountPercent);
     // The listed price stays the listed price while a code is held: which plan
@@ -2497,6 +2518,9 @@ export function renewPlanMenu(
     }
     keyboard.push(row);
   }
+  for (const tier of tiers) {
+    keyboard.push([{ text: tier.name, callback_data: encode('rnwp', subscriptionId, tier.productId) }]);
+  }
   return withChrome(keyboard, 'renewPlans', {
     applies: (action) =>
       action === 'dxr'
@@ -2504,7 +2528,9 @@ export function renewPlanMenu(
         : action === 'dsr'
           ? heldCode == null
           : action === 'rnwl'
-            ? matched
+            ? // «پلن‌های دیگر» reaches the rest when the matched plan is the
+              // only thing shown; with tiers on screen, the tiers ARE the rest.
+              matched && tiers.length === 0
             : true,
     target: (action) =>
       action === 'renew' || action === 'menu'

@@ -58,6 +58,7 @@ describe('a composed config name, seen by the bot', () => {
       planId: 1,
       productId: 1,
       productName: 'طلایی',
+      productKind: 'vpn',
       planName: '',
       badge: null,
       buttonStyle: null,
