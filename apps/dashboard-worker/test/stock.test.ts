@@ -192,6 +192,63 @@ describe('making a shelf', () => {
       )!.id,
     );
 
+  /**
+   * Issue #125. Every shelf is a provider row, and forty shelves buried the
+   * five real panels on «مدیریت پنل‌ها» and in every panel picker. A shelf is
+   * managed from «قفسهٔ انبار»; the panel screens do not see it.
+   */
+  it('is not listed as a panel, nor offered where a panel is picked', async () => {
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'قفسهٔ پنهان',
+      kind: 'spotify',
+      priceIrr: 2_500_000,
+      durationDays: 30,
+      categoryId: await categoryId(),
+    });
+    expect(res.status).toBe(200);
+    const { planId } = (await res.json()) as { planId: number };
+    const providerId = Number(
+      (
+        await baseEnv.DB.prepare(
+          `SELECT p.provider_id FROM product_plans pl JOIN products p ON p.id = pl.product_id WHERE pl.id = ?1`,
+        )
+          .bind(planId)
+          .first<{ provider_id: number }>()
+      )!.provider_id,
+    );
+    const flagged = await baseEnv.DB.prepare(
+      `SELECT config->>'shelf' AS shelf, code FROM provisioning_providers WHERE id = ?1`,
+    )
+      .bind(providerId)
+      .first<{ shelf: string | null; code: string }>();
+    expect(flagged?.shelf).toBe('true');
+
+    const panels = (await (await app.request('/api/v1/admin/panels', {}, envAs(ADMIN))).json()) as {
+      items: { id: number }[];
+    };
+    expect(panels.items.some((p) => p.id === providerId)).toBe(false);
+
+    const catalog = (await (
+      await app.request('/api/v1/admin/catalog?page=1&pageSize=1', {}, envAs(ADMIN))
+    ).json()) as { panels: { id: number }[] };
+    expect(catalog.panels.some((p) => p.id === providerId)).toBe(false);
+
+    // A row made before the flag existed is told apart by its code alone.
+    await baseEnv.DB.prepare(`UPDATE provisioning_providers SET config = '{}' WHERE id = ?1`)
+      .bind(providerId)
+      .run();
+    const again = (await (await app.request('/api/v1/admin/panels', {}, envAs(ADMIN))).json()) as {
+      items: { id: number }[];
+    };
+    expect(again.items.some((p) => p.id === providerId)).toBe(false);
+
+    // And the shelf itself is still where it is managed from.
+    const stock = (await (await app.request('/api/v1/admin/stock', {}, envAs(ADMIN))).json()) as {
+      shelves: { planId: number }[];
+    };
+    expect(stock.shelves.some((s) => s.planId === planId)).toBe(true);
+  });
+
   it('builds the panel, the service and the product from one name', async () => {
     // What Sam asked for: make the shelf first, then put accounts in it. Three
     // rows have to exist for a shelf to be sellable, and none of them is a

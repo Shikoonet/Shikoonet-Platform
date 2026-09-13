@@ -321,8 +321,11 @@ export function registerStockRoutes(
       await c.env.DB.withSession(async (tx) => {
         const provider = await tx
           .prepare(
-            `INSERT INTO provisioning_providers (code, name, kind, status)
-             VALUES (?1, ?2, 'manual', 'ACTIVE') RETURNING id`,
+            // `config.shelf` is what keeps this row off «مدیریت پنل‌ها» and
+            // out of every panel picker: it is managed from «قفسهٔ انبار»,
+            // not as a panel (issue #125, NOT_A_SHELF in @shikoo/domain).
+            `INSERT INTO provisioning_providers (code, name, kind, status, config)
+             VALUES (?1, ?2, 'manual', 'ACTIVE', '{"shelf": true}'::jsonb) RETURNING id`,
           )
           .bind(code, b.name)
           .first<{ id: number }>();

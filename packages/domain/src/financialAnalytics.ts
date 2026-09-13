@@ -14,6 +14,18 @@ import {
 
 export { MIRZABOT_SOURCE, BANK_INCOME_TX_WHERE };
 
+/**
+ * «Not a shelf» — a `provisioning_providers` row an operator manages from
+ * «مدیریت پنل‌ها», as opposed to one «قفسهٔ تازه» created for itself.
+ *
+ * Every shelf gets a provider row of its own (idx_stock_account_once is keyed
+ * on provider_id), so forty shelves are forty rows that are not panels, and
+ * the panels page and every panel picker bent under them (issue #125). A
+ * shelf's row is flagged `config.shelf = true` at creation; the code-shape
+ * half is for the rows made before the flag existed.
+ */
+export const NOT_A_SHELF = `((pr.config->>'shelf') IS DISTINCT FROM 'true' AND pr.code NOT LIKE 'shelf-%')`;
+
 /** The settled match row for a verified Mirzabot claim (auto beats manual). */
 export const SETTLED_MATCH_SUBQUERY = `
   SELECT m2.id FROM reconciliation_matches m2
