@@ -1017,6 +1017,87 @@ describe('POST /api/v1/admin/products/:id', () => {
   });
 });
 
+describe('POST /api/v1/admin/products/:id/merge', () => {
+  /**
+   * The legacy shop sold one `product` row per price and a catalogue imported
+   * before #210 keeps that shape: seven services named «1ماهه-20گیگ-119.000ت»
+   * where one «سرویس تیتانیوم» with seven configs was meant. Sam, 2026-09-13:
+   * «باید این کانفیگها زیر مجموعهٔ تیتانیوم باشن». This is the admin's way
+   * to fold them.
+   */
+  function merge(id: number, into: number, email = ADMIN) {
+    return app.request(
+      `/api/v1/admin/products/${id}/merge`,
+      { method: 'POST', body: JSON.stringify({ into }), headers: { 'content-type': 'application/json' } },
+      envAs(email),
+    );
+  }
+
+  /** A second service on the SAME panel as `made`, with one plan. */
+  async function sibling(made: Made, label: string, sortOrder = 0) {
+    const product = await baseEnv.DB.prepare(
+      `INSERT INTO products (code, name, kind, provider_id, category_id, status, sort_order)
+       VALUES (?1, ?2, 'vpn', ?3, (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE', ?4) RETURNING id`,
+    )
+      .bind(`${PREFIX}${label}`, `محصول ${label}`, made.providerId, sortOrder)
+      .first<{ id: number }>();
+    const productId = Number(product!.id);
+    const plan = await baseEnv.DB.prepare(
+      `INSERT INTO product_plans (product_id, name, price_irr, duration_days, volume_gb, status)
+       VALUES (?1, ?2, 2000000, 30, 20, 'ACTIVE') RETURNING id`,
+    )
+      .bind(productId, `پلن ${label}`)
+      .first<{ id: number }>();
+    return { productId, planId: Number(plan!.id) };
+  }
+
+  it('moves every config, the sale history with it, and a scoped code — and the source is gone', async () => {
+    const tier = await makeCatalog('tier');
+    const price = await sibling(tier, 'price', 7);
+    // A sold config: an order and a subscription point at the PLAN, so they
+    // must survive the service they were filed under going away.
+    await placeOrder(price.planId, 991_000_020);
+    await baseEnv.DB.prepare(`INSERT INTO discount_codes (code, kind, percent, product_id) VALUES (?1, 'PERCENT_OFF', 10, ?2)`)
+      .bind(`${PREFIX}mcode`, price.productId)
+      .run();
+
+    const res = await merge(price.productId, tier.productId);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { moved: number }).moved).toBe(1);
+
+    const plan = await baseEnv.DB.prepare(`SELECT product_id, sort_order FROM product_plans WHERE id = ?1`)
+      .bind(price.planId)
+      .first<{ product_id: number; sort_order: number }>();
+    expect(Number(plan?.product_id)).toBe(tier.productId);
+    // The source service's position, so a folded legacy catalogue keeps its order.
+    expect(Number(plan?.sort_order)).toBe(7);
+    expect(await planRow(tier.planId)).not.toBeNull();
+    expect(await baseEnv.DB.prepare(`SELECT id FROM products WHERE id = ?1`).bind(price.productId).first()).toBeNull();
+    const order = await baseEnv.DB.prepare(`SELECT plan_id FROM orders WHERE plan_id = ?1`).bind(price.planId).first();
+    expect(order).not.toBeNull();
+    const code = await baseEnv.DB.prepare(`SELECT product_id FROM discount_codes WHERE code = ?1`)
+      .bind(`${PREFIX}mcode`)
+      .first<{ product_id: number }>();
+    expect(Number(code?.product_id)).toBe(tier.productId);
+    expect((await auditRows('PRODUCT', price.productId)).some((r) => r.action === 'catalog.product_merged')).toBe(true);
+  });
+
+  it('refuses another panel or another kind, and changes nothing', async () => {
+    const a = await makeCatalog('merge-a');
+    const b = await makeCatalog('merge-b'); // its own panel
+    expect((await merge(a.productId, b.productId)).status).toBe(409);
+    const spotify = await sibling(a, 'merge-spotify');
+    await baseEnv.DB.prepare(`UPDATE products SET kind = 'spotify' WHERE id = ?1`).bind(spotify.productId).run();
+    expect((await merge(spotify.productId, a.productId)).status).toBe(409);
+    for (const id of [a.productId, b.productId, spotify.productId]) {
+      expect(await baseEnv.DB.prepare(`SELECT id FROM products WHERE id = ?1`).bind(id).first()).not.toBeNull();
+    }
+    expect((await merge(a.productId, a.productId)).status).toBe(400);
+    expect((await merge(a.productId, 2_000_000_005)).status).toBe(404);
+    expect((await merge(a.productId, b.productId, REVIEWER)).status).toBe(403);
+  });
+});
+
 describe('DELETE /api/v1/admin/products/:id', () => {
   function del(id: number, email = ADMIN) {
     return app.request(`/api/v1/admin/products/${id}`, { method: 'DELETE' }, envAs(email));

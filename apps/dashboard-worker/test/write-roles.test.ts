@@ -446,6 +446,13 @@ describe('every write route, asked directly', () => {
     // route did not already grant — the check is the same, the audit row per
     // request is the same, and a request already decided is refused rather
     // than re-decided. What it removes is 171 presses.
-    expect(writeRoutes().length).toBe(159);
+    //
+    // 160, 2026-09-13: `POST /products/:id/merge` — every config of one
+    // service moves under another on the same panel and the first is
+    // deleted. It deletes a catalogue row and re-files sold configs, so it
+    // is ADMIN-only like the delete it replaces; refused for a REVIEWER and a
+    // READ_ONLY by the three tests above, and `products.test.ts` pins the
+    // same-panel/same-kind refusal.
+    expect(writeRoutes().length).toBe(160);
   });
 });
