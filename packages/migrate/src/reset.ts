@@ -266,7 +266,23 @@ export async function resetShopData(pgc: pg.Client): Promise<ResetResult> {
   // its pointers have to be cleared by hand, or the panel offers a button for
   // a recording that is gone. An UPDATE, not a DELETE, so the count this
   // function guarded a moment ago still holds.
-  await pgc.query(`UPDATE import_runs SET undo_schema = NULL WHERE undo_schema IS NOT NULL`);
+  //
+  // `undone_at IS NULL` is not a refinement, it is the difference between this
+  // working and throwing. A run that was already undone keeps the name of the
+  // recording it consumed, and migration 0044 REQUIRES it to:
+  // `CHECK (undone_at IS NULL OR undo_schema IS NOT NULL)`. Clearing every
+  // pointer therefore put an undone row into the one state the CHECK forbids,
+  // the statement threw, and the whole reset rolled back — so on any box where
+  // «بازگرداندن» had ever been pressed, the button simply did not work
+  // (staging, 2026-09-14).
+  //
+  // Nothing is lost by skipping them: a button only appears where
+  // `idx_import_runs_undoable` looks, and that index is already scoped
+  // `WHERE undo_schema IS NOT NULL AND undone_at IS NULL`.
+  await pgc.query(
+    `UPDATE import_runs SET undo_schema = NULL
+      WHERE undo_schema IS NOT NULL AND undone_at IS NULL`,
+  );
 
   const removed = before.filter((c) => c.rows > 0).sort((a, b) => b.rows - a.rows);
   const total = removed.reduce((sum, c) => sum + c.rows, 0);
