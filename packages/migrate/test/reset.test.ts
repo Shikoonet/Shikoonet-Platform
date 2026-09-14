@@ -252,6 +252,74 @@ describe('resetShopData — the clean page an undo cannot give', () => {
     }
   });
 
+  it('still works once a run has been undone, which is the case that blocked it', async () => {
+    /**
+     * The whole button, dead on any box where «بازگرداندن» had ever been
+     * pressed — reported from staging on 2026-09-14 as
+     * `new row for relation "import_runs" violates check constraint
+     * "import_runs_undone_needs_schema"`.
+     *
+     * The two halves each look right on their own:
+     *
+     *   - undo stamps `undone_at` and KEEPS `undo_schema`, because the name of
+     *     the recording it consumed is part of the record.
+     *   - migration 0044 says an undone run must name that schema:
+     *     `CHECK (undone_at IS NULL OR undo_schema IS NOT NULL)`.
+     *
+     * and reset then cleared `undo_schema` on EVERY row that had one. On an
+     * already-undone row that is exactly the state the CHECK forbids, so the
+     * statement threw, the transaction rolled back, and nothing was emptied.
+     * The test above only ever builds a run that has NOT been undone, which is
+     * why this went unseen.
+     *
+     * The pointer only has to be cleared where a button could still appear,
+     * and `idx_import_runs_undoable` already says where that is:
+     * `WHERE undo_schema IS NOT NULL AND undone_at IS NULL`.
+     */
+    const done = quiet();
+    try {
+      const undoneId = '44444444-5555-6666-7777-888888888888';
+      const liveId = '55555555-6666-7777-8888-999999999999';
+      const liveSchema = undoSchemaFor(liveId);
+      await pgc.query(`CREATE SCHEMA "${liveSchema}"`);
+      await pgc.query(`CREATE TABLE "${liveSchema}".users (id bigint)`);
+
+      // A run someone already undid: stamped, and still naming the recording it
+      // consumed. Its schema is long gone — `dropUndo` took it — but the column
+      // keeps the name, exactly as the CHECK demands.
+      await pgc.query(
+        `INSERT INTO import_runs (id, mode, status, dump_path, started_by, finished_at,
+                                  undo_schema, undone_at, undone_by)
+              VALUES ($1, 'APPLY', 'SUCCEEDED', '/tmp/__reset.sql', 'reset@samsos.org', now(),
+                      $2, now(), 'reset@samsos.org')`,
+        [undoneId, undoSchemaFor(undoneId)],
+      );
+      // And one that has not been undone, so the clearing still has a subject.
+      await pgc.query(
+        `INSERT INTO import_runs (id, mode, status, dump_path, started_by, finished_at, undo_schema)
+              VALUES ($1, 'APPLY', 'SUCCEEDED', '/tmp/__reset.sql', 'reset@samsos.org', now(), $2)`,
+        [liveId, liveSchema],
+      );
+
+      // Before the fix this threw, and took the whole reset with it.
+      await resetShopData(pgc);
+
+      const { rows } = await pgc.query<{ id: string; undo_schema: string | null }>(
+        `SELECT id, undo_schema FROM import_runs WHERE id = ANY($1)`,
+        [[undoneId, liveId]],
+      );
+      const byId = new Map(rows.map((r) => [r.id, r.undo_schema]));
+
+      // The one that could still have offered a button no longer can.
+      expect(byId.get(liveId)).toBeNull();
+      // The undone one keeps its record — nulling it is what the CHECK forbids,
+      // and it never offered a button anyway.
+      expect(byId.get(undoneId)).toBe(undoSchemaFor(undoneId));
+    } finally {
+      done();
+    }
+  });
+
   it('keeps the defaults a migration installed and no import re-supplies', async () => {
     /**
      * The regression test for a loss nothing reported.
