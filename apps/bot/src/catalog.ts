@@ -245,6 +245,8 @@ export interface CatalogProduct {
   badge: string | null;
   /** The same rule, for the colour. See `badge` above. */
   buttonStyle: ButtonStyle | null;
+  /** Accounts on the shelf across its configs; null when the panel delivers by itself. */
+  shelfAvailable: number | null;
   /**
    * Which row of the tier screen this button sits on, or null for its own.
    *
@@ -306,7 +308,17 @@ export async function productsForUser(
               -- row's value; with more than one it is NULL and the button
               -- draws exactly as it did before.
               COALESCE(p.badge,        CASE WHEN COUNT(*) = 1 THEN MIN(pl.badge) END)        AS badge,
-              COALESCE(p.button_style, CASE WHEN COUNT(*) = 1 THEN MIN(pl.button_style) END) AS button_style
+              COALESCE(p.button_style, CASE WHEN COUNT(*) = 1 THEN MIN(pl.button_style) END) AS button_style,
+              -- Accounts on the shelf across every config here, or NULL for a
+              -- panel that delivers by itself. Zero marks the tier «ناموجود»
+              -- the way shelf_available marks a config — the customer meets
+              -- this button one screen earlier.
+              CASE WHEN pr.kind IN (${AUTOMATED_KINDS_SQL}) THEN NULL
+                   ELSE (SELECT COUNT(*)::int FROM provisioning_stock st
+                          JOIN product_plans spl ON spl.id = st.plan_id
+                         WHERE spl.product_id = p.id AND spl.status = 'ACTIVE'
+                           AND st.status = 'AVAILABLE')
+              END AS shelf_available
          FROM products p
          JOIN product_plans pl          ON pl.product_id = p.id
          JOIN provisioning_providers pr ON pr.id = p.provider_id
@@ -316,7 +328,7 @@ export async function productsForUser(
           AND (?3::bigint IS NULL OR p.category_id = ?3)
           AND ${PURCHASABLE}
           ${SELLS_NEW}
-        GROUP BY p.id, p.name, p.sort_order, p.row_index, pr.name
+        GROUP BY p.id, p.name, p.sort_order, p.row_index, pr.name, pr.kind
         -- The product's own order, and nothing before it.
         --
         -- This used to lead with the panel's sort_order and id — correct when
@@ -341,6 +353,7 @@ export async function productsForUser(
       row_index: number | null;
       badge: string | null;
       button_style: ButtonStyle | null;
+      shelf_available: number | null;
     }>();
   return rows.results.map((r) => ({
     productId: r.product_id,
@@ -349,6 +362,7 @@ export async function productsForUser(
     badge: r.badge,
     buttonStyle: r.button_style,
     rowIndex: r.row_index,
+    shelfAvailable: r.shelf_available,
   }));
 }
 
@@ -482,6 +496,13 @@ export interface CatalogPlan {
   siblings: number;
   /** How many services in this category have something ACTIVE in them. */
   tiers: number;
+  /**
+   * Accounts waiting on the shelf for this config, or null when the panel
+   * delivers by itself. Zero is «ناموجود»: the button is still drawn, so the
+   * customer learns the shop sells this and it is out — but no order is
+   * written for it (`place()` refuses) and the tap says why.
+   */
+  shelfAvailable: number | null;
 }
 
 interface PlanRow {
@@ -503,6 +524,7 @@ interface PlanRow {
   siblings: number;
   tiers: number;
   username_mode: string | null;
+  shelf_available: number | null;
 }
 
 const PLAN_COLUMNS = `
@@ -523,6 +545,14 @@ const PLAN_COLUMNS = `
   -- joins the panel, and the buy path needs to know BEFORE the order is placed
   -- whether this panel asks the customer to name their account.
   pr.config->>'username_mode' AS username_mode,
+  -- How many accounts wait on the shelf for this config — or NULL when the
+  -- panel delivers by itself and the shelf is only its outage escape. Sam,
+  -- 2026-09-15: a panel with no third party behind it sells ONLY what is on
+  -- the shelf, and says so instead of taking money for a queue.
+  CASE WHEN pr.kind IN (${AUTOMATED_KINDS_SQL}) THEN NULL
+       ELSE (SELECT COUNT(*)::int FROM provisioning_stock st
+              WHERE st.plan_id = pl.id AND st.status = 'AVAILABLE')
+  END AS shelf_available,
   p.category_id   AS category_id,
   pl.row_index    AS row_index,
   (SELECT COUNT(*)::int
@@ -563,6 +593,7 @@ function toPlan(row: PlanRow): CatalogPlan {
     siblings: row.siblings,
     tiers: row.tiers,
     usernameMode: row.username_mode,
+    shelfAvailable: row.shelf_available,
   };
 }
 

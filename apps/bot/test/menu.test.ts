@@ -43,6 +43,7 @@ const PLAN: CatalogPlan = {
   siblings: 1,
   tiers: 1,
   usernameMode: null,
+  shelfAvailable: null,
 };
 
 describe('the price list', () => {
@@ -188,8 +189,8 @@ describe('every button we draw', () => {
     menu.mainMenu(CUSTOMER),
     menu.mainMenu(RESELLER),
     menu.productMenu([
-      { productId: 1, name: 'یک', providerName: 'پ', badge: null, buttonStyle: null, rowIndex: null },
-      { productId: 999_999_999, name: 'دو', providerName: 'پ', badge: '🆕', buttonStyle: 'primary', rowIndex: null },
+      { productId: 1, name: 'یک', providerName: 'پ', badge: null, buttonStyle: null, rowIndex: null, shelfAvailable: null },
+      { productId: 999_999_999, name: 'دو', providerName: 'پ', badge: '🆕', buttonStyle: 'primary', rowIndex: null, shelfAvailable: null },
     ]),
     menu.planMenu([PLAN]),
     menu.planMenu([]),
@@ -247,6 +248,7 @@ const SERVICE: CatalogProduct = {
   productId: 7,
   name: 'پلاتینیوم',
   rowIndex: null,
+  shelfAvailable: null,
   providerName: '🥇 سرویس VIP',
   // Null on both, because this service holds three configs — see the rule in
   // `CatalogProduct.badge`. The badged case is asserted against Postgres in

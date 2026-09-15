@@ -39,8 +39,11 @@ async function makeShop(
 ): Promise<{ categoryId: number; tiers: Tier[] }> {
   const provider = await db
     .prepare(
-      `INSERT INTO provisioning_providers (code, name, kind, status)
-       VALUES (?1, ?1, 'marzban', 'ACTIVE') RETURNING id`,
+      // Wired pasarguard, not the 'marzban' alias: since 2026-09-15 a kind
+      // with no adapter sells only from its shelf, and this file is about
+      // tiers, not shelves.
+      `INSERT INTO provisioning_providers (code, name, kind, status, base_url, secret_ref)
+       VALUES (?1, ?1, 'pasarguard', 'ACTIVE', 'https://x.test', ?1) RETURNING id`,
     )
     .bind(`${PREFIX}${label}`)
     .first<{ id: number }>();
@@ -331,8 +334,8 @@ describe('the tier list obeys the same visibility rule as everything else', () =
     // One tier moves to a switched-off panel of its own.
     const dead = await db
       .prepare(
-        `INSERT INTO provisioning_providers (code, name, kind, status)
-         VALUES (?1, ?1, 'marzban', 'DISABLED') RETURNING id`,
+        `INSERT INTO provisioning_providers (code, name, kind, status, base_url, secret_ref)
+         VALUES (?1, ?1, 'pasarguard', 'DISABLED', 'https://x.test', ?1) RETURNING id`,
       )
       .bind(`${PREFIX}mixed-off`)
       .first<{ id: number }>();
@@ -414,8 +417,8 @@ describe('the tier screen can be arranged', () => {
     ]);
     const other = await db
       .prepare(
-        `INSERT INTO provisioning_providers (code, name, kind, status)
-         VALUES (?1, ?1, 'marzban', 'ACTIVE') RETURNING id`,
+        `INSERT INTO provisioning_providers (code, name, kind, status, base_url, secret_ref)
+         VALUES (?1, ?1, 'pasarguard', 'ACTIVE', 'https://x.test', ?1) RETURNING id`,
       )
       .bind(`${PREFIX}twopanels-b`)
       .first<{ id: number }>();

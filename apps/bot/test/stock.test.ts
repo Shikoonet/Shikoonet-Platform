@@ -559,17 +559,20 @@ describe('selling accounts from the shelf', () => {
     expect(failed?.provision_first_failed_at).toBeNull();
   });
 
-  it('falls back to the manual path when the shelf is empty, not a retry loop', async () => {
+  it('fails a paid order the shelf cannot serve — no queue for a person, not a retry loop', async () => {
+    // Until 2026-09-15 this fell through to the manual adapter: COMPLETED, a
+    // subscription with no link, and «a person is finishing it» — money taken
+    // for an account that did not exist, in a queue no screen showed. Sam:
+    // «اگر اکانتی موجود نبود … پول نگیره». `place()` holds a row for every
+    // invoice now, so this is an order from before that or a shelf emptied by
+    // hand; it fails the way a refusing panel does. `shelf-only.test.ts` has
+    // the rest of the rule.
     const order = await paidOrder({ planCode: 'sim-shop-ai' });
 
     await provisionPaidOrders(db, deadPanel, Date.now());
 
-    // Exactly what an adapterless product did before the shelf could hold
-    // accounts: sold, completed, and a person finishes it.
-    expect(await orderStatus(order.orderId)).toBe('COMPLETED');
-    const subs = await subsFor(order.orderId);
-    expect(subs).toHaveLength(1);
-    expect(subs[0]!.subscription_url).toBeNull();
+    expect(await orderStatus(order.orderId)).toBe('FAILED');
+    expect(await subsFor(order.orderId)).toHaveLength(0);
     const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
     expect(note?.text).toContain(order.publicId);
   });

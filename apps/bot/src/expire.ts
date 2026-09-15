@@ -150,6 +150,17 @@ export async function expireUnpaidOrders(
       .bind((expired ?? []).map((r) => r.id))
       .run();
 
+    // The shelf row the invoice was holding goes back on the shelf (0063).
+    // Same transaction as the expiry: an invoice cannot die while still
+    // owning an account nobody else may buy.
+    await tx
+      .prepare(
+        `UPDATE provisioning_stock SET status = 'AVAILABLE', order_id = NULL
+          WHERE order_id = ANY(?1) AND status = 'RESERVED'`,
+      )
+      .bind((expired ?? []).map((r) => r.id))
+      .run();
+
     // Same transaction as the expiry itself, so an order can never be marked
     // EXPIRED without the customer being owed the news.
     for (const row of expired ?? []) {

@@ -85,9 +85,12 @@ async function makeConfigs(
   label: string,
   count: number,
 ): Promise<{ serviceId: number; ids: number[] }> {
+  // A wired pasarguard, not the 'marzban' alias: since 2026-09-15 a kind with
+  // no adapter sells only from its shelf, and this file counts what is for
+  // sale by switches, not by stock.
   const panel = await baseEnv.DB.prepare(
-    `INSERT INTO provisioning_providers (code, name, kind, status)
-     VALUES (?1, ?2, 'marzban', 'ACTIVE') RETURNING id`,
+    `INSERT INTO provisioning_providers (code, name, kind, status, base_url, secret_ref)
+     VALUES (?1, ?2, 'pasarguard', 'ACTIVE', 'https://x.test', ?1) RETURNING id`,
   )
     .bind(`${PREFIX}${label}`, `پنل ${label}`)
     .first<{ id: number }>();
@@ -129,6 +132,9 @@ async function readPlans(ids: number[]): Promise<Record<number, [number | null, 
 }
 
 async function purge(): Promise<void> {
+  await baseEnv.DB.prepare(`DELETE FROM provisioning_stock WHERE remote_username LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
   await baseEnv.DB.prepare(
     `DELETE FROM product_plans WHERE product_id IN (SELECT id FROM products WHERE code LIKE ?1)`,
   )
@@ -400,6 +406,39 @@ describe('the number the screens print', () => {
     // flat list counts, so the two screens cannot print different numbers about
     // the same shop.
     expect(mine).toMatchObject({ productsCount: 2, sellableCount: 2 });
+  });
+
+  it('counts a shelf config only while something is on the shelf', async () => {
+    // Sam, 2026-09-15: a panel with nothing behind it sells only from its
+    // shelf. The bot's `place()` refuses the invoice; this is the dashboard
+    // saying the same number, and `apps/bot/test/sellable.test.ts` is what
+    // keeps the two from drifting.
+    const cat = await makeCategory('shelf');
+    const { ids } = await makeConfigs(cat, 'shelf-count', 1);
+    await baseEnv.DB.prepare(
+      `UPDATE provisioning_providers SET kind = 'manual', base_url = NULL, secret_ref = NULL
+        WHERE id = (SELECT provider_id FROM products WHERE code = ?1)`,
+    )
+      .bind(`${PREFIX}shelf-count`)
+      .run();
+    const count = async () =>
+      ((await (await get(`/api/v1/admin/catalog?categoryId=${cat}`)).json()) as {
+        sellableTotal: number;
+        items: { configs: { shelfAvailable: number }[] }[];
+      });
+    let body = await count();
+    expect(body.sellableTotal).toBe(0);
+    expect(body.items[0]?.configs[0]?.shelfAvailable).toBe(0);
+
+    await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
+       VALUES (?1, (SELECT provider_id FROM products WHERE code = ?2), ?3, 'https://x.test/s')`,
+    )
+      .bind(ids[0], `${PREFIX}shelf-count`, `${PREFIX}shelf-acct`)
+      .run();
+    body = await count();
+    expect(body.sellableTotal).toBe(1);
+    expect(body.items[0]?.configs[0]?.shelfAvailable).toBe(1);
   });
 
   it('finds the unsellable rows, including one with no panel at all', async () => {

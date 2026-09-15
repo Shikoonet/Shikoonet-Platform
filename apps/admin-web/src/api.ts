@@ -227,6 +227,8 @@ export interface ConfigRow {
   buttonStyle: ButtonStyle | null;
   /** This config's own words at delivery, over the service's. */
   deliveryNote: string | null;
+  /** Accounts on the shelf for this config; meaningful only when the panel does not reach a panel. */
+  shelfAvailable?: number;
   priceIrr: number;
   /** null is unmetered. Zero is a real, free allowance — not the same thing. */
   volumeGb: number | null;
@@ -519,7 +521,7 @@ export interface StockRow {
   subscriptionUrl: string | null;
   /** An account's password, same visibility rule as the link. */
   secret: string | null;
-  status: 'AVAILABLE' | 'USED' | 'RETIRED';
+  status: 'AVAILABLE' | 'RESERVED' | 'USED' | 'RETIRED';
   orderPublicId: string | null;
   note: string | null;
   createdAt: string;
@@ -531,6 +533,8 @@ export interface ShelfCount {
   planName: string;
   productName: string;
   available: number;
+  /** Held by unpaid invoices — not for sale, not yet sold. */
+  reserved: number;
   used: number;
 }
 

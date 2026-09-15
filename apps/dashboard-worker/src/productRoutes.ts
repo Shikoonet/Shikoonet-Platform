@@ -606,6 +606,7 @@ interface ConfigRow {
   badge: string | null;
   button_style: 'primary' | 'success' | 'danger' | null;
   delivery_note: string | null;
+  shelf_available: number;
   price_irr: number;
   duration_days: number | null;
   volume_gb: number | null;
@@ -637,6 +638,8 @@ async function configsFor(db: D1Database, productIds: number[]): Promise<ConfigR
               pl.duration_days, pl.volume_gb,
               pl.user_limit, pl.status, pl.sort_order, pl.row_index,
               pl.attrs->>'delivery_note' AS delivery_note,
+              (SELECT COUNT(*)::int FROM provisioning_stock st
+                WHERE st.plan_id = pl.id AND st.status = 'AVAILABLE') AS shelf_available,
               (SELECT COUNT(*) FROM orders o WHERE o.plan_id = pl.id) AS orders_count
          FROM product_plans pl
         WHERE pl.product_id IN (${holes})
@@ -716,6 +719,9 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
         buttonStyle: cf.button_style,
         // This config's own words at delivery, over the service's.
         deliveryNote: cf.delivery_note,
+        // Only meaningful when the panel does not deliver by itself; the
+        // screen asks `panel.hasGroups` before reading it.
+        shelfAvailable: Number(cf.shelf_available),
         priceIrr: Number(cf.price_irr),
         durationDays: cf.duration_days,
         // NULL is unmetered and 0 is a free gigabyte allowance. The flat route
@@ -761,7 +767,13 @@ const SELLABLE = `
   -- the kinds with a real adapter are asked; the list is the adapter registry's
   -- own, so this and the bot cannot disagree about which kinds reach a panel.
   AND (pr.kind NOT IN (${AUTOMATED_KINDS_SQL})
-       OR (NULLIF(pr.base_url, '') IS NOT NULL AND ${PANEL_HAS_SECRET}))`;
+       OR (NULLIF(pr.base_url, '') IS NOT NULL AND ${PANEL_HAS_SECRET}))
+  -- A kind with no adapter sells only from its shelf (Sam, 2026-09-15): an
+  -- empty shelf is «ناموجود» in the bot and not for sale here. The bot's
+  -- shelf_available column and place() say the same thing.
+  AND (pr.kind IN (${AUTOMATED_KINDS_SQL})
+       OR EXISTS (SELECT 1 FROM provisioning_stock st
+                   WHERE st.plan_id = pl.id AND st.status = 'AVAILABLE'))`;
 
 /**
  * The panel's ceiling, and how much of it is spent.

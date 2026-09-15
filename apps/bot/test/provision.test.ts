@@ -632,18 +632,22 @@ describe('the referrer is paid on delivery', () => {
 });
 
 describe('a product with no automation', () => {
-  it('is completed and queued for a person, not failed, and promises no link', async () => {
+  it('is failed and refunded when its shelf has nothing, never queued for a person', async () => {
+    // Until 2026-09-15 this was «completed and queued for a person»: the
+    // manual adapter reported success, the order went COMPLETED, and the
+    // customer was told somebody was finishing it — money taken, no account,
+    // and no screen listing the queue. Sam: a kind with no adapter delivers
+    // from its shelf and nothing else; `shelf-only.test.ts` has the rule end
+    // to end. Here: the sweep never reaches the network and never says
+    // «دستی».
     const order = await paidOrder({ kind: 'spotify' });
 
     await provisionPaidOrders(db, deadPanel);
 
-    const notes = await pendingNotifications();
-    // Never reached the network at all — an unknown kind falls to manual.
-    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
-    const sub = (await subsFor(order.orderId))[0]!;
-    expect(sub.remote_ref).toMatchObject({ pending: true, kind: 'manual' });
-    const note = notes.find((n) => n.chatId === order.telegramId)!;
-    expect(note.text).toContain('دستی');
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'FAILED' });
+    expect(await subsFor(order.orderId)).toHaveLength(0);
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId)!;
+    expect(note.text).toContain(order.publicId);
     expect(note.text).not.toContain('http');
   });
 });
