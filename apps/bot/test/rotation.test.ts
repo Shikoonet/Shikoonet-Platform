@@ -56,6 +56,13 @@ function luhnOk(digits: string): boolean {
 /**
  * A pool of `count` cards, all ACTIVE and standing in the line in index order,
  * with every other card in the database parked. Returns the card numbers.
+ *
+ * Tickets come from the queue sequence, never written by hand. The first
+ * version of this wrote `0..count-1` and passed on the sim database, where
+ * the sequence had been seeded above four million, and failed in CI on a
+ * fresh one: there the sequence started at 1, so a card that took money drew
+ * ticket 2 and landed in FRONT of card 5 rather than behind it. A ticket only
+ * means «behind everyone» when everyone's ticket came from the same counter.
  */
 async function pool(count: number): Promise<string[]> {
   await db
@@ -82,12 +89,12 @@ async function pool(count: number): Promise<string[]> {
         `INSERT INTO payment_cards
            (id, financial_account_id, card_digits, label, holder_name, status,
             created_at, rotation_cursor)
-         VALUES (?1, ?2, ?3, ?4, 'چرخش', 'ACTIVE', 0, ?5)
+         VALUES (?1, ?2, ?3, ?4, 'چرخش', 'ACTIVE', 0, nextval('payment_card_queue_seq'))
          ON CONFLICT (card_digits) DO UPDATE
-           SET status = 'ACTIVE', rotation_cursor = EXCLUDED.rotation_cursor,
+           SET status = 'ACTIVE', rotation_cursor = nextval('payment_card_queue_seq'),
                last_assigned_at = NULL`,
       )
-      .bind(`${PREFIX}${i}`, ACCOUNT_ID, digits, `card ${i}`, i)
+      .bind(`${PREFIX}${i}`, ACCOUNT_ID, digits, `card ${i}`)
       .run();
   }
   return cards;
@@ -492,8 +499,8 @@ describe('a card is only handed out while its account is in service', () => {
         `INSERT INTO payment_cards
            (id, financial_account_id, card_digits, label, holder_name, status,
             created_at, rotation_cursor)
-         VALUES (?1, ?2, ?3, 'زنده', 'چرخش', 'ACTIVE', 0, 0)
-         ON CONFLICT (card_digits) DO UPDATE SET status = 'ACTIVE', rotation_cursor = 0`,
+         VALUES (?1, ?2, ?3, 'زنده', 'چرخش', 'ACTIVE', 0, nextval('payment_card_queue_seq'))
+         ON CONFLICT (card_digits) DO UPDATE SET status = 'ACTIVE'`,
       )
       .bind(`${PREFIX}live`, live, liveDigits)
       .run();
