@@ -279,6 +279,30 @@ describe('the line moves on money, not on being shown', { timeout: 60_000 }, () 
     expect(order).toEqual([...cards, newcomer]);
   });
 
+  it('sends a card to the back when its order is delivered by hand, before any SMS', async () => {
+    // Sam, 2026-09-15: «اگر دستی تایید کنم یعنی بله، باید ته صف بره». Manual
+    // delivery and continuity mode write FULFILLED_UNRECONCILED and the bank
+    // SMS reconciles it to VERIFIED hours later; the card moves on the first
+    // of the two, and NOT again on the second — a second ticket would push it
+    // behind cards that took money in between.
+    const cards = await pool(3);
+    const id = await openClaim(cards[0]!);
+    await db
+      .prepare(`UPDATE payment_claims SET status = 'FULFILLED_UNRECONCILED' WHERE id = ?1`)
+      .bind(id)
+      .run();
+    expect(await drawOne()).toBe(cards[1]!);
+
+    // Card 1 takes money the ordinary way, so it is now behind card 0.
+    await deposit(cards[1]!);
+    // The SMS for card 0's order arrives. Card 0 must stay in front of card 1.
+    await db.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = ?1`).bind(id).run();
+
+    expect(await drawOne()).toBe(cards[2]!);
+    await deposit(cards[2]!);
+    expect(await drawOne()).toBe(cards[0]!);
+  });
+
   it('does not move the queue for a claim imported already VERIFIED', async () => {
     // `packages/migrate` writes historical claims straight in as VERIFIED. If
     // those moved the queue, cutover would reorder every card by whatever order
