@@ -10,13 +10,11 @@
  * UNIQUE, so a deleted card cannot be re-added while any history references it,
  * and the audit trail loses the row that received the money.
  *
- * The half worth testing is what happens on the way BACK. `rotation_cursor` is a
- * virtual clock that only moves forward, so a card parked at 4,000,000 while its
- * peers climb to 40,000,000 will win EVERY checkout after it is switched on
- * again — the exact behaviour the head admin asked us to remove on 2026-08-13,
- * arriving through a door that did not exist when that was fixed. The create
- * route already seeds a new card at `MAX(rotation_cursor)` for this reason;
- * re-enabling is the same event and needs the same seed.
+ * The half worth testing is what happens on the way BACK. `rotation_cursor` is
+ * the card's place in the bakery queue (0064), and a card switched off months
+ * ago still holds the ticket it had then — in front of every card that has
+ * taken money since. Re-enabling is the same event as adding, and both draw a
+ * fresh ticket from the queue sequence: the card joins the back of the line.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -57,26 +55,37 @@ async function patch(id: string, body: unknown, email?: string) {
 
 async function card(id: string) {
   return baseEnv.DB.prepare(
-    `SELECT id, status, display_weight, label, rotation_cursor FROM payment_cards WHERE id = ?1`,
+    `SELECT id, status, label, rotation_cursor FROM payment_cards WHERE id = ?1`,
   )
     .bind(id)
     .first<{
       id: string;
       status: string;
-      display_weight: number;
       label: string | null;
       rotation_cursor: number;
     }>();
 }
 
-async function seedCard(id: string, digits: string, cursor: number, status = 'ACTIVE') {
+/**
+ * `cursor` is a hand-written ticket, or 'next' for one drawn from the queue
+ * sequence the way the routes draw them. Tickets only ever come from that
+ * sequence in production, so a test that wants "in front of / behind" has to
+ * draw its comparison tickets from it too — a literal 40,000,000 is above
+ * the sequence on a fresh database and below it on the sim database.
+ */
+async function seedCard(id: string, digits: string, cursor: number | 'next', status = 'ACTIVE') {
   await baseEnv.DB.prepare(
     `INSERT INTO payment_cards
        (id, financial_account_id, card_digits, label, created_at, status, rotation_cursor)
-     VALUES (?1, ?2, ?3, NULL, 1, ?4, ?5)`,
+     VALUES (?1, ?2, ?3, NULL, 1, ?4,
+             CASE WHEN ?6 = 1 THEN nextval('payment_card_queue_seq') ELSE ?5 END)`,
   )
-    .bind(id, ACCOUNT, digits, status, cursor)
+    .bind(id, ACCOUNT, digits, status, cursor === 'next' ? 0 : cursor, cursor === 'next' ? 1 : 0)
     .run();
+}
+
+async function cursorOf(id: string): Promise<number> {
+  return (await card(id))!.rotation_cursor;
 }
 
 beforeAll(async () => {
@@ -137,19 +146,19 @@ describe('switching a card off and on', () => {
     expect(await card(A)).toMatchObject({ status: 'ACTIVE' });
   });
 
-  it('does not send a re-enabled card to the front of the queue', async () => {
-    // The card was switched off early and its clock stopped; its peers kept
-    // running. Coming back level is the whole point — coming back at 1,000,000
-    // among peers at 40,000,000 means it takes every checkout until it catches
-    // up, which is a shop showing one card all afternoon.
+  it('sends a re-enabled card to the back of the line', async () => {
+    // The card was switched off early and kept its old ticket; its peers have
+    // taken money since and drawn new ones. Coming back in FRONT of them means
+    // it takes every checkout until each of them has taken money again — a
+    // shop showing one card all afternoon.
     await seedCard(A, '5047061674737313', 1_000_000, 'DISABLED');
-    await seedCard(B, '5047061674687526', 40_000_000);
-    await seedCard(C, '5047061153142274', 41_000_000);
+    await seedCard(B, '5047061674687526', 'next');
+    await seedCard(C, '5047061153142274', 'next');
 
     await patch(A, { status: 'ACTIVE' });
 
-    const back = await card(A);
-    expect(back?.rotation_cursor).toBe(41_000_000);
+    expect(await cursorOf(A)).toBeGreaterThan(await cursorOf(C));
+    expect(await cursorOf(C)).toBeGreaterThan(await cursorOf(B));
   });
 
   it('leaves the cursor alone when the card is only being switched OFF', async () => {
@@ -192,11 +201,12 @@ describe('switching a card off and on', () => {
 });
 
 describe('the rest of the edit', () => {
-  it('still changes the display weight', async () => {
+  it('no longer knows a display weight — the queue has no use for one', async () => {
+    // `display_weight` went with migration 0064. A body that still sends it is
+    // a stale client, and `.strict()` makes that a 400 rather than a silent drop.
     await seedCard(A, '5047061674737313', 1_000_000);
 
-    expect((await patch(A, { displayWeight: 5 })).status).toBe(200);
-    expect(await card(A)).toMatchObject({ display_weight: 5 });
+    expect((await patch(A, { displayWeight: 5 })).status).toBe(400);
   });
 
   it('renames a card', async () => {
@@ -227,12 +237,12 @@ describe('the rest of the edit', () => {
     expect(await card(A)).toMatchObject({ label: 'کارت پویان', status: 'DISABLED' });
   });
 
-  it('changes weight and status in one call without losing either', async () => {
+  it('changes label and status in one call without losing either', async () => {
     await seedCard(A, '5047061674737313', 1_000_000);
 
-    await patch(A, { displayWeight: 3, status: 'DISABLED' });
+    await patch(A, { label: 'کارت پویان', status: 'DISABLED' });
 
-    expect(await card(A)).toMatchObject({ display_weight: 3, status: 'DISABLED' });
+    expect(await card(A)).toMatchObject({ label: 'کارت پویان', status: 'DISABLED' });
   });
 });
 
@@ -245,8 +255,7 @@ describe('what the route refuses', () => {
   });
 
   it('refuses a body that asks for nothing', async () => {
-    // An empty PATCH used to be a 400 only because the schema demanded a weight.
-    // It has to stay a 400 on purpose, or a UI bug silently writes an audit row
+    // It has to be a 400 on purpose, or a UI bug silently writes an audit row
     // recording that nothing changed.
     await seedCard(A, '5047061674737313', 1_000_000);
 

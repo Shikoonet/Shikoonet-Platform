@@ -24,7 +24,8 @@ const CARD = {
   display: '5047-0616-7456-0137',
   label: null,
   status: 'ACTIVE',
-  display_weight: 1,
+  queue_position: 3,
+  held_until: null,
   bank_name: 'SHAHR',
   luhn_ok: true,
 };
@@ -116,5 +117,44 @@ describe('what the badge says when the account is off', () => {
   it('still says «در گردش» when both switches are on', async () => {
     render(<PaymentCardsPanel accountId="acc-1" accountActive />);
     expect(await screen.findByText('در گردش')).toBeTruthy();
+  });
+});
+
+/**
+ * The bakery queue, on the screen. `display_weight` left with migration 0064
+ * — a plain queue has nothing for a weight to divide — and what replaced the
+ * select is the two facts an operator asks about: where the card stands, and
+ * whether a customer has it right now. Both come from the route, already
+ * computed the way the bot computes them.
+ */
+describe('the queue badges', () => {
+  it('shows the card’s place in the line, and no weight control', async () => {
+    render(<PaymentCardsPanel accountId="acc-1" accountActive />);
+    await screen.findByText('5047-0616-7456-0137');
+
+    expect(screen.getByText('نوبت ۳')).toBeTruthy();
+    expect(screen.queryByLabelText('سهم از نمایش')).toBeNull();
+  });
+
+  it('says a customer has the card while an invoice holds it', async () => {
+    vi.mocked(fetch).mockImplementation(async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, items: [{ ...CARD, held_until: Date.UTC(2026, 8, 15, 10, 0) }] }),
+      }) as Response,
+    );
+    render(<PaymentCardsPanel accountId="acc-1" accountActive />);
+    await screen.findByText('5047-0616-7456-0137');
+
+    // The help text below the list says the same words; the badge is the claim.
+    expect(screen.getByText(/در دست مشتری تا/, { selector: '.badge' })).toBeTruthy();
+  });
+
+  it('shows neither for a card that is off — it is not in the line', async () => {
+    render(<PaymentCardsPanel accountId="acc-1" accountActive={false} />);
+    await screen.findByText('5047-0616-7456-0137');
+
+    expect(screen.queryByText(/نوبت/, { selector: '.badge' })).toBeNull();
   });
 });

@@ -1,19 +1,15 @@
 /**
- * Which card gets shown, and how often — and, since 2026-08-21, which card
- * actually RECEIVES the money.
+ * Which card gets shown — the bakery queue, as Sam put it on 2026-09-15:
+ * «هر کی نان گرفت بره انتهای صف».
  *
- * The head admin's request on 2026-08-13 was a ratio, and it had two halves:
- * a newly added card must be shown MORE than the others until it catches up,
- * and it must NOT be the only card shown. Both halves are asserted here,
- * because the second one is what the code did wrong before this change —
- * `ORDER BY last_assigned_at NULLS FIRST` gave a fresh card 100% of checkouts.
+ * Three rules, each with its own describe below:
  *
- * Sam's request on 2026-08-21 was a queue: a card goes to the back when money
- * lands on it, not when it is merely shown. A shown-and-abandoned checkout is
- * the common case — the customer opens the payment screen and walks away — and
- * under the old rule it cost that card its turn, so the money piled onto a
- * fraction of the cards. The second half of this file counts DEPOSITS rather
- * than assignments and is where that is asserted.
+ *   - The line moves on MONEY, not on being shown (Sam, 2026-08-21). A
+ *     shown-and-abandoned checkout is the common case, and when that cost a
+ *     card its turn the money piled onto a fraction of the cards.
+ *   - A card in a customer's hands is out of the line for ten minutes — longer
+ *     once they press «پرداخت کردم» — and the lease is the open `payments` row.
+ *   - Only a live card is in the line: card ACTIVE, account on.
  *
  * These count real assignments through `rotateCard` rather than reasoning about
  * the SQL. Every other card in the shared database is parked as DISABLED for
@@ -21,9 +17,14 @@
  */
 
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
+import { CARD_HOLD_MS, CLAIMED_CARD_HOLD_MS } from '@shikoo/domain';
 import { afterEach, describe, expect, it } from 'vitest';
 import { rotateCard } from '../src/payment.js';
 import { db } from './helpers/env.js';
+
+/** A fixed instant every draw is measured from — the picker reads no clock. */
+const T = 1_700_000_000_000;
+const MINUTE = 60_000;
 
 const ACCOUNT_ID = 'rotation-test-account';
 const PREFIX = 'rot-card-';
@@ -53,11 +54,17 @@ function luhnOk(digits: string): boolean {
 }
 
 /**
- * A pool of `count` cards, all ACTIVE, with every other card in the database
- * parked. `weights[i]` is the display weight of card i; anything unspecified
- * is 1. Returns the card numbers in index order.
+ * A pool of `count` cards, all ACTIVE and standing in the line in index order,
+ * with every other card in the database parked. Returns the card numbers.
+ *
+ * Tickets come from the queue sequence, never written by hand. The first
+ * version of this wrote `0..count-1` and passed on the sim database, where
+ * the sequence had been seeded above four million, and failed in CI on a
+ * fresh one: there the sequence started at 1, so a card that took money drew
+ * ticket 2 and landed in FRONT of card 5 rather than behind it. A ticket only
+ * means «behind everyone» when everyone's ticket came from the same counter.
  */
-async function pool(count: number, weights: Record<number, number> = {}): Promise<string[]> {
+async function pool(count: number): Promise<string[]> {
   await db
     .prepare(`UPDATE payment_cards SET status = 'DISABLED' WHERE id NOT LIKE ?1`)
     .bind(`${PREFIX}%`)
@@ -81,23 +88,23 @@ async function pool(count: number, weights: Record<number, number> = {}): Promis
       .prepare(
         `INSERT INTO payment_cards
            (id, financial_account_id, card_digits, label, holder_name, status,
-            created_at, display_weight, rotation_cursor)
-         VALUES (?1, ?2, ?3, ?4, 'چرخش', 'ACTIVE', 0, ?5, 0)
+            created_at, rotation_cursor)
+         VALUES (?1, ?2, ?3, ?4, 'چرخش', 'ACTIVE', 0, nextval('payment_card_queue_seq'))
          ON CONFLICT (card_digits) DO UPDATE
-           SET status = 'ACTIVE', display_weight = EXCLUDED.display_weight,
-               rotation_cursor = 0, last_assigned_at = NULL`,
+           SET status = 'ACTIVE', rotation_cursor = nextval('payment_card_queue_seq'),
+               last_assigned_at = NULL`,
       )
-      .bind(`${PREFIX}${i}`, ACCOUNT_ID, digits, `card ${i}`, weights[i] ?? 1)
+      .bind(`${PREFIX}${i}`, ACCOUNT_ID, digits, `card ${i}`)
       .run();
   }
   return cards;
 }
 
 /** Assign `times` cards through the real rotation and count who got them. */
-async function draw(times: number): Promise<Map<string, number>> {
+async function draw(times: number, at: number = T): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   for (let i = 0; i < times; i++) {
-    const card = await db.withSession((tx) => rotateCard(tx, 1_700_000_000_000 + i));
+    const card = await db.withSession((tx) => rotateCard(tx, at + i));
     if (!card) throw new Error(`rotation returned no card on draw ${i}`);
     counts.set(card.card_digits, (counts.get(card.card_digits) ?? 0) + 1);
   }
@@ -136,8 +143,8 @@ async function deposit(digits: string): Promise<void> {
 }
 
 /** Draw one card through the real rotation and return its number. */
-async function drawOne(): Promise<string> {
-  const [card] = [...(await draw(1)).keys()];
+async function drawOne(at: number = T): Promise<string> {
+  const [card] = [...(await draw(1, at)).keys()];
   if (!card) throw new Error('rotation returned no card');
   return card;
 }
@@ -149,7 +156,29 @@ async function drawAndPay(): Promise<string> {
   return card;
 }
 
+let holdSeq = 0;
+
+/**
+ * An invoice holding `digits`: the open `payments` row `checkoutFor` writes
+ * when it shows a card, dated `shownAt`. `claimed` is the row after
+ * «پرداخت کردم». Returns the row id so a test can settle it.
+ */
+async function hold(digits: string, shownAt: number, claimed = false): Promise<number> {
+  const row = await db
+    .prepare(
+      `INSERT INTO payments
+         (public_id, amount_irr, method, status, assigned_card_number, created_at, updated_at)
+       VALUES (?1, 1000000, 'CARD_TO_CARD', ?2, ?3,
+               to_timestamp(?4 / 1000.0), to_timestamp(?4 / 1000.0))
+       RETURNING id`,
+    )
+    .bind(`${CLAIM_PREFIX}hold-${holdSeq++}`, claimed ? 'AWAITING_REVIEW' : 'PENDING', digits, shownAt)
+    .first<{ id: number }>();
+  return row!.id;
+}
+
 afterEach(async () => {
+  await db.prepare(`DELETE FROM payments WHERE public_id LIKE ?1`).bind(`${CLAIM_PREFIX}%`).run();
   await db.prepare(`DELETE FROM payment_claims WHERE id LIKE ?1`).bind(`${CLAIM_PREFIX}%`).run();
   await db.prepare(`DELETE FROM payment_cards WHERE id LIKE ?1`).bind(`${PREFIX}%`).run();
   await db.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(ACCOUNT_ID).run();
@@ -185,127 +214,34 @@ afterEach(async () => {
  * and fewer draws would make the ratio noisy, which is a flake with a different
  * shape.
  */
-describe('card rotation', { timeout: 30_000 }, () => {
-  it('splits evenly when every card has the same weight', async () => {
-    const cards = await pool(5);
-
-    const counts = await draw(500);
-
-    for (const card of cards) {
-      expect(counts.get(card)).toBe(100);
-    }
-  });
-
-  it('shows a weighted card more often, in the ratio of its weight', async () => {
-    // Card 0 carries weight 3 among five cards, so its expected share is
-    // 3/(3+1+1+1+1) = 3/7 and each other card gets 1/7.
-    const cards = await pool(5, { 0: 3 });
-
-    const counts = await draw(700);
-
-    expect(counts.get(cards[0]!)).toBe(300);
-    for (const card of cards.slice(1)) {
-      expect(counts.get(card)).toBe(100);
-    }
-  });
-
-  it('never gives the weighted card every checkout', async () => {
-    // The half of the request that the old code got wrong. Even at the maximum
-    // weight the schema allows, the other cards must keep their turn.
-    const cards = await pool(4, { 0: 20 });
-
-    const counts = await draw(230);
-
-    for (const card of cards) {
-      expect(counts.get(card) ?? 0).toBeGreaterThan(0);
-    }
-    expect(counts.get(cards[0]!)).toBeLessThan(230);
-  });
-
-  it('does not let a card added later drain the pool', async () => {
-    // Four cards run for a while, then a fifth is added the way the dashboard
-    // adds one: seeded to MAX(rotation_cursor) rather than to zero. Without
-    // that seeding the newcomer sits at 0 among peers in the millions and takes
-    // every single checkout until it catches up — the live bug this replaced.
-    const cards = await pool(4);
-    await draw(400);
-
-    const newcomer = digitsFor(99);
-    await db
-      .prepare(
-        `INSERT INTO payment_cards
-           (id, financial_account_id, card_digits, label, holder_name, status,
-            created_at, display_weight, rotation_cursor)
-         VALUES (?1, ?2, ?3, 'newcomer', 'چرخش', 'ACTIVE', 0, 1,
-                 COALESCE((SELECT MAX(rotation_cursor) FROM payment_cards WHERE status = 'ACTIVE'), 0))`,
-      )
-      .bind(`${PREFIX}99`, ACCOUNT_ID, newcomer)
-      .run();
-
-    const counts = await draw(100);
-
-    const share = counts.get(newcomer) ?? 0;
-    expect(share).toBeGreaterThan(0);
-    // A fair share of five cards is 20. Anything near 100 would be the old bug.
-    expect(share).toBeLessThanOrEqual(25);
-    for (const card of cards) {
-      expect(counts.get(card) ?? 0).toBeGreaterThan(0);
-    }
-  });
-
-  it('skips a card that has been disabled', async () => {
-    const cards = await pool(3);
-    await db
-      .prepare(`UPDATE payment_cards SET status = 'DISABLED' WHERE card_digits = ?1`)
-      .bind(cards[1]!)
-      .run();
-
-    const counts = await draw(60);
-
-    expect(counts.get(cards[1]!)).toBeUndefined();
-    expect(counts.get(cards[0]!)).toBe(30);
-    expect(counts.get(cards[2]!)).toBe(30);
-  });
-});
-
-/**
- * The queue, as Sam described it on 2026-08-21: thirty cards in a line, and the
- * one that just took money goes to the end of it.
- *
- * The distinction these cases turn on is the one the old code did not make.
- * Being SHOWN a card advances it by 1,000,000; taking money on it advances it
- * by 1,000,000,000 — a thousand times as far. So a checkout the customer
- * abandons barely moves the card, and a checkout they pay sends it a full lap
- * back. Neither number is asserted anywhere; what is asserted is the behaviour
- * the ratio buys, which is what would actually be wrong if somebody changed it.
- */
-describe('card queue advances on money, not on being shown', { timeout: 60_000 }, () => {
-  it('sends a card that took money to the back, and leaves a shown one where it was', async () => {
+describe('the line moves on money, not on being shown', { timeout: 60_000 }, () => {
+  it('shows the front of the line to everyone until somebody pays', async () => {
+    // Being shown is not taking bread. Twenty customers open a checkout and
+    // walk away (no invoice row here, so no hold either) and the same card is
+    // at the front for every one of them.
     const cards = await pool(3);
 
-    // One customer pays. The other two cards are untouched.
+    const counts = await draw(20);
+
+    expect(counts.get(cards[0]!)).toBe(20);
+  });
+
+  it('sends the card that took money to the back, and comes round to it again', async () => {
+    const cards = await pool(3);
+
     expect(await drawAndPay()).toBe(cards[0]!);
-
-    const counts = await draw(100);
-
-    // A hundred more checkouts and card 0 is still waiting its turn, because
-    // one lap is 1000 assignments and only 100 have happened. Under the old
-    // rule it would take its ordinary third of these, about 33.
-    expect(counts.get(cards[0]!) ?? 0).toBe(0);
-    expect(counts.get(cards[1]!)).toBe(50);
-    expect(counts.get(cards[2]!)).toBe(50);
+    expect(await drawAndPay()).toBe(cards[1]!);
+    expect(await drawAndPay()).toBe(cards[2]!);
+    // Everybody has had a turn; the line is back in its first order.
+    expect(await drawAndPay()).toBe(cards[0]!);
+    expect(await drawOne()).toBe(cards[1]!);
   });
 
   it('spreads thirty payments over thirty cards even when most checkouts are abandoned', async () => {
-    // This is the whole request in one case. Every round has two customers who
-    // are shown a card and never pay, and one who does.
-    //
-    // Under the old rule the abandoned checkouts advanced their cards just as
-    // far as a paid one, so the paying customer was always handed the third
-    // card of the round: the money landed on cards 2, 5, 8 … 29 — ten of the
-    // thirty — three times each, and the other twenty never saw a rial. That is
-    // the imbalance Sam is describing, and it is what this case fails on if the
-    // queue ever goes back to moving when a card is merely shown.
+    // The whole request in one case. Every round has two customers who are
+    // shown a card and never pay, and one who does. Under the pre-0029 rule the
+    // abandoned checkouts moved their cards as far as a paid one, so the money
+    // landed on cards 2, 5, 8 … 29 — ten of the thirty — three times each.
     const cards = await pool(30);
 
     const paid = new Map<string, number>();
@@ -319,28 +255,35 @@ describe('card queue advances on money, not on being shown', { timeout: 60_000 }
     for (const card of cards) expect(paid.get(card)).toBe(1);
   });
 
-  it('gives a weighted card its share of the money, not just of the screens', async () => {
-    // `display_weight` was the head admin's 2026-08-13 knob and it still has to
-    // mean something. It divides the payment step too, so a weight of 2 comes
-    // back around twice as fast and collects twice the deposits.
-    const cards = await pool(3, { 0: 2 });
+  it('puts a card added later at the back of the line, not the front', async () => {
+    // The dashboard adds a card with `nextval` on the queue sequence. The old
+    // clock design seeded a newcomer at zero among peers in the millions, and
+    // it took every checkout until it caught up — the head admin's 2026-08-13
+    // complaint. Here it simply waits its turn behind everyone.
+    const cards = await pool(3);
+    for (let i = 0; i < 3; i++) await drawAndPay();
 
-    const paid = new Map<string, number>();
-    for (let i = 0; i < 40; i++) {
-      const card = await drawAndPay();
-      paid.set(card, (paid.get(card) ?? 0) + 1);
-    }
+    const newcomer = digitsFor(99);
+    await db
+      .prepare(
+        `INSERT INTO payment_cards
+           (id, financial_account_id, card_digits, label, holder_name, status,
+            created_at, rotation_cursor)
+         VALUES (?1, ?2, ?3, 'newcomer', 'چرخش', 'ACTIVE', 0, nextval('payment_card_queue_seq'))`,
+      )
+      .bind(`${PREFIX}99`, ACCOUNT_ID, newcomer)
+      .run();
 
-    expect(paid.get(cards[0]!)).toBe(20);
-    expect(paid.get(cards[1]!)).toBe(10);
-    expect(paid.get(cards[2]!)).toBe(10);
+    const order: string[] = [];
+    for (let i = 0; i < 4; i++) order.push(await drawAndPay());
+    expect(order).toEqual([...cards, newcomer]);
   });
 
   it('does not move the queue for a claim imported already VERIFIED', async () => {
     // `packages/migrate` writes historical claims straight in as VERIFIED. If
     // those moved the queue, cutover would reorder every card by whatever order
-    // the import happened to run in — thousands of laps, all meaningless. The
-    // trigger is ON UPDATE for exactly this reason.
+    // the import happened to run in. The trigger is ON UPDATE for exactly this
+    // reason.
     const cards = await pool(2);
     const id = `${CLAIM_PREFIX}${claimSeq++}`;
     await db
@@ -353,25 +296,127 @@ describe('card queue advances on money, not on being shown', { timeout: 60_000 }
       .bind(id, id, ACCOUNT_ID, cards[0]!, MIRZABOT_SOURCE)
       .run();
 
-    const counts = await draw(20);
-
-    expect(counts.get(cards[0]!)).toBe(10);
-    expect(counts.get(cards[1]!)).toBe(10);
+    expect(await drawOne()).toBe(cards[0]!);
   });
 
   it('leaves the queue alone when a verification is reverted', async () => {
-    // Reverting an approval does not un-receive the money, and rewinding the
-    // cursor would need the whole history of what it was before. The card keeps
-    // its lap. Written down because it is a choice, not an oversight.
+    // Reverting an approval does not un-receive the money, and the ticket a
+    // card drew cannot be handed back. The card keeps its place at the back.
+    // Written down because it is a choice, not an oversight.
     const cards = await pool(2);
     const id = await openClaim(cards[0]!);
     await db.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = ?1`).bind(id).run();
     await db.prepare(`UPDATE payment_claims SET status = 'REJECTED' WHERE id = ?1`).bind(id).run();
 
-    const counts = await draw(20);
+    expect(await drawOne()).toBe(cards[1]!);
+  });
 
-    expect(counts.get(cards[0]!) ?? 0).toBe(0);
-    expect(counts.get(cards[1]!)).toBe(20);
+  it('skips a card that has been disabled', async () => {
+    const cards = await pool(3);
+    await db
+      .prepare(`UPDATE payment_cards SET status = 'DISABLED' WHERE card_digits = ?1`)
+      .bind(cards[0]!)
+      .run();
+
+    expect(await drawOne()).toBe(cards[1]!);
+  });
+});
+
+/**
+ * A card in a customer's hands is out of the line.
+ *
+ * The hold is the open `payments` row — nothing else records it — so these
+ * write that row the way `checkoutFor` does and read the picker's answer at
+ * chosen instants. (`pay.test.ts` walks the same thing through the real
+ * checkout, so a `checkoutFor` that stopped recording the card would fail
+ * there.) Without the hold, two customers buying the same plan a minute apart
+ * are told to pay the same amount into the same card, and the matcher cannot
+ * say whose transfer is whose (`AMBIGUOUS_CLAIMS`).
+ */
+describe("a card in a customer's hands is out of the line", () => {
+  it('skips a held card for ten minutes, then hands it out again', async () => {
+    const cards = await pool(2);
+    await hold(cards[0]!, T);
+
+    expect(await drawOne(T)).toBe(cards[1]!);
+    expect(await drawOne(T + CARD_HOLD_MS - 1)).toBe(cards[1]!);
+    // Free again — and at the FRONT, because it never took money.
+    expect(await drawOne(T + CARD_HOLD_MS)).toBe(cards[0]!);
+  });
+
+  it('holds for as many minutes as the operator set on the settings screen', async () => {
+    // Sam, 2026-09-15: the ten minutes is a default, not a rule. Written the
+    // way the settings screen writes it — a JSON string — and put back after,
+    // because `settings` is shared by every file on this database. An upsert,
+    // not an UPDATE: another suite truncates `settings`, and an UPDATE that
+    // touched no row would leave this test asserting the default against
+    // itself.
+    const cards = await pool(2);
+    await hold(cards[0]!, T);
+    const set = (json: string) =>
+      db
+        .prepare(
+          `INSERT INTO settings (scope, key, value) VALUES ('pay', 'card_hold_minutes', ?1::jsonb)
+           ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value`,
+        )
+        .bind(json)
+        .run();
+    await set('"2"');
+    try {
+      expect(await drawOne(T + 2 * MINUTE - 1)).toBe(cards[1]!);
+      expect(await drawOne(T + 2 * MINUTE)).toBe(cards[0]!);
+    } finally {
+      await set('10');
+    }
+  });
+
+  it('keeps a card out while its customer says they paid, until the claim is settled', async () => {
+    const cards = await pool(2);
+    const id = await hold(cards[0]!, T, true);
+
+    expect(await drawOne(T + 30 * MINUTE)).toBe(cards[1]!);
+
+    // An operator rejects it: nothing arrived. The card is free the same instant.
+    await db.prepare(`UPDATE payments SET status = 'REJECTED' WHERE id = ?1`).bind(id).run();
+    expect(await drawOne(T + 30 * MINUTE)).toBe(cards[0]!);
+  });
+
+  it('does not let a claim nobody ever settles park a card for good', async () => {
+    const cards = await pool(2);
+    await hold(cards[0]!, T, true);
+
+    expect(await drawOne(T + CLAIMED_CARD_HOLD_MS - 1)).toBe(cards[1]!);
+    expect(await drawOne(T + CLAIMED_CARD_HOLD_MS)).toBe(cards[0]!);
+  });
+
+  it('frees the card when the invoice is settled or expired', async () => {
+    const cards = await pool(2);
+    for (const status of ['PAID', 'EXPIRED']) {
+      const id = await hold(cards[0]!, T);
+      expect(await drawOne(T)).toBe(cards[1]!);
+      await db.prepare(`UPDATE payments SET status = ?2 WHERE id = ?1`).bind(id, status).run();
+      expect(await drawOne(T)).toBe(cards[0]!);
+    }
+  });
+
+  it('keeps selling when every card is busy, on the card that frees soonest', async () => {
+    // Sam's call: three cards, five customers at once, nobody is turned away.
+    // The fourth customer gets the card whose ten minutes end first — the
+    // matcher may need a person for that one, and review beats no sale.
+    const cards = await pool(3);
+    await hold(cards[0]!, T - 2 * MINUTE);
+    await hold(cards[1]!, T - 9 * MINUTE);
+    await hold(cards[2]!, T - 5 * MINUTE);
+
+    expect(await drawOne(T)).toBe(cards[1]!);
+  });
+
+  it('prefers any free card, however far back in the line, to a busy one', async () => {
+    const cards = await pool(3);
+    await hold(cards[0]!, T);
+    await hold(cards[1]!, T);
+
+    expect(await drawOne(T)).toBe(cards[2]!);
   });
 });
 
@@ -405,7 +450,7 @@ describe('a card is only handed out while its account is in service', () => {
 
     await accountState(0, 'ACTIVE');
 
-    const card = await db.withSession((tx) => rotateCard(tx, 1_700_000_000_000));
+    const card = await db.withSession((tx) => rotateCard(tx, T));
     // Null is the honest answer, and `checkoutFor` turns it into «کارت موجود
     // نیست». Handing the card out anyway is what this is fixing.
     expect(card).toBeNull();
@@ -416,7 +461,7 @@ describe('a card is only handed out while its account is in service', () => {
       await pool(3);
       await accountState(1, status);
 
-      expect(await db.withSession((tx) => rotateCard(tx, 1_700_000_000_000))).toBeNull();
+      expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
     });
   }
 
@@ -425,11 +470,11 @@ describe('a card is only handed out while its account is in service', () => {
     // a gate with no way back is a shop that cannot sell again.
     await pool(3);
     await accountState(0, 'ACTIVE');
-    expect(await db.withSession((tx) => rotateCard(tx, 1_700_000_000_000))).toBeNull();
+    expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
 
     await accountState(1, 'ACTIVE');
 
-    const card = await db.withSession((tx) => rotateCard(tx, 1_700_000_000_001));
+    const card = await db.withSession((tx) => rotateCard(tx, T + 1));
     expect(card?.card_digits).toBeTruthy();
   });
 
@@ -453,9 +498,9 @@ describe('a card is only handed out while its account is in service', () => {
       .prepare(
         `INSERT INTO payment_cards
            (id, financial_account_id, card_digits, label, holder_name, status,
-            created_at, display_weight, rotation_cursor)
-         VALUES (?1, ?2, ?3, 'زنده', 'چرخش', 'ACTIVE', 0, 1, 0)
-         ON CONFLICT (card_digits) DO UPDATE SET status = 'ACTIVE', rotation_cursor = 0`,
+            created_at, rotation_cursor)
+         VALUES (?1, ?2, ?3, 'زنده', 'چرخش', 'ACTIVE', 0, nextval('payment_card_queue_seq'))
+         ON CONFLICT (card_digits) DO UPDATE SET status = 'ACTIVE'`,
       )
       .bind(`${PREFIX}live`, live, liveDigits)
       .run();

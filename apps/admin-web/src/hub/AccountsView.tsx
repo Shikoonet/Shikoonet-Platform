@@ -904,8 +904,10 @@ interface PaymentCardRow {
   display: string;
   label: string | null;
   status: string;
-  /** How many turns this card takes for every one turn a weight-1 card takes. */
-  display_weight: number;
+  /** Where the card stands in the bakery queue, among every card in service. */
+  queue_position: number;
+  /** Epoch ms while an open invoice has this card; null when it is free. */
+  held_until: number | null;
   bank_name: string | null;
   luhn_ok: boolean;
 }
@@ -959,7 +961,7 @@ export function PaymentCardsPanel({
    */
   async function edit(
     id: string,
-    change: { displayWeight?: number; status?: 'ACTIVE' | 'DISABLED'; label?: string | null },
+    change: { status?: 'ACTIVE' | 'DISABLED'; label?: string | null },
     what: string,
     quiet = false,
   ) {
@@ -1073,6 +1075,17 @@ export function PaymentCardsPanel({
                       ACCOUNT is off sends them to the wrong switch. */}
                   {on ? 'در گردش' : offBecauseAccount ? 'حساب خاموش است' : 'خاموش'}
                 </span>
+                {/* The queue, as the bot walks it: a card that took money goes to
+                    the back, and a card in a customer's hands is skipped until
+                    their ten minutes are up or their claim is settled. Both
+                    badges are what «چرا این کارت نشان داده نمی‌شود» is answered
+                    with, so they sit beside the state rather than in a tooltip. */}
+                {on && <span className="badge">نوبت {count(c.queue_position)}</span>}
+                {on && c.held_until != null && (
+                  <span className="badge badge-warning">
+                    در دست مشتری تا {formatTime(c.held_until)}
+                  </span>
+                )}
                 <IdentifierText value={c.display} />
                 {c.bank_name && <span className="badge">{c.bank_name}</span>}
                 {/* A card number that fails its own check digit cannot exist. One
@@ -1097,23 +1110,6 @@ export function PaymentCardsPanel({
                     }}
                     {...w}
                   />
-                </label>
-                <label className="payment-card__field">
-                  <span className="form-label">سهم از نمایش</span>
-                  <select
-                    value={c.display_weight}
-                    disabled={busy || !on}
-                    {...w}
-                    onChange={(e) =>
-                      void edit(c.id, { displayWeight: Number(e.target.value) }, 'تغییر وزن')
-                    }
-                  >
-                    {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
-                      <option key={n} value={n}>
-                        {n === 1 ? 'معمولی (۱×)' : `${count(n)}× بیشتر`}
-                      </option>
-                    ))}
-                  </select>
                 </label>
 
                 <div className="payment-card__actions">
@@ -1162,15 +1158,19 @@ export function PaymentCardsPanel({
       <details className="payment-cards-help">
         <summary>چرخش کارت‌ها چطور کار می‌کند؟</summary>
         <p>
-          ربات همیشه کارتی را می‌دهد که بیش از همه عقب افتاده است. «سهم از نمایش ۳×» یعنی این کارت
-          سه برابر یک کارت معمولی بالا می‌آید — ولی هیچ‌وقت تنها کارت نمی‌شود. برای کارتی که تازه
-          اضافه شده سهم را بالا ببر تا شمار تراکنش‌هایش در «آمار مالی» به بقیه برسد، بعد به ۱
-          برگردان.
+          کارت‌ها در یک صف ایستاده‌اند، مثل صف نانوایی: ربات همیشه کارت اول صف را می‌دهد، و کارتی
+          که واریزی گرفت می‌رود ته صف تا دوباره نوبتش برسد. «نوبت» همین جایگاه است. فقط نمایش
+          دادن جای کارت را عوض نمی‌کند.
+        </p>
+        <p>
+          کارتی که به فاکتوری داده شده تا مدتی به کس دیگری نشان داده نمی‌شود («در دست مشتری
+          تا …») — پیش‌فرض ده دقیقه، قابل تغییر در «تنظیمات» ← «مدت نگه‌داشتن کارت»؛ اگر مشتری «پرداخت کردم» زده باشد، تا وقتی پرداختش بررسی شود. اگر همهٔ کارت‌ها
+          در دست مشتری باشند فروش نمی‌ایستد و کارتی داده می‌شود که زودتر آزاد می‌شود.
         </p>
         <p>
           کارت خاموش هرگز به مشتری نشان داده نمی‌شود، ولی تاریخچه و پرداخت‌هایش سر جایشان می‌مانند.
-          برای کارتی که موقتاً از رده خارج می‌شود «خاموش کن» را بزن، نه «حذف». کارتی که دوباره روشن
-          شود هم‌تراز با بقیه به صف برمی‌گردد، نه اول صف.
+          برای کارتی که موقتاً از رده خارج می‌شود «خاموش کن» را بزن، نه «حذف». کارت تازه و کارتی
+          که دوباره روشن شود ته صف می‌ایستند.
         </p>
       </details>
 

@@ -243,6 +243,44 @@ describe('the checkout screen', () => {
     }
   });
 
+  it('hands two customers two different cards while the first invoice is open', async () => {
+    // The bakery queue's hold, through the door the customer uses. The lease
+    // is the `payments` row `checkoutFor` writes — `rotation.test.ts` proves
+    // the picker reads it, this proves the checkout writes it. A second ACTIVE
+    // card, as in the race test above, so there is a different card to get.
+    const a = ids();
+    const b = ids();
+    const userA = await makeCustomer(a.telegramId);
+    const userB = await makeCustomer(b.telegramId);
+    const plan = await planId('sim-gold-10');
+    // The race test above leaves its checkout rows on these digits, and an open
+    // one would hold the fixture card before this test starts.
+    await db.prepare(`DELETE FROM payments WHERE assigned_card_number = '6219861999999999'`).run();
+    await db
+      .prepare(
+        `INSERT INTO payment_cards (id, financial_account_id, card_digits, holder_name,
+                                    status, created_at, rotation_cursor)
+         SELECT '__hold-card', financial_account_id, '6219861999999999', 'Hold Fixture',
+                'ACTIVE', 1, nextval('payment_card_queue_seq')
+           FROM payment_cards LIMIT 1`,
+      )
+      .run();
+
+    try {
+      await handleUpdate(db, press(a.updateId, a.telegramId, `order:${plan}`));
+      await handleUpdate(db, press(b.updateId, b.telegramId, `order:${plan}`));
+
+      const [first] = await paymentsOf(userA);
+      const [second] = await paymentsOf(userB);
+      expect(first?.assigned_card_number).toBeTruthy();
+      expect(second?.assigned_card_number).toBeTruthy();
+      expect(second?.assigned_card_number).not.toBe(first?.assigned_card_number);
+    } finally {
+      await db.prepare(`DELETE FROM payments WHERE assigned_card_number = '6219861999999999'`).run();
+      await db.prepare(`DELETE FROM payment_cards WHERE id = '__hold-card'`).run();
+    }
+  });
+
   it('says so rather than drawing a checkout with nowhere to pay', async () => {
     const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);
