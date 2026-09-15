@@ -18,7 +18,6 @@ function card(over: Record<string, unknown>) {
   return {
     cardDigits: '6037000000000095',
     cardMasked: '****0095',
-    displayWeight: 1,
     accountId: 'acc-1',
     displayName: 'حساب ملی',
     ownerLabel: null,

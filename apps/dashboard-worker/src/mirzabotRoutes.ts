@@ -22,6 +22,7 @@ import {
   reopenMirzabotManualVerification,
   isManualVerificationReopenEligible,
   inferPrimaryDevice,
+  CARD_HELD_UNTIL_SQL,
   type D1Database as DomainD1Database,
 } from '@shikoo/domain';
 import { MIRZABOT_SOURCE, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
@@ -742,10 +743,22 @@ export function registerMirzabotRoutes(
 
   app.get('/api/v1/accounts/:accountId/payment-cards', async (c) => {
     const prefixes = await loadPrefixes(c.env.DB);
+    const now = Date.now();
+    // The bakery queue as the bot sees it (`rotateCard`): where this card
+    // stands among every card in service — across accounts, which is why the
+    // count is not scoped to `?1` — and until when an open invoice holds it.
+    // Same hold fragment as the picker, so the two cannot disagree.
     const rows = await c.env.DB.prepare(
-      `SELECT id, financial_account_id, card_digits, label, created_at,
-              status, display_weight, last_assigned_at
-       FROM payment_cards WHERE financial_account_id = ?1 ORDER BY created_at DESC`,
+      `SELECT pc.id, pc.financial_account_id, pc.card_digits, pc.label, pc.created_at,
+              pc.status, pc.last_assigned_at,
+              (SELECT COUNT(*)::int + 1 FROM payment_cards o
+                 JOIN financial_accounts ofa ON ofa.id = o.financial_account_id
+                WHERE o.status = 'ACTIVE' AND ofa.active = 1 AND ofa.status = 'ACTIVE'
+                  AND (o.rotation_cursor, o.id) < (pc.rotation_cursor, pc.id)) AS queue_position,
+              ${CARD_HELD_UNTIL_SQL} AS held_until
+         FROM payment_cards pc
+        WHERE pc.financial_account_id = ?1
+        ORDER BY pc.created_at DESC`,
     )
       .bind(c.req.param('accountId'))
       .all<{
@@ -755,8 +768,9 @@ export function registerMirzabotRoutes(
         label: string | null;
         created_at: number;
         status: string;
-        display_weight: number;
         last_assigned_at: number | null;
+        queue_position: number;
+        held_until: number | null;
       }>();
     const items = (rows.results ?? []).map((r) => ({
       id: r.id,
@@ -767,9 +781,11 @@ export function registerMirzabotRoutes(
       label: r.label,
       created_at: r.created_at,
       status: r.status,
-      // How much more often than a weight-1 card this one is handed out.
-      display_weight: r.display_weight,
       last_assigned_at: r.last_assigned_at,
+      // Meaningful only while the card is in service; the screen hides it otherwise.
+      queue_position: r.queue_position,
+      // Epoch ms, or null: the invoice that has this card right now.
+      held_until: r.held_until != null && r.held_until > now ? r.held_until : null,
       bank_name: identifyBank(r.card_digits, prefixes),
       luhn_ok: luhnOk(r.card_digits),
     }));
@@ -845,15 +861,13 @@ export function registerMirzabotRoutes(
     const now = Date.now();
     const id = crypto.randomUUID();
     try {
-      // The rotation cursor starts level with the cards already in service, not
-      // at zero. A card starting at zero among peers whose cursors are in the
-      // millions wins EVERY checkout until it catches up — which is exactly the
-      // behaviour the head admin asked us to remove, so re-introducing it here
-      // would undo the whole change.
+      // A new card joins the BACK of the line — a ticket from the queue
+      // sequence (0064). Seeded at zero it would stand in front of every card
+      // already waiting and take every checkout until each of them had taken
+      // money, which is the head admin's 2026-08-13 complaint in a new shape.
       await c.env.DB.prepare(
         `INSERT INTO payment_cards (id, financial_account_id, card_digits, label, created_at, rotation_cursor)
-         VALUES (?1,?2,?3,?4,?5,
-                 COALESCE((SELECT MAX(rotation_cursor) FROM payment_cards WHERE status = 'ACTIVE'), 0))`,
+         VALUES (?1,?2,?3,?4,?5, nextval('payment_card_queue_seq'))`,
       )
         .bind(id, accountId, digits, parsed.data.label ?? null, now)
         .run();
@@ -911,10 +925,9 @@ export function registerMirzabotRoutes(
   });
 
   /**
-   * Editing one card: how often it is shown, whether it is shown at all, and
-   * what it is called.
+   * Editing one card: whether it is shown at all, and what it is called.
    *
-   * `rotation_cursor` is deliberately NOT here. It is rotation's own state, and
+   * `rotation_cursor` is deliberately NOT here. It is the queue's own state, and
    * an admin setting it by hand would be editing the queue position of every
    * other card at the same time.
    *
@@ -924,12 +937,11 @@ export function registerMirzabotRoutes(
    */
   const CardEditBody = z
     .object({
-      displayWeight: z.number().int().min(1).max(20).optional(),
       status: z.enum(['ACTIVE', 'DISABLED']).optional(),
       label: z.string().max(120).nullable().optional(),
     })
     .strict()
-    .refine((b) => b.displayWeight !== undefined || b.status !== undefined || b.label !== undefined);
+    .refine((b) => b.status !== undefined || b.label !== undefined);
   app.patch('/api/v1/payment-cards/:id', async (c) => {
     const ident = c.get('identity');
     // READ_ONLY, not «not ADMIN» — the same guard its two siblings use.
@@ -944,32 +956,28 @@ export function registerMirzabotRoutes(
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const cardId = c.req.param('id');
     const before = await c.env.DB.prepare(
-      `SELECT id, card_digits, display_weight, status, label
+      `SELECT id, card_digits, status, label
          FROM payment_cards WHERE id = ?1`,
     )
       .bind(cardId)
       .first<{
         id: string;
         card_digits: string;
-        display_weight: number;
         status: string;
         label: string | null;
       }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     const after = {
-      displayWeight: parsed.data.displayWeight ?? before.display_weight,
       status: parsed.data.status ?? before.status,
       label: parsed.data.label !== undefined ? parsed.data.label : before.label,
     };
-    // Coming back into service is the same event as being added, and it needs
-    // the same seed. The cursor is a clock that only moves forward: a card
-    // parked at 4,000,000 while its peers climbed to 40,000,000 would take
-    // EVERY checkout until it caught up — the behaviour the head admin asked us
-    // to remove on 2026-08-13, arriving through a door that did not exist then.
-    // Only on the way IN: seeding on the way out would move the queue for an
-    // act that should not, and seeding an already-ACTIVE card would reshuffle
-    // it every time a UI saved the row unchanged.
+    // Coming back into service is the same event as being added: the card
+    // joins the BACK of the line with a fresh ticket. Left where it was, a
+    // card switched off months ago would stand in front of everyone who has
+    // taken money since. Only on the way IN: a ticket on the way out would move
+    // the queue for an act that should not, and one for an already-ACTIVE card
+    // would reshuffle it every time a UI saved the row unchanged.
     const rejoining = before.status === 'DISABLED' && after.status === 'ACTIVE' ? 1 : 0;
 
     const now = Date.now();
@@ -984,38 +992,26 @@ export function registerMirzabotRoutes(
         ident.email,
         ident.role,
         cardId,
-        JSON.stringify({
-          displayWeight: before.display_weight,
-          status: before.status,
-          label: before.label,
-        }),
+        JSON.stringify({ status: before.status, label: before.label }),
         JSON.stringify(after),
         now,
       ),
-      // Only the columns the body named. Writing all three from the row read a
+      // Only the columns the body named. Writing both from the row read a
       // moment ago is a read-modify-write, and two saves in flight then revert
       // each other — which the panel produces by design, because the label
       // saves on blur and blur is what happens on the way to pressing a button.
       //
       // `label` cannot use COALESCE: null is a real value there, meaning «no
       // label», so a separate flag says whether it was asked for at all.
-      //
-      // `id <> ?1` rather than relying on the row still reading DISABLED inside
-      // its own UPDATE: the snapshot rule is right, but a guard a reader can see
-      // is worth more than one they have to derive.
       c.env.DB.prepare(
         `UPDATE payment_cards
-            SET display_weight = COALESCE(?2, display_weight),
-                status = COALESCE(?3, status),
-                label = CASE WHEN ?4 = 1 THEN ?5 ELSE label END,
-                rotation_cursor = CASE WHEN ?6 = 1
-                  THEN COALESCE((SELECT MAX(rotation_cursor) FROM payment_cards
-                                  WHERE status = 'ACTIVE' AND id <> ?1), rotation_cursor)
-                  ELSE rotation_cursor END
+            SET status = COALESCE(?2, status),
+                label = CASE WHEN ?3 = 1 THEN ?4 ELSE label END,
+                rotation_cursor = CASE WHEN ?5 = 1
+                  THEN nextval('payment_card_queue_seq') ELSE rotation_cursor END
           WHERE id = ?1`,
       ).bind(
         cardId,
-        parsed.data.displayWeight ?? null,
         parsed.data.status ?? null,
         parsed.data.label !== undefined ? 1 : 0,
         parsed.data.label ?? null,

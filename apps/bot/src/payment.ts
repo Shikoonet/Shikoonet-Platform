@@ -26,6 +26,7 @@ import {
 } from '@shikoo/contracts';
 import type { D1DatabaseSession } from '@shikoo/database';
 import {
+  CARD_HELD_UNTIL_SQL,
   fulfilMirzabotClaimWithoutPayment,
   NO_TRANSFER_REASONS,
   readContinuityMode,
@@ -46,48 +47,35 @@ export interface CheckoutPayment {
 }
 
 /**
- * How far a card's cursor advances per assignment, before its weight divides
- * it. Large enough that integer division still has resolution at the maximum
- * weight of 20 (the smallest step is 50,000), small enough that a bigint never
- * comes close to running out.
+ * The next card in the line, marked as handed out in the same statement.
  *
- * It is the SMALL of the two steps. A deposit advances the same cursor a
- * thousand times as far, from the trigger in `0029_card_queue_moves_on_money`.
- * The ratio between them is the whole design and neither number means anything
- * alone — change one and change the other.
- */
-const ROTATION_STEP = 1_000_000;
-
-/**
- * The next ACTIVE card to hand out, marked as assigned in the same statement.
+ * A bakery queue — Sam, 2026-09-15. The line is `rotation_cursor` ascending.
+ * Being SHOWN moves nothing: a card leaves the front of the line only when
+ * money lands on it, and then it goes to the back (`card_to_back_of_queue`,
+ * migration 0064, a trigger on `payment_claims` because a claim reaches
+ * VERIFIED down three code paths plus the live PHP bot). So thirty cards see
+ * thirty deposits in turn, however many customers open a checkout and walk
+ * away — measured before 0029 on a pool of 30, ten cards took everything.
  *
- * Weighted round-robin over a virtual clock. Each card carries a cursor; the
- * smallest cursor is taken and advanced by ROTATION_STEP/weight. A card with
- * weight 3 advances a third as far per turn, so it comes up three times as
- * often — the ratio is exactly the weight ratio.
+ * While an invoice holds a card, the card is out of the line: ten minutes
+ * from being shown, or until the claim is settled once the customer pressed
+ * «پرداخت کردم». That keeps two customers from being told to pay the same
+ * amount into the same card inside one window, which is the one thing the
+ * auto-matcher cannot untangle (`AMBIGUOUS_CLAIMS`). The hold is the open
+ * `payments` row itself, read through `CARD_HELD_UNTIL_SQL`.
  *
- * It also cannot become exclusive, which is the part the head admin actually
- * asked for. The cursor of the card just picked strictly increases, so after a
- * finite number of turns it passes every other card and their turn comes. That
- * is a property worth testing rather than asserting, and `pay.test.ts` does.
+ * When EVERY card is in somebody's hands the shop does not stop selling —
+ * Sam's call — and the card that frees soonest is handed out; the match may
+ * land in review, and review is better than no sale. Free cards always come
+ * first, in line order.
  *
- * This replaced a plain `ORDER BY last_assigned_at NULLS FIRST`, which had the
- * opposite behaviour: a freshly added card has NULL there, so it won EVERY
- * checkout until it had been used more recently than all the others.
+ * This replaced two earlier designs: `ORDER BY last_assigned_at NULLS FIRST`
+ * (a fresh card won every checkout) and a weighted virtual clock (0007/0029)
+ * whose `display_weight` knob a plain queue has no use for.
  *
- * `idx_payment_cards_rotation` covers this read. SKIP LOCKED is what makes two
- * simultaneous checkouts take two different cards instead of queueing behind
- * one row, and it is why this needs no lease table — the legacy bot keeps
- * leases in the PHP repo, and none of that complexity buys anything here.
- *
- * This is only HALF of what moves a card through the queue, and the smaller
- * half. Most checkouts are abandoned, so if being shown were the only thing
- * that advanced a card, the cards that actually RECEIVED money would be a fixed
- * subset rather than a rotation — measured on a pool of 30, ten of them took
- * everything. A verified deposit advances the same cursor by a thousand
- * assignments, and it does so from a trigger on `payment_claims` rather than
- * from here, because a claim reaches VERIFIED down three code paths plus the
- * live PHP bot. See `migrations/0029_card_queue_moves_on_money.sql`.
+ * `idx_payment_cards_rotation` covers the line; `idx_payments_open_by_card`
+ * covers the hold. SKIP LOCKED is what makes two simultaneous checkouts take
+ * two different cards instead of queueing behind one row.
  */
 export async function rotateCard(
   tx: D1DatabaseSession,
@@ -100,11 +88,11 @@ export async function rotateCard(
   return tx
     .prepare(
       `UPDATE payment_cards
-          SET rotation_cursor  = rotation_cursor + ?1 / display_weight,
-              last_assigned_at = ?2
+          SET last_assigned_at = ?1
         WHERE id = (
           SELECT pc.id FROM payment_cards pc
            JOIN financial_accounts fa ON fa.id = pc.financial_account_id
+           LEFT JOIN LATERAL (SELECT ${CARD_HELD_UNTIL_SQL} AS held_until) h ON TRUE
            WHERE pc.status = 'ACTIVE'
              -- The ACCOUNT has to be live too, and it did not used to be asked.
              --
@@ -125,13 +113,18 @@ export async function rotateCard(
              -- cannot disagree about which accounts are in service.
              AND fa.active = 1
              AND fa.status = 'ACTIVE'
-           ORDER BY pc.rotation_cursor, pc.id
+           -- Free cards first (COALESCE: a NULL hold is "free", and a bare
+           -- boolean would sort NULL after true). Among the busy, the one that
+           -- frees soonest. Then the line itself.
+           ORDER BY COALESCE(h.held_until > ?1, false),
+                    CASE WHEN h.held_until > ?1 THEN h.held_until END,
+                    pc.rotation_cursor, pc.id
            LIMIT 1
            FOR UPDATE OF pc SKIP LOCKED
         )
         RETURNING card_digits, holder_name, financial_account_id`,
     )
-    .bind(ROTATION_STEP, now)
+    .bind(now)
     .first<{ card_digits: string; holder_name: string | null; financial_account_id: string }>();
 }
 
