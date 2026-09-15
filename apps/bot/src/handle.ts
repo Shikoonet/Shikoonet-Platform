@@ -58,6 +58,7 @@ import * as menu from './menu.js';
 import { matchingRenewalPlan } from './renewMatch.js';
 import { IRR_PER_TOMAN, priceForUser, toAsciiDigits } from './money.js';
 import {
+  OUT_OF_STOCK,
   newPublicId,
   placeAddonOrder,
   placeOrder,
@@ -1918,6 +1919,9 @@ async function placeOrderScreen(
     chosenName,
     held?.bonusGb ?? 0,
   );
+  // The shelf ran out between the button and the tap — or the button is in
+  // an old message. No invoice, no money, and the code stays unredeemed.
+  if (placed === OUT_OF_STOCK) return screen(menu.PLAN_OUT_OF_STOCK, menu.planMenu([]));
   // A total of zero is refused rather than written. The code is left
   // unredeemed on purpose: nothing was bought with it.
   if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.planDetailMenu(plan));
@@ -2221,6 +2225,10 @@ async function planScreen(
   plan: CatalogPlan,
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
 ): Promise<HandleOutcome> {
+  // Sold from the shelf, and the shelf is empty: the tap says so, and no
+  // screen with a «خرید» button is drawn. `place()` refuses too, for the
+  // button in a month-old message.
+  if (plan.shelfAvailable === 0) return screen(menu.PLAN_OUT_OF_STOCK, menu.planMenu([]));
   const price = priceForUser(plan.priceIrr, user.discount_percent);
   const held = await heldCode(tx, user, plan, price.totalIrr);
   const applied = held ? appliedOf(held, plan) : null;

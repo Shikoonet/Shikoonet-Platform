@@ -115,7 +115,7 @@ const ShelfCreate = z
 
 const StockQuery = z.object({
   planId: z.coerce.number().int().positive().optional(),
-  status: z.enum(['AVAILABLE', 'USED', 'RETIRED']).optional(),
+  status: z.enum(['AVAILABLE', 'RESERVED', 'USED', 'RETIRED']).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
 });
@@ -223,6 +223,8 @@ export function registerStockRoutes(
       `SELECT pl.id AS plan_id, pl.name AS plan_name, p.name AS product_name,
               pr.kind AS provider_kind,
               COUNT(st.id) FILTER (WHERE st.status = 'AVAILABLE')::int AS available,
+              -- Held by an unpaid invoice (0063): not for sale, not yet sold.
+              COUNT(st.id) FILTER (WHERE st.status = 'RESERVED')::int AS reserved,
               COUNT(st.id) FILTER (WHERE st.status = 'USED')::int AS used
          FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
@@ -241,6 +243,7 @@ export function registerStockRoutes(
       product_name: string;
       provider_kind: string | null;
       available: number;
+      reserved: number;
       used: number;
     }>();
 
@@ -255,12 +258,15 @@ export function registerStockRoutes(
         // automated adapter, plus any plan that already holds stock — which is
         // how a VPN panel's outage shelf keeps its row. Asked through
         // `isAutomated` rather than a list of kinds spelled again in SQL.
-        .filter((r) => !isAutomated(r.provider_kind ?? '') || r.available + r.used > 0)
+        .filter(
+          (r) => !isAutomated(r.provider_kind ?? '') || r.available + r.reserved + r.used > 0,
+        )
         .map((r) => ({
           planId: Number(r.plan_id),
           planName: r.plan_name,
           productName: r.product_name,
           available: Number(r.available),
+          reserved: Number(r.reserved),
           used: Number(r.used),
         })),
     });
@@ -668,7 +674,9 @@ export function registerStockRoutes(
           detail:
             row.status === 'USED'
               ? 'این کانفیگ فروخته شده و به یک سفارش وصل است.'
-              : 'این کانفیگ از قبل بازنشسته شده است.',
+              : row.status === 'RESERVED'
+                ? 'این کانفیگ برای یک فاکتور پرداخت‌نشده نگه داشته شده؛ با انقضای فاکتور آزاد می‌شود.'
+                : 'این کانفیگ از قبل بازنشسته شده است.',
         },
         409,
       );
@@ -694,11 +702,13 @@ export function registerStockRoutes(
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
-    // Only a config that was never sold. A USED row names the order that took
-    // it and the customer's subscription points at the same account — removing
-    // it loses the only record of where their service came from.
+    // Only a config that was never sold and is nobody's invoice. A USED row
+    // names the order that took it and the customer's subscription points at
+    // the same account — removing it loses the only record of where their
+    // service came from. A RESERVED row is an invoice somebody may pay in the
+    // next hour; it comes back on its own when the invoice dies (0063).
     const done = await c.env.DB.prepare(
-      `DELETE FROM provisioning_stock WHERE id = ?1 AND status <> 'USED'`,
+      `DELETE FROM provisioning_stock WHERE id = ?1 AND status NOT IN ('USED', 'RESERVED')`,
     )
       .bind(id)
       .run();
@@ -708,7 +718,14 @@ export function registerStockRoutes(
         .first<{ status: string }>();
       if (!row) return c.json({ ok: false, error: 'not_found' }, 404);
       return c.json(
-        { ok: false, error: 'sold', detail: 'کانفیگ فروخته‌شده حذف نمی‌شود — تاریخچهٔ سفارش است.' },
+        {
+          ok: false,
+          error: 'sold',
+          detail:
+            row.status === 'RESERVED'
+              ? 'این کانفیگ برای یک فاکتور پرداخت‌نشده نگه داشته شده؛ با انقضای فاکتور آزاد می‌شود.'
+              : 'کانفیگ فروخته‌شده حذف نمی‌شود — تاریخچهٔ سفارش است.',
+        },
         409,
       );
     }

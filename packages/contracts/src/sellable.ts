@@ -48,6 +48,14 @@ export interface SellableFacts {
   /** `products.status`. */
   productStatus: string;
   /**
+   * Accounts waiting on the shelf for this config, or null when the panel
+   * delivers by itself. A kind with no adapter sells ONLY from its shelf
+   * (Sam, 2026-09-15), so zero there is «not for sale» — the bot draws the
+   * button marked «ناموجود» and writes no invoice for it. Required, for the
+   * reason `category` is.
+   */
+  shelfAvailable: number | null;
+  /**
    * The category this service is filed under, and whether it is switched on.
    *
    * Required rather than optional on purpose. An optional field lets a screen
@@ -92,6 +100,7 @@ export type NotSellable =
   | { kind: 'PANEL_OFF'; panel: string }
   | { kind: 'PANEL_UNWIRED'; panel: string }
   | { kind: 'PANEL_FULL'; panel: string; capacity: number; live: number }
+  | { kind: 'SHELF_EMPTY' }
   | { kind: 'PRODUCT_OFF'; status: string }
   | { kind: 'PLAN_OFF'; status: string };
 
@@ -149,6 +158,12 @@ export function whyNotSellable(facts: SellableFacts): NotSellable[] {
   if (facts.planStatus !== 'ACTIVE') {
     out.push({ kind: 'PLAN_OFF', status: facts.planStatus });
   }
+  // Last: the one reason an operator fixes by loading accounts, not by
+  // flipping a switch — and only asked of a panel that has nothing else to
+  // deliver from.
+  if (panel !== null && !panel.reachesAPanel && facts.shelfAvailable === 0) {
+    out.push({ kind: 'SHELF_EMPTY' });
+  }
 
   return out;
 }
@@ -186,6 +201,8 @@ export function notSellableFa(reason: NotSellable): string {
       return `پنل «${reason.panel}» آدرس یا اعتبارنامه ندارد، پس سفارشی از آن تحویل نمی‌شود و از فروشگاه برداشته شده.`;
     case 'PANEL_FULL':
       return `پنل «${reason.panel}» به سقفش رسیده — ${faDigits(reason.live)} اشتراک زنده از ${faDigits(reason.capacity)}.`;
+    case 'SHELF_EMPTY':
+      return 'قفسهٔ انبارش خالی است؛ در ربات «ناموجود» نشان داده می‌شود و فاکتوری برایش ساخته نمی‌شود.';
     case 'PRODUCT_OFF':
       return `سرویسش ${STATUS_FA[reason.status] ?? reason.status} است.`;
     case 'PLAN_OFF':
@@ -208,6 +225,8 @@ export function notSellableShortFa(reason: NotSellable): string {
       return 'پنل وصل نیست';
     case 'PANEL_FULL':
       return 'پنل پر است';
+    case 'SHELF_EMPTY':
+      return 'قفسه خالی';
     case 'PRODUCT_OFF':
       return `سرویس ${STATUS_FA[reason.status] ?? reason.status}`;
     case 'PLAN_OFF':

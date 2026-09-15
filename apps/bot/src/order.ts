@@ -17,6 +17,7 @@
 
 import { randomBytes } from 'node:crypto';
 import type { D1DatabaseSession } from '@shikoo/database';
+import { isAutomated } from '@shikoo/domain';
 import type { CatalogPlan } from './catalog.js';
 import { priceForUser, type Price } from './money.js';
 import { loadShopSettings } from './settings.js';
@@ -38,6 +39,23 @@ export interface PlacedOrder {
  * bot for everybody.
  */
 export type PlaceResult = PlacedOrder | null;
+
+/**
+ * The shelf this config sells from is empty, so no invoice was written.
+ *
+ * Its own value rather than `null`, because `null` already means «this order
+ * costs nothing and cannot be paid for», and the two screens are different:
+ * one is a shop mistake, this one is a customer being told to come back.
+ */
+export const OUT_OF_STOCK = Symbol('OUT_OF_STOCK');
+export type PlaceOrResult = PlaceResult | typeof OUT_OF_STOCK;
+
+/** Only a NEW_PURCHASE holds a shelf row, so only `placeOrder` can hear this. */
+async function notShelf(r: Promise<PlaceOrResult>): Promise<PlaceResult> {
+  const out = await r;
+  if (out === OUT_OF_STOCK) throw new Error('a non-purchase order asked for the shelf');
+  return out;
+}
 
 /**
  * Ten hex characters, the shape production already uses for `payments.public_id`
@@ -67,7 +85,7 @@ export async function placeOrder(
   usernameText: string | null = null,
   /** Gigabytes a volume code adds, frozen on the order — see 0062. */
   bonusVolumeGb = 0,
-): Promise<PlaceResult> {
+): Promise<PlaceOrResult> {
   return place(
     tx,
     userId,
@@ -112,7 +130,7 @@ export async function placeRenewalOrder(
   codeDiscountIrr = 0,
   bonusVolumeGb = 0,
 ): Promise<PlaceResult> {
-  return place(
+  return notShelf(place(
     tx,
     userId,
     plan.planId,
@@ -122,7 +140,7 @@ export async function placeRenewalOrder(
     1,
     null,
     bonusVolumeGb,
-  );
+  ));
 }
 
 /**
@@ -143,14 +161,14 @@ export async function placeTopupOrder(
   if (!Number.isSafeInteger(amountIrr) || amountIrr <= 0) {
     throw new Error(`top-up amount ${amountIrr} is not a usable amount`);
   }
-  return place(
+  return notShelf(place(
     tx,
     userId,
     null,
     { unitPriceIrr: amountIrr, discountIrr: 0, totalIrr: amountIrr },
     'WALLET_TOPUP',
     null,
-  );
+  ));
 }
 
 /**
@@ -182,7 +200,7 @@ export async function placeAddonOrder(
   const gross = priceForUser(unitPriceIrr * quantity, discountPercent);
   // The discount is taken off the total, so it is the unit price that must be
   // restated for the check `total = unit x quantity - discount` to hold.
-  return place(
+  return notShelf(place(
     tx,
     userId,
     null,
@@ -194,7 +212,7 @@ export async function placeAddonOrder(
     kind,
     subscriptionId,
     quantity,
-  );
+  ));
 }
 
 /**
@@ -282,7 +300,7 @@ async function place(
    * written. Zero for every caller but a purchase or renewal with such a code.
    */
   bonusVolumeGb = 0,
-): Promise<PlaceResult> {
+): Promise<PlaceOrResult> {
   // An order that costs nothing is refused here, once, for all four callers.
   //
   // Downstream nothing survives it. `checkoutMenu` renders «pay from wallet»
@@ -365,6 +383,51 @@ async function place(
     return { id: open.id, publicId: open.public_id, totalIrr: open.total_irr, reused: true };
   }
 
+  /*
+   * A config sold from the shelf is HELD for the invoice, here, before the
+   * invoice exists. Sam, 2026-09-15: a panel with no third party behind it
+   * delivers only what is on the shelf, and «ازش پول نگیره» when there is
+   * nothing — and an invoice lives 24 hours, so a check at the button cannot
+   * keep two customers from paying for the last account. The row is locked
+   * first (SKIP LOCKED: a second customer at this instant takes the next one),
+   * the order is written, and the same row is marked RESERVED with the order's
+   * id inside this transaction. 0063 makes «held without an order» impossible;
+   * `expireUnpaidOrders` puts the row back when the invoice dies unpaid, and
+   * `deliverFromStock` sells exactly this row when it is paid.
+   *
+   * Asked of the database, not of the caller: which panel a plan sits on is a
+   * money decision, and a `CatalogPlan` a handler passes in is one screen old.
+   */
+  let held: number | null = null;
+  if (kind === 'NEW_PURCHASE' && planId !== null) {
+    const shelf = await tx
+      .prepare(
+        `SELECT pr.kind FROM product_plans pl
+           JOIN products p ON p.id = pl.product_id
+           JOIN provisioning_providers pr ON pr.id = p.provider_id
+          WHERE pl.id = ?1`,
+      )
+      .bind(planId)
+      .first<{ kind: string }>();
+    if (shelf && !isAutomated(shelf.kind)) {
+      const row = await tx
+        .prepare(
+          `WITH due AS MATERIALIZED (
+             SELECT id FROM provisioning_stock
+              WHERE plan_id = ?1 AND status = 'AVAILABLE'
+              ORDER BY id
+              LIMIT 1
+              FOR UPDATE SKIP LOCKED
+           )
+           SELECT id FROM due`,
+        )
+        .bind(planId)
+        .first<{ id: number }>();
+      if (!row) return OUT_OF_STOCK;
+      held = row.id;
+    }
+  }
+
   // `expires_at` is set here and never refreshed, including on the reuse above.
   // The deadline belongs to the invoice, and a customer who could push it out by
   // tapping the same plan again would be keeping a card-to-card invoice — and
@@ -403,6 +466,19 @@ async function place(
     )
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (!row) throw new Error('order insert returned no row');
+
+  if (held !== null) {
+    // Locked above, so this cannot lose the row to anybody; the status guard
+    // stays because a guard that is «redundant today» is the rule-9 habit.
+    const marked = await tx
+      .prepare(
+        `UPDATE provisioning_stock SET status = 'RESERVED', order_id = ?2
+          WHERE id = ?1 AND status = 'AVAILABLE'`,
+      )
+      .bind(held, row.id)
+      .run();
+    if (marked.meta.changes !== 1) throw new Error(`stock #${held} slipped away under its lock`);
+  }
 
   return { id: row.id, publicId: row.public_id, totalIrr: row.total_irr, reused: false };
 }

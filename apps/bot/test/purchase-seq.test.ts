@@ -103,7 +103,7 @@ async function ownPanelPlan(): Promise<number> {
   const provider = await db
     .prepare(
       `INSERT INTO provisioning_providers (code, name, kind, base_url, secret_ref, config)
-       VALUES ('seq-panel', 'پنل شمارهٔ خرید', 'marzban', 'https://panel.test', ?1,
+       VALUES ('seq-panel', 'پنل شمارهٔ خرید', 'pasarguard', 'https://panel.test', ?1,
                '{"username_mode":"PANEL_TEXT_SEQ","username_text":"shikoo"}'::jsonb)
        ON CONFLICT (code) DO UPDATE
          SET config = EXCLUDED.config, base_url = EXCLUDED.base_url,
@@ -210,6 +210,10 @@ async function nameSoldUnder(publicId: string): Promise<string | null> {
 }
 
 beforeAll(async () => {
+  // The fixture panel is a real pasarguard since 2026-09-15 (the 'marzban'
+  // alias has no adapter and now sells only from a shelf), so it needs the
+  // credential every real panel reads from the environment.
+  process.env[`PANEL_${PROVIDER_CODE.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`] = 'admin:secret';
   await ensureCatalog();
 });
 

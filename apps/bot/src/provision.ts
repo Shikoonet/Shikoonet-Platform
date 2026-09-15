@@ -824,14 +824,23 @@ async function deliver(
     fetch: fetchImpl,
   };
 
-  // A kind with no automated adapter has no panel to ask — but it may have a
-  // shelf. Bulk-bought accounts (ai_account, spotify, …) are delivered from
-  // stock on the first sweep, no grace: nothing is failing, there is nothing to
-  // wait out. An empty shelf falls through to the manual path below, which is
-  // exactly what these kinds did before the shelf could hold accounts.
-  if (!isAutomated(row.provider_kind)) {
+  // A kind with no automated adapter has no panel to ask — it has a shelf, and
+  // ONLY a shelf. Bulk-bought accounts (OpenVPN, ai_account, spotify, …) are
+  // delivered from stock on the first sweep, no grace: nothing is failing,
+  // there is nothing to wait out. An empty shelf used to fall through to the
+  // manual adapter, which marked the order COMPLETED and told the customer a
+  // person was finishing it — money taken, no account, and a queue no screen
+  // showed. Sam, 2026-09-15: «اگر اکانتی موجود نبود … پول نگیره». `place()`
+  // now holds a row for every invoice, so a paid purchase reaching an empty
+  // shelf is an order from before 0063 or a hand-edited shelf — and the honest
+  // answer is the one a refusing panel gets: FAILED, refunded where the money
+  // came from the wallet, and a person for the rest.
+  if (!isAutomated(row.provider_kind) && row.order_kind === 'NEW_PURCHASE') {
     const sold = await deliverFromStock(db, row, now, true);
     if (sold !== null) return stockedScreen(db, row, now, sold);
+    const refunded = await fail(db, row.order_id, 'shelf_empty');
+    log.error('provision.failed', { ref: row.order_public_id, reason: 'shelf_empty', refunded });
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
   const result = await adapterFor(row.provider_kind).provision(request, provider);

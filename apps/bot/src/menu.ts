@@ -120,6 +120,7 @@ export let TRIAL_NONE = DEFAULT_TEXTS.raw('TRIAL_NONE');
 export let TRIAL_USED = DEFAULT_TEXTS.raw('TRIAL_USED');
 export let TRIAL_ON_THE_WAY = DEFAULT_TEXTS.raw('TRIAL_ON_THE_WAY');
 export let PLAN_GONE = DEFAULT_TEXTS.raw('PLAN_GONE');
+export let PLAN_OUT_OF_STOCK = DEFAULT_TEXTS.raw('PLAN_OUT_OF_STOCK');
 export let NOT_REGISTERED = DEFAULT_TEXTS.raw('NOT_REGISTERED');
 /** For the few screens handle.ts builds a one-button keyboard for itself. */
 
@@ -261,6 +262,7 @@ export function applyContent(content: BotContent): void {
   TRIAL_USED = t.raw('TRIAL_USED');
   TRIAL_ON_THE_WAY = t.raw('TRIAL_ON_THE_WAY');
   PLAN_GONE = t.raw('PLAN_GONE');
+  PLAN_OUT_OF_STOCK = t.raw('PLAN_OUT_OF_STOCK');
   NOT_REGISTERED = t.raw('NOT_REGISTERED');
   ASK_DISCOUNT_CODE = t.raw('ASK_DISCOUNT_CODE');
   ASK_GIFT_CODE = t.raw('ASK_GIFT_CODE');
@@ -891,11 +893,14 @@ export function productMenu(
         // plan itself — so the badge and colour an operator typed onto it in
         // «محصولات» belong here. `catalog.ts` is where the «one config» rule
         // lives; this line only draws what it decided.
-        text: badged(
-          product.badge,
-          (seen.get(product.name) ?? 0) > 1
-            ? `${product.name} (${product.providerName})`
-            : product.name,
+        text: outOfStock(
+          badged(
+            product.badge,
+            (seen.get(product.name) ?? 0) > 1
+              ? `${product.name} (${product.providerName})`
+              : product.name,
+          ),
+          product.shelfAvailable,
         ),
         callback_data: encode('prd', product.productId),
         ...styled(product.buttonStyle),
@@ -993,17 +998,27 @@ export function planMenu(
  */
 function planLabel(plan: CatalogPlan, discountPercent: number, template: string | null): string {
   const price = priceForUser(plan.priceIrr, discountPercent);
-  if (template === null) {
-    return badged(plan.badge, priced(plan.planName, plan.priceIrr, price));
-  }
-  return renderPlanLabel(template, {
-    name: plan.planName,
-    badge: plan.badge ?? '',
-    duration: durationText(plan.durationDays),
-    volume: volumeText(plan.volumeGb),
-    users: usersText(plan.userLimit),
-    price: formatToman(price.totalIrr),
-  });
+  const label =
+    template === null
+      ? badged(plan.badge, priced(plan.planName, plan.priceIrr, price))
+      : renderPlanLabel(template, {
+          name: plan.planName,
+          badge: plan.badge ?? '',
+          duration: durationText(plan.durationDays),
+          volume: volumeText(plan.volumeGb),
+          users: usersText(plan.userLimit),
+          price: formatToman(price.totalIrr),
+        });
+  return outOfStock(label, plan.shelfAvailable);
+}
+
+/**
+ * «— ناموجود» on a button whose shelf is empty. Drawn, and marked, rather
+ * than hidden: Sam chose «دیده شود با برچسب ناموجود» so a customer learns the
+ * shop sells this and it is out. Null is a panel that delivers by itself.
+ */
+function outOfStock(label: string, shelfAvailable: number | null): string {
+  return shelfAvailable === 0 ? `${label} — ${TEXTS_NOW.raw('PLAN_OUT_OF_STOCK_TAG')}` : label;
 }
 
 /**

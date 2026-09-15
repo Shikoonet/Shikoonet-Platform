@@ -69,6 +69,13 @@ async function makeShop(
     kind?: string;
     baseUrl?: string | null;
     secretRef?: string | null;
+    /**
+     * Accounts on the shelf. One unless said otherwise, because since
+     * 2026-09-15 a kind with no adapter sells ONLY from its shelf, and a
+     * fixture with nothing on it would be «ناموجود» rather than healthy. The
+     * shelf case says 0.
+     */
+    stock?: number;
   } = {},
 ): Promise<Shop> {
   const withPanel = opts.withPanel ?? true;
@@ -147,6 +154,18 @@ async function makeShop(
     .bind(productId, `کانفیگ ${label}`, opts.planStatus ?? 'ACTIVE')
     .first<{ id: number }>();
 
+  if (withPanel && !isAutomated(opts.kind ?? 'marzban')) {
+    for (let n = 0; n < (opts.stock ?? 1); n += 1) {
+      await db
+        .prepare(
+          `INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
+           VALUES (?1, ?2, ?3, 'https://x.test/s')`,
+        )
+        .bind(Number(plan!.id), providerId, `${PREFIX}${label}-acct-${n}`)
+        .run();
+    }
+  }
+
   return { categoryId, providerId, productId, planId: Number(plan!.id), panelName };
 }
 
@@ -162,7 +181,9 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
               (NULLIF(pr.secret_ref, '') IS NOT NULL
                OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id)) AS panel_has_secret,
               (SELECT COUNT(*)::int FROM subscriptions s
-                WHERE s.provider_id = pr.id AND s.status IN ('ACTIVE','ON_HOLD')) AS live
+                WHERE s.provider_id = pr.id AND s.status IN ('ACTIVE','ON_HOLD')) AS live,
+              (SELECT COUNT(*)::int FROM provisioning_stock st
+                WHERE st.plan_id = pl.id AND st.status = 'AVAILABLE') AS shelf
          FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
          LEFT JOIN product_categories cat ON cat.id = p.category_id
@@ -182,10 +203,15 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
       panel_base_url: string | null;
       panel_has_secret: boolean | null;
       live: number | null;
+      shelf: number;
     }>();
+  const reaches = isAutomated(row!.panel_kind ?? '');
   return {
     planStatus: row!.plan_status,
     productStatus: row!.product_status,
+    // The way the catalogue screen fills it: only a panel with nothing else
+    // to deliver from is asked about its shelf.
+    shelfAvailable: row!.panel_status === null || reaches ? null : Number(row!.shelf),
     category:
       row!.category_active === null
         ? null
@@ -291,6 +317,8 @@ async function agree(shop: Shop): Promise<{ dashboard: boolean; bot: boolean }> 
 }
 
 async function purge(): Promise<void> {
+  // The shelf points at plans, so it goes first.
+  await db.prepare(`DELETE FROM provisioning_stock WHERE remote_username LIKE ?1`).bind(`${PREFIX}%`).run();
   await db
     .prepare(
       `DELETE FROM product_plans WHERE product_id IN (SELECT id FROM products WHERE code LIKE ?1)`,
@@ -380,8 +408,24 @@ describe('what the dashboard says is on sale, and what the bot sells', () => {
     });
     expect(await agree(wired)).toEqual({ dashboard: true, bot: true });
 
-    const shelf = await makeShop('shelf', { kind: 'manual' });
+    // A kind with no adapter sells ONLY from its shelf — Sam, 2026-09-15 —
+    // so with nothing on it the row is not for sale. The bot still DRAWS the
+    // button, marked «ناموجود» (Sam's choice: the customer learns it exists),
+    // which is why this case asks the gate and not the list: the tap must
+    // refuse, and no invoice may be written.
+    const shelf = await makeShop('shelf', { kind: 'manual', stock: 0 });
+    expect(isSellable(await factsOf(shelf))).toBe(false);
+    expect(whyNotSellable(await factsOf(shelf))).toEqual([{ kind: 'SHELF_EMPTY' }]);
+    expect(await botSellsPlanDirectly(shelf.planId)).toBe(false);
+    await db
+      .prepare(
+        `INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
+         VALUES (?1, ?2, ?3, 'https://x.test/s')`,
+      )
+      .bind(shelf.planId, shelf.providerId, `${PREFIX}shelf-acct`)
+      .run();
     expect(await agree(shelf)).toEqual({ dashboard: true, bot: true });
+    expect(await botSellsPlanDirectly(shelf.planId)).toBe(true);
   });
 
   it('agrees a panel at its ceiling sells nothing more', async () => {

@@ -128,7 +128,18 @@ const PROVIDERS: ProviderSpec[] = [
     baseUrl: 'https://panel.test',
     secretRef: 'sim-vip',
   },
-  { code: 'sim-gold', name: '🥈 سرویس طلایی (شبیه‌سازی)', kind: 'hiddify', capacity: 200 },
+  // A second panel that delivers by itself. It was `hiddify` — a kind with no
+  // adapter, which fell to manual — until 2026-09-15, when a kind with no
+  // adapter became «sells only from its shelf»: every test that buys here
+  // would have met «ناموجود». Wired like sim-vip; the fake panel answers both.
+  {
+    code: 'sim-gold',
+    name: '🥈 سرویس طلایی (شبیه‌سازی)',
+    kind: 'pasarguard',
+    capacity: 200,
+    baseUrl: 'https://gold.panel.test',
+    secretRef: 'sim-gold',
+  },
   // Fulfilled by hand. The one adapter that cannot fail for a network reason,
   // which makes it the right control in any provisioning test.
   { code: 'sim-shop', name: '📦 اکانت‌ها (شبیه‌سازی)', kind: 'manual', capacity: null },
@@ -481,6 +492,33 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
           .run();
       }
       plans++;
+    }
+  }
+
+  // The shelf behind the account products. A kind with no adapter sells ONLY
+  // from its shelf since 2026-09-15, so a `sim-shop` product with nothing on
+  // it is «ناموجود» — and every suite that buys one to test payment would
+  // have stopped at that word. Two accounts per plan, keyed so a re-run adds
+  // nothing; a suite that wants an empty shelf clears them itself.
+  for (const code of ['sim-shop-spotify', 'sim-shop-ai']) {
+    const rows = await db
+      .prepare(
+        `SELECT pl.id, p.provider_id FROM product_plans pl JOIN products p ON p.id = pl.product_id
+          WHERE p.code = ?1`,
+      )
+      .bind(code)
+      .all<{ id: number; provider_id: number }>();
+    for (const pl of rows.results) {
+      for (const n of [1, 2]) {
+        await db
+          .prepare(
+            `INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url, secret)
+             VALUES (?1, ?2, ?3, NULL, 'sim-shelf-pw')
+             ON CONFLICT (provider_id, remote_username) DO NOTHING`,
+          )
+          .bind(pl.id, pl.provider_id, `${code}-shelf-${n}@sim.test`)
+          .run();
+      }
     }
   }
 

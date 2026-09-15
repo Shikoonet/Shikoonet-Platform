@@ -914,6 +914,8 @@ function SellState({ service, config }: { service: ServiceRow; config: ConfigRow
   const reasons = whyNotSellable({
     planStatus: config.status,
     productStatus: service.status,
+    // Only a panel with nothing to deliver from is asked about its shelf.
+    shelfAvailable: service.panel?.hasGroups ? null : (config.shelfAvailable ?? null),
     category:
       service.categoryId === null
         ? null

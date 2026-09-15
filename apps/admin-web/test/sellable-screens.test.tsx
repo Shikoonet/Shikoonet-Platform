@@ -60,6 +60,8 @@ function service(
   panel: PanelRef | null,
   status = 'ACTIVE',
   productStatus = 'ACTIVE',
+  /** Accounts on the shelf. One, so a shelf fixture is «در فروشگاه» unless a case empties it. */
+  shelfAvailable = 1,
 ): ServiceRow {
   return {
     id: id * 10,
@@ -95,6 +97,7 @@ function service(
         sortOrder: id,
         rowIndex: null,
         ordersCount: 0,
+        shelfAvailable,
       },
     ],
   };
@@ -195,9 +198,22 @@ describe('«نمای جدولی» says what the shop can do with a row', () => {
     await waitFor(() => expect(table().getByText('پنل پر است')).toBeTruthy());
   });
 
-  it('names a panel the bot cannot log in to, and leaves a shelf alone', async () => {
+  it('names a panel the bot cannot log in to, and leaves a stocked shelf alone', async () => {
     await draw([service(4, 'روی پنل بی‌اعتبارنامه', UNWIRED), service(5, 'روی قفسه', SHELF)], 1);
     await waitFor(() => expect(table().getByText('پنل وصل نیست')).toBeTruthy());
+    expect(table().getByText('در فروشگاه')).toBeTruthy();
+  });
+
+  it('names an empty shelf — and never asks a real panel about its shelf', async () => {
+    // Sam, 2026-09-15: a panel with nothing behind it sells only from its
+    // shelf, so an empty one is «ناموجود» in the bot and not for sale here.
+    // A pasarguard panel keeps its shelf for outages and is «در فروشگاه» with
+    // nothing on it.
+    await draw(
+      [service(6, 'قفسهٔ خالی', SHELF, 'ACTIVE', 'ACTIVE', 0), service(7, 'پنل بی‌قفسه', LIVE, 'ACTIVE', 'ACTIVE', 0)],
+      1,
+    );
+    await waitFor(() => expect(table().getByText('قفسه خالی')).toBeTruthy());
     expect(table().getByText('در فروشگاه')).toBeTruthy();
   });
 

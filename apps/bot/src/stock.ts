@@ -138,7 +138,22 @@ export async function deliverFromStock(
     // thing being claimed is a config somebody paid for. The tests run against
     // a shelf of one or two rows, which never gets a nested loop — so they are
     // silent about this rather than green.
+    // The row this invoice has been holding since it was printed (0063) —
+    // that one and no other, so the account promised is the account handed
+    // over. Only an order placed before the hold existed, or a VPN panel's
+    // outage escape, falls through to «any available one».
     taken =
+      (await tx
+        .prepare(
+          `UPDATE provisioning_stock s
+              SET status = 'USED', used_at = now()
+            WHERE s.order_id = ?1 AND s.status = 'RESERVED'
+            RETURNING s.id, s.provider_id, s.remote_username, s.remote_ref, s.subscription_url,
+                      s.secret`,
+        )
+        .bind(row.order_id)
+        .first<StockRow>()) ?? null;
+    taken ??=
       (await tx
         .prepare(
           `WITH due AS MATERIALIZED (

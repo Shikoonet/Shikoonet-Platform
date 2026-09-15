@@ -29,6 +29,7 @@ import { useAdminWriteProps } from '../role.js';
 
 const STATUS_FA: Record<string, string> = {
   AVAILABLE: 'روی قفسه',
+  RESERVED: 'در فاکتور',
   USED: 'فروخته شده',
   RETIRED: 'بازنشسته',
 };
@@ -263,13 +264,14 @@ export function StockPage() {
               <tr>
                 <th>قفسه</th>
                 <th>آماده</th>
+                <th>در فاکتور</th>
                 <th>فروخته‌شده</th>
               </tr>
             </thead>
             <tbody>
               {shelves.length === 0 && (
                 <tr>
-                  <td className="empty" colSpan={3}>
+                  <td className="empty" colSpan={4}>
                     هنوز هیچ قفسه‌ای نیست — یک سرویس روی پنلی بساز که تحویلش دستی یا از قفسه است.
                   </td>
                 </tr>
@@ -289,6 +291,7 @@ export function StockPage() {
                       {count(s.available)}
                     </span>
                   </td>
+                  <td>{count(s.reserved ?? 0)}</td>
                   <td>{count(s.used)}</td>
                 </tr>
               ))}
@@ -335,6 +338,7 @@ export function StockPage() {
             >
               <option value="">همه</option>
               <option value="AVAILABLE">روی قفسه</option>
+              <option value="RESERVED">در فاکتور</option>
               <option value="USED">فروخته شده</option>
               <option value="RETIRED">بازنشسته</option>
             </select>
@@ -408,8 +412,14 @@ export function StockPage() {
                     <button
                       type="button"
                       className="btn btn-sm"
-                      disabled={r.status === 'USED'}
-                      title={r.status === 'USED' ? 'فروخته شده — تاریخچهٔ سفارش است' : ''}
+                      disabled={r.status === 'USED' || r.status === 'RESERVED'}
+                      title={
+                        r.status === 'USED'
+                          ? 'فروخته شده — تاریخچهٔ سفارش است'
+                          : r.status === 'RESERVED'
+                            ? 'در فاکتوری پرداخت‌نشده نگه داشته شده'
+                            : ''
+                      }
                       onClick={() => void act('delete', r)}
                       {...w}
                     >

@@ -153,7 +153,9 @@ function readiness(p: {
   if (p.status !== 'ACTIVE') {
     return { tone: 'warn', label: 'غیرفعال', why: 'از خرید و تمدید برداشته شده' };
   }
-  if (!REACHES_A_PANEL.has(p.kind)) return { tone: 'ok', label: 'فعال', why: null };
+  // The other mode, named as such: nothing behind this panel but its shelf.
+  // Sam, 2026-09-15 — two modes, «متصل به پنل ثالث» or «فقط از قفسه».
+  if (!REACHES_A_PANEL.has(p.kind)) return { tone: 'ok', label: 'تحویل از قفسه', why: null };
   // Both halves are named rather than one «تنظیم نشده», because they used to be
   // fixed in different places and an operator has to know which one to open.
   const missing = [...(p.baseUrl ? [] : ['آدرس']), ...(p.hasSecretRef ? [] : ['رمز'])];
@@ -1798,7 +1800,8 @@ function PanelCard({
       ) : (
         <div className="info-line">
           <span className="info-line__v muted">
-            تحویل این پنل دستی است — آدرس و رمز ندارد و نبودشان ایراد نیست.
+            این پنل به سرویس ثالثی وصل نیست؛ اکانت‌ها فقط از قفسهٔ انبار تحویل می‌شوند. کانفیگی که
+            قفسه‌اش خالی باشد در ربات «ناموجود» است و فاکتوری برایش ساخته نمی‌شود؛ تمدید هم ندارد.
           </span>
         </div>
       )}

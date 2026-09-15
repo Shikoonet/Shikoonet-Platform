@@ -18,6 +18,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { AUTOMATED_KINDS_SQL } from '@shikoo/domain';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -241,6 +242,11 @@ const RENEWABLE = `
   s.status = 'ACTIVE'
   AND s.remote_username IS NOT NULL
   AND pv.status = 'ACTIVE'
+  -- An account from the shelf is bought, not extended: there is no panel to
+  -- add days to, and «renewing» it used to take the money and put the order
+  -- in a queue nobody could see. Sam, 2026-09-15: «اکانتها یک بار مصرف هستن و
+  -- قابلیت تمدید ندارن» — the customer buys the next one from the shelf.
+  AND pv.kind IN (${AUTOMATED_KINDS_SQL})
 `;
 
 const RENEWABLE_COLUMNS = `
