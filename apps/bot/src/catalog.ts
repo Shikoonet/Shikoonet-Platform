@@ -316,7 +316,8 @@ export async function productsForUser(
               CASE WHEN pr.kind IN (${AUTOMATED_KINDS_SQL}) THEN NULL
                    ELSE (SELECT COUNT(*)::int FROM provisioning_stock st
                           JOIN product_plans spl ON spl.id = st.plan_id
-                         WHERE spl.product_id = p.id AND st.status = 'AVAILABLE')
+                         WHERE spl.product_id = p.id AND spl.status = 'ACTIVE'
+                           AND st.status = 'AVAILABLE')
               END AS shelf_available
          FROM products p
          JOIN product_plans pl          ON pl.product_id = p.id
