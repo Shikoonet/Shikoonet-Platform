@@ -147,13 +147,14 @@ describe('the queue badges', () => {
     render(<PaymentCardsPanel accountId="acc-1" accountActive />);
     await screen.findByText('5047-0616-7456-0137');
 
-    expect(screen.getByText(/در دست مشتری تا/)).toBeTruthy();
+    // The help text below the list says the same words; the badge is the claim.
+    expect(screen.getByText(/در دست مشتری تا/, { selector: '.badge' })).toBeTruthy();
   });
 
   it('shows neither for a card that is off — it is not in the line', async () => {
     render(<PaymentCardsPanel accountId="acc-1" accountActive={false} />);
     await screen.findByText('5047-0616-7456-0137');
 
-    expect(screen.queryByText(/نوبت/)).toBeNull();
+    expect(screen.queryByText(/نوبت/, { selector: '.badge' })).toBeNull();
   });
 });

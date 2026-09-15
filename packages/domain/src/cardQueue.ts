@@ -9,9 +9,11 @@
  *
  * Two lengths, because «I paid» changes what waiting means:
  *
- *   - PENDING (shown, nothing pressed): ten minutes from being shown. After
- *     that the customer is treated as gone and the card is free again — its
- *     place in the line does not move, it never took money.
+ *   - PENDING (shown, nothing pressed): `pay/card_hold_minutes` from being
+ *     shown — ten unless the operator changed it on the settings screen (Sam,
+ *     2026-09-15: «۵ دقیقه یا ۲ دقیقه یا هر چقدر که دوست داره»). After that
+ *     the customer is treated as gone and the card is free again — its place
+ *     in the line does not move, it never took money.
  *   - AWAITING_REVIEW (customer pressed «پرداخت کردم»): money is probably in
  *     flight, so the card stays out until somebody settles the claim. Bounded
  *     by the widest window anything here waits for a bank SMS, the 24h of
@@ -21,8 +23,22 @@
 
 import { FULFILLED_RECONCILE_MAX_TIME_DELTA_MS } from '@shikoo/contracts';
 
-export const CARD_HOLD_MS = 10 * 60_000;
+export const DEFAULT_CARD_HOLD_MINUTES = 10;
+/** The hold at the default setting — what a fresh database gives. */
+export const CARD_HOLD_MS = DEFAULT_CARD_HOLD_MINUTES * 60_000;
 export const CLAIMED_CARD_HOLD_MS = FULFILLED_RECONCILE_MAX_TIME_DELTA_MS;
+
+/**
+ * The operator's number, read inside the statement so the bot and the
+ * dashboard cannot hold different copies of it. The settings screen saves
+ * numbers as JSON strings and 0064 seeds a JSON number; `#>> '{}'` reads both
+ * as text. Anything that is not digits — a cleared field, a stray minus —
+ * falls back to the default rather than to «no hold».
+ */
+const CARD_HOLD_MINUTES_SQL = `COALESCE(
+  (SELECT CASE WHEN s.value #>> '{}' ~ '^[0-9]{1,4}$' THEN (s.value #>> '{}')::int END
+     FROM settings s WHERE s.scope = 'pay' AND s.key = 'card_hold_minutes'),
+  ${DEFAULT_CARD_HOLD_MINUTES})`;
 
 /**
  * Scalar subquery, correlated on an outer `pc` (a `payment_cards` row): the
@@ -33,7 +49,8 @@ export const CARD_HELD_UNTIL_SQL = `(
   SELECT MAX(CASE WHEN p.status = 'AWAITING_REVIEW'
                   THEN (EXTRACT(EPOCH FROM COALESCE(p.updated_at, p.created_at)) * 1000)::bigint
                        + ${CLAIMED_CARD_HOLD_MS}
-                  ELSE (EXTRACT(EPOCH FROM p.created_at) * 1000)::bigint + ${CARD_HOLD_MS}
+                  ELSE (EXTRACT(EPOCH FROM p.created_at) * 1000)::bigint
+                       + ${CARD_HOLD_MINUTES_SQL} * 60000
              END)
     FROM payments p
    WHERE p.assigned_card_number = pc.card_digits

@@ -52,7 +52,7 @@ RELEASE_LOCK=/var/lock/shikoo-deploy-production.lock
 STATE_DIR=/var/lib/shikoo
 
 # The hash of the manifest that lists every script this may run.
-MANIFEST_SHA256=4021920cab0d3c2c665f271e75ce1079928bf3ed1aab84cf8f6b684e5780cb85
+MANIFEST_SHA256=8187df9a342286b0972590e251c3bad6a138c6e11347baeb7cdc7f6c65dce6d1
 
 die() { echo "shikoo-task-runner: $*" >&2; exit 1; }
 note() {

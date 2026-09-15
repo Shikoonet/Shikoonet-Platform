@@ -337,6 +337,32 @@ describe("a card in a customer's hands is out of the line", () => {
     expect(await drawOne(T + CARD_HOLD_MS)).toBe(cards[0]!);
   });
 
+  it('holds for as many minutes as the operator set on the settings screen', async () => {
+    // Sam, 2026-09-15: the ten minutes is a default, not a rule. Written the
+    // way the settings screen writes it — a JSON string — and put back after,
+    // because `settings` is shared by every file on this database. An upsert,
+    // not an UPDATE: another suite truncates `settings`, and an UPDATE that
+    // touched no row would leave this test asserting the default against
+    // itself.
+    const cards = await pool(2);
+    await hold(cards[0]!, T);
+    const set = (json: string) =>
+      db
+        .prepare(
+          `INSERT INTO settings (scope, key, value) VALUES ('pay', 'card_hold_minutes', ?1::jsonb)
+           ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value`,
+        )
+        .bind(json)
+        .run();
+    await set('"2"');
+    try {
+      expect(await drawOne(T + 2 * MINUTE - 1)).toBe(cards[1]!);
+      expect(await drawOne(T + 2 * MINUTE)).toBe(cards[0]!);
+    } finally {
+      await set('10');
+    }
+  });
+
   it('keeps a card out while its customer says they paid, until the claim is settled', async () => {
     const cards = await pool(2);
     const id = await hold(cards[0]!, T, true);

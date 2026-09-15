@@ -261,10 +261,9 @@ describe('the checkout screen', () => {
         `INSERT INTO payment_cards (id, financial_account_id, card_digits, holder_name,
                                     status, created_at, rotation_cursor)
          SELECT '__hold-card', financial_account_id, '6219861999999999', 'Hold Fixture',
-                'ACTIVE', ?1, nextval('payment_card_queue_seq')
+                'ACTIVE', 1, nextval('payment_card_queue_seq')
            FROM payment_cards LIMIT 1`,
       )
-      .bind(Date.now())
       .run();
 
     try {
