@@ -166,3 +166,43 @@ describe('10-minute waiting / Suspected Fake projection', () => {
     expect(again.decision).toBe('SUGGEST');
   });
 });
+
+/**
+ * Sam, 2026-09-17: «در حالت اتومات حتماً رسید پرداخت هم بگیر». A found,
+ * unambiguous transfer is not enough on its own — the customer's receipt is
+ * what releases automatic verification. Anchored on `paid_clicked_at`, since
+ * the receipt is the thing that is absent.
+ */
+describe('a found transfer still waits for the receipt', () => {
+  const noReceipt = () => claim({ receiptSubmittedAt: null });
+  const found = () => [tx({ bankTimestamp: BASE_MS + 20_000 })];
+
+  it('holds inside the waiting period, naming the transaction', () => {
+    const d = decide(noReceipt(), found(), [], BASE_MS + 30_000);
+    expect(d.decision).toBe('WAIT');
+    expect(d.reason).toBe('AWAITING_RECEIPT');
+    expect(d.transactionId).toBe('t1');
+  });
+
+  it('hands it to the operator once the waiting period is over', () => {
+    const d = decide(noReceipt(), found(), [], BASE_MS + WAITING_TIMEOUT_MS + 1);
+    expect(d.decision).toBe('SUGGEST');
+    expect(d.reason).toBe('RECEIPT_MISSING');
+    expect(d.diagnostics.candidateTransactionIds).toEqual(['t1']);
+  });
+
+  it('verifies the moment the receipt is in', () => {
+    const d = decide(claim({ receiptSubmittedAt: BASE_MS + 40_000 }), found(), [], BASE_MS + 45_000);
+    expect(d.decision).toBe('AUTO_VERIFY');
+  });
+
+  it('does not hold a manual delivery: its reconciliation needs no receipt', () => {
+    const d = decide(
+      claim({ status: 'FULFILLED_UNRECONCILED', receiptSubmittedAt: null }),
+      found(),
+      [],
+      BASE_MS + 30_000,
+    );
+    expect(d.decision).toBe('AUTO_VERIFY');
+  });
+});

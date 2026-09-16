@@ -635,7 +635,8 @@ export const TEXTS = {
     hint: 'شمارهٔ پیگیری در پیام ثبت پرداخت',
   },
   PAID_WAIT: {
-    default: 'به‌محض تایید تراکنش، سرویس برایتان ارسال می‌شود. معمولاً چند دقیقه طول می‌کشد.',
+    default:
+      'با رسیدن عکس رسید و تایید تراکنش، سرویس برایتان ارسال می‌شود. معمولاً چند دقیقه طول می‌کشد.',
     placeholders: [],
     screen: 'paid',
     hint: 'خط آخر پیام ثبت پرداخت',
@@ -647,17 +648,17 @@ export const TEXTS = {
     // reading believing there was nothing left to do. Sam read it exactly that
     // way on 2026-08-24 and reported that the bot never asked.
     //
-    // It stays an instruction rather than a requirement: the claim is opened by
-    // the button press, and automatic verification against the bank SMS needs
-    // no picture at all. A customer who sends nothing still gets their service
-    // when the money arrives; what they cost is the operator's certainty if it
-    // does not — which is the second sentence, and it is conditional on
-    // purpose: «بررسی دستی» is what happens when no transfer is found, not a
-    // penalty for the missing picture. Sam, 2026-09-12: after «پرداخت کردم»
-    // the bot insists on the receipt, and names the way out for the customer
-    // who never paid — the button beneath this text.
+    // A requirement since 2026-09-17, no longer only an instruction. Until
+    // then automatic verification needed no picture: the bank SMS alone
+    // delivered the service, and the receipt only bought the operator
+    // certainty when no transfer was found. Sam, 2026-09-17, the first night
+    // of real money on this hub: «در حالت اتومات حتماً رسید پرداخت هم بگیر» —
+    // the matcher now holds a found transfer until the receipt is in
+    // (`AWAITING_RECEIPT` in `mirzabotMatch.ts`), so this sentence has to say
+    // that nothing ships without it. The way out for the customer who never
+    // paid is still the button beneath this text (Sam, 2026-09-12).
     default:
-      '📸 حالا عکس رسید واریز را همین‌جا بفرستید. بدون رسید، اگر واریزی خودکار پیدا نشود تایید پرداخت شما به بررسی دستی می‌رود و دیرتر انجام می‌شود.\n\nاگر اشتباهی زده‌اید و هنوز واریز نکرده‌اید، «پرداختی نکردم» را بزنید.',
+      '📸 حالا عکس رسید واریز را همین‌جا بفرستید. بدون رسید، سرویس ارسال نمی‌شود — حتی وقتی واریزی شما پیدا شده باشد.\n\nاگر اشتباهی زده‌اید و هنوز واریز نکرده‌اید، «پرداختی نکردم» را بزنید.',
     placeholders: [],
     screen: 'paid',
     hint: 'درخواست عکس رسید، بعد از «پرداخت کردم» — در هر دو حالت اول و تکرار گفته می‌شود، و راه خروجِ تپ اشتباهی را نام می‌برد',

@@ -39,6 +39,13 @@ export type SuspectReason =
   | 'DUPLICATE_ORDER'
   | 'DUPLICATE_EVENT'
   | 'RECEIPT_REUSED'
+  /**
+   * The bank credit is there and it is this claim's, but the customer never
+   * sent the receipt. Sam, 2026-09-17: an automatic verification delivers
+   * nothing without the picture, so after the waiting period the operator
+   * decides — the matching transaction is in the diagnostics.
+   */
+  | 'RECEIPT_MISSING'
   | 'PARSER_FAILURE_NEARBY'
   | 'INTEGRATION_ERROR';
 
