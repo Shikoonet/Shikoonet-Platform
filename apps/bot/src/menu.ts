@@ -484,19 +484,26 @@ export function mainMenu(viewer: MenuViewer): InlineKeyboard {
  *
  * The shop itself remains an inline menu: it can be edited in place as the
  * customer walks through it, while this small bottom bar always offers the
- * same escape hatch back home. Keeping only that escape hatch here also keeps
- * the text field usable; a copy of the whole shop menu can fill most of a
- * phone's screen.
+ * same two escape hatches. Keeping only those here also keeps the text field
+ * usable; a copy of the whole shop menu can fill most of a phone's screen.
+ *
+ * Both buttons, always. Until 2026-09-16 the bar showed «home» at the main
+ * menu and «back» everywhere else, and every switch between the two needed an
+ * invisible carrier message that Telegram would not let us delete — so a
+ * customer who walked in and out of the menu a few times had a column of
+ * empty bubbles above the shop. A bar that never changes needs no carrier.
+ * «برگشت» at the main menu simply opens the main menu (`navigationBack`).
  */
 export const HOME_REPLY_LABEL = '🏠 بازگشت به منوی اصلی';
 export const BACK_REPLY_LABEL = '↩️ برگشت';
 
 export function homeReplyMenu(): ReplyKeyboard {
-  return [[{ text: HOME_REPLY_LABEL, style: 'primary' }]];
-}
-
-export function backReplyMenu(): ReplyKeyboard {
-  return [[{ text: BACK_REPLY_LABEL, style: 'primary' }]];
+  return [
+    [
+      { text: BACK_REPLY_LABEL, style: 'primary' },
+      { text: HOME_REPLY_LABEL, style: 'primary' },
+    ],
+  ];
 }
 
 /**

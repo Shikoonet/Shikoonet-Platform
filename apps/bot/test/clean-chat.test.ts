@@ -184,7 +184,10 @@ describe('the navigation bar installed by /start', () => {
     const first = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
     expect(first.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
     expect(first.replies[0]?.replyKeyboard).toEqual([
-      [{ text: menu.HOME_REPLY_LABEL, style: 'primary' }],
+      [
+        { text: menu.BACK_REPLY_LABEL, style: 'primary' },
+        { text: menu.HOME_REPLY_LABEL, style: 'primary' },
+      ],
     ]);
     expect(first.replies[0]?.keyboard).toBeUndefined();
     expect(first.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
@@ -218,7 +221,7 @@ describe('the navigation bar under the chat', () => {
     expect(viaLabel.replies[0]?.keyboard).toEqual(viaButton.replies[0]?.keyboard);
   });
 
-  it('turns blue «برگشت» inside a menu and returns home from its first screen', async () => {
+  it('returns home from the first screen of a menu, and the bar never changes', async () => {
     const { telegramId } = ids();
     await makeCustomer(telegramId);
 
@@ -226,20 +229,32 @@ describe('the navigation bar under the chat', () => {
       db,
       pressed(ids().updateId, telegramId, 'buy', 901),
     );
-    expect(inside.replyKeyboardUpdate).toEqual({
-      chatId: telegramId,
-      keyboard: [[{ text: menu.BACK_REPLY_LABEL, style: 'primary' }]],
-    });
+    // Entering a submenu edits the screen in place. No new message and no
+    // bottom-keyboard change: that pair is what used to leave an undeletable
+    // empty bubble on every trip in or out of the menu.
+    expect(inside.replies[0]?.editMessageId).toBe(901);
+    expect(inside.replies[0]?.replyKeyboard).toBeUndefined();
 
     const back = await handleUpdate(
       db,
       typed(ids().updateId, telegramId, menu.BACK_REPLY_LABEL),
     );
     expect(back.replies[0]?.text).toBe(menu.MENU_TITLE);
-    expect(back.replyKeyboardUpdate).toEqual({
-      chatId: telegramId,
-      keyboard: [[{ text: menu.HOME_REPLY_LABEL, style: 'primary' }]],
-    });
+    expect(back.replies[0]?.replyKeyboard).toBeUndefined();
+  });
+
+  it('opens the main menu for «برگشت» when there is nothing to go back to', async () => {
+    // The bar shows «برگشت» at the main menu too now. It must do something
+    // sensible there rather than nothing.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+
+    const back = await handleUpdate(
+      db,
+      typed(ids().updateId, telegramId, menu.BACK_REPLY_LABEL),
+    );
+    expect(back.status).toBe('processed');
+    expect(back.replies[0]?.text).toBe(menu.MENU_TITLE);
   });
 
   it('remembers the real parent for «برگشت» on a deeper screen', async () => {
@@ -247,11 +262,7 @@ describe('the navigation bar under the chat', () => {
     await makeCustomer(telegramId);
     const plan = await planId('sim-vip-1m-50');
 
-    const prompt = await handleUpdate(
-      db,
-      pressed(ids().updateId, telegramId, `dsc:${plan}`, 902),
-    );
-    expect(prompt.replyKeyboardUpdate?.keyboard).toEqual(menu.backReplyMenu());
+    await handleUpdate(db, pressed(ids().updateId, telegramId, `dsc:${plan}`, 902));
 
     const back = await handleUpdate(
       db,
@@ -262,9 +273,6 @@ describe('the navigation bar under the chat', () => {
       pressed(ids().updateId, telegramId, `plan:${plan}`, 903),
     );
     expect(back.replies[0]?.text).toBe(direct.replies[0]?.text);
-    // Both screens are still below the main menu, so no redundant Telegram
-    // keyboard replacement is requested — only the saved parent changes.
-    expect(back.replyKeyboardUpdate).toBeUndefined();
   });
 
   it('abandons an open question rather than answering it', async () => {

@@ -194,28 +194,6 @@ describe('sendMessage', () => {
     });
   });
 
-  it('replaces the bottom keyboard without deleting its invisible carrier', async () => {
-    const { api, calls } = apiWith(() => ok({ message_id: 771 }));
-
-    await api.replaceReplyKeyboard?.(42, [[{ text: '↩️ برگشت', style: 'primary' }]]);
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({
-      url: expect.stringContaining('/sendMessage'),
-      body: {
-        chat_id: 42,
-        text: '\u2063',
-        disable_notification: true,
-        reply_markup: {
-          keyboard: [[{ text: '↩️ برگشت', style: 'primary' }]],
-          resize_keyboard: true,
-          is_persistent: true,
-          one_time_keyboard: false,
-        },
-      },
-    });
-  });
-
   it('throws when Telegram rejects it', async () => {
     const { api } = apiWith(
       () =>

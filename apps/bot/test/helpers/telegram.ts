@@ -15,7 +15,6 @@ export function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
     deleteWebhook: async () => undefined,
     getUpdates: async () => [],
     sendMessage: async () => undefined,
-    replaceReplyKeyboard: async () => undefined,
     sendPhoto: async () => undefined,
     sendPhotoBytes: async () => undefined,
     sendDocument: async () => undefined,

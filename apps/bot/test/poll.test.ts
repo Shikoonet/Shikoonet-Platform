@@ -241,7 +241,12 @@ describe('pollOnce', () => {
     ]);
   });
 
-  it('changes the persistent bar before landing an inline submenu screen', async () => {
+  it('walks into a submenu by editing the screen, with nothing else sent', async () => {
+    // Until 2026-09-16 this transition sent an invisible keyboard carrier, a
+    // NEW screen, and then deleted the old one — and the carrier could never
+    // be deleted, so every trip in and out of the menu left an empty bubble
+    // in the chat. The bar under the chat no longer changes per screen, so a
+    // submenu is one edit and the chat stays exactly as long as it was.
     const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);
     const calls: string[] = [];
@@ -257,24 +262,22 @@ describe('pollOnce', () => {
           },
         },
       ],
-      replaceReplyKeyboard: async (chatId, keyboard) => {
-        expect(chatId).toBe(telegramId);
-        expect(keyboard).toEqual([[{ text: '↩️ برگشت', style: 'primary' }]]);
-        calls.push('bar');
-      },
       sendMessage: async () => {
         calls.push('screen');
       },
-      deleteMessage: async (chatId, messageId) => {
+      editMessageText: async (chatId, messageId) => {
         expect(chatId).toBe(telegramId);
         expect(messageId).toBe(812);
+        calls.push('edit');
+      },
+      deleteMessage: async () => {
         calls.push('old-screen');
       },
     });
 
     await pollOnce(db, api, updateId);
 
-    expect(calls).toEqual(['bar', 'screen', 'old-screen']);
+    expect(calls).toEqual(['edit']);
   });
 
   /**
