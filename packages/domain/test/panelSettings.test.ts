@@ -11,7 +11,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   downgradeGroupsFor,
+  panelNoteFor,
   remoteUsernameFor,
+  sanitiseUsernamePart,
   trialFor,
   usernameShapeFor,
 } from '../src/index.js';
@@ -19,7 +21,7 @@ import {
 describe('روش ساخت نام کاربری — the shapes a panel may give an account name', () => {
   it('defaults to the Telegram id, which is what three of the five live panels do', () => {
     expect(usernameShapeFor({}).mode).toBe('TELEGRAM_ID');
-    expect(remoteUsernameFor(369469521, 'inv-ce4c9a')).toBe('369469521_invce4c9a');
+    expect(remoteUsernameFor(369469521, 'inv-ce4c9a')).toBe('369469521_invc');
   });
 
   /**
@@ -61,9 +63,9 @@ describe('روش ساخت نام کاربری — the shapes a panel may give an
       telegramUsername: 'Sam_Shikoo',
     });
 
-    expect(byId).toBe('55_inv7b1f');
-    expect(byText).toBe('vip_inv7b1f');
-    expect(byName).toBe('sam_shikoo_inv7b1f');
+    expect(byId).toBe('55_inv7');
+    expect(byText).toBe('vip_inv7');
+    expect(byName).toBe('sam_shikoo_inv7');
 
     // The property the whole design turns on: same order in, same name out.
     // Legacy cannot say this of five of its eight modes.
@@ -86,7 +88,7 @@ describe('روش ساخت نام کاربری — the shapes a panel may give an
       const again = remoteUsernameFor(TG, ORDER, { mode: 'ORDER_ID' });
 
       expect(again).toBe(first);
-      expect(first).toMatch(/^[a-z][a-z0-9]{2,}_inv7b1f$/);
+      expect(first).toMatch(/^[a-z][a-z0-9]{2,}_inv7$/);
       expect(first).not.toContain(String(TG));
     });
 
@@ -101,7 +103,7 @@ describe('روش ساخت نام کاربری — the shapes a panel may give an
 
     it('puts the customer’s own text in front, and keeps the order number', () => {
       expect(remoteUsernameFor(TG, ORDER, { mode: 'CUSTOMER_TEXT', customerText: 'reza' })).toBe(
-        'reza_inv7b1f',
+        'reza_inv7',
       );
     });
 
@@ -266,5 +268,43 @@ describe('گروه اکانت غیرفعال — where an ended service goes', (
 
   it('takes group ids and drops anything that is not one', () => {
     expect(downgradeGroupsFor({ downgrade_group_ids: [3, '4', 0, -1, 'x', null] })).toEqual([3, 4]);
+  });
+});
+
+/**
+ * What the admin types in «متن دلخواه» must come out as a name PasarGuard
+ * takes: letters and digits joined by single underscores. Sam typed
+ * «firstbuy_» on 2026-09-16, the bot added its own `_` and the order id, and
+ * the panel refused `firstbuy__e484…` with a 422 on a paid order.
+ */
+describe('a panel prefix cannot end in the underscore the bot is about to add', () => {
+  it('trims and collapses underscores', () => {
+    expect(sanitiseUsernamePart('firstbuy_')).toBe('firstbuy');
+    expect(sanitiseUsernamePart('_firstbuy')).toBe('firstbuy');
+    expect(sanitiseUsernamePart('first__buy')).toBe('first_buy');
+    expect(sanitiseUsernamePart('First Buy!')).toBe('firstbuy');
+  });
+
+  it('builds a name with exactly one underscore before the order id', () => {
+    expect(remoteUsernameFor(55, 'e4845593ed', { mode: 'PANEL_TEXT', panelText: 'firstbuy_' })).toBe(
+      'firstbuy_e484',
+    );
+  });
+
+  it('still refuses text that has nothing usable in it', () => {
+    expect(sanitiseUsernamePart('شیکو')).toBeNull();
+    expect(sanitiseUsernamePart('__')).toBeNull();
+    expect(sanitiseUsernamePart('ab')).toBeNull();
+  });
+});
+
+describe('the note the admin reads on the panel', () => {
+  it('is «id | username | buy», as the legacy bot wrote it', () => {
+    expect(panelNoteFor(5524701349, 'mazuni_rezashon', 'buy')).toBe('5524701349 | mazuni_rezashon | buy');
+  });
+
+  it('says NOT_USERNAME for a customer without one', () => {
+    expect(panelNoteFor(8217990320, null, 'buy')).toBe('8217990320 | NOT_USERNAME | buy');
+    expect(panelNoteFor(8217990320, '  ', 'usertest')).toBe('8217990320 | NOT_USERNAME | usertest');
   });
 });
