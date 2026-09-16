@@ -458,70 +458,17 @@ export function BulkPage() {
           پیام برای هر مشتری فعال در صف می‌رود و ربات آن را می‌فرستد — نه از این صفحه. کسی که بعد از
           این لحظه /start بزند آن را نمی‌گیرد.
         </p>
-        <div className="filters">
-          <div>
-            <label className="form-label" htmlFor="bulk-audience">
-              برای چه کسانی
-            </label>
-            <select
-              id="bulk-audience"
-              className="form-control"
-              value={audienceKind}
-              disabled={busy}
-              onChange={(e) => setAudienceKind(e.target.value as BroadcastAudience['kind'])}
-            >
-              {AUDIENCES.map(([k, label]) => (
-                <option key={k} value={k}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </div>
-          {audienceKind === 'provider' && (
-            <div>
-              <label className="form-label" htmlFor="bulk-audience-panel">
-                پنل
-              </label>
-              {/* By id, from the catalogue. Matching the plan's NAME would empty
-                  the audience the day somebody renames it, with nothing on any
-                  screen to say so. */}
-              <select
-                id="bulk-audience-panel"
-                className="form-control"
-                value={audiencePanel}
-                disabled={busy}
-                onChange={(e) => setAudiencePanel(e.target.value)}
-              >
-                <option value="">— انتخاب کنید —</option>
-                {(panels ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          {audienceKind === 'customer' && (
-            <div>
-              <label className="form-label" htmlFor="bulk-audience-telegram-id">
-                آی‌دی تلگرام مشتری
-              </label>
-              {/* The numeric id, not a @username: the queue is keyed on
-                  `users.telegram_id`, and a username can change or be absent.
-                  The count below is what confirms the id names somebody. */}
-              <input
-                id="bulk-audience-telegram-id"
-                className="form-control"
-                inputMode="numeric"
-                dir="ltr"
-                placeholder="مثلاً 111713193"
-                value={audienceTelegramId}
-                disabled={busy}
-                onChange={(e) => setAudienceTelegramId(e.target.value.replace(/[^0-9]/g, ''))}
-              />
-            </div>
-          )}
-        </div>
+        <AudiencePicker
+          idPrefix="bulk"
+          kind={audienceKind}
+          panel={audiencePanel}
+          telegramId={audienceTelegramId}
+          panels={panels}
+          busy={busy}
+          onKind={setAudienceKind}
+          onPanel={setAudiencePanel}
+          onTelegramId={setAudienceTelegramId}
+        />
         {/* The number, before the press and not after. An audience an operator
             believed was a hundred people and is fifteen thousand has to be
             visible here. */}
@@ -773,7 +720,215 @@ export function BulkPage() {
           <p className="muted">بعد از تایید، جلوی فرستادن را نمی‌شود گرفت.</p>
         </Confirm>
       )}
+
+      <TrialQuotaResetCard panels={panels} />
     </>
+  );
+}
+
+/**
+ * «برای چه کسانی» — the one picker, drawn by the message card and by the
+ * trial reset. Two copies of these three inputs would agree until somebody
+ * added an audience to one of them.
+ */
+function AudiencePicker({
+  idPrefix,
+  kind,
+  panel,
+  telegramId,
+  panels,
+  busy,
+  onKind,
+  onPanel,
+  onTelegramId,
+}: {
+  idPrefix: string;
+  kind: BroadcastAudience['kind'];
+  panel: string;
+  telegramId: string;
+  panels: PanelItem[] | null;
+  busy: boolean;
+  onKind: (k: BroadcastAudience['kind']) => void;
+  onPanel: (v: string) => void;
+  onTelegramId: (v: string) => void;
+}) {
+  return (
+        <div className="filters">
+      <div>
+        <label className="form-label" htmlFor={`${idPrefix}-audience`}>
+          برای چه کسانی
+        </label>
+        <select
+          id={`${idPrefix}-audience`}
+          className="form-control"
+          value={kind}
+          disabled={busy}
+          onChange={(e) => onKind(e.target.value as BroadcastAudience['kind'])}
+        >
+          {AUDIENCES.map(([k, label]) => (
+            <option key={k} value={k}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+      {kind === 'provider' && (
+        <div>
+          <label className="form-label" htmlFor={`${idPrefix}-audience-panel`}>
+            پنل
+          </label>
+          {/* By id, from the catalogue. Matching the plan's NAME would empty
+              the audience the day somebody renames it, with nothing on any
+              screen to say so. */}
+          <select
+            id={`${idPrefix}-audience-panel`}
+            className="form-control"
+            value={panel}
+            disabled={busy}
+            onChange={(e) => onPanel(e.target.value)}
+          >
+            <option value="">— انتخاب کنید —</option>
+            {(panels ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {kind === 'customer' && (
+        <div>
+          <label className="form-label" htmlFor={`${idPrefix}-audience-telegram-id`}>
+            آی‌دی تلگرام مشتری
+          </label>
+          {/* The numeric id, not a @username: the queue is keyed on
+              `users.telegram_id`, and a username can change or be absent.
+              The count below is what confirms the id names somebody. */}
+          <input
+            id={`${idPrefix}-audience-telegram-id`}
+            className="form-control"
+            inputMode="numeric"
+            dir="ltr"
+            placeholder="مثلاً 111713193"
+            value={telegramId}
+            disabled={busy}
+            onChange={(e) => onTelegramId(e.target.value.replace(/[^0-9]/g, ''))}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * «ریست سقف اکانت تست» — for everybody, or for one group, or for one person.
+ *
+ * Sam, 2026-09-16: «بتونه اگر خواست برای همه ریست کنه و یا برای گروه خاصی».
+ * The audiences are the broadcast's own, so «گروه خاصی» means what it means
+ * one card up, and the number shown is the server's count of customers who
+ * have actually used a trial — not the audience size, which would promise a
+ * reset to people with nothing to reset.
+ */
+function TrialQuotaResetCard({ panels }: { panels: PanelItem[] | null }) {
+  const [kind, setKind] = useState<BroadcastAudience['kind']>('customer');
+  const [panel, setPanel] = useState('');
+  const [telegramId, setTelegramId] = useState('');
+  const [used, setUsed] = useState<number | null>(null);
+  const seq = useRef(0);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const audience = audienceFor(kind, panel, telegramId);
+
+  useEffect(() => {
+    const mine = ++seq.current;
+    setUsed(null);
+    setDone(null);
+    if (audience === null) return;
+    void (async () => {
+      try {
+        const n = (await api.bulkTrialUsed(audience)).used;
+        if (seq.current === mine) setUsed(n);
+      } catch (e) {
+        if (seq.current === mine) setErr(message(e));
+      }
+    })();
+    // The audience is derived from the three strings; they are the deps.
+  }, [kind, panel, telegramId]);
+
+  async function submit() {
+    if (audience === null) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api.bulkTrialReset(audience);
+      setDone(`شمارندهٔ ${count(r.reset)} مشتری صفر شد — می‌توانند دوباره اکانت تست بگیرند.`);
+      setConfirming(false);
+      setUsed(0);
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <h3>ریست سقف اکانت تست</h3>
+      <p className="muted">
+        شمارندهٔ «چند بار اکانت تست گرفته» را صفر می‌کند تا مشتری دوباره بتواند بگیرد. سقف
+        خودش در «تنظیمات» است. برای همه، برای یک گروه، یا برای یک نفر.
+      </p>
+      <AudiencePicker
+        idPrefix="trial"
+        kind={kind}
+        panel={panel}
+        telegramId={telegramId}
+        panels={panels}
+        busy={busy}
+        onKind={setKind}
+        onPanel={setPanel}
+        onTelegramId={setTelegramId}
+      />
+      <p className="muted">
+        {audience === null
+          ? kind === 'customer'
+            ? 'آی‌دی تلگرام مشتری را بنویسید.'
+            : 'اول پنل را انتخاب کنید.'
+          : used === null
+            ? 'در حال شمردن…'
+            : used === 0
+              ? 'کسی در این گروه اکانت تست نگرفته — چیزی برای ریست نیست.'
+              : `${count(used)} نفر اکانت تست گرفته‌اند و ریست می‌شوند.`}
+      </p>
+      {err && <div className="alert alert-error">{err}</div>}
+      {done && <div className="alert alert-info">{done}</div>}
+      <button
+        type="button"
+        className="btn btn-primary"
+        disabled={busy || audience === null || used === null || used === 0}
+        onClick={() => setConfirming(true)}
+      >
+        ادامه
+      </button>
+      {confirming && audience !== null && (
+        <Confirm
+          title="سقف اکانت تست ریست شود؟"
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => void submit()}
+          busy={busy}
+        >
+          <p>
+            شمارندهٔ <strong>{count(used ?? 0)}</strong> مشتری صفر می‌شود —{' '}
+            {AUDIENCES.find(([k]) => k === kind)?.[1]}
+            {kind === 'customer' ? `: ${telegramId}` : ''}.
+          </p>
+          <p className="muted">هر کدام می‌توانند دوباره به تعداد سقف اکانت تست بگیرند.</p>
+        </Confirm>
+      )}
+    </div>
   );
 }
 

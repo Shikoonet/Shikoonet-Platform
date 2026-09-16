@@ -42,6 +42,8 @@ import {
   creditEveryone,
   previewBulkPrice,
   queueBroadcast,
+  resetTrialQuota,
+  trialQuotaUsedCount,
   type BroadcastAudience,
   type BroadcastContent,
 } from '@shikoo/domain';
@@ -304,6 +306,44 @@ export function registerBulkRoutes(
    * power as making one, and a REVIEWER who cannot see it is the person most
    * likely to ask an ADMIN to send it again.
    */
+  /** How many in the audience have used a trial — what a reset would touch. */
+  app.get('/api/v1/admin/bulk/trial-used', async (c) => {
+    const audience = audienceFromQuery(new URL(c.req.url));
+    if (audience === null) return c.json({ ok: false, error: 'invalid_audience' }, 400);
+    return c.json({ ok: true, used: await trialQuotaUsedCount(c.env.DB, audience) });
+  });
+
+  /**
+   * Lets the audience take a free trial again.
+   *
+   * ADMIN only, and audited: a reset hands out free accounts, which cost
+   * panel capacity, and «who let everybody try again on Tuesday» is a
+   * question the log has to answer.
+   */
+  app.post('/api/v1/admin/bulk/trial-reset', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = z
+      .object({ audience: Audience })
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const { audience } = parsed.data;
+
+    const reset = await resetTrialQuota(c.env.DB, audience);
+    await audit(
+      c.env.DB,
+      ident,
+      'customers.trial_quota_reset',
+      'CUSTOMER',
+      audience.kind === 'customer' ? String(audience.telegramId) : audience.kind,
+      null,
+      { audience: audience.kind, reset },
+      null,
+    );
+    return c.json({ ok: true, reset });
+  });
+
   app.get('/api/v1/admin/bulk/recent', async (c) => {
     const { results } = await c.env.DB.prepare(
       `SELECT DISTINCT ON (action)
