@@ -2000,10 +2000,13 @@ async function migrateCards(ctx: Ctx): Promise<number> {
     created_at: number;
   }>(ctx.cfg, 'payment_cards');
 
+  // The hub's `label` lands in `holder_name` — since 0068 a card has one name,
+  // the one the invoice prints. The bot's `namecard` below overrides it where
+  // both exist, because that is the name customers were actually shown.
   const written = await insertBatch(
     ctx.pg,
     'payment_cards',
-    cols(['id', 'financial_account_id', 'card_digits', 'label', 'created_at']),
+    cols(['id', 'financial_account_id', 'card_digits', 'holder_name', 'created_at']),
     hub.map((c) => [
       c.id,
       c.financial_account_id,

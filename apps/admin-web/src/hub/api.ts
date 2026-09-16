@@ -115,7 +115,8 @@ export interface AccountListItem {
     card_digits: string;
     masked: string;
     display: string;
-    label: string | null;
+    /** Printed on the customer's invoice as «به نام». */
+    holder_name: string | null;
     /** ACTIVE | DISABLED. A list that omits it draws a dead card as a live one. */
     status?: string;
   }>;

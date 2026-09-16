@@ -40,8 +40,8 @@ export async function ensurePaymentCard(): Promise<void> {
   await db
     .prepare(
       `INSERT INTO payment_cards
-         (id, financial_account_id, card_digits, label, holder_name, status, created_at)
-       VALUES ('sim-bot-card', ?1, ?2, 'کارت تست', 'تست شیکو', 'ACTIVE', 0)
+         (id, financial_account_id, card_digits, holder_name, status, created_at)
+       VALUES ('sim-bot-card', ?1, ?2, 'تست شیکو', 'ACTIVE', 0)
        ON CONFLICT (card_digits) DO NOTHING`,
     )
     .bind(FIXTURE_ACCOUNT_ID, FIXTURE_CARD)

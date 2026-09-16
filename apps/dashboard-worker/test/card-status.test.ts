@@ -55,13 +55,13 @@ async function patch(id: string, body: unknown, email?: string) {
 
 async function card(id: string) {
   return baseEnv.DB.prepare(
-    `SELECT id, status, label, rotation_cursor FROM payment_cards WHERE id = ?1`,
+    `SELECT id, status, holder_name, rotation_cursor FROM payment_cards WHERE id = ?1`,
   )
     .bind(id)
     .first<{
       id: string;
       status: string;
-      label: string | null;
+      holder_name: string | null;
       rotation_cursor: number;
     }>();
 }
@@ -76,7 +76,7 @@ async function card(id: string) {
 async function seedCard(id: string, digits: string, cursor: number | 'next', status = 'ACTIVE') {
   await baseEnv.DB.prepare(
     `INSERT INTO payment_cards
-       (id, financial_account_id, card_digits, label, created_at, status, rotation_cursor)
+       (id, financial_account_id, card_digits, holder_name, created_at, status, rotation_cursor)
      VALUES (?1, ?2, ?3, NULL, 1, ?4,
              CASE WHEN ?6 = 1 THEN nextval('payment_card_queue_seq') ELSE ?5 END)`,
   )
@@ -209,40 +209,50 @@ describe('the rest of the edit', () => {
     expect((await patch(A, { displayWeight: 5 })).status).toBe(400);
   });
 
-  it('renames a card', async () => {
+  it('names the card holder — in the column the bot prints on the invoice', async () => {
+    // `holder_name`, not a second column. Until 0068 this route wrote `label`,
+    // `rotateCard` returned `holder_name`, and three production cards went to
+    // customers nameless with the owner's name saved on every one of them.
     await seedCard(A, '5047061674737313', 1_000_000);
 
-    expect((await patch(A, { label: 'کارت پویان' })).status).toBe(200);
-    expect(await card(A)).toMatchObject({ label: 'کارت پویان' });
+    expect((await patch(A, { holderName: 'پویان بهمن' })).status).toBe(200);
+    expect(await card(A)).toMatchObject({ holder_name: 'پویان بهمن' });
   });
 
-  it('clears a label when asked to, which is not the same as not asking', async () => {
-    // The distinction the SQL turns on. `label` cannot be COALESCEd against the
-    // existing value, because null is a real label — it means «no label» — so
-    // an explicit null has to be told apart from an absent field.
+  it('still refuses the column that went with 0068', async () => {
     await seedCard(A, '5047061674737313', 1_000_000);
-    await patch(A, { label: 'کارت پویان' });
 
-    await patch(A, { label: null });
-
-    expect((await card(A))?.label).toBeNull();
+    expect((await patch(A, { label: 'کارت پویان' })).status).toBe(400);
   });
 
-  it('leaves the label alone when the call is about something else', async () => {
+  it('clears the name when asked to, which is not the same as not asking', async () => {
+    // The distinction the SQL turns on. `holder_name` cannot be COALESCEd
+    // against the existing value, because null is a real value — it means «no
+    // name on the invoice» — so an explicit null has to be told apart from an
+    // absent field.
     await seedCard(A, '5047061674737313', 1_000_000);
-    await patch(A, { label: 'کارت پویان' });
+    await patch(A, { holderName: 'پویان بهمن' });
+
+    await patch(A, { holderName: null });
+
+    expect((await card(A))?.holder_name).toBeNull();
+  });
+
+  it('leaves the name alone when the call is about something else', async () => {
+    await seedCard(A, '5047061674737313', 1_000_000);
+    await patch(A, { holderName: 'پویان بهمن' });
 
     await patch(A, { status: 'DISABLED' });
 
-    expect(await card(A)).toMatchObject({ label: 'کارت پویان', status: 'DISABLED' });
+    expect(await card(A)).toMatchObject({ holder_name: 'پویان بهمن', status: 'DISABLED' });
   });
 
-  it('changes label and status in one call without losing either', async () => {
+  it('changes name and status in one call without losing either', async () => {
     await seedCard(A, '5047061674737313', 1_000_000);
 
-    await patch(A, { label: 'کارت پویان', status: 'DISABLED' });
+    await patch(A, { holderName: 'پویان بهمن', status: 'DISABLED' });
 
-    expect(await card(A)).toMatchObject({ label: 'کارت پویان', status: 'DISABLED' });
+    expect(await card(A)).toMatchObject({ holder_name: 'پویان بهمن', status: 'DISABLED' });
   });
 });
 
