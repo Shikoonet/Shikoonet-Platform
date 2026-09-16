@@ -166,11 +166,6 @@ export interface HandleOutcome {
   status: HandleStatus;
   replies: Reply[];
   /**
-   * A chat-wide keyboard change that cannot share the inline markup on the
-   * screen reply. `poll.ts` applies it immediately before the screen lands.
-   */
-  replyKeyboardUpdate?: { chatId: number; keyboard: ReplyKeyboard };
-  /**
    * Messages to remove once the replies are out.
    *
    * The shop's screens are edited in place, so a button press has never left a
@@ -1256,10 +1251,9 @@ function navigationParent(raw: string | undefined): string | null {
 }
 
 /**
- * Persists the target independently of a prompt's `step`, and requests a
- * Telegram keyboard replacement only when the visible mode changes between
- * home and back. Deeper navigation changes the target without needless
- * service messages because the label is already «برگشت».
+ * Persists where the bottom «برگشت» should land, independently of a prompt's
+ * `step`. Nothing is sent to Telegram for it: the bar under the chat is the
+ * same on every screen (`menu.homeReplyMenu`), so only the saved target moves.
  */
 async function applyCallbackNavigation(
   tx: D1DatabaseSession,
@@ -1279,8 +1273,6 @@ async function applyCallbackNavigation(
     .first<{ id: number; data: Record<string, unknown> }>();
   if (!row) return outcome;
 
-  const saved = row.data['navBack'];
-  const current = typeof saved === 'string' && decode(saved) !== null ? saved : null;
   const next = navigationParent(raw);
   const data = { ...row.data };
   if (next === null) delete data['navBack'];
@@ -1296,15 +1288,7 @@ async function applyCallbackNavigation(
     .bind(row.id, JSON.stringify(data))
     .run();
 
-  if ((current === null) === (next === null)) return outcome;
-  const chatId = outcome.replies.find((reply) => reply.chatId === telegramId)?.chatId ?? telegramId;
-  return {
-    ...outcome,
-    replyKeyboardUpdate: {
-      chatId,
-      keyboard: next === null ? menu.homeReplyMenu() : menu.backReplyMenu(),
-    },
-  };
+  return outcome;
 }
 
 /**

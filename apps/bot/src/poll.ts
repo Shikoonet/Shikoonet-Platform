@@ -365,23 +365,6 @@ export async function pollOnce(
     if (outcome.status === 'duplicate') {
       log.info('update.duplicate', { trace: traceOf(update) });
     }
-    // A reply keyboard cannot share a message with the inline keyboard on the
-    // screen. Change the chat-wide bar first through its invisible carrier,
-    // then land the actual screen as a NEW message. Editing the old screen does
-    // not move it below the carrier, so it would leave the invisible plumbing
-    // as the chronologically newest message and recreate the reported bug.
-    if (outcome.replyKeyboardUpdate && api.replaceReplyKeyboard) {
-      try {
-        await api.replaceReplyKeyboard(
-          outcome.replyKeyboardUpdate.chatId,
-          outcome.replyKeyboardUpdate.keyboard,
-        );
-      } catch (err) {
-        // The transaction has committed. A stale bottom label is inconvenient,
-        // not a reason to lose or replay the action that produced the screen.
-        log.error('reply.keyboard_update_failed', { trace: traceOf(update) }, err);
-      }
-    }
     for (const reply of outcome.replies) {
       try {
         if (reply.qrOf !== undefined) {
@@ -410,10 +393,7 @@ export async function pollOnce(
           await api.sendPhoto(reply.chatId, reply.photo, reply.text);
         } else if (reply.document !== undefined) {
           await api.sendDocument(reply.chatId, reply.document, reply.text);
-        } else if (
-          reply.editMessageId === undefined ||
-          outcome.replyKeyboardUpdate !== undefined
-        ) {
+        } else if (reply.editMessageId === undefined) {
           await onceMore(traceOf(update), () =>
             api.sendMessage(
               reply.chatId,
@@ -423,20 +403,6 @@ export async function pollOnce(
               reply.replyKeyboard,
             ),
           );
-          if (reply.editMessageId !== undefined) {
-            // The replacement is safely below the keyboard carrier now. The
-            // old inline screen is dead chrome; remove it so one transition
-            // does not leave two copies of the app in the chat.
-            try {
-              await api.deleteMessage(reply.chatId, reply.editMessageId);
-            } catch (err) {
-              log.warn(
-                'reply.replaced_screen_delete_failed',
-                { trace: traceOf(update), message_id: reply.editMessageId },
-                err,
-              );
-            }
-          }
         } else {
           try {
             await api.editMessageText(reply.chatId, reply.editMessageId, reply.text, reply.keyboard);

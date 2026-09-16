@@ -329,16 +329,6 @@ export interface TelegramApi {
     replyKeyboard?: ReplyKeyboard,
   ): Promise<void>;
   /**
-   * Replaces the persistent keyboard under a private chat.
-   *
-   * Telegram has no standalone "set reply keyboard" method: a keyboard can
-   * only ride on a message. The implementation sends an invisible carrier and
-   * deliberately keeps it: deleting that message makes some clients restore
-   * the previous keyboard. Optional so lightweight test/report transports
-   * that never drive customer navigation do not have to support it.
-   */
-  replaceReplyKeyboard?(chatId: number, keyboard: ReplyKeyboard): Promise<void>;
-  /**
    * Re-sends a photo we were sent, by its `file_id`.
    *
    * Nothing is downloaded and nothing is stored: the receipt lives on
@@ -906,25 +896,6 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
         keyboard,
         (body) => call('sendMessage', { chat_id: chatId, ...body, ...topic(threadId) }, 15_000),
         replyKeyboard,
-      );
-    },
-
-    async replaceReplyKeyboard(chatId, keyboard) {
-      // U+2063 is non-empty to Telegram and invisible to the customer. The
-      // carrier stays in history: deleting it can make Telegram Android walk
-      // back to the previous ReplyKeyboardMarkup — which is how an upgraded
-      // customer suddenly got the old full shop keyboard again. `poll.ts`
-      // sends the real screen after this, so the carrier is never the newest
-      // visible message.
-      await call(
-        'sendMessage',
-        {
-          chat_id: chatId,
-          text: '\u2063',
-          disable_notification: true,
-          ...replyMarkup(keyboard, false),
-        },
-        15_000,
       );
     },
 
