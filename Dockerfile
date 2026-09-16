@@ -25,15 +25,16 @@
 # ---------------------------------------------------------------------------
 # The base image is pinned by DIGEST, not by tag.
 #
-# `node:22-slim` is mutable: it moves whenever the Node 22 line gets a patch or
+# `node:24-slim` is mutable: it moves whenever the Node 24 line gets a patch or
 # the Debian base is rebuilt. That matters here because CI and Coolify build
 # SEPARATELY — `.github/workflows/ci.yml` runs `docker build -t shikoo-ci .` and
 # tests that image, and Coolify later builds its own from the same commit. With
 # a moving tag those two builds can start from different bytes, so the image the
 # gate approved is not the image that serves customers.
 #
-# sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 is the
-# OCI image index for `node:22-slim` as published on 2026-08-27, resolved from
+# sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 is the
+# OCI image index for `node:24-slim` (Node 24.21.0, the active LTS) as resolved
+# on 2026-09-16 from
 # registry-1.docker.io. It is multi-architecture and includes linux/amd64, which
 # is what the staging host runs (`docker version` reports amd64/linux).
 #
@@ -47,11 +48,11 @@
 # MAINTENANCE: this digest does not auto-update, so security patches to the base
 # image will NOT arrive on their own. Re-resolve it deliberately:
 #
-#   docker buildx imagetools inspect node:22-slim --format '{{.Manifest.Digest}}'
+#   docker buildx imagetools inspect node:24-slim --format '{{.Manifest.Digest}}'
 #
 # and update BOTH occurrences below in the same commit.
 # ---------------------------------------------------------------------------
-FROM node:22-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS base
+FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS base
 # Two statements, not one: a variable is not yet defined within the ENV that
 # declares it, so `PATH=$PNPM_HOME:$PATH` in the same line expands to an empty
 # prefix and BuildKit warns about it.
@@ -135,7 +136,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --prod --frozen-l
 # TypeScript IS the artifact here; see the note at the top of this file. The one
 # exception is the SPA, which really is built, and is taken from `build` rather
 # than from the context so a Windows-built `dist` can never ship.
-FROM node:22-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
+FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS runtime
 WORKDIR /app
 
 # Manifests and the pruned module tree, together, because pnpm's per-package
@@ -181,7 +182,7 @@ ENV HOST=0.0.0.0
 # The health check has to live here, not in the panel.
 #
 # Coolify's own check shells `curl` (falling back to `wget`) into the container,
-# and this image has neither — `node:22-slim` ships no HTTP client but Node
+# and this image has neither — `node:24-slim` ships no HTTP client but Node
 # itself. Enabled in the panel, it would mark all three services unhealthy while
 # all three were fine, which is the worse failure: a red light that means
 # nothing teaches you to ignore the light.
