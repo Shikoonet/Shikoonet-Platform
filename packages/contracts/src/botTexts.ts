@@ -1828,6 +1828,13 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'به کانال گزارش، با دکمهٔ باز کردن همان کاربر',
   },
+  // در نیمهٔ راهِ سقف، یک بار — تا کسی که تند می‌زند بفهمد قبل از اینکه مسدود شود.
+  SPAM_WARNING: {
+    default: '⚠️ لطفاً آرام‌تر. اگر همین‌طور پشت‌سرهم پیام بفرستید، ربات شما را مسدود می‌کند.',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'به خودِ کاربر، وقتی به نیمهٔ سقف پیام در دقیقه می‌رسد',
+  },
 
   /*
    * The reports, one per topic. Editable like every other text the bot sends,

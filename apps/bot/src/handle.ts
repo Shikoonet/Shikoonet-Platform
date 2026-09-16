@@ -67,7 +67,7 @@ import {
   placeTrialOrder,
 } from './order.js';
 import { clientApps, helpArticle, helpArticles } from './content.js';
-import { blockForSpam, overSpamLimit } from './spam.js';
+import { blockForSpam, spamVerdict } from './spam.js';
 import {
   claimReferrer,
   referralLink,
@@ -429,20 +429,29 @@ export async function handleUpdate(
     //
     // Admins are exempt from the counter, not just from the block: an admin
     // walking the panel fast is the ordinary way this bot is operated.
-    if (from && !(await isAdmin()) && (await overSpamLimit(from.id, update.update_id))) {
-      const user = await upsertUser(tx, from);
-      const blocked = await blockForSpam(tx, {
-        userId: user.id,
-        telegramId: from.id,
-        updateId: update.update_id,
-        reportChatId: SHOP.reportChatId,
-        reportThreadId: SHOP.reportTopics.otherreport,
-      });
-      // Told once, at the moment it happens. Every message after this one is
-      // ignored in silence, which is what the per-handler checks already do.
-      return blocked && chatId !== undefined
-        ? { status: 'processed', replies: [reply(chatId, menu.SPAM_BLOCKED)] }
-        : IGNORED;
+    if (from && !(await isAdmin())) {
+      const verdict = await spamVerdict(from.id, update.update_id, SHOP.spamLimitPerMinute);
+      if (verdict === 'block') {
+        const user = await upsertUser(tx, from);
+        const blocked = await blockForSpam(tx, {
+          userId: user.id,
+          telegramId: from.id,
+          updateId: update.update_id,
+          reportChatId: SHOP.reportChatId,
+          reportThreadId: SHOP.reportTopics.otherreport,
+        });
+        // Told once, at the moment it happens. Every message after this one is
+        // ignored in silence, which is what the per-handler checks already do.
+        return blocked && chatId !== undefined
+          ? { status: 'processed', replies: [reply(chatId, menu.SPAM_BLOCKED)] }
+          : IGNORED;
+      }
+      // Halfway there: the warning, in place of this message's answer. A
+      // person who was pressing too fast reads it and stops; a script does
+      // not, and meets the block seventeen messages later.
+      if (verdict === 'warn' && chatId !== undefined) {
+        return { status: 'processed', replies: [reply(chatId, menu.SPAM_WARNING)] };
+      }
     }
 
     // Channel membership and the shop's rules, at the same single point and for
