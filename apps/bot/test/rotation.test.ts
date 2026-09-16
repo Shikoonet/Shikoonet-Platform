@@ -87,9 +87,9 @@ async function pool(count: number): Promise<string[]> {
     await db
       .prepare(
         `INSERT INTO payment_cards
-           (id, financial_account_id, card_digits, label, holder_name, status,
+           (id, financial_account_id, card_digits, holder_name, status,
             created_at, rotation_cursor)
-         VALUES (?1, ?2, ?3, ?4, 'چرخش', 'ACTIVE', 0, nextval('payment_card_queue_seq'))
+         VALUES (?1, ?2, ?3, ?4, 'ACTIVE', 0, nextval('payment_card_queue_seq'))
          ON CONFLICT (card_digits) DO UPDATE
            SET status = 'ACTIVE', rotation_cursor = nextval('payment_card_queue_seq'),
                last_assigned_at = NULL`,
@@ -267,9 +267,9 @@ describe('the line moves on money, not on being shown', { timeout: 60_000 }, () 
     await db
       .prepare(
         `INSERT INTO payment_cards
-           (id, financial_account_id, card_digits, label, holder_name, status,
+           (id, financial_account_id, card_digits, holder_name, status,
             created_at, rotation_cursor)
-         VALUES (?1, ?2, ?3, 'newcomer', 'چرخش', 'ACTIVE', 0, nextval('payment_card_queue_seq'))`,
+         VALUES (?1, ?2, ?3, 'newcomer', 'ACTIVE', 0, nextval('payment_card_queue_seq'))`,
       )
       .bind(`${PREFIX}99`, ACCOUNT_ID, newcomer)
       .run();
@@ -521,9 +521,9 @@ describe('a card is only handed out while its account is in service', () => {
     await db
       .prepare(
         `INSERT INTO payment_cards
-           (id, financial_account_id, card_digits, label, holder_name, status,
+           (id, financial_account_id, card_digits, holder_name, status,
             created_at, rotation_cursor)
-         VALUES (?1, ?2, ?3, 'زنده', 'چرخش', 'ACTIVE', 0, nextval('payment_card_queue_seq'))
+         VALUES (?1, ?2, ?3, 'زنده', 'ACTIVE', 0, nextval('payment_card_queue_seq'))
          ON CONFLICT (card_digits) DO UPDATE SET status = 'ACTIVE'`,
       )
       .bind(`${PREFIX}live`, live, liveDigits)

@@ -120,7 +120,7 @@ describe('an account that has been switched off', () => {
         display_name: 'حساب کارت‌دار',
         active: 0,
         payment_cards: [
-          { id: 'c1', card_digits: '6037000000000095', masked: '****0095', display: '6037-0000-0000-0095', label: null, status: 'ACTIVE' },
+          { id: 'c1', card_digits: '6037000000000095', masked: '****0095', display: '6037-0000-0000-0095', holder_name: null, status: 'ACTIVE' },
         ],
       }),
     ];
@@ -193,7 +193,7 @@ describe('an account that has been switched off', () => {
         display_name: 'حساب زنده',
         active: 1,
         payment_cards: [
-          { id: 'c2', card_digits: '6037000000000095', masked: '****0095', display: '6037-0000-0000-0095', label: null, status: 'DISABLED' },
+          { id: 'c2', card_digits: '6037000000000095', masked: '****0095', display: '6037-0000-0000-0095', holder_name: null, status: 'DISABLED' },
         ],
       }),
     ];

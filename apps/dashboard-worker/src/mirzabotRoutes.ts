@@ -67,7 +67,8 @@ export type PaymentCardListItem = {
   card_digits: string;
   masked: string;
   display: string;
-  label: string | null;
+  /** Printed on the customer's invoice as «به نام». */
+  holder_name: string | null;
   /** ACTIVE | DISABLED — so a list can say why the bot ignored one. */
   status: string;
 };
@@ -83,7 +84,7 @@ export async function loadPaymentCardsForAccounts(
     .prepare(
       // `status` too: the accounts list drew a disabled card and a live one
       // identically, so «حساب / کارت» could not say why the bot had ignored one.
-      `SELECT id, financial_account_id, card_digits, label, status
+      `SELECT id, financial_account_id, card_digits, holder_name, status
        FROM payment_cards WHERE financial_account_id IN (${placeholders})
        ORDER BY created_at ASC`,
     )
@@ -92,7 +93,7 @@ export async function loadPaymentCardsForAccounts(
       id: string;
       financial_account_id: string;
       card_digits: string;
-      label: string | null;
+      holder_name: string | null;
       status: string;
     }>();
   const map = new Map<string, PaymentCardListItem[]>();
@@ -102,7 +103,7 @@ export async function loadPaymentCardsForAccounts(
       card_digits: r.card_digits,
       masked: maskCardDigits(r.card_digits),
       display: formatCardDigitsForDisplay(r.card_digits),
-      label: r.label,
+      holder_name: r.holder_name,
       status: r.status,
     };
     const list = map.get(r.financial_account_id) ?? [];
@@ -749,7 +750,7 @@ export function registerMirzabotRoutes(
     // count is not scoped to `?1` — and until when an open invoice holds it.
     // Same hold fragment as the picker, so the two cannot disagree.
     const rows = await c.env.DB.prepare(
-      `SELECT pc.id, pc.financial_account_id, pc.card_digits, pc.label, pc.created_at,
+      `SELECT pc.id, pc.financial_account_id, pc.card_digits, pc.holder_name, pc.created_at,
               pc.status, pc.last_assigned_at,
               (SELECT COUNT(*)::int + 1 FROM payment_cards o
                  JOIN financial_accounts ofa ON ofa.id = o.financial_account_id
@@ -765,7 +766,7 @@ export function registerMirzabotRoutes(
         id: string;
         financial_account_id: string;
         card_digits: string;
-        label: string | null;
+        holder_name: string | null;
         created_at: number;
         status: string;
         last_assigned_at: number | null;
@@ -778,7 +779,7 @@ export function registerMirzabotRoutes(
       card_digits: r.card_digits,
       masked: maskCardDigits(r.card_digits),
       display: formatCardDigitsForDisplay(r.card_digits),
-      label: r.label,
+      holder_name: r.holder_name,
       created_at: r.created_at,
       status: r.status,
       last_assigned_at: r.last_assigned_at,
@@ -795,7 +796,8 @@ export function registerMirzabotRoutes(
   const AddCardBody = z
     .object({
       cardNumber: z.string().min(1).max(64),
-      label: z.string().max(128).optional(),
+      /** «نام صاحب کارت» — what the bot prints on the invoice as «به نام». */
+      holderName: z.string().max(128).optional(),
       /** Reassign if this card is mapped to another account (TEST/admin). */
       moveIfMapped: z.boolean().optional(),
     })
@@ -866,10 +868,10 @@ export function registerMirzabotRoutes(
       // already waiting and take every checkout until each of them had taken
       // money, which is the head admin's 2026-08-13 complaint in a new shape.
       await c.env.DB.prepare(
-        `INSERT INTO payment_cards (id, financial_account_id, card_digits, label, created_at, rotation_cursor)
+        `INSERT INTO payment_cards (id, financial_account_id, card_digits, holder_name, created_at, rotation_cursor)
          VALUES (?1,?2,?3,?4,?5, nextval('payment_card_queue_seq'))`,
       )
-        .bind(id, accountId, digits, parsed.data.label ?? null, now)
+        .bind(id, accountId, digits, parsed.data.holderName ?? null, now)
         .run();
     } catch {
       return c.json(
@@ -938,10 +940,11 @@ export function registerMirzabotRoutes(
   const CardEditBody = z
     .object({
       status: z.enum(['ACTIVE', 'DISABLED']).optional(),
-      label: z.string().max(120).nullable().optional(),
+      // The same ceiling as POST, so a name a card was created with can be edited.
+      holderName: z.string().max(128).nullable().optional(),
     })
     .strict()
-    .refine((b) => b.status !== undefined || b.label !== undefined);
+    .refine((b) => b.status !== undefined || b.holderName !== undefined);
   app.patch('/api/v1/payment-cards/:id', async (c) => {
     const ident = c.get('identity');
     // READ_ONLY, not «not ADMIN» — the same guard its two siblings use.
@@ -956,7 +959,7 @@ export function registerMirzabotRoutes(
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const cardId = c.req.param('id');
     const before = await c.env.DB.prepare(
-      `SELECT id, card_digits, status, label
+      `SELECT id, card_digits, status, holder_name
          FROM payment_cards WHERE id = ?1`,
     )
       .bind(cardId)
@@ -964,13 +967,14 @@ export function registerMirzabotRoutes(
         id: string;
         card_digits: string;
         status: string;
-        label: string | null;
+        holder_name: string | null;
       }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     const after = {
       status: parsed.data.status ?? before.status,
-      label: parsed.data.label !== undefined ? parsed.data.label : before.label,
+      holder_name:
+        parsed.data.holderName !== undefined ? parsed.data.holderName : before.holder_name,
     };
     // Coming back into service is the same event as being added: the card
     // joins the BACK of the line with a fresh ticket. Left where it was, a
@@ -992,29 +996,30 @@ export function registerMirzabotRoutes(
         ident.email,
         ident.role,
         cardId,
-        JSON.stringify({ status: before.status, label: before.label }),
+        JSON.stringify({ status: before.status, holder_name: before.holder_name }),
         JSON.stringify(after),
         now,
       ),
       // Only the columns the body named. Writing both from the row read a
       // moment ago is a read-modify-write, and two saves in flight then revert
-      // each other — which the panel produces by design, because the label
+      // each other — which the panel produces by design, because the name
       // saves on blur and blur is what happens on the way to pressing a button.
       //
-      // `label` cannot use COALESCE: null is a real value there, meaning «no
-      // label», so a separate flag says whether it was asked for at all.
+      // `holder_name` cannot use COALESCE: null is a real value there, meaning
+      // «no name on the invoice», so a separate flag says whether it was asked
+      // for at all.
       c.env.DB.prepare(
         `UPDATE payment_cards
             SET status = COALESCE(?2, status),
-                label = CASE WHEN ?3 = 1 THEN ?4 ELSE label END,
+                holder_name = CASE WHEN ?3 = 1 THEN ?4 ELSE holder_name END,
                 rotation_cursor = CASE WHEN ?5 = 1
                   THEN nextval('payment_card_queue_seq') ELSE rotation_cursor END
           WHERE id = ?1`,
       ).bind(
         cardId,
         parsed.data.status ?? null,
-        parsed.data.label !== undefined ? 1 : 0,
-        parsed.data.label ?? null,
+        parsed.data.holderName !== undefined ? 1 : 0,
+        parsed.data.holderName ?? null,
         rejoining,
       ),
     ]);

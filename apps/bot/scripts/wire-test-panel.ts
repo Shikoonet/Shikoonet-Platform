@@ -211,9 +211,9 @@ async function main(): Promise<number> {
     await db
       .prepare(
         `INSERT INTO payment_cards
-           (id, financial_account_id, card_digits, label, created_at,
+           (id, financial_account_id, card_digits, created_at,
             holder_name, status, rotation_cursor)
-         VALUES (?1, ?2, ?3, 'کارت تست', ?4, 'تست شیکو', 'ACTIVE', nextval('payment_card_queue_seq'))
+         VALUES (?1, ?2, ?3, ?4, 'تست شیکو', 'ACTIVE', nextval('payment_card_queue_seq'))
          ON CONFLICT (id) DO UPDATE SET status = 'ACTIVE', financial_account_id = ?2`,
       )
       .bind(CARD_ID, ACCOUNT_ID, CARD_DIGITS, now)

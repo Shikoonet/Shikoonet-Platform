@@ -213,10 +213,10 @@ export async function seed(db: D1Database, opts: { verbose?: boolean } = {}): Pr
   for (const [i, a] of accounts.entries()) {
     await db
       .prepare(
-        `INSERT INTO payment_cards (id, financial_account_id, card_digits, label, holder_name, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE', ?6)`,
+        `INSERT INTO payment_cards (id, financial_account_id, card_digits, holder_name, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'ACTIVE', ?5)`,
       )
-      .bind(id(), a.id, fixtureCardDigits(i, a.card_last_four), a.display_name, 'تست شیکو', t0)
+      .bind(id(), a.id, fixtureCardDigits(i, a.card_last_four), 'تست شیکو', t0)
       .run();
   }
 

@@ -37,6 +37,17 @@ const KNOWN_FRAGMENTS = [
   'FROM reconciliation_matches m2 WHERE m2.payment_claim_id = c.id',
 ];
 
+/**
+ * Statements that name a column the new schema has since retired on purpose.
+ * They were portable when written and are not the point of this test, which
+ * is the dialect — not whether the hub's screens still fit a schema that has
+ * moved on. Each entry names the migration that retired the column.
+ */
+const RETIRED_COLUMNS = [
+  // 0068: payment_cards.label folded into holder_name — one name per card.
+  'card_digits, label',
+];
+
 const SQL_START = /^\s*(SELECT|INSERT|UPDATE|DELETE|WITH)\b/i;
 
 /** Removes comments so a backtick-quoted phrase in JSDoc is not read as SQL. */
@@ -59,7 +70,12 @@ interface Statement {
   sql: string;
 }
 
-function collect(): { standalone: Statement[]; interpolated: number; fragments: number } {
+function collect(): {
+  standalone: Statement[];
+  interpolated: number;
+  fragments: number;
+  retired: number;
+} {
   const roots = [join(HUB, 'packages'), join(HUB, 'apps')].filter(existsSync);
   const files = roots
     .flatMap((r) => walk(r))
@@ -68,6 +84,7 @@ function collect(): { standalone: Statement[]; interpolated: number; fragments: 
   const standalone: Statement[] = [];
   let interpolated = 0;
   let fragments = 0;
+  let retired = 0;
 
   for (const file of files) {
     const src = stripComments(readFileSync(file, 'utf8'));
@@ -84,10 +101,14 @@ function collect(): { standalone: Statement[]; interpolated: number; fragments: 
         fragments++;
         continue;
       }
+      if (RETIRED_COLUMNS.some((f) => flat.includes(f))) {
+        retired++;
+        continue;
+      }
       standalone.push({ file: file.replace(HUB, '').replace(/\\/g, '/'), sql });
     }
   }
-  return { standalone, interpolated, fragments };
+  return { standalone, interpolated, fragments, retired };
 }
 
 const hubPresent = existsSync(join(HUB, 'packages'));
@@ -101,16 +122,20 @@ afterAll(async () => {
 });
 
 describe.skipIf(!hubPresent)('every hub SQL statement is portable', () => {
-  const { standalone, interpolated, fragments } = hubPresent
+  const { standalone, interpolated, fragments, retired } = hubPresent
     ? collect()
-    : { standalone: [], interpolated: 0, fragments: 0 };
+    : { standalone: [], interpolated: 0, fragments: 0, retired: 0 };
 
   it('found the hub source to check', () => {
     // A silent zero would make this whole file pass while proving nothing.
     expect(standalone.length).toBeGreaterThan(200);
+    // Exactly the two hub card reads — a third would mean a new statement
+    // hid behind the retired-column list rather than being looked at.
+    expect(retired).toBe(2);
     console.log(
       `  ${standalone.length} standalone statements, ` +
-        `${interpolated} interpolated (skipped), ${fragments} known fragments`,
+        `${interpolated} interpolated (skipped), ${fragments} known fragments, ` +
+        `${retired} on retired columns`,
     );
   });
 

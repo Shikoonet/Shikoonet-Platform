@@ -273,7 +273,7 @@ describe('a claim arriving while Continuity is on', () => {
       .run();
     await env.DB.prepare(
       `INSERT INTO payment_cards
-         (id, financial_account_id, card_digits, label, created_at)
+         (id, financial_account_id, card_digits, holder_name, created_at)
        VALUES (?1, ?2, ?3, 'Continuity card', ?4)`,
     )
       .bind(`card-cont-${suffix}`, accountId, cardDigits, BASE_MS)

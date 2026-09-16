@@ -22,7 +22,7 @@ const CARD = {
   id: 'card-1',
   card_digits: '5047061674560137',
   display: '5047-0616-7456-0137',
-  label: null,
+  holder_name: null,
   status: 'ACTIVE',
   queue_position: 3,
   held_until: null,
@@ -56,20 +56,22 @@ afterEach(() => {
 });
 
 describe('editing a card', () => {
-  it('saves a typed label AND the button pressed straight afterwards', async () => {
+  it('saves a typed holder name AND the button pressed straight afterwards', async () => {
     render(<PaymentCardsPanel accountId="acc-1" accountActive />);
     await screen.findByText('5047-0616-7456-0137');
 
-    const label = screen.getByLabelText('نام دلخواه');
-    fireEvent.change(label, { target: { value: 'شهر - پویان' } });
+    const name = screen.getByLabelText('نام صاحب کارت — روی فاکتور مشتری');
+    fireEvent.change(name, { target: { value: 'پویان بهمن' } });
     // Blur and click, in the order a real hand produces them: pressing a button
     // blurs the field first. The blur must not disable the button under it.
-    fireEvent.blur(label);
+    fireEvent.blur(name);
     fireEvent.click(screen.getByRole('button', { name: 'خاموش کن' }));
 
     await waitFor(() => expect(sent).toHaveLength(2));
+    // `holderName`, the column the bot's invoice reads — not `label`, which
+    // this field wrote until 0068 while the invoice never looked at it.
     expect(sent.map(([, body]) => body)).toEqual([
-      { label: 'شهر - پویان' },
+      { holderName: 'پویان بهمن' },
       { status: 'DISABLED' },
     ]);
   });
@@ -84,11 +86,11 @@ describe('editing a card', () => {
     expect(sent[0]![1]).toEqual({ status: 'DISABLED' });
   });
 
-  it('does not save a label the operator did not change', async () => {
+  it('does not save a name the operator did not change', async () => {
     render(<PaymentCardsPanel accountId="acc-1" accountActive />);
     await screen.findByText('5047-0616-7456-0137');
 
-    fireEvent.blur(screen.getByLabelText('نام دلخواه'));
+    fireEvent.blur(screen.getByLabelText('نام صاحب کارت — روی فاکتور مشتری'));
 
     expect(sent).toHaveLength(0);
   });

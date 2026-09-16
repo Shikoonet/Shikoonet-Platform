@@ -68,7 +68,7 @@ async function seedAccountAndCard() {
     .bind(accountId, now)
     .run();
   await env.DB.prepare(
-    `INSERT INTO payment_cards (id, financial_account_id, card_digits, label, created_at)
+    `INSERT INTO payment_cards (id, financial_account_id, card_digits, holder_name, created_at)
      VALUES ('pc-1', ?1, '6037997512345678', 'test', ?2)`,
   )
     .bind(accountId, now)

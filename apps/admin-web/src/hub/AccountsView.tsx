@@ -49,7 +49,7 @@ function formatPaymentCardCell(a: AccountListItem): string {
     const accountOff = a.active === 0;
     return mapped
       .map((c) => {
-        const name = c.label ? `${c.display} (${c.label})` : c.display;
+        const name = c.holder_name ? `${c.display} (${c.holder_name})` : c.display;
         if (accountOff) return `${name} — حساب خاموش`;
         // `!== 'ACTIVE'` rather than `=== 'DISABLED'`: an older response with
         // no status must read as live, which is what it always was.
@@ -902,7 +902,8 @@ interface PaymentCardRow {
   id: string;
   card_digits: string;
   display: string;
-  label: string | null;
+  /** Printed on the customer's invoice as «به نام». */
+  holder_name: string | null;
   status: string;
   /** Where the card stands in the bakery queue, among every card in service. */
   queue_position: number;
@@ -932,7 +933,7 @@ export function PaymentCardsPanel({
   const w = useWriteProps();
   const [cards, setCards] = useState<PaymentCardRow[]>([]);
   const [newCard, setNewCard] = useState('');
-  const [label, setLabel] = useState('');
+  const [holderName, setHolderName] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [moveOffer, setMoveOffer] = useState<{ cardNumber: string; message: string } | null>(null);
@@ -948,11 +949,11 @@ export function PaymentCardsPanel({
   }
 
   /**
-   * One PATCH for every field of a card. The route takes weight, status and
-   * label together or singly, so three controls do not need three functions.
+   * One PATCH for every field of a card. The route takes status and holder
+   * name together or singly, so the controls do not need a function each.
    *
-   * `quiet` leaves the panel's `busy` flag alone. The label saves on blur, and
-   * blur is what happens on the way to pressing a button — so a label save that
+   * `quiet` leaves the panel's `busy` flag alone. The name saves on blur, and
+   * blur is what happens on the way to pressing a button — so a name save that
    * disabled the row would eat the very click that caused it. That is not a
    * theory: it happened while walking this screen on 2026-08-29, and it fails
    * silently, which is the worst way for it to fail. It is safe because the
@@ -961,7 +962,7 @@ export function PaymentCardsPanel({
    */
   async function edit(
     id: string,
-    change: { status?: 'ACTIVE' | 'DISABLED'; label?: string | null },
+    change: { status?: 'ACTIVE' | 'DISABLED'; holderName?: string | null },
     what: string,
     quiet = false,
   ) {
@@ -995,7 +996,11 @@ export function PaymentCardsPanel({
       const r = await fetch(`/api/v1/accounts/${accountId}/payment-cards`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ cardNumber: newCard, label: label || undefined, moveIfMapped }),
+        body: JSON.stringify({
+          cardNumber: newCard,
+          holderName: holderName || undefined,
+          moveIfMapped,
+        }),
       });
       const j = (await r.json().catch(() => ({}))) as {
         error?: string;
@@ -1012,7 +1017,7 @@ export function PaymentCardsPanel({
         throw new Error(j.message ?? j.error ?? `${r.status}`);
       }
       setNewCard('');
-      setLabel('');
+      setHolderName('');
       await load();
       onChanged?.();
     } catch (e) {
@@ -1095,17 +1100,21 @@ export function PaymentCardsPanel({
               </div>
 
               <div className="payment-card__controls">
+                {/* The one name a card has, and the customer sees it: the bot
+                    prints it on the invoice as «👤 به نام». Until 0068 this field
+                    wrote a second column the invoice never read, and three cards
+                    went out nameless with the owner's name typed in here. */}
                 <label className="payment-card__field">
-                  <span className="form-label">نام دلخواه</span>
+                  <span className="form-label">نام صاحب کارت — روی فاکتور مشتری</span>
                   <input
-                    placeholder="مثلاً «کارت پویان»"
-                    defaultValue={c.label ?? ''}
+                    placeholder="مثلاً «پویان بهمن»"
+                    defaultValue={c.holder_name ?? ''}
                     // On blur rather than on every keystroke: each save writes an
                     // audit row, and one row per letter typed is not a history.
                     onBlur={(e) => {
                       const next = e.target.value.trim();
-                      if (next !== (c.label ?? '')) {
-                        void edit(c.id, { label: next || null }, 'تغییر برچسب', true);
+                      if (next !== (c.holder_name ?? '')) {
+                        void edit(c.id, { holderName: next || null }, 'تغییر نام صاحب کارت', true);
                       }
                     }}
                     {...w}
@@ -1185,11 +1194,11 @@ export function PaymentCardsPanel({
           />
         </label>
         <label className="payment-card__field">
-          <span className="form-label">نام دلخواه (اختیاری)</span>
+          <span className="form-label">نام صاحب کارت (اختیاری) — روی فاکتور مشتری</span>
           <input
-            placeholder="مثلاً «کارت پویان»"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
+            placeholder="مثلاً «پویان بهمن»"
+            value={holderName}
+            onChange={(e) => setHolderName(e.target.value)}
           />
         </label>
         <button
