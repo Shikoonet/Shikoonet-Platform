@@ -28,6 +28,7 @@ import {
   renderPlanLabel,
 } from '@shikoo/contracts';
 import { CustomerLink } from '../CustomerLink.js';
+import { RequiredChannelsPanel } from '../hub/RequiredChannelsPanel.js';
 import { count, dateTime } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -131,6 +132,10 @@ export function SettingsPage() {
           <div className="page-head__sub">{count(rows.length)} کلید</div>
         </div>
       </div>
+
+      {/* Not a settings row — a table of its own — but it is the setting an
+          operator comes here for (Sam, 2026-09-16), so it sits first. */}
+      <RequiredChannelsPanel />
 
       <div className="card">
         <form
