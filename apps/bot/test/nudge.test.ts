@@ -11,7 +11,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { nudgeNeverBought } from '../src/nudge.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { invalidateShopSettings } from '../src/settings.js';
-import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 8, 6, 12, 0, 0);
 const DAY = 86_400_000;
@@ -54,6 +54,19 @@ async function buys(userId: number): Promise<void> {
        VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1000000, 0, 1000000, 1, 'COMPLETED')`,
     )
     .bind(`zz-nudge-${userId}`, userId, await planId('sim-vip-1m-50'))
+    .run();
+}
+
+/** The free trial: an order that completes like a sale and is not one. */
+async function tries(userId: number): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO orders
+         (public_id, user_id, kind, provider_id, unit_price_irr, discount_irr, total_irr,
+          quantity, status, completed_at)
+       VALUES (?1, ?2, 'TRIAL', ?3, 0, 0, 0, 1, 'COMPLETED', now())`,
+    )
+    .bind(`zz-nudge-trial-${userId}`, userId, await providerId('sim-vip'))
     .run();
 }
 
@@ -137,6 +150,15 @@ describe('who gets it', () => {
 
     expect(await nudgeNeverBought(db, NOW_MS)).toBe(0);
     expect(await nudged(telegramId)).toBe(0);
+  });
+
+  it('still nudges somebody whose only order is the free trial', async () => {
+    // A trial order ends COMPLETED like a sale does; it is not one.
+    const { userId, telegramId } = await starter(60);
+    await tries(userId);
+
+    expect(await nudgeNeverBought(db, NOW_MS)).toBe(1);
+    expect(await nudged(telegramId)).toBe(1);
   });
 
   it('respects the customer’s own notify switch', async () => {

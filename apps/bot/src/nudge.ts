@@ -40,7 +40,7 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { createLogger } from '@shikoo/domain';
+import { COMPLETED_A_PURCHASE_SQL, createLogger } from '@shikoo/domain';
 import { enqueue } from './notify.js';
 import * as menu from './menu.js';
 import { loadShopSettings } from './settings.js';
@@ -86,9 +86,7 @@ export async function nudgeNeverBought(
           AND u.notify_enabled
           AND u.status = 'ACTIVE'
           AND u.registered_at <= to_timestamp(?1 / 1000.0) - make_interval(days => ?2)
-          AND NOT EXISTS (
-            SELECT 1 FROM orders o
-             WHERE o.user_id = u.id AND o.status = 'COMPLETED')
+          AND NOT ${COMPLETED_A_PURCHASE_SQL}
           -- The record that they have already been asked. Checked in the
           -- SELECT as well as relied on at the INSERT: without it every sweep
           -- would re-read the same eleven thousand rows for ever, fill its

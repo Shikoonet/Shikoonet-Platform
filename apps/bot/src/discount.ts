@@ -34,6 +34,7 @@
  */
 
 import type { D1DatabaseSession } from '@shikoo/database';
+import { OWNS_PAID_SERVICE_SQL } from '@shikoo/domain';
 import { IRR_PER_TOMAN } from './money.js';
 
 /** Why a code cannot be used. Each one gets its own sentence on screen. */
@@ -336,14 +337,10 @@ export async function checkCode(
   }
 
   if (row.first_purchase_only) {
-    // "First purchase" is about services owned, not orders placed: an order
-    // that was never paid for is not a purchase. `index.php:4249` counts
-    // invoice rows in the live statuses, which is the same set.
+    // "First purchase" is about services owned, not orders placed, and the
+    // free trial is neither — the one definition, shared with the catalog.
     const owned = await tx
-      .prepare(
-        `SELECT 1 FROM subscriptions
-          WHERE user_id = ?1 AND status <> 'PENDING_PAYMENT' LIMIT 1`,
-      )
+      .prepare(`SELECT 1 FROM users u WHERE u.id = ?1 AND ${OWNS_PAID_SERVICE_SQL}`)
       .bind(userId)
       .first<{ '?column?': number }>();
     if (owned) return { ok: false, reason: 'FIRST_PURCHASE_ONLY' };

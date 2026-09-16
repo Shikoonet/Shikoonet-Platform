@@ -12,6 +12,7 @@ import { db } from './helpers/env.js';
 import {
   ensureCatalog,
   giveSubscription,
+  giveTrial,
   makeCustomer,
   planId,
   productId,
@@ -124,11 +125,14 @@ describe('what the shop shows a customer', () => {
   let customer: number;
   let reseller: number;
   let returning: number;
+  let tried: number;
   let vip: number;
 
   beforeAll(async () => {
     await ensureCatalog();
     customer = await makeCustomer(810_001);
+    tried = await makeCustomer(810_002);
+    await giveTrial(tried, 'catalog-trial-1');
     reseller = await makeCustomer(810_002, { reseller: true });
     returning = await makeCustomer(810_003);
     await giveSubscription(returning, 'catalog-sub-1');
@@ -163,6 +167,10 @@ describe('what the shop shows a customer', () => {
     try {
       expect(await panelCodes(customer)).toContain('sim-gold');
       expect(await panelCodes(returning)).not.toContain('sim-gold');
+      // «اکانت تست رو نباید جزو خرید اولی‌ها حساب کنیم» — Sam, 2026-09-16. A
+      // trial is a service owned, and until that day it closed the starter
+      // panel on exactly the person it exists for.
+      expect(await panelCodes(tried)).toContain('sim-gold');
       // And it has not taken the rest of the shop with it.
       expect(await panelCodes(returning)).toContain('sim-vip');
     } finally {
@@ -366,8 +374,11 @@ describe('what the shop shows a customer', () => {
   it('offers a first-purchase plan only until the first purchase', async () => {
     const fresh = (await plansOnPanel(db, customer, vip)).map((p) => p.productName);
     const after = (await plansOnPanel(db, returning, vip)).map((p) => p.productName);
+    const afterTrial = (await plansOnPanel(db, tried, vip)).map((p) => p.productName);
     expect(fresh).toContain('اکانت تست - ۱ روزه - ۱ گیگ');
     expect(after).not.toContain('اکانت تست - ۱ روزه - ۱ گیگ');
+    // A free trial is not the first purchase (Sam, 2026-09-16).
+    expect(afterTrial).toContain('اکانت تست - ۱ روزه - ۱ گیگ');
   });
 
   it('returns nothing for a panel the customer may not open', async () => {
@@ -391,10 +402,13 @@ describe('purchasablePlan answers the same question as the list', () => {
   let customer: number;
   let reseller: number;
   let returning: number;
+  let tried: number;
 
   beforeAll(async () => {
     await ensureCatalog();
     customer = await makeCustomer(811_001);
+    tried = await makeCustomer(811_002);
+    await giveTrial(tried, 'catalog-trial-2');
     reseller = await makeCustomer(811_002, { reseller: true });
     returning = await makeCustomer(811_003);
     await giveSubscription(returning, 'catalog-sub-2');

@@ -45,7 +45,7 @@ const NOW_MS = Date.UTC(2026, 8, 4, 6, 0, 0);
  * and failed on the second run with a duplicate `orders_public_id_key`, which
  * is a test that proves nothing about the run after the one you watched.
  */
-const PEOPLE = ['never', 'bought', 'ended', 'both', 'panel-a'] as const;
+const PEOPLE = ['never', 'tried', 'bought', 'ended', 'both', 'panel-a'] as const;
 const tgOf = (tag: (typeof PEOPLE)[number]) => TG + PEOPLE.indexOf(tag);
 
 /** The panel this file's fixtures sell from, and one it does not. */
@@ -70,6 +70,16 @@ async function completedOrder(userId: number): Promise<void> {
      VALUES (?1, ?2, 'NEW_PURCHASE', 1000, 1000, 'COMPLETED', now())`,
   )
     .bind(uuid(), userId)
+    .run();
+}
+
+async function trialOrder(userId: number): Promise<void> {
+  await baseEnv.DB.prepare(
+    `INSERT INTO orders (public_id, user_id, kind, provider_id, unit_price_irr, total_irr,
+                         status, completed_at)
+     VALUES (?1, ?2, 'TRIAL', ?3, 0, 0, 'COMPLETED', now())`,
+  )
+    .bind(uuid(), userId, providerA)
     .run();
 }
 
@@ -129,6 +139,7 @@ async function got(broadcastId: string, userId: number): Promise<boolean> {
 
 /** Everybody this file made, so the assertions do not depend on the shop. */
 let never = 0;
+let tried = 0;
 let bought = 0;
 let ended = 0;
 let endedButAlsoLive = 0;
@@ -168,6 +179,12 @@ beforeAll(async () => {
   // Bought once. Not «هیچ خریدی نکرده», however long ago.
   bought = await customer('bought');
   await completedOrder(bought);
+
+  // Took the free trial and nothing else. Still «هیچ خریدی نکرده» — the
+  // trial's order completes like a sale, and it is the one order that is
+  // not one (Sam, 2026-09-16).
+  tried = await customer('tried');
+  await trialOrder(tried);
 
   // Had a service, has none now.
   ended = await customer('ended');
@@ -229,6 +246,7 @@ describe('the audience on a broadcast', () => {
   it('leaves out anybody who has completed an order', async () => {
     const { broadcastId } = await send({ kind: 'never_bought' });
     expect(await got(broadcastId, never)).toBe(true);
+    expect(await got(broadcastId, tried)).toBe(true);
     expect(await got(broadcastId, bought)).toBe(false);
     expect(await got(broadcastId, onPanelA)).toBe(false);
   });
