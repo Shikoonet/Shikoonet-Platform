@@ -135,3 +135,33 @@ describe('the panel edit dialog', () => {
     expect(nameBox().value).toBe('پنل گاما');
   });
 });
+
+/**
+ * The prefix field shows the name it will produce, so «firstbuy_» is seen
+ * as `firstbuy_5a7e` before «ذخیره» rather than as a 422 on a paid order
+ * afterwards (Sam, 2026-09-16).
+ */
+describe('the account-name prefix', () => {
+  async function openEditorOnA() {
+    draw();
+    await screen.findByText('پنل آلفا');
+    fireEvent.click(screen.getAllByRole('button', { name: 'ویرایش' })[0]!);
+    const mode = (await screen.findByLabelText('روش ساخت')) as HTMLSelectElement;
+    fireEvent.change(mode, { target: { value: 'PANEL_TEXT' } });
+    return screen.getByLabelText('پیشوند انگلیسی') as HTMLInputElement;
+  }
+
+  it('previews the name the panel will get, with one underscore', async () => {
+    const box = await openEditorOnA();
+    fireEvent.change(box, { target: { value: 'firstbuy_' } });
+    expect(await screen.findByText('firstbuy_5a7e')).toBeTruthy();
+  });
+
+  it('drops what the panel would refuse as it is typed, and says why', async () => {
+    const box = await openEditorOnA();
+    fireEvent.change(box, { target: { value: 'شیکو Vip' } });
+    expect(box.value).toBe('vip');
+    fireEvent.change(box, { target: { value: 'ab' } });
+    expect(await screen.findByText(/پنل نام فارسی را نمی‌پذیرد/)).toBeTruthy();
+  });
+});

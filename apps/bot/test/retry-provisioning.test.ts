@@ -71,7 +71,7 @@ function fakePanel() {
    * the remote username carries its public id, which is what makes that
    * possible.
    */
-  const madeFor = (publicId: string) => created.filter((n) => n.includes(publicId));
+  const madeFor = (publicId: string) => created.filter((n) => n.endsWith(`_${publicId.slice(0, 4)}`));
   return { created, madeFor, fetchImpl };
 }
 
@@ -88,7 +88,8 @@ const RUN = Date.now().toString(36).slice(-5);
 let seq = 0;
 function nextIds() {
   seq += 1;
-  return { telegramId: 880_000 + seq * 13, publicId: `rty${RUN}${seq}` };
+  // Sequence first — the account name is `<id>_<first four of the order id>`.
+  return { telegramId: 880_000 + seq * 13, publicId: `${String(seq).padStart(2, '0')}${RUN}rty` };
 }
 
 /** Whether the panel behind this plan has credentials the bot can find. */
