@@ -725,8 +725,13 @@ async function freeRemoteUsername(
   shape: ReturnType<typeof usernameShapeFor>,
 ): Promise<string> {
   const telegramId = row.telegram_id ?? row.user_id;
-  let name = remoteUsernameFor(telegramId, row.order_public_id, shape);
-  for (let len = USERNAME_SUFFIX_DEFAULT + 2; len <= USERNAME_SUFFIX_MAX; len += 2) {
+  let name = '';
+  for (let len = USERNAME_SUFFIX_DEFAULT; len <= USERNAME_SUFFIX_MAX; len += 2) {
+    const candidate = remoteUsernameFor(telegramId, row.order_public_id, shape, len);
+    // A mode without a suffix (PANEL_TEXT_SEQ) gives the same name at every
+    // length; nothing longer to try, and the check below already ran on it.
+    if (candidate === name) break;
+    name = candidate;
     const taken = await db
       .prepare(
         `SELECT 1 AS taken FROM subscriptions
@@ -736,10 +741,10 @@ async function freeRemoteUsername(
       .bind(row.provider_id, name, row.order_id)
       .first<{ taken: number }>();
     if (!taken) return name;
-    const longer = remoteUsernameFor(telegramId, row.order_public_id, shape, len);
-    if (longer === name) return name;
-    name = longer;
   }
+  // Every length was taken. At ten characters the suffix is the whole public
+  // id, which is unique per order, so this is reachable only by a stored row
+  // that is not this shop's doing; the insert below (0051) refuses it loudly.
   return name;
 }
 
