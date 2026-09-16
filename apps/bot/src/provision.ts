@@ -30,9 +30,12 @@ import {
   isAutomated,
   groupIdsFor,
   open,
+  panelNoteFor,
   panelSecretKey,
   remoteUsernameFor,
   renewModeFor,
+  USERNAME_SUFFIX_DEFAULT,
+  USERNAME_SUFFIX_MAX,
   trialFor,
   usernameShapeFor,
   splitCredential,
@@ -700,6 +703,46 @@ export async function provisionPaidOrders(
   return delivered;
 }
 
+/**
+ * The account name for this order — the four-character shape Sam asked for,
+ * lengthened only when this shop has already given that exact name to a
+ * DIFFERENT order on the same panel.
+ *
+ * Four characters of the order id leave two of one customer's orders a
+ * 1-in-65,536 chance of the same name. A collision is not silent: migration
+ * 0051 refuses the second subscription row with 23505, `fail` runs, and the
+ * customer's money comes back with «سرویس نیاز به بررسی دارد» — a paid order
+ * lost to bad luck. So the name is checked against `subscriptions` first. A
+ * row for THIS order is not a collision (a retry after a half-finished
+ * provisioning must find its own account), and the set of other orders is
+ * fixed by the time this one runs, so every retry lands on the same answer.
+ * Only the order-suffixed modes reach the loop; `PANEL_TEXT_SEQ` ignores the
+ * length and returns on the first pass.
+ */
+async function freeRemoteUsername(
+  db: D1Database,
+  row: PendingOrder,
+  shape: ReturnType<typeof usernameShapeFor>,
+): Promise<string> {
+  const telegramId = row.telegram_id ?? row.user_id;
+  let name = remoteUsernameFor(telegramId, row.order_public_id, shape);
+  for (let len = USERNAME_SUFFIX_DEFAULT + 2; len <= USERNAME_SUFFIX_MAX; len += 2) {
+    const taken = await db
+      .prepare(
+        `SELECT 1 AS taken FROM subscriptions
+          WHERE provider_id = ?1 AND remote_username = ?2 AND order_id IS DISTINCT FROM ?3
+          LIMIT 1`,
+      )
+      .bind(row.provider_id, name, row.order_id)
+      .first<{ taken: number }>();
+    if (!taken) return name;
+    const longer = remoteUsernameFor(telegramId, row.order_public_id, shape, len);
+    if (longer === name) return name;
+    name = longer;
+  }
+  return name;
+}
+
 async function deliver(
   db: D1Database,
   row: PendingOrder,
@@ -781,13 +824,9 @@ async function deliver(
         ? null
         : new Date(now + durationDays * 86_400_000)
       : new Date(now + trial.durationHours! * 3_600_000);
-  const request: ProvisionRequest = {
-    username: remoteUsernameFor(
-      row.telegram_id ?? row.user_id,
-      row.order_public_id,
-      // «روش ساخت نام کاربری». The suffix is still the order's public id in
-      // every mode, so every mode is still reproducible by a retry.
-      usernameShapeFor(
+  const shape = // «روش ساخت نام کاربری». The suffix is still cut from the order's
+    // public id in every mode, so every mode is still reproducible by a retry.
+    usernameShapeFor(
         row.provider_config ?? {},
         row.telegram_username,
         row.username_text,
@@ -804,11 +843,17 @@ async function deliver(
         // Null is already the documented «could not count it» path and falls
         // back to the order's own public id, which is unique by construction.
         row.order_kind === 'NEW_PURCHASE' ? toNumber(row.purchase_seq) : null,
-      ),
-    ),
+      );
+  const request: ProvisionRequest = {
+    username: await freeRemoteUsername(db, row, shape),
     volumeGb,
     durationDays,
-    note: `shikoo ${row.order_public_id}`,
+    // What the admin reads on the panel: `5524701349 | mazuni_rezashon | buy`.
+    note: panelNoteFor(
+      row.telegram_id ?? row.user_id,
+      row.telegram_username,
+      trial === null ? 'buy' : 'usertest',
+    ),
     providerConfig: row.provider_config ?? {},
     planAttrs: planAttrsFor(row),
     expiresAt,
@@ -1301,7 +1346,13 @@ async function renew(
             : 0,
       durationDays:
         addon === null ? row.duration_days : addon.kind === 'ADD_TIME' ? addon.quantity : 0,
-      note: `shikoo ${row.order_public_id}`,
+      // The order id stays in the note: the adapter reads it back to know this
+      // extension was already applied (`marzban.ts`, `renew`).
+      note: panelNoteFor(
+        row.telegram_id ?? row.user_id,
+        row.telegram_username,
+        `${addon === null ? 'renew' : 'extra'} ${row.order_public_id}`,
+      ),
       providerConfig: row.provider_config ?? {},
       planAttrs: planAttrsFor(row),
       /*

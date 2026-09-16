@@ -9,6 +9,7 @@
 
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { D1DatabaseSession } from '@shikoo/database';
+import { remoteUsernameFor } from '@shikoo/domain';
 import { provisionPaidOrders } from '../src/provision.js';
 import { invalidateShopSettings } from '../src/settings.js';
 import { db, pendingNotifications } from './helpers/env.js';
@@ -69,19 +70,31 @@ function latch(): { reached: Promise<void>; open: () => void } {
 }
 function nextIds() {
   seq += 1;
-  return { telegramId: 770_000 + seq * 7, publicId: `prov${String(seq).padStart(6, '0')}` };
+  // The sequence FIRST: the account name carries the first four characters
+  // of the order id (`5524701349_5a7e`, Sam 2026-09-16), so ids that only
+  // differ in their tail would all be named alike and the collision guard
+  // would lengthen every one after the first.
+  return { telegramId: 770_000 + seq * 7, publicId: `${String(seq).padStart(4, '0')}prov` };
 }
 
 /** A paid order sitting exactly where the settlement sweep leaves one. */
 async function paidOrder(
-  options: { kind?: string; planCode?: string; bonusVolumeGb?: number } = {},
+  options: {
+    kind?: string;
+    planCode?: string;
+    bonusVolumeGb?: number;
+    /** A second order for the SAME customer, with a chosen id. */
+    sameCustomerAs?: { telegramId: number; publicId: string };
+  } = {},
 ): Promise<{
   orderId: number;
   publicId: string;
   telegramId: number;
   userId: number;
 }> {
-  const { telegramId, publicId } = nextIds();
+  const fresh = nextIds();
+  const telegramId = options.sameCustomerAs?.telegramId ?? fresh.telegramId;
+  const publicId = options.sameCustomerAs?.publicId ?? fresh.publicId;
   const userId = await makeCustomer(telegramId);
   // `ORDER BY id` inside the helper, so a product with several plans always
   // yields the same one: a fixture that picks a different plan per run is a
@@ -168,14 +181,14 @@ describe('delivering a paid order', () => {
     expect(subs).toHaveLength(1);
     expect(subs[0]).toMatchObject({
       public_id: order.publicId,
-      remote_username: `${order.telegramId}_${order.publicId}`,
+      remote_username: remoteUsernameFor(order.telegramId, order.publicId),
       status: 'ACTIVE',
       price_irr: 1_950_000,
     });
     // What the customer is sent must be the link that actually exists.
     const note = notes.find((n) => n.chatId === order.telegramId);
-    expect(note?.text).toContain(`https://panel.test/sub/${order.telegramId}_${order.publicId}`);
-    expect(panel.created).toContain(`${order.telegramId}_${order.publicId}`);
+    expect(note?.text).toContain(`https://panel.test/sub/${remoteUsernameFor(order.telegramId, order.publicId)}`);
+    expect(panel.created).toContain(remoteUsernameFor(order.telegramId, order.publicId));
   });
 
   /**
@@ -196,7 +209,7 @@ describe('delivering a paid order', () => {
 
     expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
     const body = panel.bodies.find(
-      (b) => b['username'] === `${order.telegramId}_${order.publicId}`,
+      (b) => b['username'] === remoteUsernameFor(order.telegramId, order.publicId),
     );
     expect(body?.['data_limit']).toBe(Math.round(56 * 1024 ** 3));
     const subs = await subsFor(order.orderId);
@@ -243,7 +256,7 @@ describe('delivering a paid order', () => {
     // Delivered, and said so — with the plain message rather than the screen.
     expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
     const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
-    expect(note?.text).toContain(`https://panel.test/sub/${order.telegramId}_${order.publicId}`);
+    expect(note?.text).toContain(`https://panel.test/sub/${remoteUsernameFor(order.telegramId, order.publicId)}`);
   });
 
   it('keeps what was sold readable even after the catalogue moves on', async () => {
@@ -257,6 +270,31 @@ describe('delivering a paid order', () => {
     expect(sub.remote_ref).toMatchObject({ panel: expect.any(String) });
   });
 
+  it('gives a second order that shares its first four characters a longer name, not the first account', async () => {
+    // `5524701349_5a7e` is four characters of the order id, so two orders of
+    // one customer can share them. The adapter's «already exists → success»
+    // would then hand the FIRST account to the second paid order; migration
+    // 0051 turns that into a refused subscription row instead. Neither is
+    // acceptable, so the name is checked against `subscriptions` and
+    // lengthened. Both orders complete, on two accounts.
+    const first = await paidOrder();
+    const panel = fakePanel();
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    const second = await paidOrder({
+      sameCustomerAs: { telegramId: first.telegramId, publicId: `${first.publicId.slice(0, 4)}twin` },
+    });
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    const a = (await subsFor(first.orderId))[0]!.remote_username;
+    const b = (await subsFor(second.orderId))[0]!.remote_username;
+    expect(a).toBe(remoteUsernameFor(first.telegramId, first.publicId));
+    expect(b).toBe(remoteUsernameFor(first.telegramId, second.publicId, undefined, 6));
+    expect(b).not.toBe(a);
+    expect(await orderRow(second.orderId)).toMatchObject({ status: 'COMPLETED' });
+    expect(panel.created).toContain(b);
+  });
+
   it('does nothing the second time', async () => {
     const order = await paidOrder();
     const panel = fakePanel();
@@ -268,7 +306,7 @@ describe('delivering a paid order', () => {
     const second = await pendingNotifications();
     expect(second.filter((n) => n.chatId === order.telegramId)).toHaveLength(1);
     expect(await subsFor(order.orderId)).toHaveLength(1);
-    expect(panel.created.filter((u) => u.endsWith(order.publicId))).toHaveLength(1);
+    expect(panel.created.filter((u) => u === remoteUsernameFor(order.telegramId, order.publicId))).toHaveLength(1);
   });
 });
 
@@ -461,7 +499,7 @@ describe('when delivery cannot finish', () => {
       if (String(input).endsWith('/api/admin/token')) {
         return new Response(JSON.stringify({ access_token: 't' }), { status: 200 });
       }
-      if (`${String(input)}${String(init?.body ?? '')}`.includes(order.publicId)) {
+      if (`${String(input)}${String(init?.body ?? '')}`.includes(remoteUsernameFor(order.telegramId, order.publicId))) {
         inThePanel.open();
         await letItFinish.reached;
       }
@@ -499,7 +537,7 @@ describe('when delivery cannot finish', () => {
     const fast = fakePanel();
 
     const heldPanel = (async (input: string | URL | Request, init?: RequestInit) => {
-      if (`${String(input)}${String(init?.body ?? '')}`.includes(order.publicId)) {
+      if (`${String(input)}${String(init?.body ?? '')}`.includes(remoteUsernameFor(order.telegramId, order.publicId))) {
         inThePanel.open();
         await letItFinish.reached;
       }
@@ -865,7 +903,7 @@ describe('which tier the panel is asked for', () => {
 
     await provisionPaidOrders(db, panel.fetchImpl);
 
-    const mine = panel.bodies.find((b) => String(b['username']).endsWith(order.publicId));
+    const mine = panel.bodies.find((b) => b['username'] === remoteUsernameFor(order.telegramId, order.publicId));
     expect(mine, 'the platinum order was delivered').toBeDefined();
     expect(mine?.['group_ids']).toEqual([6, 7]);
   });
@@ -881,7 +919,7 @@ describe('which tier the panel is asked for', () => {
 
     await provisionPaidOrders(db, panel.fetchImpl);
 
-    const mine = panel.bodies.find((b) => String(b['username']).endsWith(order.publicId));
+    const mine = panel.bodies.find((b) => b['username'] === remoteUsernameFor(order.telegramId, order.publicId));
     expect(mine, 'the plain order was delivered').toBeDefined();
     expect(mine).not.toHaveProperty('group_ids');
   });
@@ -903,7 +941,7 @@ describe('which tier the panel is asked for', () => {
       .run();
     try {
       await provisionPaidOrders(db, panel.fetchImpl);
-      const mine = panel.bodies.find((b) => String(b['username']).endsWith(order.publicId));
+      const mine = panel.bodies.find((b) => b['username'] === remoteUsernameFor(order.telegramId, order.publicId));
       expect(mine?.['group_ids']).toEqual([3]);
     } finally {
       // Restored whatever the assertion did. This is a fixture row the rest of

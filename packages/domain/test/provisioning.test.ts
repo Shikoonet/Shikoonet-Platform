@@ -127,9 +127,17 @@ function request(over: Partial<ProvisionRequest> = {}): ProvisionRequest {
 
 describe('remoteUsernameFor', () => {
   it('keeps the shape the panels already hold', () => {
-    // Real production usernames: 369469521_ce4c, 5633385607_ff620a55.
-    expect(remoteUsernameFor(369469521, '84702b7df0')).toBe('369469521_84702b7df0');
-    expect(remoteUsernameFor(5633385607, 'd2154af80e')).toBe('5633385607_d2154af80e');
+    // Real production usernames: 369469521_ce4c, 5524701349_5a7e — the
+    // legacy bot's `<id>_<4 hex>`, which Sam asked to keep (2026-09-16).
+    expect(remoteUsernameFor(369469521, '84702b7df0')).toBe('369469521_8470');
+    expect(remoteUsernameFor(5633385607, 'd2154af80e')).toBe('5633385607_d215');
+  });
+
+  it('lengthens the suffix on request, from the same order id', () => {
+    // What `freeRemoteUsername` in the bot reaches for when four characters
+    // are already taken by another order on the panel.
+    expect(remoteUsernameFor(369469521, '84702b7df0', undefined, 6)).toBe('369469521_84702b');
+    expect(remoteUsernameFor(369469521, '84702b7df0', undefined, 10)).toBe('369469521_84702b7df0');
   });
 
   it('is the same every time, which is what makes a retry safe', () => {
@@ -138,13 +146,16 @@ describe('remoteUsernameFor', () => {
     expect(a).toBe(b);
   });
 
-  it('keeps two orders of one customer apart, however alike their ids', () => {
-    // This caught a real defect. An earlier version took the first eight
-    // characters, so these two collided — and a collision is not an error: the
-    // adapter finds the existing account and reports success, so the customer
-    // pays twice and receives one service.
-    expect(remoteUsernameFor(1, 'abcdef1235')).not.toBe(remoteUsernameFor(1, 'abcdef1234'));
-    expect(remoteUsernameFor(1, 'aaaaaaaaab')).not.toBe(remoteUsernameFor(1, 'aaaaaaaaaa'));
+  it('can collide on four characters — and the full order id always tells them apart', () => {
+    // Four characters are the legacy shape, not a uniqueness guarantee: two
+    // orders of one customer may share them, and the bot checks the name
+    // against `subscriptions` before using it (`freeRemoteUsername`,
+    // proved in `apps/bot/test/provision.test.ts`). The full id is the floor
+    // that check can always fall back to.
+    expect(remoteUsernameFor(1, 'abcdef1235')).toBe(remoteUsernameFor(1, 'abcdef1234'));
+    expect(remoteUsernameFor(1, 'abcdef1235', undefined, 10)).not.toBe(
+      remoteUsernameFor(1, 'abcdef1234', undefined, 10),
+    );
   });
 
   describe('«متن پنل + آیدی عددی + شمارهٔ خرید»', () => {
@@ -174,8 +185,8 @@ describe('remoteUsernameFor', () => {
       // A caller that could not count it — an old row, a path that predates
       // this. Inventing a number here is the one thing that must not happen:
       // a guessed «1» is a name the customer's first account already has.
-      expect(seq(null)).toBe('shikoo_84702b7df0');
-      expect(seq(0)).toBe('shikoo_84702b7df0');
+      expect(seq(null)).toBe('shikoo_8470');
+      expect(seq(0)).toBe('shikoo_8470');
     });
 
     it('falls back with the shop’s own word, not a bare id', () => {

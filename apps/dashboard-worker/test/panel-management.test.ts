@@ -156,6 +156,25 @@ describe('روش ساخت نام کاربری', () => {
     expect((await patch(id, { usernameMode: 'PANEL_TEXT' })).status).toBe(200);
     expect((await configOf(id))['username_mode']).toBe('PANEL_TEXT');
   });
+
+  it('holds «متن پنل + آیدی + شمارهٔ خرید» to the same rule as «متن دلخواه»', async () => {
+    // This mode read the text too and was never checked: a Persian «متن» saved
+    // with 200 and every account was quietly named after the Telegram id.
+    const id = await makePanel('username-seq');
+    expect((await patch(id, { usernameMode: 'PANEL_TEXT_SEQ', usernameText: 'شیکو' })).status).toBe(400);
+    expect((await configOf(id))['username_mode']).toBeUndefined();
+  });
+
+  it('stores the text the panel will get, not the text that was typed', async () => {
+    // Sam typed «firstbuy_» (2026-09-16). The bot joins prefix and order id
+    // with its own `_`, so the stored prefix must not end in one — the panel
+    // refused `firstbuy__e484…` with a 422 on a paid order.
+    const id = await makePanel('username-trailing');
+    expect((await patch(id, { usernameMode: 'PANEL_TEXT', usernameText: 'firstbuy_' })).status).toBe(200);
+    expect((await configOf(id))['username_text']).toBe('firstbuy');
+    expect((await patch(id, { usernameText: 'First__Buy!' })).status).toBe(200);
+    expect((await configOf(id))['username_text']).toBe('first_buy');
+  });
 });
 
 describe('سرویس تست', () => {

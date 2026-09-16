@@ -51,6 +51,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { sanitiseUsernamePart } from '@shikoo/contracts';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
 import { Icon } from '../icons.js';
@@ -1400,8 +1401,14 @@ function PanelModal({
                 {(usernameMode === 'PANEL_TEXT' || usernameMode === 'PANEL_TEXT_SEQ') && (
                   <div className="grow">
                     <label className="form-label" htmlFor="panel-username-text">
-                      متن دلخواه
+                      پیشوند انگلیسی
                     </label>
+                    {/* What the panel will take, not what was typed: the same
+                        reduction the bot applies before it builds the name, so
+                        «Vip_» reads back as `vip` and a Persian word as nothing.
+                        Sam typed «firstbuy_» here on 2026-09-16 and the panel
+                        refused `firstbuy__…` on a paid order — the rule lived
+                        only on the far side of «ذخیره». */}
                     <input
                       id="panel-username-text"
                       className="form-control ltr"
@@ -1409,9 +1416,28 @@ function PanelModal({
                       maxLength={32}
                       placeholder="shikoo"
                       value={usernameText}
-                      onChange={(e) => setUsernameText(e.target.value)}
+                      onChange={(e) =>
+                        setUsernameText(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))
+                      }
                       {...w}
                     />
+                    <p className="muted" style={{ marginBlockStart: 4 }}>
+                      {sanitiseUsernamePart(usernameText) === null ? (
+                        <>
+                          فقط حروف انگلیسی کوچک، عدد و زیرخط — حداقل ۳ حرف، با حرف شروع شود. پنل
+                          نام فارسی را نمی‌پذیرد.
+                        </>
+                      ) : (
+                        <>
+                          اکانت‌ها این‌طور ساخته می‌شوند:{' '}
+                          <b className="ltr">
+                            {usernameMode === 'PANEL_TEXT_SEQ'
+                              ? `${sanitiseUsernamePart(usernameText)}_369469521_2`
+                              : `${sanitiseUsernamePart(usernameText)}_5a7e`}
+                          </b>
+                        </>
+                      )}
+                    </p>
                   </div>
                 )}
               </div>
@@ -1429,9 +1455,11 @@ function PanelModal({
                   </>
                 ) : (
                   <>
-                    نام اکانت روی پنل این شکلی می‌شود: <b>{'<پیشوند>_<شناسهٔ سفارش>'}</b>. پسوند
-                    همیشه شناسهٔ سفارش است تا اگر ساخت نیمه‌کاره ماند، تلاش دوم همان اکانت را پیدا
-                    کند و اکانت دوم نسازد.
+                    نام اکانت روی پنل این شکلی می‌شود: <b>{'<پیشوند>_<چهار حرف از شمارهٔ سفارش>'}</b>{' '}
+                    — مثلاً <span className="ltr">5524701349_5a7e</span>. پسوند از شمارهٔ سفارش
+                    می‌آید تا اگر ساخت نیمه‌کاره ماند، تلاش دوم همان اکانت را پیدا کند و اکانت
+                    دوم نسازد. یادداشت اکانت روی پنل هم{' '}
+                    <span className="ltr">{'<آیدی> | <یوزرنیم> | buy'}</span> نوشته می‌شود.
                   </>
                 )}
                 {usernameMode === 'TELEGRAM_USERNAME' && (

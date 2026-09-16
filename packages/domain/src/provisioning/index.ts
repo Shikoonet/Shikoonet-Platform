@@ -3,6 +3,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { sanitiseUsernamePart, USERNAME_PART_MAX } from '@shikoo/contracts';
 import { marzbanAdapter } from './marzban.js';
 import { manualAdapter } from './manual.js';
 import type { ProvisioningAdapter, RenewMode } from './types.js';
@@ -284,10 +285,26 @@ function wholeBound(raw: unknown): number | null {
  * Uniqueness is already guaranteed one column over; throwing it away to match a
  * cosmetic length was not a trade worth making.
  */
+/**
+ * How many characters of the order id follow the prefix.
+ *
+ * Four, since 2026-09-16 — `5524701349_5a7e`, the shape the legacy bot gave
+ * every account (`bin2hex(random_bytes(2))`) and the one Sam pointed at on
+ * the panel screen. The suffix is still cut from the order's public id, so a
+ * retry still computes the same name; what four characters give up is that
+ * two of one customer's orders can share them (1 in 65,536 per pair).
+ * `provisionPaidOrders` checks the name against the subscriptions this shop
+ * has already written and lengthens the suffix when it is taken, which is why
+ * the length is a parameter here.
+ */
+export const USERNAME_SUFFIX_DEFAULT = 4;
+export const USERNAME_SUFFIX_MAX = 10;
+
 export function remoteUsernameFor(
   telegramId: number,
   orderPublicId: string,
   shape?: UsernameShape,
+  suffixLength: number = USERNAME_SUFFIX_DEFAULT,
 ): string {
   // The one mode whose suffix is NOT the order's public id.
   //
@@ -322,8 +339,31 @@ export function remoteUsernameFor(
       return `${prefix}_${telegramId}_${seq}`;
     }
   }
-  const suffix = orderPublicId.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const suffix = orderPublicId
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase()
+    .slice(0, Math.max(1, suffixLength));
   return `${usernamePrefix(telegramId, orderPublicId, shape)}_${suffix}`;
+}
+
+/**
+ * The panel's `note` on an account, in the shape the legacy bot wrote and the
+ * admin reads on the panel: `5524701349 | mazuni_rezashon | buy`, with
+ * `NOT_USERNAME` where the customer has no Telegram username — Sam,
+ * 2026-09-16, from the panel's own «Modify user» screen.
+ *
+ * `kind` is the legacy `type` column: `buy`, `usertest`, and for a renewal
+ * `renew <order>` — the order id has to be in there because the renew adapter
+ * reads the note back to know whether THIS order's extension was already
+ * applied (`marzban.ts`, `renew`).
+ */
+export function panelNoteFor(
+  telegramId: number,
+  telegramUsername: string | null | undefined,
+  kind: string,
+): string {
+  const who = telegramUsername && telegramUsername.trim() !== '' ? telegramUsername.trim() : 'NOT_USERNAME';
+  return `${telegramId} | ${who} | ${kind}`;
 }
 
 /**
@@ -546,16 +586,6 @@ function orderIdPrefix(orderPublicId: string): string {
   return `u${body.padEnd(7, '0')}`;
 }
 
-/**
- * Down to what a panel will accept, or null.
- *
- * The charset is legacy's own (`index.php:3030`) - must start with a letter,
- * three characters at least, `[a-z0-9_]` only. The CAP is not legacy's: it has
- * none anywhere, so a custom text plus seven random digits plus a collision
- * retry's own prefix can pass forty characters, and the panel answers 422 in
- * the middle of a paid order.
- */
-const USERNAME_PART_MAX = 32;
 
 /**
  * The cap on a name the CUSTOMER types, which is tighter than the admin's.
@@ -569,13 +599,9 @@ const USERNAME_PART_MAX = 32;
 export const CUSTOMER_NAME_MAX = 16;
 
 /**
- * The bot's prompt runs input through this too, so the rule a customer is held
- * to and the rule the panel is given are one rule rather than two.
- */
-/**
  * What a WHOLE panel username may be, as opposed to one part of one.
  *
- * `sanitiseUsernamePart` above is about a PIECE — the shop's word, the
+ * `sanitiseUsernamePart` (contracts) is about a PIECE — the shop's word, the
  * customer's chosen name — and enforces the rules a piece needs: at least three
  * characters, starting with a letter, short enough to leave room for a suffix.
  * A whole name is a different object: it is `shikoo_369469521_2`, so it is
@@ -616,15 +642,8 @@ export function checkRemoteUsername(value: string): string | null {
   return null;
 }
 
-export function sanitiseUsernamePart(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string') return null;
-  const cleaned = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9_]/g, '')
-    .replace(/^[^a-z]+/, '')
-    .slice(0, USERNAME_PART_MAX);
-  return cleaned.length >= 3 ? cleaned : null;
-}
+/** Re-exported: the rule lives in contracts so the panel editor can show the name it produces. */
+export { sanitiseUsernamePart, USERNAME_PART_MAX };
 
 /**
  * The free account a panel may hand out, and the two numbers behind it.

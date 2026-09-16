@@ -60,6 +60,7 @@ import {
   downgradeGroupsFor,
   trialFor,
   usernameShapeFor,
+  sanitiseUsernamePart,
   seal,
   splitCredential,
   NOT_A_SHELF,
@@ -798,13 +799,7 @@ function shape(r: PanelRow) {
  * is a save that is refused rather than a setting that does nothing.
  */
 function sanitisedPanelText(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string') return null;
-  const cleaned = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9_]/g, '')
-    .replace(/^[^a-z]+/, '')
-    .slice(0, 32);
-  return cleaned.length >= 3 ? cleaned : null;
+  return sanitiseUsernamePart(raw);
 }
 
 /**
@@ -2320,17 +2315,25 @@ export function registerPanelRoutes(
     const merged = { ...(before.config ?? {}), ...configPatch };
     if (patch.usernameMode !== undefined || patch.usernameText !== undefined) {
       const shape = usernameShapeFor(merged);
-      if (shape.mode === 'PANEL_TEXT' && sanitisedPanelText(shape.panelText) === null) {
+      // Both modes that read the text. `PANEL_TEXT_SEQ` was left out of this
+      // check and a Persian «متن» saved fine, then every account was silently
+      // named after the Telegram id — the switched-on-and-inert shape again.
+      const readsText = shape.mode === 'PANEL_TEXT' || shape.mode === 'PANEL_TEXT_SEQ';
+      const cleaned = sanitisedPanelText(shape.panelText);
+      if (readsText && cleaned === null) {
         return c.json(
           {
             ok: false,
             error: 'invalid_body',
             detail:
-              'برای «متن دلخواه پنل» باید یک متن حداقل ۳ حرفی بگذارید که با حرف انگلیسی شروع شود.',
+              'پیشوند نام اکانت فقط می‌تواند حروف انگلیسی کوچک، عدد و زیرخط باشد — حداقل ۳ حرف، با حرف شروع شود. پنل نام فارسی نمی‌پذیرد.',
           },
           400,
         );
       }
+      // Store what the panel will actually get, not what was typed: `Vip_`
+      // becomes `vip`, so the screen shows the name the accounts carry.
+      if (readsText && cleaned !== shape.panelText) configPatch['username_text'] = cleaned;
     }
     if (
       patch.trialEnabled !== undefined ||
