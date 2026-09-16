@@ -158,17 +158,21 @@ const TYPED_OUT_SETTINGS = [
   },
 
   // ── Money ───────────────────────────────────────────────────────────────
+  // Both rows hold TOMAN, as the PHP wrote them; `settings.ts` multiplies by
+  // ten on the way in (`tomanLimit`). The label says so because the form has
+  // no unit of its own, and an operator who read «10000000» as Rial and
+  // «corrected» it would set a ceiling ten times what they meant.
   {
     scope: 'pay',
     key: 'minbalancecart',
-    label: 'کمینهٔ شارژ کیف پول',
+    label: 'کمینهٔ شارژ کیف پول (تومان)',
     hint: 'کمتر از این مبلغ، شارژ پذیرفته نمی‌شود.',
     kind: 'irr',
   },
   {
     scope: 'pay',
     key: 'maxbalancecart',
-    label: 'بیشینهٔ شارژ کیف پول',
+    label: 'بیشینهٔ شارژ کیف پول (تومان)',
     hint: 'بیشتر از این مبلغ، شارژ پذیرفته نمی‌شود.',
     kind: 'irr',
   },
@@ -337,18 +341,29 @@ const TYPED_OUT_SETTINGS = [
     kind: 'bool',
     truth: { on: 'onpvsupport', off: 'offpvsupport', unknown: 'off' },
   },
+  // A HANDLE, not a chat id. The PHP wrote it from a username the admin typed
+  // (`admin.php:8021`) and the bot puts it on the support screen as «@…»
+  // (`menu.supportScreen`). It was `chatId` here, so the form drew a number
+  // box that could not show «admiinturbo» — production's value — and the
+  // empty box invited a number, which the screen would then have printed as
+  // «@12345». Seen 2026-09-16, the first night on the real shop.
   {
     scope: 'bot',
     key: 'id_support',
-    label: 'شناسهٔ پشتیبان',
-    hint: 'آیدی عددی تلگرام کسی که پیام‌های پشتیبانی به او می‌رسد.',
-    kind: 'chatId',
+    label: 'نام کاربری پشتیبان',
+    hint: 'بدون @ — دکمهٔ پشتیبانی مشتری را به این حساب می‌فرستد.',
+    kind: 'text',
   },
+  // The BOT's own username, and the bot writes it itself on every boot from
+  // `getMe` (`server.ts`) — so the referral links it hands out cannot name a
+  // different bot. The old label called it the support handle and the hint
+  // named a `{support}` placeholder that exists nowhere; an operator who
+  // «fixed» it would have had it overwritten at the next restart.
   {
     scope: 'bot',
     key: 'username',
-    label: 'نام کاربری پشتیبان',
-    hint: 'بدون @ — در متن‌ها به‌جای {support} می‌نشیند.',
+    label: 'نام کاربری ربات',
+    hint: 'ربات خودش در هر بوت از تلگرام می‌گیرد و لینک معرفی را از آن می‌سازد؛ تغییرش با اولین ری‌استارت برمی‌گردد.',
     kind: 'text',
   },
 
