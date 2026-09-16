@@ -36,7 +36,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { AUTOMATED_KINDS_SQL, trialFor } from '@shikoo/domain';
+import { AUTOMATED_KINDS_SQL, OWNS_PAID_SERVICE_SQL, trialFor } from '@shikoo/domain';
 
 import type { ButtonStyle } from './telegram.js';
 
@@ -71,9 +71,10 @@ const PANEL_WIRED = `
  * bring `u` into scope, which is the point: there is no way to ask this
  * question without saying who is asking.
  *
- * `subscriptions.status <> 'PENDING_PAYMENT'` is the migration of legacy
- * `invoice WHERE Status != 'Unpaid'` — "has this customer ever actually
- * received anything", which is what makes a first-purchase offer first.
+ * «Has this customer bought» is `OWNS_PAID_SERVICE_SQL` from the domain —
+ * services owned, minus the free trial — and it is not spelled here, because
+ * the discount code, the audience list and the nudge ask the same question
+ * and the day the answers differed a trial closed the starter panel.
  */
 const PURCHASABLE = `
   /*
@@ -114,22 +115,16 @@ const PURCHASABLE = `
         SELECT 1 FROM provider_hidden_users h
          WHERE h.provider_id = pr.id AND h.user_id = u.id
       )
-  AND (
-        p.once_per_user = false
-     OR NOT EXISTS (
-          SELECT 1 FROM subscriptions s
-           WHERE s.user_id = u.id AND s.status <> 'PENDING_PAYMENT'
-        )
-      )
+  AND (p.once_per_user = false OR NOT ${OWNS_PAID_SERVICE_SQL})
   /*
    * «فقط برای کسانی که هنوز خرید نکرده‌اند» — Sam, 2026-09-03. A starter panel
    * that disappears the moment the customer owns anything.
    *
    * The same question as once_per_user directly above, asked of the PANEL
-   * rather than of the product, and answered with the identical sub-select on
+   * rather than of the product, and answered with the identical fragment on
    * purpose: «has this person bought» means services OWNED, not orders placed
-   * — legacy index.php:4249, and the reason discount.ts:203 says so too. An
-   * order that was never paid for has bought nothing.
+   * — legacy index.php:4249, and the reason discount.ts says so too. An
+   * order that was never paid for has bought nothing, and neither has a trial.
    *
    * Here rather than in the listing queries for the reason the deny list above
    * gives, and with one consequence the panel screen has to state out loud:
@@ -138,13 +133,7 @@ const PURCHASABLE = `
    * never bought» means, and it is not a bug — but it is a sentence somebody
    * must read before ticking the box.
    */
-  AND (
-        (pr.config->>'newcomers_only') IS DISTINCT FROM 'true'
-     OR NOT EXISTS (
-          SELECT 1 FROM subscriptions s
-           WHERE s.user_id = u.id AND s.status <> 'PENDING_PAYMENT'
-        )
-      )
+  AND ((pr.config->>'newcomers_only') IS DISTINCT FROM 'true' OR NOT ${OWNS_PAID_SERVICE_SQL})
   /*
    * A panel the bot cannot log in to cannot deliver, so it is not for sale.
    *

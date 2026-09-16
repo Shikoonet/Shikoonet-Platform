@@ -175,6 +175,34 @@ export async function makeCustomer(
  * eligibility for a first-purchase offer. `ACTIVE` rather than
  * `PENDING_PAYMENT` on purpose: the legacy rule is `invoice.Status != 'Unpaid'`.
  */
+/**
+ * A free trial, the way the bot writes one: a TRIAL order at zero and the
+ * subscription it delivered, joined by `order_id`. The join is the whole
+ * point — «has this customer bought» tells a trial from a purchase through it.
+ */
+export async function giveTrial(userId: number, publicId: string): Promise<void> {
+  const order = await db
+    .prepare(
+      `INSERT INTO orders
+         (public_id, user_id, kind, provider_id, quantity,
+          unit_price_irr, discount_irr, total_irr, status, completed_at)
+       VALUES (?1, ?2, 'TRIAL', ?3, 1, 0, 0, 0, 'COMPLETED', now())
+       ON CONFLICT (public_id) DO UPDATE SET user_id = EXCLUDED.user_id
+       RETURNING id`,
+    )
+    .bind(publicId, userId, await providerId('sim-vip'))
+    .first<{ id: number }>();
+  await db
+    .prepare(
+      `INSERT INTO subscriptions
+         (public_id, user_id, order_id, plan_name_at_sale, price_irr, status, purchased_at)
+       VALUES (?1, ?2, ?3, 'سرویس تست', 0, 'ACTIVE', now())
+       ON CONFLICT (public_id) DO UPDATE SET user_id = EXCLUDED.user_id, order_id = EXCLUDED.order_id`,
+    )
+    .bind(publicId, userId, order?.id ?? null)
+    .run();
+}
+
 export async function giveSubscription(userId: number, publicId: string): Promise<void> {
   await db
     .prepare(

@@ -33,6 +33,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { COMPLETED_A_PURCHASE_SQL } from './bought.js';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -96,14 +97,10 @@ export function audienceSql(
       return { sql: '', params: [] };
 
     case 'never_bought':
-      // Started the bot and never completed an order — 11,037 of 15,847. The
-      // largest audience the shop has, and the one with something to say to it.
-      return {
-        sql: `AND NOT EXISTS (
-                SELECT 1 FROM orders o
-                 WHERE o.user_id = u.id AND o.status = 'COMPLETED')`,
-        params: [],
-      };
+      // Started the bot and never bought — 11,037 of 15,847. The largest
+      // audience the shop has, and the one with something to say to it. A
+      // free trial does not take anybody out of it (`bought.ts`).
+      return { sql: `AND NOT ${COMPLETED_A_PURCHASE_SQL}`, params: [] };
 
     case 'service_ended':
       /*

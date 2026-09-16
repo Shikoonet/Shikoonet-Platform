@@ -19,7 +19,7 @@ import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
-import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
+import { ensureCatalog, giveTrial, makeCustomer, planId, providerId } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 7, 14, 9, 0, 0);
 const DAY = 86_400_000;
@@ -596,6 +596,20 @@ describe('a code that does not', () => {
       .run();
 
     expect(await useCode(updateId, telegramId, VIP_PLAN, 'first1')).toBe(
+      menu.DISCOUNT_REFUSED['FIRST_PURCHASE_ONLY'],
+    );
+  });
+
+  it('still takes a first-purchase code from somebody who only had the free trial', async () => {
+    // The trial is a service owned, and until 2026-09-16 that made the
+    // customer «already bought» to this check — so the code meant for the
+    // first purchase was refused on exactly the first purchase.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('first2', { firstPurchaseOnly: true });
+    await giveTrial(userId, `trial-${telegramId}`);
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'first2')).not.toBe(
       menu.DISCOUNT_REFUSED['FIRST_PURCHASE_ONLY'],
     );
   });
