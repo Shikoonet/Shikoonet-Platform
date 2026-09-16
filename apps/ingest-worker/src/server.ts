@@ -92,7 +92,8 @@ const MUST_BE_DECIDED = [
  */
 const CONSEQUENCE: Record<(typeof MUST_BE_DECIDED)[number], string> = {
   MIRZABOT_INTEGRATION_ENABLED:
-    'the PHP bot posts claims and every one is refused, which from its end looks like an outage.',
+    'the PHP bot posts claims and every one is refused, which from its end looks like an outage. ' +
+    'The new bot is unaffected: its claims are matched under AUTO_MATCH_ENABLED alone.',
   AUTO_MATCH_ENABLED:
     'a bank SMS is stored and a transaction is written, but no payment is ever verified.',
   AUTO_FULFILLMENT_ENABLED:
@@ -210,7 +211,12 @@ export function start(): { stop: () => Promise<void> } {
 
   // Was a Worker cron trigger. A failure here must not take the process down —
   // the sweep is retried on the next tick, and the SMS endpoint keeps serving.
-  const everyMs = positiveInt('SWEEP_INTERVAL_MS', 60_000);
+  // Fifteen seconds, not sixty: since 2026-09-16 this tick is what verifies
+  // a customer who paid BEFORE pressing «پرداخت کردم» (see
+  // `finalizeExpiredMirzabotWaits`), so its period is that customer's wait.
+  // The sweep is one SELECT over live claims plus one group evaluation per
+  // distinct (account, amount) — cheap at any realistic claim rate.
+  const everyMs = positiveInt('SWEEP_INTERVAL_MS', 15_000);
   const timer = setInterval(() => {
     void runScheduledSweep(env).catch((err: unknown) => {
       log.error('sweep.failed', {}, err);

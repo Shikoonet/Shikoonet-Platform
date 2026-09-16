@@ -543,3 +543,79 @@ describe('PHASE 5 — concurrency and double-use', () => {
     expect(matches?.n).toBe(1);
   });
 });
+
+/**
+ * Production, 2026-09-16 — the night the shop went live on this hub. Four
+ * customers transferred first and pressed «پرداخت کردم» seconds later; every
+ * one of them waited for an operator, because (a) the matcher was gated on
+ * `MIRZABOT_INTEGRATION_ENABLED`, which production had off, and (b) the new
+ * bot only INSERTs its claim, and the sweep skipped anything younger than the
+ * 10-minute wait. Both are pinned here from the new bot's side: a claim row
+ * written directly, never posted to the HMAC endpoint.
+ */
+describe('the new bot: SMS first, «پرداخت کردم» after', () => {
+  async function botClaim(
+    orderId: string,
+    accountId: string,
+    cardDigits: string,
+    amountIrr: number,
+    at: number,
+  ) {
+    await env.DB.prepare(
+      `INSERT INTO payment_claims
+         (id, external_order_id, customer_reference, expected_amount_irr,
+          target_financial_account_id, card_digits, submitted_at, paid_clicked_at,
+          source_system, metadata_json, status, created_at, updated_at)
+       VALUES (?1, ?2, '174181341', ?3, ?4, ?6, ?5, ?5, 'MIRZABOT', '{}', 'PENDING', ?5, ?5)`,
+    )
+      .bind(`claim-${orderId}`, `shikoo:${orderId}`, amountIrr, accountId, at, cardDigits)
+      .run();
+  }
+  async function botClaimStatus(orderId: string) {
+    return env.DB.prepare(`SELECT status FROM payment_claims WHERE external_order_id = ?1`)
+      .bind(`shikoo:${orderId}`)
+      .first<{ status: string }>();
+  }
+
+  it('verifies on the next sweep, not on the tenth minute', async () => {
+    const accountId = 'acc-bot-sms-first';
+    await seedAccountWithCard(accountId, '6037997512349900');
+    const smsAt = BASE_MS + 60_000;
+    await seedTransaction(accountId, 1_990_000, smsAt, 'tx-bot-sms-first');
+    // The SMS landed with no claim to meet: nothing to verify yet.
+    expect((await rematch(accountId, 1_990_000, 'tx-bot-sms-first', smsAt)).autoVerifiedCount).toBe(0);
+
+    await botClaim('sms-first', accountId, '6037997512349900', 1_990_000, smsAt + 20_000);
+
+    const { finalizeExpiredMirzabotWaits } = await import('../src/integrations/mirzabot.js');
+    await finalizeExpiredMirzabotWaits(domainDb(), {
+      autoMatchEnabled: true,
+      now: smsAt + 35_000,
+    });
+    expect((await botClaimStatus('sms-first'))?.status).toBe('VERIFIED');
+  });
+
+  it('is not switched off by MIRZABOT_INTEGRATION_ENABLED=false', async () => {
+    const accountId = 'acc-bot-legacy-off';
+    await seedAccountWithCard(accountId, '6037997512349901');
+    const clickedAt = BASE_MS + 120_000;
+    await botClaim('legacy-off', accountId, '6037997512349901', 1_190_000, clickedAt);
+    await seedTransaction(accountId, 1_190_000, clickedAt + 3_000, 'tx-bot-legacy-off');
+
+    const { rematchMirzabotClaimsForCreditTx } = await import('../src/integrations/mirzabot.js');
+    const run = await rematchMirzabotClaimsForCreditTx(
+      domainDb(),
+      {
+        id: 'tx-bot-legacy-off',
+        financial_account_id: accountId,
+        amount_irr: 1_190_000,
+        direction: 'CREDIT',
+        bank_timestamp: clickedAt + 3_000,
+        processing_disposition: 'ACTIONABLE',
+      },
+      { enabled: false, autoMatchEnabled: true, now: clickedAt + 8_000 },
+    );
+    expect(run.autoVerifiedCount).toBe(1);
+    expect((await botClaimStatus('legacy-off'))?.status).toBe('VERIFIED');
+  });
+});

@@ -3,7 +3,6 @@ import type { D1Database } from '@shikoo/database';
 import {
   MIRZABOT_CLAIMS_PATH,
   MIRZABOT_SOURCE,
-  WAITING_TIMEOUT_MS,
   type MirzabotClaimPayload,
 } from '@shikoo/contracts';
 import { normalizeCardDigits, tomanToIrr } from '@shikoo/domain';
@@ -64,7 +63,14 @@ export interface MirzabotClaimResult {
 export type MirzabotWebhookEnv = Parameters<typeof deliverMirzabotVerifiedWebhook>[0];
 
 export interface MirzabotMatchOpts {
-  /** Whole integration switch. When false the matcher never touches D1. */
+  /**
+   * `MIRZABOT_INTEGRATION_ENABLED`. Accepted and ignored here. Until
+   * 2026-09-16 it switched the whole matcher off — and the new bot's claims
+   * go through this same matcher, so a production box with the PHP endpoint
+   * closed verified nothing while customers paid. The switch now guards only
+   * the HMAC claim endpoint, where `index.ts` reads it directly. Matching is
+   * governed by `autoMatchEnabled` alone.
+   */
   enabled?: boolean;
   autoMatchEnabled: boolean;
   webhookEnv?: MirzabotWebhookEnv;
@@ -271,30 +277,37 @@ export async function runMirzabotMatching(
 }
 
 /**
- * Re-run matching for claims whose 10-minute waiting period has elapsed.
- * Classifies genuinely no-evidence claims as NO_TRANSACTION_AFTER_10M; leaves
- * evidence-bearing claims in Needs Review. Idempotent.
+ * Re-run matching for every live claim group. Idempotent: the engine itself
+ * decides WAIT (inside the 10-minute window, no evidence yet), AUTO_VERIFY,
+ * or a suspect reason such as NO_TRANSACTION_AFTER_10M.
+ *
+ * Every live group, not only those past the 10-minute wait — that filter was
+ * here until 2026-09-16 and it is why «paid first, pressed the button after»
+ * took ten minutes to verify in production. The PHP bot's claims run the
+ * matcher the moment they are posted (`handleMirzabotClaim`); the new bot only
+ * INSERTs its claim, so this sweep is the first thing that evaluates it. A
+ * claim that arrives after its SMS therefore verifies on the next tick, not
+ * on the tenth minute. `FULFILLED_UNRECONCILED` is included for the same
+ * reason: a delivery made before the SMS (#134) has nothing else that comes
+ * back for it once the SMS is already in the table.
  */
 export async function finalizeExpiredMirzabotWaits(
   db: D1Database,
   opts: MirzabotMatchOpts,
 ): Promise<number> {
-  if (opts.enabled === false) return 0;
-  const now = opts.now ?? Date.now();
   const rows = await db
     .prepare(
       `SELECT DISTINCT c.target_financial_account_id AS account_id, c.expected_amount_irr AS amount
        FROM payment_claims c
        WHERE c.source_system = ?1
-         AND c.status IN ('PENDING','MATCH_SUGGESTED')
+         AND c.status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')
          AND (c.suspect_reason IS NULL
               OR c.suspect_reason IN ('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION'))
          AND c.target_financial_account_id IS NOT NULL
          AND COALESCE(c.receipt_submitted_at, c.paid_clicked_at) IS NOT NULL
-         AND COALESCE(c.receipt_submitted_at, c.paid_clicked_at) + ?2 <= ?3
        LIMIT 50`,
     )
-    .bind(MIRZABOT_SOURCE, WAITING_TIMEOUT_MS, now)
+    .bind(MIRZABOT_SOURCE)
     .all<{ account_id: string; amount: number }>();
 
   for (const r of rows.results ?? []) {
@@ -316,7 +329,6 @@ export async function rematchMirzabotClaimsForCreditTx(
   },
   opts: MirzabotMatchOpts,
 ): Promise<{ evaluatedClaims: number; autoVerifiedCount: number }> {
-  if (opts.enabled === false) return { evaluatedClaims: 0, autoVerifiedCount: 0 };
   if (!tx.financial_account_id || tx.amount_irr == null || tx.direction !== 'CREDIT') {
     return { evaluatedClaims: 0, autoVerifiedCount: 0 };
   }
@@ -324,7 +336,10 @@ export async function rematchMirzabotClaimsForCreditTx(
     return { evaluatedClaims: 0, autoVerifiedCount: 0 };
   }
 
-  await finalizeExpiredMirzabotWaits(db, opts);
+  // Only this transaction's group. The whole-table sweep used to run here
+  // first; now that it evaluates every live group it would verify this very
+  // claim before the call below could, and report it as nobody's. The timer
+  // in `server.ts` owns the other groups.
   const run = await runMirzabotMatching(
     db,
     { accountId: tx.financial_account_id, amountIrr: tx.amount_irr },
