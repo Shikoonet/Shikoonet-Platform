@@ -167,6 +167,17 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
   }
   setReportChatIdFallback(reportChatId);
 
+  // Before the first `getUpdates` and after the lock, so exactly one process
+  // does it per token. A webhook the previous bot left behind makes Telegram
+  // refuse every poll with 409 — see `deleteWebhook` in telegram.ts. Not fatal
+  // on failure: Telegram being unreachable at boot is the poll loop's problem
+  // to report, and a crash-loop here would hide it behind a restart counter.
+  try {
+    await api.deleteWebhook();
+  } catch (err) {
+    log.warn('boot.delete_webhook_failed', { consequence: 'polling may 409 until it is cleared' }, err);
+  }
+
   const finished = run(db, api, {
     timeoutSec: positiveInt('TELEGRAM_POLL_TIMEOUT_SEC', 25),
     signal: controller.signal,
