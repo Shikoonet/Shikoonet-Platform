@@ -166,6 +166,14 @@ export interface Column {
 export interface InsertOptions {
   /** Conflict target for idempotency, e.g. '(legacy_id)'. */
   conflict: string;
+  /**
+   * What to do with the conflicting row instead of nothing — everything after
+   * `DO UPDATE`, e.g. `SET value = EXCLUDED.value WHERE …`. Absent means
+   * DO NOTHING, which is right for every entity table (see below). Only
+   * `settings` uses it: a shop's configuration is whatever its last dump said,
+   * and a row a schema migration seeded first must not outrank that.
+   */
+  update?: string;
   batchSize?: number;
 }
 
@@ -178,7 +186,10 @@ export interface InsertOptions {
  * and no updates, so a half-finished run can simply be run again.
  *
  * Returns how many rows the database actually wrote, which is what makes a
- * second run visibly a no-op instead of merely assumed to be one.
+ * second run visibly a no-op instead of merely assumed to be one. With
+ * `update`, a conflicting row whose values differ counts as written too; one
+ * that already matches does not (the `WHERE` below), so a re-run of the same
+ * dump still reports «already present».
  */
 export async function insertBatch(
   client: pg.Client,
@@ -215,7 +226,7 @@ export async function insertBatch(
 
     const sql =
       `INSERT INTO ${table} (${names}) VALUES ${tuples.join(', ')} ` +
-      `ON CONFLICT ${opts.conflict} DO NOTHING`;
+      `ON CONFLICT ${opts.conflict} ${opts.update ? `DO UPDATE ${opts.update}` : 'DO NOTHING'}`;
     const result = await client.query(sql, params);
     written += result.rowCount ?? 0;
   }

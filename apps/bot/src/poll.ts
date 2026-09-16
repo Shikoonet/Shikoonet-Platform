@@ -787,6 +787,47 @@ export async function drainBroadcasts(
 }
 
 /**
+ * Sends the outbox (`bot_notifications`) beside the poll loop, for the same
+ * reason `drainBroadcasts` does — and this one was measured, not predicted.
+ *
+ * `notify.flush` used to be the last call of every cycle: fifty rows, each a
+ * round trip to Telegram, each refusal three more writes. That was fine while
+ * the outbox held a handful of receipts a minute. On 2026-09-16 an import put
+ * ten thousand «your service is ready» rows in it at once, the cycle grew to
+ * about forty seconds, and every customer's every press waited behind it —
+ * Sam: «سرعت ربات تلگرامش هم افتضاح کند هست». Nothing a customer is waiting
+ * on should queue behind the outbox, however the outbox got full.
+ *
+ * Safe beside the poll for the reason `flush` already gives: each row is
+ * claimed with `SKIP LOCKED` and a lease, so this loop and a handler replying
+ * to a customer share only the bot's rate limit. What the old placement
+ * bought — «settled at the top of a cycle, told at the bottom of the same one»
+ * — this keeps within a second instead of within a cycle, and `run` still
+ * flushes once after its loop so a shutdown does not strand a message that a
+ * sweep enqueued on the way out.
+ */
+export async function drainNotifications(
+  db: D1Database,
+  api: TelegramApi,
+  signal?: AbortSignal,
+  options: { idleMs?: number; limit?: number } = {},
+): Promise<void> {
+  const idleMs = options.idleMs ?? BROADCAST_IDLE_MS;
+  while (!signal?.aborted) {
+    let handled = 0;
+    try {
+      const r = await notify.flush(db, api, options.limit === undefined ? {} : { limit: options.limit });
+      // Dead and failed rows count as work done: a batch that all died must
+      // not be followed by a second's sleep while the next batch waits.
+      handled = r.sent + r.failed + r.dead;
+    } catch (err) {
+      log.error('notify.drain_failed', { will_retry: true }, err);
+    }
+    if (handled === 0) await sleep(idleMs, signal);
+  }
+}
+
+/**
  * Drops claims old enough that Telegram can no longer redeliver them, and dead
  * letters old enough that nobody is going to read them.
  *
@@ -820,7 +861,7 @@ export interface RunOptions {
   pruneEveryCycles?: number;
   /** Pause after a failed cycle. A knob because tests cannot wait five seconds. */
   backoffMs?: number;
-  /** How long the broadcast drain sleeps on an empty queue. A knob for tests. */
+  /** How long either drain sleeps on an empty queue. A knob for tests. */
   broadcastIdleMs?: number;
   signal?: AbortSignal;
   /**
@@ -874,9 +915,11 @@ export async function run(
 
   // Beside the cycle, not inside it — see `drainBroadcasts`. Awaited after the
   // loop so `stop()` still means «everything this process was doing is done».
-  const draining = drainBroadcasts(db, api, options.signal, {
-    ...(options.broadcastIdleMs === undefined ? {} : { idleMs: options.broadcastIdleMs }),
-  });
+  const idle = options.broadcastIdleMs === undefined ? {} : { idleMs: options.broadcastIdleMs };
+  const draining = Promise.all([
+    drainBroadcasts(db, api, options.signal, idle),
+    drainNotifications(db, api, options.signal, idle),
+  ]);
 
   while (!options.signal?.aborted) {
     try {
@@ -1024,18 +1067,12 @@ export async function run(
         if (queued.length > 0) log.info('report.queued', { nights: queued.join(',') });
         return queued.length;
       });
-      // After every sweep that can enqueue, so a payment settled at the top of
-      // this cycle is told about at the bottom of the same one — the property
-      // the old inline sending had, kept.
-      //
-      // What is new is that a refusal here is not the end of the message. It
-      // stays in `bot_notifications` and is tried again next cycle, so Telegram
-      // being unreachable for a minute costs a minute rather than a customer.
-      await notify.flush(db, api);
-      // The broadcast is not here. It has its own loop (`drainBroadcasts`),
-      // started above, because a sweep that runs once per cycle sends once per
-      // 25-second wait — and nothing a customer is waiting on should queue
-      // behind eleven thousand announcements either.
+      // Neither the outbox nor the broadcast is sent here. Each has its own
+      // loop beside this one (`drainNotifications`, `drainBroadcasts`), started
+      // above: a sweep that runs once per cycle sends once per 25-second wait,
+      // and a cycle that sends fifty rows makes every customer wait behind
+      // them. What the sweeps enqueue above goes out within a second, not at
+      // the bottom of this cycle.
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.
@@ -1064,6 +1101,12 @@ export async function run(
     }
   }
   await draining;
+  // The drains stop the moment the signal fires, and the sweeps of the last
+  // cycle may have enqueued after that. One pass so a customer told «paid» at
+  // the top of the final cycle is not left waiting for the next container.
+  await notify.flush(db, api).catch((err: unknown) => {
+    log.error('notify.drain_failed', { will_retry: false }, err);
+  });
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

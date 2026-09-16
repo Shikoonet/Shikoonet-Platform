@@ -58,10 +58,11 @@ import { report } from './db.js';
  * What survives a reset, and the one question each entry answers.
  *
  * The rule is narrow on purpose: the import writes all seven of its domains
- * across most of the database — `settings`, `products` and
- * `provisioning_providers` included — so «keep the shop's own configuration»
- * is not a line anybody can draw. What stays is only what this installation
- * cannot be reached or operated without.
+ * across most of the database — `products` and `provisioning_providers`
+ * included — so «keep the shop's own configuration» is not a line anybody can
+ * draw. What stays is only what this installation cannot be reached or
+ * operated without. `settings` is the one exception, and it is here for a
+ * reason that was measured, not argued — see its entry.
  *
  * `@shikoo/seed`'s own KEEP has five entries and every one of them is here.
  * That is a starting point rather than an answer: seed runs against a database
@@ -108,24 +109,23 @@ export const RESET_KEEP: readonly string[] = [
   'emoji_pack_items',
   // The log of the very thing that led to this reset.
   'import_runs',
+  // The switches. This entry is the reversal of a decision, and the decision
+  // was right when it was taken: on 2026-09-03 a re-import restored `settings`
+  // to within two absent-safe rows, so wiping it cost nothing. `0057` then
+  // installed the cron switches, `0064`/`0066`/`0067` three more, and every
+  // one of them is a row the panel can only EDIT — `cronRoutes.ts` answers
+  // `404 setting_not_installed` to a key that is not there, and nothing but a
+  // schema migration ever creates one. So reset → import now produced a
+  // production panel with no cron switches at all (2026-09-16): the bot ran
+  // on its compiled defaults and the operator had no way to change them.
+  //
+  // Keeping the table is safe because the settings step is the one importer
+  // step that overwrites: every key the dump carries takes the dump's value,
+  // and the keys it does not carry are exactly the migration-installed ones
+  // that must survive. `product_categories` stays out — the import writes it
+  // whole and the re-import restored it exactly.
+  'settings',
 ];
-
-/**
- * What that same measurement says a reset legitimately DOES take.
- *
- * `settings` and `product_categories` also hold rows a migration installs, and
- * they are not here — they are the shop's configuration and the import writes
- * them. The re-import restored `product_categories` exactly and `settings` to
- * within two rows: `pay:continuity_mode` and `shop:plan_button_template`, both
- * installed by a migration and written by no import.
- *
- * Both are absent-safe and were read rather than assumed: `continuityMode.ts`
- * answers `OFF` — NORMAL verification, the safe direction — and `planLabel.ts`
- * treats a missing row as «the way labels have always been written». So the
- * loss is a return to defaults rather than a hole, which is why they go.
- * Written down because the next person will find the same two rows missing and
- * deserves to know somebody looked.
- */
 
 /** A table and how many rows it holds. */
 export interface TableCount {

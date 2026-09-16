@@ -347,6 +347,32 @@ describe('resetShopData — the clean page an undo cannot give', () => {
       done();
     }
   });
+
+  it('keeps the cron switches, which the panel can edit but never create', async () => {
+    /**
+     * Production, 2026-09-16: reset, then import. `0057` had installed
+     * `cron_warn_time` and its siblings, no dump carries them, and the panel
+     * answers `404 setting_not_installed` to a key that is not there. So the
+     * cron screen had nothing to switch and the bot ran on compiled defaults
+     * with no way for the operator to change them.
+     */
+    const done = quiet();
+    try {
+      const { rows } = await pgc.query<{ n: string }>(
+        `SELECT count(*) AS n FROM settings WHERE key = 'cron_warn_time'`,
+      );
+      expect(rows[0]?.n, 'a migrated database has the switch').toBe('1');
+
+      await resetShopData(pgc);
+
+      const after = await pgc.query<{ n: string }>(
+        `SELECT count(*) AS n FROM settings WHERE key = 'cron_warn_time'`,
+      );
+      expect(after.rows[0]?.n).toBe('1');
+    } finally {
+      done();
+    }
+  });
 });
 
 describe('the guard on the KEEP set', () => {

@@ -270,19 +270,26 @@ CREATE TABLE `invoice` (
   -- panel was deleted, which migrates with a NULL provider_id and the name
   -- preserved.
   `Service_location` varchar(64) DEFAULT NULL,
+  -- Epoch SECONDS, one of the four legacy clocks (docs/STATUS.md). Without it
+  -- `migrateInvoiceOrders` skips the row as «no sale time», so until 2026-09-16
+  -- this fixture exercised no order at all — which is how an importer that
+  -- dated every order to the import itself reached production.
+  `time_sell`     varchar(32)  DEFAULT NULL,
+  `price_product` varchar(32)  DEFAULT '0',
+  `name_product`  varchar(128) DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `invoice` (`id`, `id_invoice`, `id_user`, `Status`, `code_panel`, `username`, `Service_location`) VALUES
-  (1, 'FXINV0001', 9000000000001, 'active',         'fx01', 'fixture_sub_a', 'fixture panel A'),
-  (2, 'FXINV0002', 9000000000002, 'unpaid',         'fx01', 'fixture_sub_b', 'fixture panel A'),
-  (3, 'FXINV0003', 9000000000003, 'send_on_hold',   'fx02', 'fixture_sub_c', 'fixture panel B'),
-  (4, 'FXINV0004', 9000000000004, 'disabled',       'fx01', 'fixture_sub_d', 'fixture panel A'),
+INSERT INTO `invoice` (`id`, `id_invoice`, `id_user`, `Status`, `code_panel`, `username`, `Service_location`, `time_sell`, `price_product`, `name_product`) VALUES
+  (1, 'FXINV0001', 9000000000001, 'active',         'fx01', 'fixture_sub_a', 'fixture panel A',    '1700000000', '119000', 'fixture 1m'),
+  (2, 'FXINV0002', 9000000000002, 'unpaid',         'fx01', 'fixture_sub_b', 'fixture panel A',    '1700000000', '119000', 'fixture 1m'),
+  (3, 'FXINV0003', 9000000000003, 'send_on_hold',   'fx02', 'fixture_sub_c', 'fixture panel B',    '1700000000', '219000', 'fixture 2m'),
+  (4, 'FXINV0004', 9000000000004, 'disabled',       'fx01', 'fixture_sub_d', 'fixture panel A',    '1700000000', '119000', 'fixture 1m'),
   -- Not a typo on our side. Production has both, from a bug in the PHP.
-  (5, 'FXINV0005', 9000000000005, 'disabledn',      'fx02', 'fixture_sub_e', 'fixture panel B'),
+  (5, 'FXINV0005', 9000000000005, 'disabledn',      'fx02', 'fixture_sub_e', 'fixture panel B',    '1700000000', '219000', 'fixture 2m'),
   -- A panel that no longer exists: migrates with provider_id NULL and the
   -- name kept, and preflight says so as a NOTICE.
-  (6, 'FXINV0006', 9000000000001, 'disablebyadmin', 'fx01', 'fixture_sub_f', 'fixture panel GONE');
+  (6, 'FXINV0006', 9000000000001, 'disablebyadmin', 'fx01', 'fixture_sub_f', 'fixture panel GONE', '1700000000', '299000', 'fixture 3m');
 
 -- ---------------------------------------------------------------------------
 -- Payments. Every `payment_Status` and every `Payment_Method` in the closed
@@ -299,17 +306,19 @@ CREATE TABLE `Payment_report` (
   `payment_Status` varchar(32)  DEFAULT 'Unpaid',
   `Payment_Method` varchar(64)  DEFAULT 'cart to cart',
   `time_pay`       varchar(32)  DEFAULT NULL,
+  -- Tehran wall-clock text (`payments.created_at` is NOT NULL and reads it).
+  `time`           varchar(32)  DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `Payment_report` (`id`, `id_order`, `id_user`, `price`, `payment_Status`, `Payment_Method`, `time_pay`) VALUES
-  (1, 'FXORD0001', 9000000000001, '195000', 'paid',       'cart to cart',         '1783966057'),
-  (2, 'FXORD0002', 9000000000002, '295000', 'Unpaid',     'cart to cart',         '1783966100'),
-  (3, 'FXORD0003', 9000000000003, '900000', 'expire',     'arze digital offline', '1783966200'),
-  (4, 'FXORD0004', 9000000000004, '150000', 'reject',     'plisio',               '1783966300'),
-  (5, 'FXORD0005', 9000000000005, '500000', 'processing', 'Star Telegram',        '1783966400'),
-  (6, 'FXORD0006', 9000000000001, '250000', 'waiting',    'add balance by admin', '1783966500'),
-  (7, 'FXORD0007', 9000000000099, '120000', 'paid',       'low balance by admin', '1783966600');
+INSERT INTO `Payment_report` (`id`, `id_order`, `id_user`, `price`, `payment_Status`, `Payment_Method`, `time_pay`, `time`) VALUES
+  (1, 'FXORD0001', 9000000000001, '195000', 'paid',       'cart to cart',         '1783966057', '2026/07/13 15:57:37'),
+  (2, 'FXORD0002', 9000000000002, '295000', 'Unpaid',     'cart to cart',         '1783966100', '2026/07/13 15:58:20'),
+  (3, 'FXORD0003', 9000000000003, '900000', 'expire',     'arze digital offline', '1783966200', '2026/07/13 16:00:00'),
+  (4, 'FXORD0004', 9000000000004, '150000', 'reject',     'plisio',               '1783966300', '2026/07/13 16:01:40'),
+  (5, 'FXORD0005', 9000000000005, '500000', 'processing', 'Star Telegram',        '1783966400', '2026/07/13 16:03:20'),
+  (6, 'FXORD0006', 9000000000001, '250000', 'waiting',    'add balance by admin', '1783966500', '2026/07/13 16:05:00'),
+  (7, 'FXORD0007', 9000000000099, '120000', 'paid',       'low balance by admin', '1783966600', '2026/07/13 16:06:40');
 
 -- SUM(price) = 195000+295000+900000+150000+500000+250000+120000
 --            = 2,410,000 Toman = 24,100,000 IRR
@@ -324,14 +333,17 @@ CREATE TABLE `service_other` (
   `type`       varchar(32) DEFAULT NULL,
   `price`      varchar(32) DEFAULT '0',
   `data_extra` text,
+  -- Tehran wall-clock text, another of the four legacy clocks.
+  `time`       varchar(32) DEFAULT NULL,
+  `status`     varchar(16) DEFAULT 'paid',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `service_other` (`id`, `id_user`, `type`, `price`, `data_extra`) VALUES
-  (1, 9000000000001, 'extend_user',     '195000', '{}'),
-  (2, 9000000000002, 'extra_user',       '50000', '{"volume_value": "10"}'),
-  (3, 9000000000003, 'extra_time_user',  '30000', '{"time_value": "7"}'),
-  (4, 9000000000004, 'transfertouser',       '0', '{}');
+INSERT INTO `service_other` (`id`, `id_user`, `type`, `price`, `data_extra`, `time`, `status`) VALUES
+  (1, 9000000000001, 'extend_user',     '195000', '{}',                     '2023/11/14 23:43:20', 'paid'),
+  (2, 9000000000002, 'extra_user',       '50000', '{"volume_value": "10"}', '2023/11/14 23:43:20', 'paid'),
+  (3, 9000000000003, 'extra_time_user',  '30000', '{"time_value": "7"}',    '2023/11/14 23:43:20', 'unpaid'),
+  (4, 9000000000004, 'transfertouser',       '0', '{}',                     '2023/11/14 23:43:20', 'paid');
 
 -- ---------------------------------------------------------------------------
 -- Cards. One is deliberately Luhn-INVALID so preflight has something to
@@ -360,17 +372,27 @@ CREATE TABLE `card_assignment_leases` (
   `telegram_user_id` bigint      DEFAULT NULL,
   `card_number`      varchar(32) DEFAULT NULL,
   `status`           varchar(16) DEFAULT 'ACTIVE',
+  -- The columns `migrateCardLeases` claims (`card_leases` has NOT NULLs on
+  -- most of them). Epoch seconds, like every other lease clock.
+  `order_id`         varchar(64) DEFAULT NULL,
+  `card_name`        varchar(64) DEFAULT '',
+  `assigned_at`      varchar(32) DEFAULT NULL,
+  `expires_at`       varchar(32) DEFAULT NULL,
+  `completed_at`     varchar(32) DEFAULT NULL,
+  `released_at`      varchar(32) DEFAULT NULL,
+  `created_at`       varchar(32) DEFAULT NULL,
+  `updated_at`       varchar(32) DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `card_assignment_leases` (`id`, `telegram_user_id`, `card_number`, `status`) VALUES
-  (1, 9000000000001, '0000000000000000', 'ACTIVE'),
-  (2, 9000000000002, '0000000000000018', 'COMPLETED'),
-  (3, 9000000000003, '0000000000000000', 'EXPIRED'),
-  (4, 9000000000004, '0000000000000018', 'CANCELLED'),
+INSERT INTO `card_assignment_leases` (`id`, `telegram_user_id`, `card_number`, `status`, `order_id`, `card_name`, `assigned_at`, `expires_at`, `completed_at`, `released_at`, `created_at`, `updated_at`) VALUES
+  (1, 9000000000001, '0000000000000000', 'ACTIVE',    'FXORD0001', 'fixture card', '1700000000', '1700000900', NULL,         NULL,         '1700000000', '1700000000'),
+  (2, 9000000000002, '0000000000000018', 'COMPLETED', 'FXORD0002', 'fixture card', '1700000000', '1700000900', '1700000300', NULL,         '1700000000', '1700000300'),
+  (3, 9000000000003, '0000000000000000', 'EXPIRED',   'FXORD0003', 'fixture card', '1700000000', '1700000900', NULL,         '1700000900', '1700000000', '1700000900'),
+  (4, 9000000000004, '0000000000000018', 'CANCELLED', 'FXORD0004', 'fixture card', '1700000000', '1700000900', NULL,         '1700000100', '1700000000', '1700000100'),
   -- References a card that is not in `card_number`: preflight reports it as a
   -- NOTICE, because `card_number` there is denormalised text by design.
-  (5, 9000000000005, '0000000000009999', 'COMPLETED');
+  (5, 9000000000005, '0000000000009999', 'COMPLETED', 'FXORD0005', 'fixture card', '1700000000', '1700000900', '1700000300', NULL,         '1700000000', '1700000300');
 
 -- ---------------------------------------------------------------------------
 -- Discounts. `Discount` is gift codes, `DiscountSell` is sale codes.
@@ -468,31 +490,38 @@ INSERT INTO `reagent_report` (`id`, `id_user`, `id_friend`, `get_gift`) VALUES
 -- Reseller applications
 -- ---------------------------------------------------------------------------
 CREATE TABLE `Requestagent` (
-  `id`      int         NOT NULL,
-  `id_user` bigint      DEFAULT NULL,
-  `status`  varchar(16) DEFAULT 'pending',
+  `id`          int         NOT NULL,
+  `id_user`     bigint      DEFAULT NULL,
+  `status`      varchar(16) DEFAULT 'pending',
+  `Description` text,
+  `type`        varchar(16) DEFAULT NULL,
+  `time`        varchar(32) DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `Requestagent` (`id`, `id_user`, `status`) VALUES
-  (1, 9000000000002, 'pending'),
-  (2, 9000000000003, 'accept');
+INSERT INTO `Requestagent` (`id`, `id_user`, `status`, `Description`, `type`, `time`) VALUES
+  (1, 9000000000002, 'pending', 'fixture: wants to resell', NULL, '1700000000'),
+  (2, 9000000000003, 'accept',  'fixture: accepted',        NULL, '1700000000');
 
 -- ---------------------------------------------------------------------------
 -- Revenue adjustments. The legacy word is `deduct`, not `subtract` —
 -- `revenue-adjustments.mysql.test.ts` exists because `subtract` was dead code.
 -- ---------------------------------------------------------------------------
 CREATE TABLE `revenue_adjustment_log` (
-  `id`     int         NOT NULL,
-  `amount` varchar(32) DEFAULT '0',
-  `type`   varchar(16) DEFAULT 'add',
-  `reason` text,
+  `id`         int         NOT NULL,
+  `amount`     varchar(32) DEFAULT '0',
+  `type`       varchar(16) DEFAULT 'add',
+  `reason`     text,
+  `note`       text,
+  `created_by` varchar(64) DEFAULT NULL,
+  -- MySQL DATETIME text, Tehran — the fourth legacy clock (docs/STATUS.md).
+  `created_at` varchar(32) DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `revenue_adjustment_log` (`id`, `amount`, `type`, `reason`) VALUES
-  (1, '50000', 'add',    'fixture: manual credit'),
-  (2, '20000', 'deduct', 'fixture: correction');
+INSERT INTO `revenue_adjustment_log` (`id`, `amount`, `type`, `reason`, `note`, `created_by`, `created_at`) VALUES
+  (1, '50000', 'add',    'fixture: manual credit', 'fixture: manual credit', 'fixture-admin', '2023-11-14 23:43:20'),
+  (2, '20000', 'deduct', 'fixture: correction',    'fixture: correction',    'fixture-admin', '2023-11-14 23:43:20');
 
 -- SUM as applied = +50000 - 20000 = 30,000 Toman = 300,000 IRR
 
@@ -508,11 +537,34 @@ CREATE TABLE `setting` (
   `Channel_Report`      varchar(64) DEFAULT NULL,
   `revenue_adjustment`  varchar(32) DEFAULT '0',
   `affiliatespercent`   varchar(16) DEFAULT '10',
+  -- A key that migration 0057 ALSO seeds (at 30), so the fixture carries the
+  -- collision: on a migrated database this row exists before the import does,
+  -- and the import has to win. 7 is what the 2026-08-29 production dump said.
+  `removedayc`          varchar(16) DEFAULT '7',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `setting` (`id`, `Bot_Status`, `rolleon`, `Channel_Report`, `revenue_adjustment`, `affiliatespercent`) VALUES
-  (1, 'onbot', 'onrolle', '-1000000000001', '30000', '10');
+INSERT INTO `setting` (`id`, `Bot_Status`, `rolleon`, `Channel_Report`, `revenue_adjustment`, `affiliatespercent`, `removedayc`) VALUES
+  (1, 'onbot', 'onrolle', '-1000000000001', '30000', '10', '7');
+
+-- Two more single-purpose configuration tables the settings step reads.
+CREATE TABLE `affiliates` (
+  `id`      int         NOT NULL,
+  `percent` varchar(16) DEFAULT '10',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `affiliates` (`id`, `percent`) VALUES (1, '10');
+
+CREATE TABLE `topicid` (
+  `id`       int         NOT NULL,
+  `report`   varchar(32) DEFAULT NULL,
+  `idreport` varchar(16) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- `topic_buyreport` is another key migration 0049 seeds (at 0).
+INSERT INTO `topicid` (`id`, `report`, `idreport`) VALUES (1, 'buyreport', '172');
 
 CREATE TABLE `shopSetting` (
   `id`          int         NOT NULL,

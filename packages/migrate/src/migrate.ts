@@ -347,7 +347,22 @@ async function migrateSettings(ctx: Ctx): Promise<number> {
     'settings',
     cols(['scope', 'key', ['value', (p) => `${p}::jsonb`]]),
     out,
-    { conflict: '(scope, key)' },
+    {
+      conflict: '(scope, key)',
+      // The one step that overwrites. Every other table is an entity keyed by
+      // its legacy id, where «already there» means «already imported». A
+      // setting is different: schema migrations seed rows for the panel to
+      // edit (`0049`, `0057`, `0067` — `topic_buyreport`, `removedayc`,
+      // `limit_usertest_all`…), and on any database that exists before its
+      // import — which is every database, since the schema gate runs first —
+      // those seeds are already in place when this step arrives. DO NOTHING
+      // kept the seed and dropped the shop's own number; on 2026-09-16 that
+      // was buy reports going to topic 0 instead of the group's thread 172.
+      // The dump is what the shop actually ran on; it wins. Undo is unaffected:
+      // it takes back rows this run INSERTED and never reverses an update.
+      update: `SET value = EXCLUDED.value, updated_at = now(), updated_by = NULL
+               WHERE settings.value IS DISTINCT FROM EXCLUDED.value`,
+    },
   );
 }
 
@@ -1056,6 +1071,20 @@ const INVOICE_TTL_S = 24 * 60 * 60;
  * The mapping is flat on purpose — quantity one, no discount. The legacy stores
  * the price the customer paid and does not keep the list price it came from, so
  * a `discount_irr` here would be a number we invented.
+ *
+ * ## `updated_at` is the legacy clock too, and it is not cosmetic
+ *
+ * Until 2026-09-16 this column was left to its `DEFAULT now()`, so every
+ * imported order looked as if it had changed at the moment of the import.
+ * `provisionPaidOrders` bounds its «finished but nobody was told» sweep on
+ * exactly that column, believing (its comment said so) that the migration's
+ * original dates kept imported orders out. On the production cutover all
+ * 10,920 of them were in, and the bot began greeting the shop's whole history
+ * with «سرویس شما تحویل شد», twenty customers a cycle, silencing each one it
+ * could not reach. The sweep now also refuses `legacy_ref` rows outright; this
+ * is the other half, so the row tells the truth to every reader, not just that
+ * one. An EXPIRED invoice last changed when its window closed; anything else,
+ * when it was sold.
  */
 async function migrateInvoiceOrders(ctx: Ctx): Promise<number> {
   const rows = await mysqlRows<Row>(ctx.my, 'SELECT * FROM invoice');
@@ -1075,6 +1104,7 @@ async function migrateInvoiceOrders(ctx: Ctx): Promise<number> {
       ['created_at', ts.epochS.expr],
       ['expires_at', ts.epochS.expr],
       ['completed_at', ts.epochS.expr],
+      ['updated_at', ts.epochS.expr],
     ]),
     rows.flatMap((r) => {
       const u = user(ctx, r.id_user);
@@ -1092,6 +1122,7 @@ async function migrateInvoiceOrders(ctx: Ctx): Promise<number> {
       }
       const status = t.invoiceOrderStatus(r.Status);
       const amount = t.tomanToIrr(r.price_product).toString();
+      const closed = status === 'EXPIRED' ? String(Number(sold) + INVOICE_TTL_S) : null;
       return [
         [
           `invoice:${r.id_invoice}`,
@@ -1104,8 +1135,9 @@ async function migrateInvoiceOrders(ctx: Ctx): Promise<number> {
           amount,
           status,
           sold,
-          status === 'EXPIRED' ? String(Number(sold) + INVOICE_TTL_S) : null,
+          closed,
           status === 'COMPLETED' ? sold : null,
+          closed ?? sold,
         ],
       ];
     }),
@@ -1276,6 +1308,7 @@ async function migrateServiceOrders(ctx: Ctx): Promise<number> {
       'total_irr',
       'status',
       ['created_at', ts.tehran.expr],
+      ['updated_at', ts.tehran.expr],
     ]),
     rows.flatMap((r) => {
       const u = user(ctx, r.id_user);
@@ -1284,6 +1317,7 @@ async function migrateServiceOrders(ctx: Ctx): Promise<number> {
         return [];
       }
       const amount = t.tomanToIrr(r.price).toString();
+      const at = t.tehranString(r.time, 'service_other.time');
       return [
         [
           `service_other:${r.id}`,
@@ -1299,7 +1333,9 @@ async function migrateServiceOrders(ctx: Ctx): Promise<number> {
             : r.status === 'unpaid'
               ? 'AWAITING_PAYMENT'
               : 'COMPLETED', // blank status rows all carry a provisioning output
-          t.tehranString(r.time, 'service_other.time'),
+          at,
+          // See migrateInvoiceOrders: the legacy clock, never the import's.
+          at,
         ],
       ];
     }),

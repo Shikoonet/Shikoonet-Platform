@@ -563,10 +563,17 @@ export async function provisionPaidOrders(
             OR (
               o.status IN ('COMPLETED', 'FAILED')
               AND u.telegram_id IS NOT NULL
+              -- An imported order was delivered, and its customer told, by the
+              -- bot it was imported from; "nobody told them" is not a question
+              -- this sweep can ask about it. The window below was believed to
+              -- cover this and did not: the importer never set updated_at, so
+              -- on 2026-09-16 all 10,920 imported orders looked "finished in
+              -- the last 24 hours" and the production bot began greeting the
+              -- shop's whole history, twenty customers a cycle.
+              AND o.legacy_ref IS NULL
               -- Bounded, and the bound is what makes this safe to switch on at
               -- all: without it the first sweep would greet every customer
-              -- served before the outbox existed, and every order the data
-              -- migration carries over from MySQL.
+              -- served before the outbox existed.
               AND o.updated_at >= to_timestamp(?1 / 1000.0) - make_interval(hours => ?2)
               AND NOT EXISTS (
                 SELECT 1 FROM bot_notifications n
