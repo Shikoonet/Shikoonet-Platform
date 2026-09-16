@@ -1519,6 +1519,10 @@ export interface ResellerReading {
  */
 export interface Attention {
   openClaims: number;
+  /** The three below, summed on the server: what a person still has to look at. */
+  unreviewedPayments: number;
+  unreconciledContinuity: number;
+  unassignedIncome: number;
   pendingRequests: number;
   expiringSubscriptions7d: number;
   staleDevices: number;

@@ -147,6 +147,28 @@ describe('Payments grouped navigation', () => {
     expect(await screen.findByText('در این بازه پرداختی با تایید خودکار ربات نیست.')).toBeTruthy();
   });
 
+  it('says how many payments are unreviewed, and each part opens its queue', async () => {
+    // open 6 + continuityPending 2 + income 4. The same three the dashboard
+    // sums, drawn here with a way into each.
+    render(<PaymentsView cache={createCache()} />);
+    const strip = await screen.findByRole('status', { name: 'پرداخت‌های بررسی‌نشده' });
+    expect(within(strip).getByText('۱۲')).toBeTruthy();
+    expect(within(strip).getByText(/پرداخت بررسی‌نشده/)).toBeTruthy();
+    fireEvent.click(within(strip).getByRole('button', { name: /تحویل تداوم بدون تطبیق/ }));
+    expect(window.location.search).toContain('tab=continuity');
+    // Re-found: the surface re-renders on a tab change.
+    const again = await screen.findByRole('status', { name: 'پرداخت‌های بررسی‌نشده' });
+    fireEvent.click(within(again).getByRole('button', { name: /واریزی بدون سفارش/ }));
+    await waitFor(() => expect(window.location.search).toContain('tab=income'));
+  });
+
+  it('says every payment is reviewed when the three queues are empty', async () => {
+    mockPaymentsFetch({ ...COUNTS, open: 0, continuityPending: 0, income: 0 });
+    render(<PaymentsView cache={createCache()} />);
+    const strip = await screen.findByRole('status', { name: 'پرداخت‌های بررسی‌نشده' });
+    expect(within(strip).getByText('همهٔ پرداخت‌ها بررسی شده‌اند.')).toBeTruthy();
+  });
+
   it('selects the separate حالت تداوم review tab', async () => {
     render(<PaymentsView cache={createCache()} />);
     fireEvent.click(await hubNav().findByRole('tab', { name: /حالت تداوم 4/i }));

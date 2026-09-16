@@ -2084,6 +2084,20 @@ button.cat-card--new:hover {
   font-weight: 800;
   font-size: 15px;
 }
+/* The same strip inside the payments surface, where it sits above the
+   sub-nav: a bordered row rather than a card, and the title carries the sum. */
+.attention--strip {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md, 10px);
+}
+.attention--strip .attention__title {
+  color: var(--text);
+  font-size: 14px;
+}
+.attention--strip .attention__title .attention__n {
+  font-size: 18px;
+}
 
 /* ── The chart ────────────────────────────────────────────────────────────
    No library: `preserveAspectRatio="none"` on a viewBox lets the bars scale

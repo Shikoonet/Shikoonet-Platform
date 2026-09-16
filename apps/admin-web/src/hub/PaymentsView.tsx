@@ -658,6 +658,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
 
       <section className="payments-shell">
         <div className="payments-shell__surface">
+          {level1GroupFromTab(tab) === 'review' && (
+            <UnreviewedStrip counts={counts} onGo={selectTab} />
+          )}
           <nav className="ops-nav ops-nav--subnav" aria-label="نماهای پرداخت">
             <ReviewSubNav
               activeGroup={level1GroupFromTab(tab)}
@@ -2762,6 +2765,61 @@ function BulkDeclineModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * «N پرداخت بررسی‌نشده» — the same three numbers the dashboard adds up, with
+ * each part a way into its own queue.
+ *
+ * Sam, 2026-09-16: «ممکنه یکسری از پرداختی‌ها رو بررسی نکرده باشیم … نشون بده
+ * ۱۰ تا پرداختی هنوز بررسی نشده». Each of the three already had a tab and a
+ * badge; what was missing was the one sentence that says whether there is
+ * anything at all. Read from `counts`, which is the payments feed's own
+ * figure — not a second query, for the reason every badge on this screen
+ * gives.
+ */
+function UnreviewedStrip({
+  counts,
+  onGo,
+}: {
+  counts: Record<string, number | undefined> | undefined;
+  onGo: (tab: PaymentTab) => void;
+}) {
+  if (!counts) return null;
+  const parts: Array<{ n: number; label: string; tab: PaymentTab }> = [
+    { n: counts.open ?? 0, label: 'رسید در انتظار بررسی', tab: 'open' },
+    { n: counts.continuityPending ?? 0, label: 'تحویل تداوم بدون تطبیق بانکی', tab: 'continuity' },
+    { n: counts.income ?? 0, label: 'واریزی بدون سفارش', tab: 'income' },
+  ];
+  const total = parts.reduce((sum, p) => sum + p.n, 0);
+  return (
+    <div className="attention attention--strip" role="status" aria-label="پرداخت‌های بررسی‌نشده">
+      {total === 0 ? (
+        <p className="muted">همهٔ پرداخت‌ها بررسی شده‌اند.</p>
+      ) : (
+        <>
+          <h4 className="attention__title">
+            <span className="attention__n">{count(total)}</span> پرداخت بررسی‌نشده
+          </h4>
+          <div className="attention__chips">
+            {parts
+              .filter((p) => p.n > 0)
+              .map((p) => (
+                <button
+                  key={p.tab}
+                  type="button"
+                  className="attention__chip"
+                  onClick={() => onGo(p.tab)}
+                >
+                  <span className="attention__n">{count(p.n)}</span>
+                  <span>{p.label}</span>
+                </button>
+              ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

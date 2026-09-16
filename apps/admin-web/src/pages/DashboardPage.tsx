@@ -54,11 +54,13 @@ function AttentionRow({
 }) {
   const chips: Array<{ n: number; label: string; go: () => void }> = [
     {
-      n: attention.openClaims,
-      label: 'پرداخت در انتظار بررسی',
-      // The tab, not just the screen: landing on the default view of a
-      // six-tab page and having to find the queue again is most of the walk
-      // this chip exists to remove.
+      // One number for three queues — receipts awaiting a decision, continuity
+      // deliveries awaiting their bank SMS, bank credits no order claimed. Sam,
+      // 2026-09-16: «ممکنه یکسری از پرداختی‌ها رو بررسی نکرده باشیم». The
+      // payments screen draws the breakdown at the top, so this lands on the
+      // screen rather than on one of the three tabs.
+      n: attention.unreviewedPayments,
+      label: 'پرداخت بررسی‌نشده',
       go: () => onGo('payments', '?tab=open'),
     },
     {

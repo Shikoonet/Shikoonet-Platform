@@ -159,10 +159,29 @@ export function registerAdminOverviewRoutes(
         panels_without_secret: number;
       }>();
 
+    /*
+     * «ممکنه یکسری از پرداختی‌ها رو بررسی نکرده باشیم» — Sam, 2026-09-16.
+     *
+     * Three queues, one number. A receipt nobody has decided about, a
+     * continuity delivery whose bank SMS has not been matched, and a bank
+     * credit no order claimed and nobody declined: each is money that a
+     * person still has to look at, and each lived on its own tab with its
+     * own count, so «is there anything unreviewed» took three visits. Sam
+     * chose all three for the sum. The parts travel with it so the payments
+     * screen can draw the same breakdown from the same numbers.
+     */
+    const unreviewed = {
+      openClaims: counts.total.open,
+      unreconciledContinuity: counts.total.continuityPending,
+      unassignedIncome: counts.total.income,
+    };
+
     return c.json({
       ok: true,
       attention: {
-        openClaims: counts.total.open,
+        unreviewedPayments:
+          unreviewed.openClaims + unreviewed.unreconciledContinuity + unreviewed.unassignedIncome,
+        ...unreviewed,
         pendingRequests: Number(waiting?.pending_requests ?? 0),
         expiringSubscriptions7d: Number(waiting?.expiring_7d ?? 0),
         staleDevices: Number(waiting?.stale_devices ?? 0),

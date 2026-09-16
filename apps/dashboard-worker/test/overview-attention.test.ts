@@ -27,6 +27,9 @@ function envAs(email: string) {
 
 interface Attention {
   openClaims: number;
+  unreviewedPayments: number;
+  unreconciledContinuity: number;
+  unassignedIncome: number;
   pendingRequests: number;
   expiringSubscriptions7d: number;
   staleDevices: number;
@@ -155,12 +158,32 @@ describe('what still needs a person', () => {
     expect(a).toBe(body.counts?.total?.open ?? 0);
   });
 
+  it('adds up the three unreviewed queues the payments screen counts, and nothing else', async () => {
+    // One number for «is there anything a person still has to look at»:
+    // open claims, continuity deliveries awaiting their bank SMS, and bank
+    // credits no order claimed. Read from the payments surface, not counted
+    // again here — the same reason openClaims is.
+    const a = (await overview()).attention;
+    const res = await app.request('/api/v1/payments?tab=open&page=1&pageSize=1', {}, envAs(ADMIN));
+    const body = (await res.json()) as {
+      counts?: { total?: { open?: number; continuityPending?: number; income?: number } };
+    };
+    const t = body.counts?.total ?? {};
+    expect(a.openClaims).toBe(t.open ?? 0);
+    expect(a.unreconciledContinuity).toBe(t.continuityPending ?? 0);
+    expect(a.unassignedIncome).toBe(t.income ?? 0);
+    expect(a.unreviewedPayments).toBe((t.open ?? 0) + (t.continuityPending ?? 0) + (t.income ?? 0));
+  });
+
   it('answers every count even when there is nothing to report', async () => {
     // Zero is an answer. A missing key would make the screen draw «—» for a
     // shop with nothing waiting, which reads as «unknown» rather than «clear».
     const a = (await overview()).attention;
     for (const k of [
       'openClaims',
+      'unreviewedPayments',
+      'unreconciledContinuity',
+      'unassignedIncome',
       'pendingRequests',
       'expiringSubscriptions7d',
       'staleDevices',
