@@ -178,8 +178,8 @@ test('a plain setting is still editable, so the lock is about credentials', asyn
   // pass for a screen that simply refuses all writes.
   //
   // Found by its LABEL, not its key: that is the whole point of the form —
-  // `minbalancecart` is «کمینهٔ شارژ کیف پول» to the person changing it.
-  const input = page.getByLabel('کمینهٔ شارژ کیف پول');
+  // `minbalancecart` is «کمینهٔ شارژ کیف پول (تومان)» to the person changing it.
+  const input = page.getByLabel('کمینهٔ شارژ کیف پول (تومان)');
   await expect(input).toBeVisible();
   await expect(input).toBeEditable();
   await expect(input).toHaveValue('80000');
