@@ -3,9 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "description": "Shikoo platform — Telegram commerce bot, bank-SMS payment verification, and product provisioning on one Postgres.",
-  "packageManager": "pnpm@10.0.0",
+  "packageManager": "pnpm@10.34.5",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "typecheck": "pnpm -r --parallel typecheck",

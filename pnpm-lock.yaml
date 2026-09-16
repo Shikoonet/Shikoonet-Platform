@@ -32,7 +32,7 @@ importers:
         version: 8.67.0(eslint@9.39.5)(typescript@5.6.3)
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
   apps/admin-web:
     dependencies:
@@ -53,8 +53,8 @@ importers:
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       '@types/react':
         specifier: ^18.3.12
         version: 18.3.31
@@ -63,7 +63,7 @@ importers:
         version: 18.3.7(@types/react@18.3.31)
       '@vitejs/plugin-react':
         specifier: ^4.3.4
-        version: 4.7.0(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.7.0(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
       happy-dom:
         specifier: ^20.11.1
         version: 20.11.2
@@ -72,10 +72,10 @@ importers:
         version: 5.6.3
       vite:
         specifier: 6.4.3
-        version: 6.4.3(@types/node@22.20.1)(tsx@4.23.12)
+        version: 6.4.3(@types/node@24.13.5)(tsx@4.23.12)
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
   apps/bot:
     dependencies:
@@ -105,8 +105,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/seed
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       '@types/pngjs':
         specifier: ^6.0.5
         version: 6.0.5
@@ -124,7 +124,7 @@ importers:
         version: 5.6.3
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
   apps/dashboard-worker:
     dependencies:
@@ -166,14 +166,14 @@ importers:
         specifier: workspace:*
         version: link:../../packages/seed
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       typescript:
         specifier: 5.6.3
         version: 5.6.3
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
   apps/ingest-worker:
     dependencies:
@@ -212,26 +212,26 @@ importers:
         specifier: workspace:*
         version: link:../../packages/seed
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       typescript:
         specifier: 5.6.3
         version: 5.6.3
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
   packages/contracts:
     devDependencies:
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       typescript:
         specifier: 5.6.3
         version: 5.6.3
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
   packages/database:
     dependencies:
@@ -243,8 +243,8 @@ importers:
         version: link:../db
     devDependencies:
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       typescript:
         specifier: 5.6.3
         version: 5.6.3
@@ -259,8 +259,8 @@ importers:
         version: 4.23.12
     devDependencies:
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       '@types/pg':
         specifier: ^8.11.10
         version: 8.21.0
@@ -281,14 +281,14 @@ importers:
         specifier: workspace:*
         version: link:../db
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       typescript:
         specifier: 5.6.3
         version: 5.6.3
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
   packages/migrate:
     dependencies:
@@ -297,14 +297,14 @@ importers:
         version: link:../contracts
       mysql2:
         specifier: ^3.11.4
-        version: 3.23.3(@types/node@22.20.1)
+        version: 3.23.3(@types/node@24.13.5)
       pg:
         specifier: ^8.13.1
         version: 8.23.0
     devDependencies:
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       '@types/pg':
         specifier: ^8.11.10
         version: 8.21.0
@@ -328,8 +328,8 @@ importers:
         version: link:../sms-parser
     devDependencies:
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       tsx:
         specifier: ^4.19.2
         version: 4.23.12
@@ -338,7 +338,7 @@ importers:
         version: 5.6.3
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
   packages/sms-parser:
     dependencies:
@@ -347,14 +347,14 @@ importers:
         version: link:../contracts
     devDependencies:
       '@types/node':
-        specifier: ^22.9.0
-        version: 22.20.1
+        specifier: ^24.0.0
+        version: 24.13.5
       typescript:
         specifier: 5.6.3
         version: 5.6.3
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+        version: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
 packages:
 
@@ -846,6 +846,7 @@ packages:
     engines: {node: ^22.20 || ^24.12 || >=25}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@playwright/test@1.62.1':
     resolution: {integrity: sha512-DTcUc8qii+cpHvtOwggMtBRMjKZHXYWdw8syRYu2vtzuq4Wxphqq4NfCs5Zt44L6mA8rfDfj+PHnxFc/FeK6mQ==}
@@ -889,66 +890,79 @@ packages:
     resolution: {integrity: sha512-81wiiX3v7aqy+T+bT61TJ78yJjRquqFFTTbAPt08imfQQzkPIW8t6aJbkTagtCCrXMNc9D66+geqlK7ydLPNqA==}
     cpu: [arm]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm-musleabihf@4.62.4':
     resolution: {integrity: sha512-9kmDIvNZqdoHOBZgNtpTBeLWYO/LVipM3H/j62P8848/l/VPEQL6N3uxU9pvP1oZAsXyC2MEnFP3ovRjo7WYNQ==}
     cpu: [arm]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-arm64-gnu@4.62.4':
     resolution: {integrity: sha512-CcnXHWnXg69g+DX5VWL3FHts3qMRN2uVEHX+BZvGLdd07/gXkn3ePjYtO1LDJvxkGKVHMclKBRa1QUTH+6toYQ==}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm64-musl@4.62.4':
     resolution: {integrity: sha512-iFOibiHnTRuhrWLlRsOQFdZJJIa7S8OwkneJr4ocALP16u5yk6lWLINFwhHaEqBFMsKDUZofLkGos7+CPzGB3g==}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-loong64-gnu@4.62.4':
     resolution: {integrity: sha512-XnWYMI7euHlb5a871xPja+Gm7DRCFU+FGRrtS2sMq9N8FvqtpagUy6gD4YOemC5MRk9xbh8+jYMEJbigFQwsgA==}
     cpu: [loong64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-loong64-musl@4.62.4':
     resolution: {integrity: sha512-qGDAlO0U8xedCcsdRm9oaoQY8DAx/QT7uIxJWhCdx0ceIWX783UC9QSYkdpzAe29wNiVfp24+bZdQmn49o45SQ==}
     cpu: [loong64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-ppc64-gnu@4.62.4':
     resolution: {integrity: sha512-ru4H6ezD7ysA5EiEK6qkkaEb4modH8CTej6kUy/gQi20u3kB3G7Zn8snXXkeJSCOFKG/rbPPtM/+9Wgas1961w==}
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-ppc64-musl@4.62.4':
     resolution: {integrity: sha512-2W4MO5WQVJnbJaZdvDb9rhBDuFU1nKIepPFpJUBsTh2k1YY2g+ODViaWuyOAjQ5cOP7NvrvLzt3wvHOoiAvc7w==}
     cpu: [ppc64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-riscv64-gnu@4.62.4':
     resolution: {integrity: sha512-+fxjfuoAmVMCYV5QyjoIpu0cp5DOiOTeqYFk1AVaxGr+/ravWLX89XfQmptsoWcaVy/TGf2hexzbUOrCQIL1CQ==}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-musl@4.62.4':
     resolution: {integrity: sha512-jTn8JfHGL4djjFxPuM06LmNUJDsst2jeVlsd9OmIH6zc5sC9K6rIuO4YajXatLUpBmBKl6b35ro1QZocLi+tcA==}
     cpu: [riscv64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-s390x-gnu@4.62.4':
     resolution: {integrity: sha512-oCJCJL4pXsoDcP2QZ+JVlPTIRc6266zsIaeJJsWImmF7HO0W8nb6HuSgZlMWxJwaPf8ehbSw8yo0EUw925hKsA==}
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-gnu@4.62.4':
     resolution: {integrity: sha512-W69hukhZ3KKNRCaMIEzKvcFye42hh0FE1+YoYaf5+Ikacuftoco6yO/xouz0hc5d5W/s3yBro5jRiuEE/Q5vUw==}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-musl@4.62.4':
     resolution: {integrity: sha512-qiXbGG2jkjXhzXpsFZSR2Xpb8DN/UaxYsbb/STbuR/6fpaDgRmmaq1B/LmtF2wQFOFOSsK2jdE0RZ3a0zHn4QA==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-openbsd-x64@4.62.4':
     resolution: {integrity: sha512-nWeM//hxv8mIo6jD7Hu4o48DVmV9pbV6gsKaWU+4NFyqHoPKwrkRiZGLKUhOBk8qNmDmpwFtPKg80Bo/Tn4xiQ==}
@@ -1029,8 +1043,8 @@ packages:
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
 
-  '@types/node@22.20.1':
-    resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
+  '@types/node@24.13.5':
+    resolution: {integrity: sha512-TXyindR+lBr22aJIdMQzCFHPHR6cR4js838mRDCSz5hOKWZvZwsXSSiXDmjRj4iJmgl+sR9O+1mkoVBSMadNug==}
 
   '@types/pg@8.21.0':
     resolution: {integrity: sha512-AYdtudzabjLZgVgRZmAnU8bAnVUXzuJX2IYHeSIiIHm68olD+LgQYCGWdtcNYnP0uq9c4S4NibVG3Ni7VbKW7Q==}
@@ -1904,8 +1918,8 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
-  undici-types@6.21.0:
-    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+  undici-types@7.18.2:
+    resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
   update-browserslist-db@1.3.1:
     resolution: {integrity: sha512-ZZ61DsRsOnakl74HAmp3oSN4aXUmEWXf+i/yv0h7tIBfICc3VdrFErQKUUKPgu3AMsTUMbcongALEN4l6GSUrQ==}
@@ -2559,25 +2573,25 @@ snapshots:
 
   '@types/json-schema@7.0.15': {}
 
-  '@types/node@22.20.1':
+  '@types/node@24.13.5':
     dependencies:
-      undici-types: 6.21.0
+      undici-types: 7.18.2
 
   '@types/pg@8.21.0':
     dependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.5
       pg-protocol: 1.16.0
       pg-types: 2.2.0
 
   '@types/pngjs@6.0.5':
     dependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.5
 
   '@types/prop-types@15.7.15': {}
 
   '@types/qrcode@1.5.6':
     dependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.5
 
   '@types/react-dom@18.3.7(@types/react@18.3.31)':
     dependencies:
@@ -2592,7 +2606,7 @@ snapshots:
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.5
 
   '@typescript-eslint/eslint-plugin@8.67.0(@typescript-eslint/parser@8.67.0(eslint@9.39.5)(typescript@5.6.3))(eslint@9.39.5)(typescript@5.6.3)':
     dependencies:
@@ -2685,7 +2699,7 @@ snapshots:
       '@typescript-eslint/types': 8.67.0
       eslint-visitor-keys: 5.0.1
 
-  '@vitejs/plugin-react@4.7.0(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))':
+  '@vitejs/plugin-react@4.7.0(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))':
     dependencies:
       '@babel/core': 7.29.7
       '@babel/plugin-transform-react-jsx-self': 7.29.7(@babel/core@7.29.7)
@@ -2693,7 +2707,7 @@ snapshots:
       '@rolldown/pluginutils': 1.0.0-beta.27
       '@types/babel__core': 7.20.5
       react-refresh: 0.17.0
-      vite: 6.4.3(@types/node@22.20.1)(tsx@4.23.12)
+      vite: 6.4.3(@types/node@24.13.5)(tsx@4.23.12)
     transitivePeerDependencies:
       - supports-color
 
@@ -2709,7 +2723,7 @@ snapshots:
       obug: 2.2.1
       std-env: 4.2.0
       tinyrainbow: 3.1.1
-      vitest: 4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+      vitest: 4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
 
   '@vitest/expect@4.1.11':
     dependencies:
@@ -2720,13 +2734,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.1
 
-  '@vitest/mocker@4.1.11(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))':
+  '@vitest/mocker@4.1.11(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))':
     dependencies:
       '@vitest/spy': 4.1.11
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 6.4.3(@types/node@22.20.1)(tsx@4.23.12)
+      vite: 6.4.3(@types/node@24.13.5)(tsx@4.23.12)
 
   '@vitest/pretty-format@4.1.11':
     dependencies:
@@ -2814,7 +2828,7 @@ snapshots:
 
   buffer-image-size@0.6.4:
     dependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.5
 
   callsites@3.1.0: {}
 
@@ -3066,7 +3080,7 @@ snapshots:
 
   happy-dom@20.11.2:
     dependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.5
       '@types/whatwg-mimetype': 3.0.2
       '@types/ws': 8.18.1
       buffer-image-size: 0.6.4
@@ -3200,9 +3214,9 @@ snapshots:
 
   ms@2.1.3: {}
 
-  mysql2@3.23.3(@types/node@22.20.1):
+  mysql2@3.23.3(@types/node@24.13.5):
     dependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.5
       aws-ssl-profiles: 1.1.2
       generate-function: 2.3.1
       iconv-lite: 0.7.3
@@ -3479,7 +3493,7 @@ snapshots:
 
   typescript@5.6.3: {}
 
-  undici-types@6.21.0: {}
+  undici-types@7.18.2: {}
 
   update-browserslist-db@1.3.1(browserslist@4.28.8):
     dependencies:
@@ -3491,7 +3505,7 @@ snapshots:
     dependencies:
       punycode: 2.3.1
 
-  vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12):
+  vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12):
     dependencies:
       esbuild: 0.25.12
       fdir: 6.5.0(picomatch@4.0.5)
@@ -3500,14 +3514,14 @@ snapshots:
       rollup: 4.62.4
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.5
       fsevents: 2.3.3
       tsx: 4.23.12
 
-  vitest@4.1.11(@types/node@22.20.1)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12)):
+  vitest@4.1.11(@types/node@24.13.5)(@vitest/coverage-v8@4.1.11)(happy-dom@20.11.2)(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12)):
     dependencies:
       '@vitest/expect': 4.1.11
-      '@vitest/mocker': 4.1.11(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.12))
+      '@vitest/mocker': 4.1.11(vite@6.4.3(@types/node@24.13.5)(tsx@4.23.12))
       '@vitest/pretty-format': 4.1.11
       '@vitest/runner': 4.1.11
       '@vitest/snapshot': 4.1.11
@@ -3524,10 +3538,10 @@ snapshots:
       tinyexec: 1.3.1
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.1
-      vite: 6.4.3(@types/node@22.20.1)(tsx@4.23.12)
+      vite: 6.4.3(@types/node@24.13.5)(tsx@4.23.12)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.5
       '@vitest/coverage-v8': 4.1.11(vitest@4.1.11)
       happy-dom: 20.11.2
     transitivePeerDependencies:
