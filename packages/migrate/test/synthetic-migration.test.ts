@@ -319,6 +319,96 @@ maybe('a migration that reaches the database', () => {
       result.skipped.filter(([what]) => what.includes('scoped to a product that is gone')),
     ).toEqual([]);
   }, 120_000);
+
+  /**
+   * Two things the production cutover of 2026-09-16 found, each of which this
+   * file could not have caught because the fixture carried no order and no
+   * setting a migration also seeds. It carries both now.
+   */
+  it('dates every imported order by the legacy clock, never by the import', async () => {
+    // `provisionPaidOrders` reads `updated_at` to find «finished, nobody
+    // told». The importer left the column at its default, so every one of
+    // 10,920 imported orders looked finished in the last 24 hours and the
+    // bot greeted the shop's whole history. Asserted as the sweep asks it,
+    // and as the column should read — not one or the other.
+    const cfg = loadConfig();
+    let orders = { total: 0, recent: 0, misdated: 0 };
+
+    await my!.query("UPDATE `user` SET codeInvitation = 'FIXREF05' WHERE id = 9000000000005");
+    try {
+      await migrate(cfg, my!, pgc!, {
+        commit: false,
+        domains: ['sales'],
+        beforeSettle: async () => {
+          const q = async (where: string) =>
+            Number(
+              (
+                await pgc!.query(
+                  `SELECT count(*)::int AS n FROM orders WHERE legacy_ref IS NOT NULL AND ${where}`,
+                )
+              ).rows[0]!['n'],
+            );
+          orders = {
+            total: await q('true'),
+            recent: await q(`updated_at >= now() - interval '24 hours'`),
+            misdated: await q('updated_at <> COALESCE(expires_at, created_at)'),
+          };
+          return true;
+        },
+      });
+    } finally {
+      await my!.query("UPDATE `user` SET codeInvitation = 'FIXREF01' WHERE id = 9000000000005");
+    }
+
+    // Invoices and service_other rows both, or the assertion is about a table
+    // the fixture happens not to fill.
+    expect(orders.total).toBeGreaterThanOrEqual(8);
+    expect(orders.recent).toBe(0);
+    expect(orders.misdated).toBe(0);
+  }, 120_000);
+
+  it('lets the dump overwrite a setting a schema migration seeded first', async () => {
+    // `0057` seeds `removedayc` so the panel has a row to edit. On any real
+    // database the schema gate runs before the import, so that seed is already
+    // there — and DO NOTHING kept the seed and dropped the shop's own number.
+    // The fixture says 7; the sentinel below is what a seed looks like from
+    // the import's side.
+    const cfg = loadConfig();
+    const seeded = await pgc!.query<{ value: unknown }>(
+      `SELECT value FROM settings WHERE scope = 'bot' AND key = 'removedayc'`,
+    );
+    expect(seeded.rowCount, 'a migrated database carries the seeded row').toBe(1);
+    const original = JSON.stringify(seeded.rows[0]!.value);
+
+    await pgc!.query(
+      `UPDATE settings SET value = '"999"'::jsonb WHERE scope = 'bot' AND key = 'removedayc'`,
+    );
+    // `core` runs whatever domain is asked for, and the fixture's duplicate
+    // referral code refuses it — the same repair the tests above make.
+    await my!.query("UPDATE `user` SET codeInvitation = 'FIXREF05' WHERE id = 9000000000005");
+    let imported: unknown = null;
+    try {
+      await migrate(cfg, my!, pgc!, {
+        commit: false,
+        domains: ['config'],
+        beforeSettle: async () => {
+          imported = (
+            await pgc!.query<{ value: unknown }>(
+              `SELECT value FROM settings WHERE scope = 'bot' AND key = 'removedayc'`,
+            )
+          ).rows[0]!.value;
+          return true;
+        },
+      });
+    } finally {
+      await my!.query("UPDATE `user` SET codeInvitation = 'FIXREF01' WHERE id = 9000000000005");
+      await pgc!.query(`UPDATE settings SET value = $1::jsonb WHERE scope = 'bot' AND key = 'removedayc'`, [
+        original,
+      ]);
+    }
+
+    expect(imported).toBe('7');
+  }, 120_000);
 });
 
 /**

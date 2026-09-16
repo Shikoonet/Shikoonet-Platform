@@ -791,6 +791,27 @@ describe('an order that ended without telling anyone', () => {
     ).toBeUndefined();
   });
 
+  it('never greets an imported order, however fresh its row looks', async () => {
+    // 2026-09-16, production: the importer wrote 10,920 legacy orders with
+    // updated_at = now(), the window above let every one of them through, and
+    // the bot started telling the whole shop's history "your service is
+    // ready". The customer of an imported order was told by the bot it came
+    // from; nothing here can know otherwise, so nothing here may ask.
+    const order = await paidOrder({ kind: 'pasarguard' });
+    await provisionPaidOrders(db, fakePanel().fetchImpl);
+    await forgetTheMessage(order.publicId);
+    await db
+      .prepare(`UPDATE orders SET legacy_ref = 'invoice:test', updated_at = now() WHERE id = ?1`)
+      .bind(order.orderId)
+      .run();
+
+    await provisionPaidOrders(db, deadPanel);
+
+    expect(
+      (await pendingNotifications()).find((n) => n.chatId === order.telegramId),
+    ).toBeUndefined();
+  });
+
   it('never greets a wallet deposit', async () => {
     // A deposit is money in, not a thing out. It is completed by the settlement
     // sweep and has no delivery message of its own, so every one of them would
