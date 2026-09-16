@@ -36,6 +36,9 @@ const overview = vi.fn(async () => ({
   ...BASE,
   attention: {
     openClaims: 6,
+    unreviewedPayments: 47,
+    unreconciledContinuity: 11,
+    unassignedIncome: 30,
     pendingRequests: 171,
     expiringSubscriptions7d: 12,
     staleDevices: 0,
@@ -64,7 +67,10 @@ afterEach(() => {
 describe('what needs attention, on the dashboard', () => {
   it('prints each queue with its count, in the panel’s digits', async () => {
     draw();
-    expect(await screen.findByText(/پرداخت در انتظار/)).toBeTruthy();
+    expect(await screen.findByText(/پرداخت بررسی‌نشده/)).toBeTruthy();
+    // The sum of the three queues, not the open claims alone (6): Sam asked
+    // for one number that says whether anything is still unreviewed.
+    expect(screen.getByText('۴۷')).toBeTruthy();
     // ۱۷۱, not 171 — every other number on this screen is Persian.
     expect(screen.getByText(/۱۷۱/)).toBeTruthy();
     expect(screen.getByText(/۱۲/)).toBeTruthy();
@@ -72,7 +78,7 @@ describe('what needs attention, on the dashboard', () => {
 
   it('sends the operator to the screen that clears it', async () => {
     const onGo = draw();
-    fireEvent.click(await screen.findByRole('button', { name: /پرداخت در انتظار/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /پرداخت بررسی‌نشده/ }));
     // The payments screen ON the open tab — the queue, not the default view.
     expect(onGo).toHaveBeenCalledWith('payments', '?tab=open');
 
@@ -85,6 +91,9 @@ describe('what needs attention, on the dashboard', () => {
       ...BASE,
       attention: {
         openClaims: 0,
+        unreviewedPayments: 0,
+        unreconciledContinuity: 0,
+        unassignedIncome: 0,
         pendingRequests: 0,
         expiringSubscriptions7d: 0,
         staleDevices: 0,
@@ -93,7 +102,7 @@ describe('what needs attention, on the dashboard', () => {
     });
     draw();
     expect(await screen.findByText('چیزی در انتظار نیست.')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /پرداخت در انتظار/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /پرداخت بررسی‌نشده/ })).toBeNull();
   });
 
   it('draws only the queues that have something in them', async () => {
