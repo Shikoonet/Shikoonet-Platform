@@ -609,9 +609,11 @@ describe('a code that does not', () => {
     await makeCode('first2', { firstPurchaseOnly: true });
     await giveTrial(userId, `trial-${telegramId}`);
 
-    expect(await useCode(updateId, telegramId, VIP_PLAN, 'first2')).not.toBe(
-      menu.DISCOUNT_REFUSED['FIRST_PURCHASE_ONLY'],
-    );
+    // The accepted reply names the code, and the order carries the discount:
+    // «not refused» alone would pass on an empty reply.
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'first2')).toContain('first2');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    expect((await lastOrder(userId))?.discount_irr).toBeGreaterThan(0);
   });
 
   it('refuses a reseller code to an ordinary customer', async () => {
