@@ -453,6 +453,11 @@ describe('every write route, asked directly', () => {
     // is ADMIN-only like the delete it replaces; refused for a REVIEWER and a
     // READ_ONLY by the three tests above, and `products.test.ts` pins the
     // same-panel/same-kind refusal.
-    expect(writeRoutes().length).toBe(160);
+    //
+    // 161, 2026-09-16: `POST /bulk/trial-reset` — lets an audience take a
+    // free trial again (Sam: «برای همه … یا برای گروه خاصی»). It hands out
+    // free panel accounts, so ADMIN-only like the credit beside it, audited,
+    // and refused for a REVIEWER and a READ_ONLY by the three tests above.
+    expect(writeRoutes().length).toBe(161);
   });
 });

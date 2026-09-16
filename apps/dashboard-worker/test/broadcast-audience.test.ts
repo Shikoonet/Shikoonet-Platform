@@ -326,6 +326,58 @@ describe('the audience on a broadcast', () => {
    * A panel nobody holds a service on. The send must refuse rather than queue
    * nothing and report success: «۰ نفر در صف قرار گرفت» reads as done.
    */
+  it('counts and resets the trial quota for exactly the audience named', async () => {
+    // «بتونه اگر خواست برای همه ریست کنه و یا برای گروه خاصی» — Sam,
+    // 2026-09-16. The same predicate the broadcast uses, so the number the
+    // operator approves is the number of rows the reset touches.
+    await baseEnv.DB.prepare(
+      `UPDATE users SET test_quota_used = 1 WHERE id IN (?1, ?2, ?3)`,
+    )
+      .bind(tried, bought, onPanelA)
+      .run();
+
+    const used = async (q: string) => {
+      const res = await app.request(`/api/v1/admin/bulk/trial-used?${q}`, {}, envAs());
+      return ((await res.json()) as { used: number }).used;
+    };
+    expect(await used(`audience=provider&providerId=${providerA}`)).toBe(1);
+    expect(await used(`audience=customer&telegramId=${tgOf('never')}`)).toBe(0);
+
+    const res = await app.request(
+      '/api/v1/admin/bulk/trial-reset',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ audience: { kind: 'provider', providerId: providerA } }),
+      },
+      envAs(),
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { reset: number }).reset).toBe(1);
+
+    const quota = async (id: number) =>
+      (
+        await baseEnv.DB.prepare(`SELECT test_quota_used AS n FROM users WHERE id = ?1`)
+          .bind(id)
+          .first<{ n: number }>()
+      )?.n;
+    expect(await quota(onPanelA)).toBe(0);
+    // Not in the audience: untouched.
+    expect(await quota(tried)).toBe(1);
+    expect(await quota(bought)).toBe(1);
+
+    // And an audit row, because a reset hands out free accounts again.
+    const audit = await baseEnv.DB.prepare(
+      `SELECT after_json FROM audit_logs WHERE action = 'customers.trial_quota_reset'
+        ORDER BY created_at DESC LIMIT 1`,
+    ).first<{ after_json: unknown }>();
+    const after =
+      typeof audit?.after_json === 'string'
+        ? (JSON.parse(audit.after_json) as { reset: number })
+        : (audit?.after_json as { reset: number });
+    expect(after.reset).toBe(1);
+  });
+
   it('refuses when the audience is empty instead of reporting a send', async () => {
     expect(await reach(`audience=provider&providerId=${providerB}`)).toBeGreaterThan(0);
     const lonely = await provider('aud-panel-empty');

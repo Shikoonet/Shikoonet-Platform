@@ -305,8 +305,12 @@ const TYPED_OUT_SETTINGS = [
   {
     scope: 'bot',
     key: 'limit_usertest_all',
-    label: 'سقف سرویس تست',
-    hint: 'در کل چند سرویس تست داده شود. صفر یعنی بدون سقف.',
+    label: 'هر مشتری چند بار اکانت تست بگیرد',
+    // The old hint said «در کل … صفر یعنی بدون سقف» — the opposite of what
+    // the bot does with it (`settings.ts`: per customer, and zero switches
+    // trials OFF). Sam asked for this setting on 2026-09-16 without knowing
+    // it existed; the words were why.
+    hint: 'سقف برای هر مشتری، روی همهٔ پنل‌ها. صفر یعنی اکانت تست خاموش. ریست‌کردن شمارنده در «ارسال گروهی» است.',
     kind: 'int',
   },
 

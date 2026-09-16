@@ -182,6 +182,45 @@ export async function activeCustomerCount(
 }
 
 /** A batch id, generated once and kept so a retry reuses it. */
+/**
+ * How many customers in the audience have used a free trial — the number the
+ * operator sees before pressing «ریست».
+ */
+export async function trialQuotaUsedCount(
+  db: Db,
+  audience: BroadcastAudience = { kind: 'all' },
+): Promise<number> {
+  const { sql, params } = audienceSql(audience, 1);
+  const stmt = db.prepare(
+    `SELECT count(*)::int AS n FROM users u
+      WHERE u.status = 'ACTIVE' AND u.test_quota_used > 0 ${sql}`,
+  );
+  const row = await (params.length > 0 ? stmt.bind(...params) : stmt).first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/**
+ * Lets the audience take a free trial again.
+ *
+ * «بتونه اگر خواست برای همه ریست کنه و یا برای گروه خاصی ریست کنه» — Sam,
+ * 2026-09-16. One UPDATE over the same predicate the broadcast and the
+ * preview use, so the count an operator approved is the count of rows this
+ * touches. Only rows with something to reset are written, and the number
+ * returned is that count.
+ */
+export async function resetTrialQuota(
+  db: Db,
+  audience: BroadcastAudience = { kind: 'all' },
+): Promise<number> {
+  const { sql, params } = audienceSql(audience, 1);
+  const stmt = db.prepare(
+    `UPDATE users u SET test_quota_used = 0, updated_at = now()
+      WHERE u.status = 'ACTIVE' AND u.test_quota_used > 0 ${sql}`,
+  );
+  const done = await (params.length > 0 ? stmt.bind(...params) : stmt).run();
+  return done.meta.changes;
+}
+
 export function newBatchId(): string {
   return randomUUID();
 }
