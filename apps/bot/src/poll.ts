@@ -748,7 +748,7 @@ export const BROADCAST_IDLE_MS = 1_000;
  * Its own loop beside the poll loop, not a call inside it. The sweep used to
  * run once per cycle, and on a quiet bot a cycle is the 25-second `getUpdates`
  * wait — so a broadcast went out as 200 messages, 25 seconds of nothing, 200
- * messages: about six a second against a pace of twenty-five, and the first
+ * messages: about six a second against a pace of twenty, and the first
  * message landed up to half a minute after the operator pressed «تایید». Sam,
  * 2026-09-16: «سرعت ارسال پیام گروهی خیلی پایینه».
  *

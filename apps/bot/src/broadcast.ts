@@ -72,7 +72,7 @@ export const BROADCAST_BATCH = 200;
  *
  * Twelve rather than thirty: the pool's throughput is bounded by the pace below
  * as soon as the connection is fast, and twelve is enough to hide a 250ms round
- * trip at that pace (12 / 0.25s ≈ 48/s of capacity against a 25/s pace) while
+ * trip at that pace (12 / 0.25s ≈ 48/s of capacity against a 20/s pace) while
  * keeping the number of open sockets small on a box that is also polling.
  */
 export const SEND_CONCURRENCY = 12;
@@ -80,11 +80,16 @@ export const SEND_CONCURRENCY = 12;
 /**
  * The floor on the gap between two sends STARTING, across the whole pool.
  *
- * 40ms is 25 messages a second, which is what the old per-message gap was aiming
- * at and never reached. Kept as a pace rather than a sleep-after-each-send: with
- * a pool the two are different things, and it is the RATE Telegram limits.
+ * 50ms is 20 messages a second. It was 40 (25/s) while the broadcast ran in
+ * eight-second bursts; since it drains continuously beside the poll loop
+ * (2026-09-16), the replies the handlers send during a broadcast share the
+ * bot's ~30/s ceiling with it, and this leaves them ten a second — more than
+ * this shop's busiest minute. Kept as a pace rather than a sleep-after-each-
+ * send: with a pool the two are different things, and it is the RATE Telegram
+ * limits. Exceeding it is not silent either way: a 429 pauses the whole pool
+ * and returns the row to the queue (`markBroadcastRetryable`).
  */
-export const SEND_GAP_MS = 40;
+export const SEND_GAP_MS = 50;
 
 /**
  * What one queued message actually is.

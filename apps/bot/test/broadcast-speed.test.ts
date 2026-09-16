@@ -12,7 +12,7 @@
  * would be the flakiest thing in the suite the first time CI was busy.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertSchema, db, resetBot } from './helpers/env.js';
 import { stubApi } from './helpers/telegram.js';
 import { makeCustomer } from './helpers/shop.js';
@@ -100,7 +100,7 @@ describe('a broadcast, sent', () => {
 
     expect(sent).toBe(12);
     expect(peak).toBeGreaterThan(1);
-    // Four or five in flight at 200ms against a 40ms pace, so «more than one»
+    // Four in flight at 200ms against a 50ms pace, so «more than one»
     // is a floor with room under it rather than a coin flip.
     // Nothing left behind: overlapping must not lose a recipient.
     const pending = await db
@@ -216,12 +216,17 @@ describe('a broadcast, drained', () => {
       },
     });
 
-    const started = Date.now();
+    // Not a wall-clock bound. `sleep` is what the loop does between batches
+    // when it has nothing, so counting its calls is counting the idle gaps:
+    // three batches, zero sleeps — and a loop that slept after every batch
+    // would show two, whatever the machine's speed.
+    const sleeps = vi.spyOn(globalThis, 'setTimeout');
     await drainBroadcasts(db, api, controller.signal, { limit: 2, idleMs: 2_000 });
-    const took = Date.now() - started;
+    const idled = sleeps.mock.calls.filter(([, ms]) => ms === 2_000).length;
+    sleeps.mockRestore();
 
     expect(sent).toBe(5);
-    expect(took).toBeLessThan(1_500);
+    expect(idled).toBe(0);
     const left = await db
       .prepare(
         `SELECT COUNT(*)::int AS n FROM broadcast_recipients

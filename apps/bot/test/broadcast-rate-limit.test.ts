@@ -301,7 +301,7 @@ describe('a broadcast that Telegram rate-limits', () => {
     // Somewhere in there, everybody waited out the second Telegram asked for.
     // Asserted as the largest GAP rather than at a fixed index: which worker
     // sends when is not ordered, and a gap is not a measurement of this
-    // machine's speed. The pace is 40ms, so nothing else here comes close.
+    // machine's speed. The pace is 50ms, so nothing else here comes close.
     const gaps = at.slice(1).map((t, i) => t - at[i]!);
     expect(Math.max(...gaps)).toBeGreaterThanOrEqual(900);
 
