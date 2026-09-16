@@ -361,6 +361,7 @@ const REASON_TEXT: Record<string, string> = {
   DUPLICATE_ORDER: 'این سفارش قبلاً ثبت شده',
   DUPLICATE_EVENT: 'این رویداد پرداخت قبلاً دریافت شده',
   RECEIPT_REUSED: 'این رسید قبلاً برای پرداخت دیگری استفاده شده',
+  RECEIPT_MISSING: `واریزی منطبق پیدا شد، ولی مشتری تا ${waitMinutes} دقیقه رسید نفرستاد`,
   INTEGRATION_ERROR: 'این پرداخت به‌صورت خودکار پردازش نشد',
 };
 
@@ -403,7 +404,12 @@ export const ALL_TAB_STATES: ReviewState[] = [
 export function defaultCandidateId(item: PaymentItem): string | null {
   const only = item.candidates.length === 1 ? item.candidates[0] : undefined;
   if (!only) return null;
-  return item.suspectReason === 'OUTSIDE_AUTO_MATCH_WINDOW' ? only.id : null;
+  // RECEIPT_MISSING has the same shape: the matcher named exactly one
+  // transaction and only the customer's picture is absent.
+  return item.suspectReason === 'OUTSIDE_AUTO_MATCH_WINDOW' ||
+    item.suspectReason === 'RECEIPT_MISSING'
+    ? only.id
+    : null;
 }
 
 export function userLabel(item: PaymentItem): string {

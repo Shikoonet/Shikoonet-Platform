@@ -302,7 +302,7 @@ export async function finalizeExpiredMirzabotWaits(
        WHERE c.source_system = ?1
          AND c.status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')
          AND (c.suspect_reason IS NULL
-              OR c.suspect_reason IN ('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION'))
+              OR c.suspect_reason IN ('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION','RECEIPT_MISSING'))
          AND c.target_financial_account_id IS NOT NULL
          AND COALESCE(c.receipt_submitted_at, c.paid_clicked_at) IS NOT NULL
        LIMIT 50`,

@@ -22,7 +22,11 @@ import type { SuspectReason } from '@shikoo/contracts';
 export type MirzabotDecisionKind = 'AUTO_VERIFY' | 'SUGGEST' | 'WAIT';
 
 /** Reason attached to a decision. AUTO_VERIFY/WAIT use their own literals. */
-export type MirzabotDecisionReason = SuspectReason | 'UNIQUE_EXACT_MATCH' | 'AWAITING_BANK_SMS';
+export type MirzabotDecisionReason =
+  | SuspectReason
+  | 'UNIQUE_EXACT_MATCH'
+  | 'AWAITING_BANK_SMS'
+  | 'AWAITING_RECEIPT';
 
 export interface MirzabotClaimCandidate {
   id: string;
@@ -351,18 +355,41 @@ export function evaluateMirzabotGroup(
       });
     }
 
+    const diagnostics = {
+      eligibleTransactionCount: 1,
+      competingClaimCount: 1,
+      timeDeltaMs: only.timeDeltaMs,
+      candidateTransactionIds: [only.tx.id],
+      competingClaimIds: [],
+    };
+
+    // The money is here and it is unambiguously this claim's — and still not
+    // without the receipt. Sam, 2026-09-17: automatic verification delivers
+    // the service, and nothing is delivered on a bank SMS alone; the customer
+    // sends the picture, the next sweep verifies. Inside the waiting period
+    // this holds; past it the operator decides, with the transaction named.
+    // A FULFILLED_UNRECONCILED claim is exempt: the product already moved by
+    // a person's decision, this only closes its reconciliation.
+    if (edges.claim.status !== 'FULFILLED_UNRECONCILED' && edges.claim.receiptSubmittedAt == null) {
+      const waitingTimeoutMs = opts.waitingTimeoutMs ?? WAITING_TIMEOUT_MS;
+      if (now < (edges.claim.paidClickedAt ?? 0) + waitingTimeoutMs) {
+        return {
+          decision: 'WAIT',
+          claimId,
+          reason: 'AWAITING_RECEIPT',
+          transactionId: only.tx.id,
+          diagnostics,
+        };
+      }
+      return suggest(claimId, 'RECEIPT_MISSING', diagnostics);
+    }
+
     return {
       decision: 'AUTO_VERIFY',
       claimId,
       reason: 'UNIQUE_EXACT_MATCH',
       transactionId: only.tx.id,
-      diagnostics: {
-        eligibleTransactionCount: 1,
-        competingClaimCount: 1,
-        timeDeltaMs: only.timeDeltaMs,
-        candidateTransactionIds: [only.tx.id],
-        competingClaimIds: [],
-      },
+      diagnostics,
     };
   });
 }

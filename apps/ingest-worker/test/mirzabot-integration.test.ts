@@ -571,6 +571,15 @@ describe('the new bot: SMS first, «پرداخت کردم» after', () => {
       .bind(`claim-${orderId}`, `shikoo:${orderId}`, amountIrr, accountId, at, cardDigits)
       .run();
   }
+  /** What `recordReceipt` in the bot does: stamps the receipt on the open claim. */
+  async function botReceipt(orderId: string, at: number) {
+    await env.DB.prepare(
+      `UPDATE payment_claims SET receipt_url_or_r2_key = 'tg:receipt', receipt_submitted_at = ?2
+        WHERE external_order_id = ?1`,
+    )
+      .bind(`shikoo:${orderId}`, at)
+      .run();
+  }
   async function botClaimStatus(orderId: string) {
     return env.DB.prepare(`SELECT status FROM payment_claims WHERE external_order_id = ?1`)
       .bind(`shikoo:${orderId}`)
@@ -587,12 +596,50 @@ describe('the new bot: SMS first, «پرداخت کردم» after', () => {
 
     await botClaim('sms-first', accountId, '6037997512349900', 1_990_000, smsAt + 20_000);
 
+    // Sam, 2026-09-17: the transfer alone ships nothing. Without the receipt
+    // the sweep holds the claim — PENDING, no suspect — even with the money
+    // sitting right there.
     const { finalizeExpiredMirzabotWaits } = await import('../src/integrations/mirzabot.js');
     await finalizeExpiredMirzabotWaits(domainDb(), {
       autoMatchEnabled: true,
       now: smsAt + 35_000,
     });
+    expect((await botClaimStatus('sms-first'))?.status).toBe('PENDING');
+
+    await botReceipt('sms-first', smsAt + 40_000);
+    await finalizeExpiredMirzabotWaits(domainDb(), {
+      autoMatchEnabled: true,
+      now: smsAt + 50_000,
+    });
     expect((await botClaimStatus('sms-first'))?.status).toBe('VERIFIED');
+  });
+
+  it('a transfer without a receipt goes to the operator after the waiting period', async () => {
+    const accountId = 'acc-bot-no-receipt';
+    await seedAccountWithCard(accountId, '6037997512349902');
+    const clickedAt = BASE_MS + 180_000;
+    await botClaim('no-receipt', accountId, '6037997512349902', 2_490_000, clickedAt);
+    await seedTransaction(accountId, 2_490_000, clickedAt + 5_000, 'tx-bot-no-receipt');
+
+    const { finalizeExpiredMirzabotWaits } = await import('../src/integrations/mirzabot.js');
+    await finalizeExpiredMirzabotWaits(domainDb(), {
+      autoMatchEnabled: true,
+      now: clickedAt + 10 * 60_000 + 1_000,
+    });
+    const row = await env.DB.prepare(
+      `SELECT status, suspect_reason FROM payment_claims WHERE external_order_id = 'shikoo:no-receipt'`,
+    ).first<{ status: string; suspect_reason: string | null }>();
+    expect(row?.status).not.toBe('VERIFIED');
+    expect(row?.suspect_reason).toBe('RECEIPT_MISSING');
+
+    // The receipt arriving late still closes it: the sweep revisits
+    // RECEIPT_MISSING claims, and the engine verifies once the picture is in.
+    await botReceipt('no-receipt', clickedAt + 11 * 60_000);
+    await finalizeExpiredMirzabotWaits(domainDb(), {
+      autoMatchEnabled: true,
+      now: clickedAt + 11 * 60_000 + 15_000,
+    });
+    expect((await botClaimStatus('no-receipt'))?.status).toBe('VERIFIED');
   });
 
   it('is not switched off by MIRZABOT_INTEGRATION_ENABLED=false', async () => {
@@ -600,6 +647,7 @@ describe('the new bot: SMS first, «پرداخت کردم» after', () => {
     await seedAccountWithCard(accountId, '6037997512349901');
     const clickedAt = BASE_MS + 120_000;
     await botClaim('legacy-off', accountId, '6037997512349901', 1_190_000, clickedAt);
+    await botReceipt('legacy-off', clickedAt + 1_000);
     await seedTransaction(accountId, 1_190_000, clickedAt + 3_000, 'tx-bot-legacy-off');
 
     const { rematchMirzabotClaimsForCreditTx } = await import('../src/integrations/mirzabot.js');
