@@ -185,6 +185,7 @@ export let ACTION_FAILED_NO_LINK = DEFAULT_TEXTS.raw('ACTION_FAILED_NO_LINK');
  * can change it instead.
  */
 export let SPAM_BLOCKED = DEFAULT_TEXTS.raw('SPAM_BLOCKED');
+export let SPAM_WARNING = DEFAULT_TEXTS.raw('SPAM_WARNING');
 
 
 /**
@@ -303,6 +304,7 @@ export function applyContent(content: BotContent): void {
   RECEIPT_WRONG_FILE = t.raw('RECEIPT_WRONG_FILE');
   ACTION_FAILED_NO_LINK = t.raw('ACTION_FAILED_NO_LINK');
   SPAM_BLOCKED = t.raw('SPAM_BLOCKED');
+  SPAM_WARNING = t.raw('SPAM_WARNING');
   DISCOUNT_REFUSED = buildDiscountRefused(t);
 }
 

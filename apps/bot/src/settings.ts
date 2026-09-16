@@ -218,6 +218,12 @@ export interface ShopSettings {
    */
   trialQuotaPerUser: number;
   /**
+   * Updates one customer may send in a minute before the flood guard blocks
+   * them — `setting.spam_limit_per_minute`, 35 by default, which is what
+   * `index.php:317` hardcodes. `spam.ts` reads it on every update.
+   */
+  spamLimitPerMinute: number;
+  /**
    * How many days a service may sit unused before the customer is nudged —
    * `setting.on_hold_day`.
    *
@@ -350,6 +356,7 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   topupMaxIrr: 100_000_000,
   warnDays: 2,
   trialQuotaPerUser: 1,
+  spamLimitPerMinute: 35,
   warnVolumeGb: 1,
   onHoldDays: 1,
   // The three warnings on and the two removals off, which is what this bot
@@ -760,6 +767,10 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       // `wholeCount` refuses zero, and zero is a real answer here - it is how
       // an admin turns trials off shop-wide - so this one is read on its own.
       trialQuotaPerUser: trialQuota(num('limit_usertest_all')),
+      spamLimitPerMinute: wholeCount(
+        num('spam_limit_per_minute'),
+        DEFAULT_SHOP_SETTINGS.spamLimitPerMinute,
+      ),
       warnVolumeGb: wholeCount(num('volumewarn'), DEFAULT_SHOP_SETTINGS.warnVolumeGb),
       onHoldDays: wholeCount(num('on_hold_day'), DEFAULT_SHOP_SETTINGS.onHoldDays),
       cron: {

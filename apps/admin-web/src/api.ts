@@ -2082,6 +2082,22 @@ export const api = {
     return req<{ ok: boolean; reach: number }>(`/bulk/reach?${q.toString()}`);
   },
 
+  /** How many in the audience have used a free trial — what a reset touches. */
+  bulkTrialUsed(audience: BroadcastAudience) {
+    const q = new URLSearchParams({ audience: audience.kind });
+    if (audience.kind === 'provider') q.set('providerId', String(audience.providerId));
+    if (audience.kind === 'customer') q.set('telegramId', String(audience.telegramId));
+    return req<{ ok: boolean; used: number }>(`/bulk/trial-used?${q.toString()}`);
+  },
+
+  /** Lets the audience take a free trial again. Audited on the server. */
+  bulkTrialReset(audience: BroadcastAudience) {
+    return req<{ ok: boolean; reset: number }>('/bulk/trial-reset', {
+      method: 'POST',
+      body: JSON.stringify({ audience }),
+    });
+  },
+
   /** The last credit and the last broadcast, so neither is sent twice by hand. */
   bulkRecent() {
     return req<{ ok: boolean; credit: BulkSend | null; broadcast: BulkSend | null }>(
