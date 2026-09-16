@@ -26,8 +26,8 @@ const bot = vi.fn(async () => ({
   connected: null,
   liveUsername: 'shikoo_dev_bot',
 }));
-const setActive = vi.fn(async () => ({ ok: true }));
-const add = vi.fn(async () => ({ ok: true, id: 3 }));
+const setActive = vi.fn(async (_id: number, _active: boolean) => ({ ok: true }));
+const add = vi.fn(async (_body: unknown) => ({ ok: true, id: 3 }));
 
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
