@@ -21,12 +21,15 @@
  *
  * The block itself is a row, because it has to outlive everything.
  *
- * ## The threshold is the legacy's, and it is not a setting
+ * ## The threshold is the legacy's default, and a setting since 2026-09-16
  *
- * 35 and one minute are hardcoded in `index.php` — there is no column for
- * either in `setting`, so there is nothing for an admin to have configured and
- * nothing to read. They are named here rather than spelled inline so a test can
- * measure against the same two numbers this file acts on.
+ * 35 and one minute are hardcoded in `index.php`. The window still is; the
+ * limit is «حداکثر پیام یک مشتری در دقیقه» in the dashboard now, read through
+ * `ShopSettings.spamLimitPerMinute`, and 35 is what a shop that never touches
+ * it gets. Sam asked after mashing buttons on the test bot and hearing
+ * nothing: the block was the first thing a flooder was ever told. So there is
+ * a warning at half the limit too, once per window, in place of that
+ * message's answer.
  */
 
 import type { D1DatabaseSession } from '@shikoo/db';
@@ -49,22 +52,21 @@ export const SPAM_WINDOW_MS = 60_000;
 export const SPAM_BLOCK_REASON = 'auto-blocked for flooding the bot';
 
 /**
- * `now` is a closure, not `Date.now` itself.
+ * One customer's minute: how many updates, until when, and whether they have
+ * already been warned in it.
  *
- * `fixedWindowRateLimit` captures whatever it is handed at construction, so
- * passing the function directly would pin the REAL clock into a limiter built
- * at module load — and then a test that pins the clock to prove the window
- * reopens would be measuring nothing. The indirection is one call deep and it
- * is the difference between a testable guard and a green test about a guard
- * that never resets.
+ * A map of its own rather than `fixedWindowRateLimit`, because that limiter
+ * answers only «over or not» and the warning needs the count. The limit is
+ * not baked in at construction either — it is a setting now, and an admin
+ * who lowers it must not wait for a restart.
  */
-function makeLimiter(): RateLimit {
-  return fixedWindowRateLimit({
-    limit: SPAM_LIMIT,
-    windowMs: SPAM_WINDOW_MS,
-    now: () => Date.now(),
-  });
+interface Minute {
+  count: number;
+  resetAt: number;
+  warned: boolean;
 }
+let minutes = new Map<number, Minute>();
+let sweepAt = 0;
 
 /**
  * A second window whose only job is to answer "have I charged for this update
@@ -87,22 +89,52 @@ function makeSeen(): RateLimit {
   return fixedWindowRateLimit({ limit: 1, windowMs: SPAM_WINDOW_MS, now: () => Date.now() });
 }
 
-let limiter: RateLimit = makeLimiter();
 let seen: RateLimit = makeSeen();
 
+export type SpamVerdict = 'ok' | 'warn' | 'block';
+
+/** Where the warning lands: halfway, so 35 warns on the 18th message. */
+export function spamWarnAt(limit: number): number {
+  return Math.ceil(limit / 2);
+}
+
 /**
- * Whether this customer has just gone over the limit.
+ * What this update earns its sender: nothing, a warning, or the block.
  *
  * One call per update, and it counts — but only once per update, however many
  * times that update is delivered. A redelivered update was under the limit the
  * first time (being over it ends in a block and a return, not an exception), so
- * answering `false` for a repeat is the same answer it got before.
+ * answering `ok` for a repeat is the same answer it got before.
+ *
+ * `warn` fires exactly once per window, on the message that reaches
+ * `spamWarnAt(limit)`; the messages after it are `ok` until the limit.
  */
-export async function overSpamLimit(telegramId: number, updateId: number): Promise<boolean> {
+export async function spamVerdict(
+  telegramId: number,
+  updateId: number,
+  limit: number,
+): Promise<SpamVerdict> {
   const first = await seen.limit({ key: `${telegramId}:${updateId}` });
-  if (!first.success) return false;
-  const { success } = await limiter.limit({ key: String(telegramId) });
-  return !success;
+  if (!first.success) return 'ok';
+  const t = Date.now();
+  // The same sweep `fixedWindowRateLimit` does: nothing until the map is
+  // big, then dead minutes go, at most once a window.
+  if (minutes.size >= 1000 && t >= sweepAt) {
+    for (const [id, m] of minutes) if (m.resetAt <= t) minutes.delete(id);
+    sweepAt = t + SPAM_WINDOW_MS;
+  }
+  let m = minutes.get(telegramId);
+  if (m === undefined || m.resetAt <= t) {
+    m = { count: 0, resetAt: t + SPAM_WINDOW_MS, warned: false };
+    minutes.set(telegramId, m);
+  }
+  m.count += 1;
+  if (m.count > limit) return 'block';
+  if (!m.warned && m.count >= spamWarnAt(limit)) {
+    m.warned = true;
+    return 'warn';
+  }
+  return 'ok';
 }
 
 /**
@@ -112,7 +144,8 @@ export async function overSpamLimit(telegramId: number, updateId: number): Promi
  * otherwise leave them over the limit for every file after it.
  */
 export function resetSpamWindows(): void {
-  limiter = makeLimiter();
+  minutes = new Map();
+  sweepAt = 0;
   seen = makeSeen();
 }
 

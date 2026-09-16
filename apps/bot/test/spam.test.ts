@@ -167,6 +167,52 @@ describe('flooding the bot', () => {
     expect(over.replies[0]?.text).toContain('مسدود');
   });
 
+  it('warns halfway to the limit, once, and then keeps counting', async () => {
+    // «ربات هیچ هشداری نداد» — Sam, 2026-09-16, mashing buttons on the test
+    // bot. The block was the first thing a flooder ever heard. One warning,
+    // at half the limit, in place of that message's answer; the messages
+    // after it are answered as usual until the limit.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    const half = Math.ceil(SPAM_LIMIT / 2);
+
+    const before = await flood(telegramId, half - 1);
+    expect(before.replies[0]?.text ?? '').not.toContain('آرام‌تر');
+    const at = await flood(telegramId, 1, half - 1);
+    expect(at.replies[0]?.text).toContain('آرام‌تر');
+    const after = await flood(telegramId, 1, half);
+    expect(after.replies[0]?.text ?? '').not.toContain('آرام‌تر');
+    expect((await statusOf(telegramId)).status).toBe('ACTIVE');
+  });
+
+  it('reads the limit from the shop settings', async () => {
+    // «حداکثر پیام یک مشتری در دقیقه» — an admin who sets 10 gets a block on
+    // the eleventh, and the warning on the fifth.
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value, updated_at)
+         VALUES ('bot', 'spam_limit_per_minute', '10'::jsonb, now())
+         ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value`,
+      )
+      .run();
+    invalidateShopSettings();
+    try {
+      const { telegramId } = ids();
+      await makeCustomer(telegramId);
+      const fifth = await flood(telegramId, 5);
+      expect(fifth.replies[0]?.text).toContain('آرام‌تر');
+      await flood(telegramId, 5, 5);
+      expect((await statusOf(telegramId)).status).toBe('ACTIVE');
+      await flood(telegramId, 1, 10);
+      expect((await statusOf(telegramId)).status).toBe('BLOCKED');
+    } finally {
+      await db
+        .prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'spam_limit_per_minute'`)
+        .run();
+      invalidateShopSettings();
+    }
+  });
+
   it('forgets the count once the window has passed', async () => {
     const { telegramId } = ids();
     await makeCustomer(telegramId);
