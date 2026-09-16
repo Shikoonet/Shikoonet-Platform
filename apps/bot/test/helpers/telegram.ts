@@ -12,6 +12,7 @@ import type { TelegramApi } from '../../src/telegram.js';
 export function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
   return {
     getMe: async () => ({ username: 'Test_Shikoo_bot' }),
+    deleteWebhook: async () => undefined,
     getUpdates: async () => [],
     sendMessage: async () => undefined,
     replaceReplyKeyboard: async () => undefined,

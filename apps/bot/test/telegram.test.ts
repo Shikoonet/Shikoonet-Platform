@@ -322,3 +322,29 @@ describe('editMessageText', () => {
     await expect(api.editMessageText(42, 7, 'منو')).rejects.toThrow('message to edit not found');
   });
 });
+
+describe('deleteWebhook', () => {
+  it('asks Telegram to drop the webhook and everything queued behind it', async () => {
+    const { api, calls } = apiWith(() => ok(true));
+
+    await api.deleteWebhook();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(`http://fake.invalid/bot${TOKEN}/deleteWebhook`);
+    expect(calls[0]?.body).toEqual({ drop_pending_updates: true });
+  });
+
+  it('rejects when Telegram says no, so boot can log it rather than poll into 409s blindly', async () => {
+    const { api } = apiWith(
+      () =>
+        new Response(JSON.stringify({ ok: false, error_code: 401, description: 'Unauthorized' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+
+    const err = await errorFrom(api.deleteWebhook());
+    expect(err.message).toContain('Unauthorized');
+    expect(err.message).not.toContain(TOKEN);
+  });
+});
