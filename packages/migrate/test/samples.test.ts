@@ -18,7 +18,9 @@
  * decision somebody has to make on purpose, in front of a red test.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type pg from 'pg';
+import { connectPostgres, loadConfig } from '../src/db.js';
 import { SAMPLE_TABLE } from '../src/migrate.js';
 
 /**
@@ -84,5 +86,34 @@ describe('an import sample cannot carry a customer', () => {
     for (const [step, spec] of Object.entries(SAMPLE_TABLE)) {
       expect(columnsOf(spec).length, `${step} samples too little to be useful`).toBeGreaterThan(2);
     }
+  });
+});
+
+/**
+ * The other half of the boundary: a column the allowlist names has to exist.
+ *
+ * `migrate()` runs each projection inside the import's own transaction, so a
+ * stale name — `payment_cards.label` after 0068 retired it — is not a missing
+ * sample, it is the whole import rolled back at the end of the step. Nothing
+ * else executes these projections: the synthetic run never asks for samples,
+ * and the allowlist test above only reads the strings. Asked of Postgres, not
+ * of a column list written down somewhere else.
+ */
+describe('every sample projection exists in the schema', () => {
+  let pgc: pg.Client;
+
+  beforeAll(async () => {
+    pgc = await connectPostgres(loadConfig());
+  });
+
+  afterAll(async () => {
+    await pgc?.end().catch(() => undefined);
+  });
+
+  it.each(Object.entries(SAMPLE_TABLE))('%s selects only real columns', async (_step, spec) => {
+    // LIMIT 0: the shape is the question, never the rows.
+    await expect(
+      pgc.query(`SELECT ${spec.columns} FROM ${spec.table} LIMIT 0`),
+    ).resolves.toBeDefined();
   });
 });

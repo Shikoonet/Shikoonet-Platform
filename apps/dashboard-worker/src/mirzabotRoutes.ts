@@ -940,7 +940,8 @@ export function registerMirzabotRoutes(
   const CardEditBody = z
     .object({
       status: z.enum(['ACTIVE', 'DISABLED']).optional(),
-      holderName: z.string().max(120).nullable().optional(),
+      // The same ceiling as POST, so a name a card was created with can be edited.
+      holderName: z.string().max(128).nullable().optional(),
     })
     .strict()
     .refine((b) => b.status !== undefined || b.holderName !== undefined);

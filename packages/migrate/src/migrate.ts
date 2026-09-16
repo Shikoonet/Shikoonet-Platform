@@ -2229,7 +2229,8 @@ export const SAMPLE_TABLE: Record<string, { table: string; columns: string }> = 
   },
   'bank cards (merged)': {
     table: 'payment_cards',
-    columns: 'id, financial_account_id, label, status, created_at',
+    // Not `holder_name`: it replaced `label` in 0068 and it names a person.
+    columns: 'id, financial_account_id, status, created_at',
   },
   'card leases': {
     table: 'card_leases',

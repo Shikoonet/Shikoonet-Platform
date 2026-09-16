@@ -16,11 +16,13 @@
 
 BEGIN;
 
+-- Blank counts as empty on both sides: the PATCH route accepts '' for
+-- holder_name, and a card whose only real name is in label must not lose it
+-- to an empty string that was never a name.
 UPDATE payment_cards
    SET holder_name = label
- WHERE holder_name IS NULL
-   AND label IS NOT NULL
-   AND btrim(label) <> '';
+ WHERE NULLIF(btrim(holder_name), '') IS NULL
+   AND NULLIF(btrim(label), '') IS NOT NULL;
 
 ALTER TABLE payment_cards DROP COLUMN label;
 
