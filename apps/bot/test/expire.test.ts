@@ -312,6 +312,7 @@ describe('a sweep that runs on a bot nobody is talking to', () => {
     const controller = new AbortController();
     const api: TelegramApi = {
       getMe: async () => ({ username: null }),
+      deleteWebhook: async () => undefined,
       forwardMessage: async () => undefined,
       // One cycle, and never a single update — which is the whole point.
       getUpdates: async () => {

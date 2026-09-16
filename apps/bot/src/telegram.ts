@@ -298,6 +298,18 @@ export interface TelegramApi {
    */
   getMe(): Promise<{ username: string | null }>;
   /**
+   * Clears a webhook left on the token by whatever ran this bot before.
+   *
+   * Telegram delivers to a webhook OR to `getUpdates`, never both, and a token
+   * that was ever a webhook bot keeps that webhook until somebody deletes it.
+   * Seen 2026-09-16 on the first production switch to `@shikoonet_bot`: the
+   * PHP shop had registered one, every `/start` went there, and this poller
+   * got `409 can't use getUpdates method while webhook is active` on every
+   * cycle. Pending updates are dropped with it — they were addressed to the
+   * previous bot, and answering them minutes late would only confuse.
+   */
+  deleteWebhook(): Promise<void>;
+  /**
    * Long-polls. Returns updates with `update_id >= offset`.
    *
    * `signal` cancels the poll in flight. Without it a shutdown has to wait out
@@ -855,6 +867,10 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       const result = await call('getMe', {}, 15_000);
       const parsed = z.object({ username: z.string().optional() }).safeParse(result);
       return { username: parsed.success ? (parsed.data.username ?? null) : null };
+    },
+
+    async deleteWebhook() {
+      await call('deleteWebhook', { drop_pending_updates: true }, 15_000);
     },
 
     async getUpdates(offset, timeoutSec, signal) {
