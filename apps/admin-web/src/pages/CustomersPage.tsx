@@ -527,12 +527,15 @@ function CustomerDrawer({
   const projected = (customer?.balanceIrr ?? 0) + amountIrr;
   const goesNegative = amountIrr !== 0 && projected < 0;
 
-  async function adjust() {
-    if (amountIrr === 0 || note.trim() === '') return;
-    if (
-      goesNegative &&
-      !window.confirm(`موجودی به ${toman(projected)} می‌رسد. با این حال اعمال شود؟`)
-    ) {
+  /**
+   * One write for two buttons. «اعمال» sends what the operator typed;
+   * «صفر کردن موجودی» sends exactly `-balance` with a fixed note, so a reset
+   * is an ordinary ledger row and not a second way to move money.
+   */
+  async function adjust(amount: number, reason: string) {
+    if (amount === 0 || reason.trim() === '') return;
+    const after = (customer?.balanceIrr ?? 0) + amount;
+    if (after < 0 && !window.confirm(`موجودی به ${toman(after)} می‌رسد. با این حال اعمال شود؟`)) {
       return;
     }
     setBusy(true);
@@ -540,8 +543,8 @@ function CustomerDrawer({
     setDone(null);
     try {
       const res = await api.adjustWallet(id, {
-        amountIrr,
-        note: note.trim(),
+        amountIrr: amount,
+        note: reason.trim(),
         idempotencyKey: adjustKey,
       });
       // `applied: false` means the key was already spent, which the route is
@@ -812,9 +815,26 @@ function CustomerDrawer({
               type="button"
               className="btn btn-primary"
               disabled={busy || amountIrr === 0 || note.trim() === ''}
-              onClick={() => void adjust()}
+              onClick={() => void adjust(amountIrr, note)}
             >
               اعمال
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || customer.balanceIrr === 0}
+              title="یک برداشت (یا واریز) به اندازهٔ کل موجودی ثبت می‌کند تا موجودی صفر شود"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `موجودی ${toman(customer.balanceIrr)} است. صفر شود؟ این در دفتر ثبت می‌شود و برگشت ندارد.`,
+                  )
+                ) {
+                  void adjust(-customer.balanceIrr, 'صفر کردن موجودی');
+                }
+              }}
+            >
+              صفر کردن موجودی
             </button>
           </div>
           {amountIrr !== 0 && (

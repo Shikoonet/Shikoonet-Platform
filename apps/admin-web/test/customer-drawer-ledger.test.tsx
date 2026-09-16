@@ -11,7 +11,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
 import { CustomersPage } from '../src/pages/CustomersPage.js';
 import type { CustomerDetail, CustomerListItem } from '../src/api.js';
@@ -79,13 +79,23 @@ const ENTRIES = [
   },
 ];
 
+// Mutable so one test can open the drawer on a customer who has money.
+let detail: CustomerDetail = DETAIL;
+const adjustWallet = vi.fn(async (_id: number, body: { amountIrr: number }) => ({
+  ok: true,
+  applied: true,
+  balanceIrr: detail.balanceIrr + body.amountIrr,
+  negative: false,
+}));
+
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
   return {
     ...actual,
     api: {
       customers: async () => ({ ok: true, total: 1, page: 1, pageSize: 25, items: LIST }),
-      customer: async () => ({ ok: true, customer: DETAIL, entries: ENTRIES }),
+      customer: async () => ({ ok: true, customer: detail, entries: ENTRIES }),
+      adjustWallet: (id: number, body: { amountIrr: number }) => adjustWallet(id, body),
       orders: async () => ({ ok: true, total: 0, page: 1, pageSize: 10, items: [] }),
       subscriptions: async () => ({ ok: true, total: 0, page: 1, pageSize: 10, items: [] }),
       customerHistory: async () => ({ ok: true, items: [] }),
@@ -95,6 +105,8 @@ vi.mock('../src/api.js', async () => {
 
 afterEach(() => {
   window.history.replaceState(null, '', '/');
+  detail = DETAIL;
+  vi.restoreAllMocks();
 });
 
 describe('the wallet ledger in a customer’s card', () => {
@@ -118,5 +130,45 @@ describe('the wallet ledger in a customer’s card', () => {
     expect(screen.getByText('sam@samsos.org')).toBeTruthy();
     expect(screen.queryByText('legacy balance carried over unchanged')).toBeNull();
     expect(screen.queryByText('SYSTEM')).toBeNull();
+  });
+});
+
+describe('«صفر کردن موجودی»', () => {
+  it('writes exactly minus the balance, and only after the operator confirms', async () => {
+    detail = { ...DETAIL, balanceIrr: 540_000 };
+    window.history.replaceState(null, '', '/customers?id=7');
+    render(
+      <RoleProvider role="ADMIN">
+        <CustomersPage />
+      </RoleProvider>,
+    );
+    const button = (await screen.findByText('صفر کردن موجودی')) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    fireEvent.click(button);
+    expect(adjustWallet).not.toHaveBeenCalled();
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(button);
+    expect(
+      await screen.findByText((t) => t.startsWith('کیف پول اصلاح شد')),
+    ).toBeTruthy();
+    expect(adjustWallet).toHaveBeenCalledTimes(1);
+    expect(adjustWallet.mock.calls[0]?.[1]).toMatchObject({
+      amountIrr: -540_000,
+      note: 'صفر کردن موجودی',
+    });
+  });
+
+  it('is disabled when there is nothing to zero', async () => {
+    window.history.replaceState(null, '', '/customers?id=7');
+    render(
+      <RoleProvider role="ADMIN">
+        <CustomersPage />
+      </RoleProvider>,
+    );
+    const button = (await screen.findByText('صفر کردن موجودی')) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
   });
 });
