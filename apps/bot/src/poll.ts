@@ -25,6 +25,7 @@ import { nudgeNeverBought } from './nudge.js';
 import type { CronJobKey } from '@shikoo/contracts';
 import { expireUnpaidOrders } from './expire.js';
 import {
+  BROADCAST_BATCH,
   claimBroadcastBatch,
   closeFinishedBroadcasts,
   markBroadcastFailed,
@@ -570,13 +571,14 @@ export async function sweepBroadcasts(
   db: D1Database,
   api: TelegramApi,
   signal?: AbortSignal,
+  limit = BROADCAST_BATCH,
 ): Promise<number> {
   // Typed rather than inferred: `worker()` below closes over it, and a `let`
   // with no annotation is `any` inside a closure — which would have hidden a
   // wrong field name in the send.
   let batch: BroadcastMessage[];
   try {
-    batch = await claimBroadcastBatch(db);
+    batch = await claimBroadcastBatch(db, limit);
   } catch (err) {
     log.error('broadcast.claim_failed', { will_retry: true }, err);
     return 0;
@@ -736,6 +738,54 @@ export async function sweepBroadcasts(
   return sent;
 }
 
+/** How long the drain sleeps when it finds nothing to send. */
+export const BROADCAST_IDLE_MS = 1_000;
+
+/**
+ * Sends batch after batch while anything is pending, and sleeps only when the
+ * queue is empty.
+ *
+ * Its own loop beside the poll loop, not a call inside it. The sweep used to
+ * run once per cycle, and on a quiet bot a cycle is the 25-second `getUpdates`
+ * wait — so a broadcast went out as 200 messages, 25 seconds of nothing, 200
+ * messages: about six a second against a pace of twenty-five, and the first
+ * message landed up to half a minute after the operator pressed «تایید». Sam,
+ * 2026-09-16: «سرعت ارسال پیام گروهی خیلی پایینه».
+ *
+ * Running beside the poll is safe for the reason `SEND_CONCURRENCY` gives:
+ * every recipient is claimed with `SKIP LOCKED` and marked by its own
+ * statement, so this loop and a handler replying to a customer share nothing
+ * but the bot's rate limit — and the pace inside the sweep is what keeps this
+ * loop under that limit whatever the poll is doing.
+ *
+ * A sweep that sent nothing means the queue is empty, or every row it claimed
+ * failed, or Telegram asked for a pause and the rows carry `next_attempt_at`.
+ * All three are answered by the same one-second sleep: an empty queue costs a
+ * query a second, a dead batch is not retried any faster than it should be,
+ * and a rate-limited row is not claimed again until its deadline has passed.
+ */
+export async function drainBroadcasts(
+  db: D1Database,
+  api: TelegramApi,
+  signal?: AbortSignal,
+  options: { idleMs?: number; limit?: number } = {},
+): Promise<void> {
+  const idleMs = options.idleMs ?? BROADCAST_IDLE_MS;
+  while (!signal?.aborted) {
+    let sent = 0;
+    try {
+      sent = await sweepBroadcasts(db, api, signal, options.limit);
+    } catch (err) {
+      // Everything inside the sweep already catches its own failures; a throw
+      // here is a bug rather than a refused message. Logged and kept alive
+      // for the reason the poll loop is: a crash-loop is an outage nobody can
+      // read.
+      log.error('broadcast.drain_failed', { will_retry: true }, err);
+    }
+    if (sent === 0) await sleep(idleMs, signal);
+  }
+}
+
 /**
  * Drops claims old enough that Telegram can no longer redeliver them, and dead
  * letters old enough that nobody is going to read them.
@@ -770,6 +820,8 @@ export interface RunOptions {
   pruneEveryCycles?: number;
   /** Pause after a failed cycle. A knob because tests cannot wait five seconds. */
   backoffMs?: number;
+  /** How long the broadcast drain sleeps on an empty queue. A knob for tests. */
+  broadcastIdleMs?: number;
   signal?: AbortSignal;
   /**
    * Called once per completed cycle, for the container health check to read.
@@ -819,6 +871,12 @@ export async function run(
    */
   let lastSyncAttemptMs = 0;
   let lastMeterAttemptMs = 0;
+
+  // Beside the cycle, not inside it — see `drainBroadcasts`. Awaited after the
+  // loop so `stop()` still means «everything this process was doing is done».
+  const draining = drainBroadcasts(db, api, options.signal, {
+    ...(options.broadcastIdleMs === undefined ? {} : { idleMs: options.broadcastIdleMs }),
+  });
 
   while (!options.signal?.aborted) {
     try {
@@ -974,10 +1032,10 @@ export async function run(
       // stays in `bot_notifications` and is tried again next cycle, so Telegram
       // being unreachable for a minute costs a minute rather than a customer.
       await notify.flush(db, api);
-      // Last of all, and after everything that a customer is waiting on. A
-      // broadcast is the only sweep that is allowed to take seconds rather than
-      // milliseconds, so nothing time-sensitive queues behind it.
-      await sweepBroadcasts(db, api, options.signal);
+      // The broadcast is not here. It has its own loop (`drainBroadcasts`),
+      // started above, because a sweep that runs once per cycle sends once per
+      // 25-second wait — and nothing a customer is waiting on should queue
+      // behind eleven thousand announcements either.
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.
@@ -1005,6 +1063,7 @@ export async function run(
       });
     }
   }
+  await draining;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

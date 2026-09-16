@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { assertSchema, db, resetBot } from './helpers/env.js';
 import { stubApi } from './helpers/telegram.js';
 import { makeCustomer } from './helpers/shop.js';
-import { sweepBroadcasts } from '../src/poll.js';
+import { drainBroadcasts, sweepBroadcasts } from '../src/poll.js';
 import { SEND_CONCURRENCY } from '../src/broadcast.js';
 
 /**
@@ -186,5 +186,69 @@ describe('a broadcast, sent', () => {
       { status: 'FAILED', n: 1 },
       { status: 'SENT', n: 9 },
     ]);
+  });
+});
+
+/**
+ * The loop around the sweep — the half that decides how many SECONDS a
+ * broadcast takes, where the pool decides how many milliseconds a batch does.
+ *
+ * Until 2026-09-16 the sweep ran once per poll cycle, and on a quiet bot a
+ * cycle is the 25-second `getUpdates` wait: 200 messages, then 25 seconds of
+ * nothing. Sam: «سرعت ارسال پیام گروهی خیلی پایینه». The drain sends batch
+ * after batch while there is anything pending and only sleeps when the queue
+ * is empty.
+ */
+describe('a broadcast, drained', () => {
+  it('takes the next batch at once rather than waiting out the idle gap', async () => {
+    // Five recipients through batches of two: three claims, and the second
+    // and third must follow the first immediately. If the loop slept its
+    // idle gap between batches the whole thing would take longer than the
+    // gap, which is what the bound below is against — not the laptop's
+    // speed: the gap is two full seconds and five sends at pace are 200ms.
+    const id = await queueBroadcast(5);
+    const controller = new AbortController();
+    let sent = 0;
+    const api = stubApi({
+      sendMessage: async () => {
+        sent += 1;
+        if (sent === 5) controller.abort();
+      },
+    });
+
+    const started = Date.now();
+    await drainBroadcasts(db, api, controller.signal, { limit: 2, idleMs: 2_000 });
+    const took = Date.now() - started;
+
+    expect(sent).toBe(5);
+    expect(took).toBeLessThan(1_500);
+    const left = await db
+      .prepare(
+        `SELECT COUNT(*)::int AS n FROM broadcast_recipients
+          WHERE broadcast_id = ?1 AND status <> 'SENT'`,
+      )
+      .bind(id)
+      .first<{ n: number }>();
+    expect(left?.n).toBe(0);
+  });
+
+  it('sleeps only when the queue is empty, and wakes for what arrives', async () => {
+    // Nothing queued: the loop must idle, not spin. Then a broadcast lands
+    // while it is asleep and is sent on the next wake — the property that lets
+    // this loop replace the poll cycle as the thing that notices new work.
+    const controller = new AbortController();
+    let sent = 0;
+    const api = stubApi({
+      sendMessage: async () => {
+        sent += 1;
+        controller.abort();
+      },
+    });
+    const draining = drainBroadcasts(db, api, controller.signal, { idleMs: 50 });
+    await new Promise((r) => setTimeout(r, 120));
+    expect(sent).toBe(0);
+    await queueBroadcast(1);
+    await draining;
+    expect(sent).toBe(1);
   });
 });

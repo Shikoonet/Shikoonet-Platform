@@ -33,10 +33,13 @@ export {
 } from '@shikoo/domain';
 
 /**
- * How many messages one poll cycle sends.
+ * How many recipients one sweep claims.
  *
- * Telegram's documented ceiling for bulk sending is around 30 messages per
- * second, and the pacing below keeps this under it.
+ * A batch, not a budget: since 2026-09-16 `drainBroadcasts` runs sweep after
+ * sweep while anything is pending, so this only bounds how many rows sit
+ * claimed as SENDING at once — what a crash mid-batch can strand. The rate is
+ * the pace below, and Telegram's documented ceiling for bulk sending is around
+ * 30 messages a second.
  */
 export const BROADCAST_BATCH = 200;
 
