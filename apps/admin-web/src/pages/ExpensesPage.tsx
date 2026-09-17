@@ -70,7 +70,9 @@ import {
   type LedgerMoney,
   type RevenueAdjustmentRow,
   type RevenueTotals,
+  type WithdrawalOption,
 } from '../api.js';
+import { api as hubApi, type AccountListItem } from '../hub/api.js';
 import { count, dateOnly, dateTime, toman } from '../format.js';
 
 function message(e: unknown): string {
@@ -769,6 +771,13 @@ function Row({
         <td>{row.kind === 'EXPENSE' ? (row.categoryName ?? '—') : '—'}</td>
         <td style={struck}>
           {row.note}
+          {(row.accountName || row.feeIrr > 0) && (
+            <div className="muted" style={{ fontSize: 11 }}>
+              {row.accountName ? `از ${row.accountName}` : ''}
+              {row.feeIrr > 0 ? `${row.accountName ? ' · ' : ''}کارمزد ${toman(row.feeIrr)}` : ''}
+              {row.transactionCandidateId ? ' · وصل به پیامک' : ''}
+            </div>
+          )}
           {gone && (
             <div className="muted" style={{ fontSize: 11 }}>
               باطل — {row.voidReason}
@@ -1428,6 +1437,18 @@ function EntryForm({
     row?.note ?? (recurrence ? `${recurrence.label} — ${jalaliPeriodLabel(recurrence.nextDueOn)}` : ''),
   );
   const [reason, setReason] = useState('');
+  /**
+   * Where the money left from — Sam, 2026-09-17. The account is asked for
+   * spending only; the fee is what the bank took on top; the withdrawal is
+   * the SMS this row IS, offered from the account's debits around the date.
+   * None of it is required: an old row, or a bill paid from somewhere the
+   * phone does not watch, is still a row.
+   */
+  const [accountId, setAccountId] = useState<string>(row?.financialAccountId ?? '');
+  const [fee, setFee] = useState(row && row.feeIrr > 0 ? String(row.feeIrr / 10) : '');
+  const [withdrawalId, setWithdrawalId] = useState<string>(row?.transactionCandidateId ?? '');
+  const [accounts, setAccounts] = useState<AccountListItem[]>([]);
+  const [withdrawals, setWithdrawals] = useState<WithdrawalOption[]>([]);
   // Noon UTC, so parsing a date-only string cannot land on the previous day in
   // Tehran the way midnight would.
   const [jDate, setJDate] = useState<JalaliDate>(() =>
@@ -1440,6 +1461,40 @@ function EntryForm({
     ),
   );
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (kind !== 'EXPENSE') return;
+    let live = true;
+    hubApi
+      .accounts()
+      .then((r) => {
+        if (live) setAccounts(r.items.filter((a) => a.active === 1 && a.status === 'ACTIVE'));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [kind]);
+
+  const spentOnIso = jalaliToIsoDate(jDate);
+  useEffect(() => {
+    if (kind !== 'EXPENSE' || !accountId) {
+      setWithdrawals([]);
+      return;
+    }
+    let live = true;
+    api
+      .withdrawalsNear(accountId, spentOnIso)
+      .then((r) => {
+        if (live) setWithdrawals(r.items);
+      })
+      .catch(() => {
+        if (live) setWithdrawals([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [kind, accountId, spentOnIso]);
 
   const originalAmount = decimal(foreign);
   const fxRateToman = digits(rate);
@@ -1506,10 +1561,14 @@ function EntryForm({
       const spentOn = jalaliToIsoDate(jDate);
 
       if (recurrence) {
+        const feeToman = tomanField(fee);
         const res = await api.postExpenseRecurrence(recurrence.id, {
           ...money,
           spentOn,
           note: note.trim(),
+          ...(accountId ? { financialAccountId: accountId } : {}),
+          ...(feeToman > 0 ? { feeToman } : {}),
+          ...(withdrawalId ? { transactionCandidateId: withdrawalId } : {}),
         });
         await onSaved(
           `ثبت شد — سررسید بعدی ${dateOnly(`${res.nextDueOn}T12:00:00Z`)}.`,
@@ -1517,12 +1576,20 @@ function EntryForm({
         return;
       }
 
+      const feeToman = tomanField(fee);
+      if (fee.trim() && (!Number.isInteger(feeToman) || feeToman < 0)) {
+        onError('کارمزد درست نیست.');
+        return;
+      }
       const rest = {
         kind,
         direction,
         categoryId: kind === 'EXPENSE' ? (categoryId === '' ? null : categoryId) : null,
         spentOn,
         note: note.trim(),
+        financialAccountId: kind === 'EXPENSE' && accountId ? accountId : null,
+        feeToman: kind === 'EXPENSE' ? feeToman : 0,
+        transactionCandidateId: kind === 'EXPENSE' && withdrawalId ? withdrawalId : null,
       };
       if (row) {
         const res = await api.editRevenueAdjustment(row.id, {
@@ -1685,6 +1752,78 @@ function EntryForm({
         )}
 
         <DateField label="تاریخ هزینه" value={jDate} onChange={setJDate} />
+
+        {kind === 'EXPENSE' && (
+          <>
+            <div>
+              <label className="form-label" htmlFor="entry-account">
+                از کدام حساب
+              </label>
+              <select
+                id="entry-account"
+                className="form-control"
+                value={accountId}
+                onChange={(e) => {
+                  setAccountId(e.target.value);
+                  setWithdrawalId('');
+                }}
+              >
+                <option value="">— مشخص نشده —</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.display_name}
+                    {a.card_last_four ? ` · ****${a.card_last_four}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="form-label" htmlFor="entry-fee">
+                کارمزد بانک (تومان)
+              </label>
+              <input
+                id="entry-fee"
+                className="form-control"
+                inputMode="numeric"
+                placeholder="۰"
+                value={fee}
+                onChange={(e) => setFee(e.target.value)}
+              />
+            </div>
+            {accountId && (
+              <div>
+                <label className="form-label" htmlFor="entry-withdrawal">
+                  پیامک برداشت
+                </label>
+                <select
+                  id="entry-withdrawal"
+                  className="form-control"
+                  value={withdrawalId}
+                  onChange={(e) => setWithdrawalId(e.target.value)}
+                >
+                  <option value="">— وصل نشده —</option>
+                  {withdrawals.map((w) => (
+                    <option
+                      key={w.id}
+                      value={w.id}
+                      disabled={w.linkedExpenseId !== null && w.linkedExpenseId !== row?.id}
+                    >
+                      {dateTime(w.bankTimestamp)} · {toman(w.amountIrr)}
+                      {w.linkedExpenseId !== null && w.linkedExpenseId !== row?.id
+                        ? ` — وصل به ردیف ${w.linkedExpenseId}`
+                        : ''}
+                    </option>
+                  ))}
+                </select>
+                {withdrawals.length === 0 && (
+                  <p className="muted" style={{ marginBlockStart: 4 }}>
+                    پیامک برداشتی حول این تاریخ روی این حساب نرسیده.
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       <div style={{ marginBlockStart: 12 }}>

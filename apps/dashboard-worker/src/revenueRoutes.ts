@@ -376,6 +376,7 @@ const RecurrencePostBody = z
     ...MONEY_FIELDS,
     spentOn: ISO_DAY.optional(),
     note: z.string().trim().min(1).max(500).optional(),
+    ...ACCOUNT_FIELDS,
   })
   .strict()
   .refine(
@@ -959,13 +960,19 @@ export function registerRevenueRoutes(
       // September in every report.
       const spentOn = given.spentOn ?? tpl.next_due_on;
       const note = given.note ?? `${tpl.label} — ${jalaliPeriodLabel(spentOn)}`;
+      const linked = await withdrawalFor(tx, given, {
+        financial_account_id: null,
+        transaction_candidate_id: null,
+      });
+      if (!linked.ok) return { status: 400 as const, error: linked.error };
 
       const row = await tx
         .prepare(
           `INSERT INTO revenue_adjustments
              (amount_irr, note, created_by, created_at, kind, category_id, spent_on,
-              recurrence_id, currency, original_amount, fx_rate_irr)
-           VALUES (?1, ?2, ?3, now(), 'EXPENSE', ?4, ?5::date, ?6, ?7, ?8, ?9)
+              recurrence_id, currency, original_amount, fx_rate_irr,
+              financial_account_id, fee_irr, transaction_candidate_id)
+           VALUES (?1, ?2, ?3, now(), 'EXPENSE', ?4, ?5::date, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
            RETURNING id`,
         )
         .bind(
@@ -978,6 +985,9 @@ export function registerRevenueRoutes(
           fx.currency,
           fx.original_amount,
           fx.fx_rate_irr,
+          linked.link.financial_account_id,
+          (given.feeToman ?? 0) * IRR_PER_TOMAN,
+          linked.link.transaction_candidate_id,
         )
         .first<{ id: number }>();
       if (!row) return { status: 500 as const, error: 'insert_failed' };

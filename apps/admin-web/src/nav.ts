@@ -56,6 +56,7 @@ export type PageId =
   | 'subscriptions'
   | 'transactions'
   | 'expenses'
+  | 'books'
   | 'requests'
   | 'panels'
   | 'stock'
@@ -140,6 +141,10 @@ export const NAV: NavGroup[] = [
       // «هزینه‌ها», not «هزینه‌ها و تعدیل‌ها»: the ledger now names each row's
       // kind in a column of its own, so the title no longer has to list them.
       { id: 'expenses', label: 'هزینه‌ها', icon: 'wallet' },
+      // «دفتر بانک» — the statement per account and month, what is off the
+      // books, and the fresh start. Beside «هزینه‌ها» because it is the other
+      // half of the same question: where did the money go.
+      { id: 'books', label: 'دفتر بانک', icon: 'list' },
       { id: 'accounts', label: 'حساب‌ها', icon: 'wallet' },
       { id: 'banks', label: 'بانک‌ها', icon: 'list' },
       { id: 'devices', label: 'دستگاه‌ها', icon: 'server' },

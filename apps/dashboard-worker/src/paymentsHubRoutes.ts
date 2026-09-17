@@ -14,6 +14,7 @@ import {
   declineIncomeTransaction,
   INCOME_TX_WHERE,
   BANK_INCOME_TX_WHERE,
+  BANK_OUTFLOW_TX_WHERE,
   historyRangeBounds,
   parseHistoryRange,
   restoreAllDeclinedIncome,
@@ -430,10 +431,20 @@ export async function loadFinancialSummary(
     )
     .bind(...bankBinds)
     .first<{ amount_irr: number }>();
+  // What left, per the bank — the same range, off-books excluded (0072).
+  const bankOutflow = await db
+    .prepare(
+      `SELECT COALESCE(SUM(t.amount_irr), 0) AS amount_irr
+       FROM transaction_candidates t
+       WHERE ${BANK_OUTFLOW_TX_WHERE}${bankRange.sql}`,
+    )
+    .bind(...bankBinds)
+    .first<{ amount_irr: number }>();
 
   return {
     range,
     bankIncomeIrr: bankIncome?.amount_irr ?? 0,
+    bankOutflowIrr: bankOutflow?.amount_irr ?? 0,
     botAutoVerified: {
       payments: botAuto?.payments ?? 0,
       amountIrr: botAuto?.amount_irr ?? 0,

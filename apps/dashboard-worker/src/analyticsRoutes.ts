@@ -367,6 +367,7 @@ export async function loadAnalytics(
       amountIrr: currentSales.manual_amount_irr,
     },
     bankInflowIrr: summary.bankIncomeIrr,
+    bankOutflowIrr: summary.bankOutflowIrr,
     reseller: {
       count: summary.reseller.payments,
       amountIrr: summary.reseller.amountIrr,

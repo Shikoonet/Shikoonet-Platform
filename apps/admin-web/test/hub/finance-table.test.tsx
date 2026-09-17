@@ -211,21 +211,21 @@ describe('the accounts-and-cards table', () => {
     draw();
     const account = (await screen.findByText('**** 6006 · پویان')).closest('tr')!;
     const cells = within(account).getAllByRole('cell').map((c) => c.textContent);
-    // واریز بانکی · فروش · ربات · دستی · نمایندگی · تخصیص‌نیافته · موجودی
+    // واریز بانکی · برداشت · فروش · ربات · دستی · نمایندگی · تخصیص‌نیافته · موجودی
     expect(cells[0]).toContain('۹۰۰٬۰۰۰ تومان');
     expect(cells[0]).toContain('۴ تراکنش');
-    expect(cells[2]).toContain('۱۰۰٬۰۰۰ تومان');
-    expect(cells[3]).toContain('۲۰۰٬۰۰۰ تومان');
-    expect(cells[4]).toContain('۵۰۰٬۰۰۰ تومان');
+    expect(cells[3]).toContain('۱۰۰٬۰۰۰ تومان');
+    expect(cells[4]).toContain('۲۰۰٬۰۰۰ تومان');
+    expect(cells[5]).toContain('۵۰۰٬۰۰۰ تومان');
 
     const mapped = screen.getByText('****0095').closest('tr')!;
     const cardCells = within(mapped).getAllByRole('cell').map((c) => c.textContent);
-    expect(cardCells[1]).toContain('۳۰۰٬۰۰۰ تومان');
-    expect(cardCells[2]).toContain('۱۰۰٬۰۰۰ تومان');
-    expect(cardCells[3]).toContain('۲۰۰٬۰۰۰ تومان');
+    expect(cardCells[2]).toContain('۳۰۰٬۰۰۰ تومان');
+    expect(cardCells[3]).toContain('۱۰۰٬۰۰۰ تومان');
+    expect(cardCells[4]).toContain('۲۰۰٬۰۰۰ تومان');
     // The bank names the account, not the card — the cell says so instead of
     // printing a zero that would read as «no reseller money here».
-    expect(cardCells[4]).toBe('—');
+    expect(cardCells[5]).toBe('—');
   });
 
   it('takes the total row from the server, not from the rows it lists', async () => {
@@ -233,11 +233,11 @@ describe('the accounts-and-cards table', () => {
     const total = (await screen.findByText('جمع همه')).closest('tr')!;
     const cells = within(total).getAllByRole('cell').map((c) => c.textContent);
     expect(cells[0]).toContain('۹٬۹۰۰٬۰۰۰ تومان');
-    expect(cells[1]).toContain('۷٬۰۰۰٬۰۰۰ تومان');
-    expect(cells[1]).toContain('۷ تراکنش');
-    expect(cells[2]).toContain('۴٬۰۰۰٬۰۰۰ تومان');
-    expect(cells[3]).toContain('۳٬۰۰۰٬۰۰۰ تومان');
-    expect(cells[4]).toContain('۲٬۰۰۰٬۰۰۰ تومان');
+    expect(cells[2]).toContain('۷٬۰۰۰٬۰۰۰ تومان');
+    expect(cells[2]).toContain('۷ تراکنش');
+    expect(cells[3]).toContain('۴٬۰۰۰٬۰۰۰ تومان');
+    expect(cells[4]).toContain('۳٬۰۰۰٬۰۰۰ تومان');
+    expect(cells[5]).toContain('۲٬۰۰۰٬۰۰۰ تومان');
   });
 
   it('lists a switched-off account under its own heading, and money that reached no account, so the rows can reach the total', async () => {

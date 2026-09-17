@@ -596,6 +596,115 @@ export const FOREIGN_CURRENCIES: Currency[] = ['EUR', 'USD', 'TON'];
  * out — because that is how the row is stored and how the legacy log stored it
  * too. `kind` says what the row means; the sign only says which direction.
  */
+/**
+ * Where an expense left from — Sam, 2026-09-17. All optional: a row may
+ * name the account alone, the account and the bank's fee, or the exact
+ * withdrawal SMS it is. `null` clears a link on edit.
+ */
+export interface LedgerAccount {
+  financialAccountId?: string | null;
+  feeToman?: number;
+  transactionCandidateId?: string | null;
+}
+
+/** A withdrawal the expense form may point at. */
+export interface WithdrawalOption {
+  id: string;
+  amountIrr: number;
+  bankTimestamp: number;
+  balanceIrr: number | null;
+  linkedExpenseId: number | null;
+}
+
+export type OffBooksCategory = 'TRANSFER' | 'PERSONAL' | 'MISTAKE_RETURNED' | 'BANK_FEE' | 'OTHER';
+
+export const OFF_BOOKS_CATEGORY_FA: Record<OffBooksCategory, string> = {
+  TRANSFER: 'جابه‌جایی بین حساب‌های خودمان',
+  PERSONAL: 'شخصی',
+  MISTAKE_RETURNED: 'اشتباهی و برگشت‌داده‌شده',
+  BANK_FEE: 'کارمزد بانک',
+  OTHER: 'سایر',
+};
+
+export interface BalancePoint {
+  balanceIrr: number;
+  asOf: number;
+  source: 'sms' | 'opening';
+}
+
+export interface OffBooksLine {
+  category: OffBooksCategory;
+  count: number;
+  amountIrr: number;
+}
+
+export interface AccountStatement {
+  accountId: string;
+  displayName: string;
+  bankName: string;
+  accountHint: string | null;
+  active: boolean;
+  opening: BalancePoint | null;
+  closing: BalancePoint | null;
+  customerIncome: { count: number; amountIrr: number };
+  offBooksCredits: OffBooksLine[];
+  explainedWithdrawals: { count: number; amountIrr: number };
+  unexplainedWithdrawals: { count: number; amountIrr: number };
+  offBooksDebits: OffBooksLine[];
+  ledger: { expenseCount: number; expenseIrr: number; feeIrr: number; unlinkedCount: number; unlinkedIrr: number };
+  bankDeltaIrr: number;
+  gapIrr: number | null;
+}
+
+export interface StatementTotals {
+  accounts: number;
+  openingIrr: number;
+  closingIrr: number;
+  customerIncomeIrr: number;
+  customerIncomeCount: number;
+  offBooksCreditsIrr: number;
+  explainedWithdrawalsIrr: number;
+  unexplainedWithdrawalsIrr: number;
+  unexplainedWithdrawalsCount: number;
+  offBooksDebitsIrr: number;
+  ledgerExpenseIrr: number;
+  ledgerFeeIrr: number;
+  gapIrr: number;
+  accountsWithGap: number;
+}
+
+export interface BooksOpening {
+  openedAt: number;
+  walletIrr: number;
+  accounts: number;
+}
+
+export interface OffBooksItem {
+  id: string;
+  transactionId: string;
+  direction: 'CREDIT' | 'DEBIT';
+  amountIrr: number;
+  bankTimestamp: number;
+  accountId: string | null;
+  accountName: string | null;
+  category: OffBooksCategory;
+  categoryFa: string;
+  note: string | null;
+  by: string;
+  at: number;
+}
+
+export interface BankMovement {
+  id: string;
+  direction: 'CREDIT' | 'DEBIT';
+  amountIrr: number;
+  balanceIrr: number | null;
+  bankTimestamp: number;
+  matched: boolean;
+  offBooks: { category: OffBooksCategory; categoryFa: string; note: string | null } | null;
+  expense: { id: number; note: string | null } | null;
+}
+
 export interface RevenueAdjustmentRow {
   id: number;
   amountIrr: number;
@@ -619,6 +728,13 @@ export interface RevenueAdjustmentRow {
   fxRateIrr: number | null;
   /** The template this was posted from, if it was posted rather than typed. */
   recurrenceId: number | null;
+  /** Which account paid (0072); null on rows from before the books knew. */
+  financialAccountId: string | null;
+  accountName: string | null;
+  /** What the bank charged on top, IRR. */
+  feeIrr: number;
+  /** The withdrawal SMS this row is, when one was linked. */
+  transactionCandidateId: string | null;
   createdBy: string | null;
   createdAt: string;
   voidedAt: string | null;
@@ -1908,7 +2024,7 @@ export const api = {
    * what a line is gets a 400 rather than a guess, because the guess would be
    * invisible and this is money.
    */
-  addRevenueAdjustment(body: LedgerMoney & {
+  addRevenueAdjustment(body: LedgerMoney & LedgerAccount & {
     kind: LedgerKind;
     direction?: 'expense' | 'credit';
     categoryId?: number | null;
@@ -1923,7 +2039,7 @@ export const api = {
 
   editRevenueAdjustment(
     id: number,
-    body: Partial<LedgerMoney> & {
+    body: Partial<LedgerMoney> & LedgerAccount & {
       kind?: LedgerKind;
       direction?: 'expense' | 'credit';
       categoryId?: number | null;
@@ -1949,6 +2065,70 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ reason }),
     });
+  },
+
+  /** Withdrawals on `accountId` around `day` (YYYY-MM-DD) the form may link. */
+  withdrawalsNear(accountId: string, day: string) {
+    const qs = new URLSearchParams({ accountId, day });
+    return req<{ ok: boolean; items: WithdrawalOption[] }>(`/books/withdrawals?${qs}`);
+  },
+
+  booksStatement(month: string, accountId?: string) {
+    const qs = new URLSearchParams({ month });
+    if (accountId) qs.set('accountId', accountId);
+    return req<{
+      ok: boolean;
+      month: { year: number; month: number; label: string; start: number; end: number };
+      accounts: AccountStatement[];
+      totals: StatementTotals;
+      opening: BooksOpening | null;
+    }>(`/books/statement?${qs}`);
+  },
+  booksStatementCsvUrl(month: string) {
+    return `${BASE}/books/statement.csv?${new URLSearchParams({ month })}`;
+  },
+  booksOffBooks(month: string, accountId?: string, category?: OffBooksCategory) {
+    const qs = new URLSearchParams({ month });
+    if (accountId) qs.set('accountId', accountId);
+    if (category) qs.set('category', category);
+    return req<{
+      ok: boolean;
+      items: OffBooksItem[];
+      totals: Record<string, { count: number; creditIrr: number; debitIrr: number }>;
+    }>(`/books/off-books?${qs}`);
+  },
+  booksOffBooksCsvUrl(month: string, accountId?: string) {
+    const qs = new URLSearchParams({ month });
+    if (accountId) qs.set('accountId', accountId);
+    return `${BASE}/books/off-books.csv?${qs}`;
+  },
+  booksMovements(month: string, accountId: string) {
+    const qs = new URLSearchParams({ month, accountId });
+    return req<{ ok: boolean; items: BankMovement[] }>(`/books/movements?${qs}`);
+  },
+  booksOpening() {
+    return req<{ ok: boolean; opening: BooksOpening | null }>('/books/opening');
+  },
+  openBooks(force = false) {
+    return req<{
+      ok: boolean;
+      openedAt: number;
+      walletIrr: number;
+      accounts: Array<{ accountId: string; displayName: string; balanceIrr: number | null; asOf: number | null }>;
+    }>('/books/open', { method: 'POST', body: JSON.stringify({ force }) });
+  },
+  /** Off the books, with a reason — the same route the payments hub uses. */
+  offBooks(transactionId: string, category: OffBooksCategory, reason?: string) {
+    return req<{ ok: boolean }>(
+      `/api/v1/transactions/${encodeURIComponent(transactionId)}/decline-income`,
+      { method: 'POST', body: JSON.stringify({ category, ...(reason ? { reason } : {}) }) },
+    );
+  },
+  backOnBooks(transactionId: string) {
+    return req<{ ok: boolean }>(
+      `/api/v1/transactions/${encodeURIComponent(transactionId)}/restore-income`,
+      { method: 'POST', body: '{}' },
+    );
   },
 
   revenueAdjustmentHistory(id: number) {
@@ -2018,7 +2198,7 @@ export const api = {
    */
   postExpenseRecurrence(
     id: number,
-    body: Partial<LedgerMoney> & { spentOn?: string; note?: string } = {},
+    body: Partial<LedgerMoney> & LedgerAccount & { spentOn?: string; note?: string } = {},
   ) {
     return req<{ ok: boolean; id: number; nextDueOn: string }>(
       `/revenue-adjustments/recurrences/${id}/post`,
