@@ -80,24 +80,40 @@ export const SEND_CONCURRENCY = 12;
 /**
  * The floor on the gap between two sends STARTING, across the whole pool.
  *
- * 250ms is four messages a second. It was 50 (20/s) until 2026-09-17, and
- * that number was the ceiling Telegram documents for a bot — not the rate it
- * lets a BROADCAST run at. On the first real 16k broadcast Telegram answered
- * every 200-row batch with three or four 429s of ~30s, which held the actual
- * rate to ~6/s, and after ~2,000 messages escalated to one 429 with
- * retry_after ≈ 3,000s: fifty minutes of nothing, twice, with the shop's bar
- * frozen at 12%. Their own guidance for bulk sends is «spread over 8–12
- * hours». Four a second sits under the ~6/s they tolerated before escalating,
- * and 16k recipients is ~70 minutes rather than «14 minutes on paper, hours
- * in practice». Mirzabot never met this limit because it sends 1,200 an hour.
+ * 2,000ms is one message every two seconds: 1,800 an hour, a 16k broadcast in
+ * about nine hours. That is Telegram's own guidance for bulk sends — «spread
+ * over 8–12 hours» — and it is within sight of the one number this shop has
+ * actually seen survive: mirzabot's 1,200 an hour, which never met a limit.
  *
- * Kept as a pace rather than a sleep-after-each-send: with a pool the two are
- * different things, and it is the RATE Telegram limits. The replies the
- * handlers send during a broadcast share the bot's ceiling with it, and this
- * leaves them plenty. Exceeding it is not silent either way: a 429 pauses the
- * whole pool and returns the row to the queue (`markBroadcastRetryable`).
+ * The history, because every faster number here was argued from the wrong
+ * limit. 50ms (20/s) was Telegram's documented per-bot ceiling; on the first
+ * real 16k broadcast (2026-09-17) it drew 429s of ~30s on every batch and,
+ * after ~2,000 messages, one 429 with retry_after ≈ 3,000s — fifty minutes of
+ * nothing with the shop's bar frozen at 12%. 250ms (4/s) was the next guess,
+ * and the same evening Telegram did it again after the same ~2,000: the
+ * trigger looks like VOLUME in a window, not rate, and no pace above a few a
+ * minute is known to be safe. Sam, 2026-09-17: «یه کاری کن بن نشه».
+ *
+ * A default, not a constant: `BROADCAST_SEND_GAP_MS` overrides it, so the
+ * pace can be moved on the server the day Telegram's threshold is known,
+ * without a deploy — see `sendGapMs`. Kept as a pace rather than a
+ * sleep-after-each-send: with a pool the two are different things, and it is
+ * the RATE Telegram limits. Exceeding it is not silent either way: a 429
+ * pauses the whole pool and returns the row to the queue
+ * (`markBroadcastRetryable`).
  */
-export const SEND_GAP_MS = 250;
+export const SEND_GAP_MS = 2_000;
+
+/**
+ * The pace in force: `BROADCAST_SEND_GAP_MS` if it is a positive integer, the
+ * default otherwise. Read per sweep rather than at import, so the tests can
+ * set it and so a bad value is a default rather than a crash-loop —
+ * `server.ts` refuses a bad value at boot, where somebody is watching.
+ */
+export function sendGapMs(): number {
+  const n = Number(process.env['BROADCAST_SEND_GAP_MS']);
+  return Number.isInteger(n) && n > 0 ? n : SEND_GAP_MS;
+}
 
 /**
  * What one queued message actually is.

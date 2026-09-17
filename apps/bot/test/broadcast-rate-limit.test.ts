@@ -29,6 +29,8 @@ import { sweepBroadcasts } from '../src/poll.js';
 import { MAX_SEND_ATTEMPTS, SEND_CONCURRENCY } from '../src/broadcast.js';
 import { TelegramRejection } from '../src/telegram.js';
 
+process.env['BROADCAST_SEND_GAP_MS'] = '50';
+
 let seq = 0;
 let ids = 0;
 const uuid = () => `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`;
@@ -304,7 +306,7 @@ describe('a broadcast that Telegram rate-limits', () => {
     // Somewhere in there, everybody waited out the second Telegram asked for.
     // Asserted as the largest GAP rather than at a fixed index: which worker
     // sends when is not ordered, and a gap is not a measurement of this
-    // machine's speed. The pace is 250ms, so nothing else here comes close.
+    // machine's speed. The pace is 50ms, so nothing else here comes close.
     const gaps = at.slice(1).map((t, i) => t - at[i]!);
     expect(Math.max(...gaps)).toBeGreaterThanOrEqual(900);
 

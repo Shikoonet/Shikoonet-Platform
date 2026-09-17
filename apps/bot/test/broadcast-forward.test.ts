@@ -17,6 +17,8 @@ import { stubApi } from './helpers/telegram.js';
 import { makeCustomer } from './helpers/shop.js';
 import { sweepBroadcasts } from '../src/poll.js';
 
+process.env['BROADCAST_SEND_GAP_MS'] = '50';
+
 let seq = 0;
 
 /**

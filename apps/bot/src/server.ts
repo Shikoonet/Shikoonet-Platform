@@ -14,6 +14,7 @@ import {
   resolveBotToken,
   setEventSink,
 } from '@shikoo/domain';
+import { SEND_GAP_MS } from './broadcast.js';
 import { beat } from './heartbeat.js';
 import { run } from './poll.js';
 import { acquirePollerLock } from './singleton.js';
@@ -177,6 +178,10 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
   } catch (err) {
     log.warn('boot.delete_webhook_failed', { consequence: 'polling may 409 until it is cleared' }, err);
   }
+
+  // Validation only — the sweep reads the variable itself (`sendGapMs`). A
+  // typo here should stop the boot, not quietly become the default pace.
+  positiveInt('BROADCAST_SEND_GAP_MS', SEND_GAP_MS);
 
   const finished = run(db, api, {
     timeoutSec: positiveInt('TELEGRAM_POLL_TIMEOUT_SEC', 25),
