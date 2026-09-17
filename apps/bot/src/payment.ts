@@ -26,7 +26,7 @@ import {
 } from '@shikoo/contracts';
 import type { D1DatabaseSession } from '@shikoo/database';
 import {
-  CARD_HELD_UNTIL_SQL,
+  cardHeldUntilSql,
   fulfilMirzabotClaimWithoutPayment,
   NO_TRANSFER_REASONS,
   readContinuityMode,
@@ -57,12 +57,13 @@ export interface CheckoutPayment {
  * thirty deposits in turn, however many customers open a checkout and walk
  * away — measured before 0029 on a pool of 30, ten cards took everything.
  *
- * While an invoice holds a card, the card is out of the line: ten minutes
- * from being shown, or until the claim is settled once the customer pressed
- * «پرداخت کردم». That keeps two customers from being told to pay the same
- * amount into the same card inside one window, which is the one thing the
- * auto-matcher cannot untangle (`AMBIGUOUS_CLAIMS`). The hold is the open
- * `payments` row itself, read through `CARD_HELD_UNTIL_SQL`.
+ * While an invoice holds a card, the card is out of the line FOR THAT AMOUNT:
+ * ten minutes from being shown, or until the claim is settled once the
+ * customer pressed «پرداخت کردم». That keeps two customers from being told to
+ * pay the same amount into the same card inside one window, which is the one
+ * thing the auto-matcher cannot untangle (`AMBIGUOUS_CLAIMS`); an order for a
+ * different amount is handed the card as if it were free. The hold is the
+ * open `payments` row itself, read through `cardHeldUntilSql`.
  *
  * When EVERY card is in somebody's hands the shop does not stop selling —
  * Sam's call — and the card that frees soonest is handed out; the match may
@@ -80,6 +81,7 @@ export interface CheckoutPayment {
 export async function rotateCard(
   tx: D1DatabaseSession,
   now: number,
+  amountIrr: number,
 ): Promise<{
   card_digits: string;
   holder_name: string | null;
@@ -92,7 +94,7 @@ export async function rotateCard(
         WHERE id = (
           SELECT pc.id FROM payment_cards pc
            JOIN financial_accounts fa ON fa.id = pc.financial_account_id
-           LEFT JOIN LATERAL (SELECT ${CARD_HELD_UNTIL_SQL} AS held_until) h ON TRUE
+           LEFT JOIN LATERAL (SELECT ${cardHeldUntilSql('?2')} AS held_until) h ON TRUE
            WHERE pc.status = 'ACTIVE'
              -- The ACCOUNT has to be live too, and it did not used to be asked.
              --
@@ -124,7 +126,7 @@ export async function rotateCard(
         )
         RETURNING card_digits, holder_name, financial_account_id`,
     )
-    .bind(now)
+    .bind(now, amountIrr)
     .first<{ card_digits: string; holder_name: string | null; financial_account_id: string }>();
 }
 
@@ -182,7 +184,7 @@ export async function checkoutFor(
     };
   }
 
-  const card = await rotateCard(tx, now);
+  const card = await rotateCard(tx, now, totalIrr);
   if (!card) return null;
 
   // `ON CONFLICT DO NOTHING` against `idx_payments_one_open_per_order` (0022).

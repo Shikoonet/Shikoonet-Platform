@@ -297,4 +297,76 @@ describe('manual approval of Mirzabot suspects', () => {
     expect(audit?.action).toBe('claim.rejected');
     expect(audit?.actor_email).toBe(EMAIL);
   });
+
+  /*
+   * The same release, from the two other doors a claim is refused through.
+   *
+   * The reject route above learned to close the invoice; mark-fake and
+   * match/reject did not, and on production (2026-09-17) a claim marked
+   * FAKE_RECEIPT at 12:34 left its invoice AWAITING_REVIEW — which is the
+   * card's lease under the bakery queue (`CARD_HELD_UNTIL_SQL`), so card
+   * 7159 stood out of the line until the next day for money everybody had
+   * already agreed was not coming.
+   */
+  async function openInvoice(publicId: string) {
+    await baseEnv.DB.prepare(`DELETE FROM payments WHERE public_id = ?1`).bind(publicId).run();
+    await baseEnv.DB.prepare(
+      `INSERT INTO payments (public_id, amount_irr, method, status, created_at, updated_at)
+       VALUES (?1, ?2, 'CARD_TO_CARD', 'AWAITING_REVIEW', now(), now())`,
+    )
+      .bind(publicId, AMOUNT)
+      .run();
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET external_order_id = ?2 WHERE id = ?1`)
+      .bind(publicId, `shikoo:${publicId}`)
+      .run();
+  }
+
+  async function invoice(publicId: string) {
+    return baseEnv.DB.prepare(
+      `SELECT status, reject_reason FROM payments WHERE public_id = ?1`,
+    )
+      .bind(publicId)
+      .first<{ status: string; reject_reason: string | null }>();
+  }
+
+  it('marking a claim fake closes its invoice too', async () => {
+    await seedClaim('c-fake-inv');
+    await openInvoice('c-fake-inv');
+
+    const r = await app.fetch(
+      new Request('https://example.com/api/v1/suspects/c-fake-inv/mark-fake', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      }),
+      envAs(),
+    );
+    expect(r.status).toBe(200);
+    expect(await invoice('c-fake-inv')).toEqual({ status: 'REJECTED', reject_reason: 'FAKE_RECEIPT' });
+  });
+
+  it('rejecting a suggested match closes the invoice with the given reason', async () => {
+    await seedClaim('c-match-inv', { status: 'MATCH_SUGGESTED' });
+    await seedTx('t-match-inv');
+    await openInvoice('c-match-inv');
+    await baseEnv.DB.prepare(
+      `INSERT INTO reconciliation_matches
+         (id, transaction_candidate_id, payment_claim_id, score, status,
+          matching_reasons_json, mismatch_reasons_json, created_at, updated_at)
+       VALUES ('m-inv', 't-match-inv', 'c-match-inv', 0.9, 'SUGGESTED', '[]', '[]', ?1, ?1)`,
+    )
+      .bind(Date.now())
+      .run();
+
+    const r = await app.fetch(
+      new Request('https://example.com/api/v1/match/reject', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ matchId: 'm-inv', reason: 'WRONG_AMOUNT' }),
+      }),
+      envAs(),
+    );
+    expect(r.status).toBe(200);
+    expect(await invoice('c-match-inv')).toEqual({ status: 'REJECTED', reject_reason: 'WRONG_AMOUNT' });
+  });
 });

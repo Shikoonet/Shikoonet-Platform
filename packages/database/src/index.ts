@@ -270,6 +270,14 @@ export const SQL = {
   updateMatchStatus: `UPDATE reconciliation_matches SET status = ?2, reviewed_by = ?3, reviewed_at = ?4, updated_at = ?4 WHERE id = ?1 AND status IN ('SUGGESTED','AUTO_VERIFIED')`,
   updateTransactionStatus: `UPDATE transaction_candidates SET status = ?2, updated_at = ?3 WHERE id = ?1`,
   updateClaimStatus: `UPDATE payment_claims SET status = ?2, updated_at = ?3 WHERE id = ?1`,
+  // The invoice behind a refused claim. Every door a claim is refused through
+  // (suspects/reject, mark-fake, match/reject) must write this beside
+  // updateClaimStatus: an invoice left AWAITING_REVIEW keeps its order from
+  // expiring and, under the bakery queue, keeps its card out of the line for
+  // 24h. ?1 is the claim's external_order_id — 'shikoo:' || public_id, the
+  // string the bot writes when it opens a claim; a PHP-bot claim matches
+  // nothing, which is right. Guarded so a PAID invoice is never rewritten.
+  rejectClaimInvoice: `UPDATE payments SET status = 'REJECTED', reject_reason = ?2, updated_at = now() WHERE 'shikoo:' || public_id = ?1 AND status = 'AWAITING_REVIEW'`,
 
   insertAudit: `INSERT INTO audit_logs (id, actor_email, actor_role, action, entity_type, entity_id, before_json, after_json, reason, request_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
 
