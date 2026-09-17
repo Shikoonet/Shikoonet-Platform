@@ -1553,7 +1553,7 @@ async function renew(
         result.volumeGb ?? null,
         expiresAt === null ? null : expiresAt.toISOString(),
         mode === 'RESET',
-        row.plan_provider_name,
+        tierChange ? row.plan_provider_name : null,
       )
       .run();
     await complete(tx, row.order_id, shop.commissionPercent);
