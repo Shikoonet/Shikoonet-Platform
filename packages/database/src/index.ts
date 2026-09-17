@@ -250,6 +250,19 @@ export const SQL = {
   /** Match against `tc` alias. */
   actionableTransactionWhereTc: `tc.direction = 'CREDIT' AND tc.processing_disposition = 'ACTIONABLE'`,
   /**
+   * `tdi.identifier_type` matches the probe type bound at `param` (a `?N`).
+   *
+   * ACCOUNT_NUMBER and ACCOUNT_HINT are one kind. The melli parser persists
+   * its short hint («حساب:06006») as ACCOUNT_HINT, while an account's
+   * `account_hint` column probes as ACCOUNT_NUMBER — so every backfill that
+   * compared the type exactly («اجرای دوبارهٔ تخصیص», assign-historical)
+   * found zero melli deposits. The resolver has read the two as synonyms
+   * since the start (`resolveDetectedIdentifiers`); this is the same rule
+   * for the reverse lookup.
+   */
+  detectedIdentifierTypeIs: (param: string) =>
+    `(tdi.identifier_type = ${param} OR (${param}::text = 'ACCOUNT_NUMBER' AND tdi.identifier_type = 'ACCOUNT_HINT'))`,
+  /**
    * Predicate for the historical DEBIT cleanup tool: any row that is
    * DEBIT (or UNKNOWN) AND still ACTIONABLE. After the migration runs,
    * this predicate matches zero rows until someone manually flips a
