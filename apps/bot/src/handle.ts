@@ -98,11 +98,12 @@ import {
 import {
   customEmojiIn,
   emojiById,
+  emojiCategories,
   emojiPlans,
   emojiServices,
   rememberEmoji,
+  setBadgeEmoji,
   setButtonEmoji,
-  setPlanEmoji,
   storedEmoji,
 } from './emoji.js';
 import { actionsFor, tierFor } from './serviceActions.js';
@@ -1078,6 +1079,64 @@ async function handleTypedAnswer(
 }
 
 /**
+ * Which catalogue row an `emoji` session is about, from the keys the three
+ * ask-screens write: `{ category }`, `{ service }`, or `{ product, plan }`.
+ * Null for a keyboard button — the older shape, handled below.
+ */
+function catalogTarget(data: Record<string, unknown>): {
+  table: 'product_categories' | 'products' | 'product_plans';
+  id: number;
+  productId?: number;
+  /** Where the cancel button goes, and the list to draw once the write is done. */
+  back: string;
+  redraw: (tx: D1DatabaseSession) => Promise<{ buttons: { id: number; label: string }[]; keyboard: InlineKeyboard }>;
+} | null {
+  const num = (k: string) => {
+    const n = Number(data[k]);
+    return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+  };
+  const category = num('category');
+  if (category) {
+    return {
+      table: 'product_categories',
+      id: category,
+      back: encode('emjc'),
+      redraw: async (tx) => {
+        const buttons = await emojiCategories(tx);
+        return { buttons, keyboard: menu.emojiCategoryList(buttons) };
+      },
+    };
+  }
+  const service = num('service');
+  if (service) {
+    return {
+      table: 'products',
+      id: service,
+      back: encode('emjp', service),
+      redraw: async (tx) => ({
+        buttons: await emojiServices(tx),
+        keyboard: menu.emojiPlanList(await emojiPlans(tx, service), service),
+      }),
+    };
+  }
+  const product = num('product');
+  const plan = num('plan');
+  if (product && plan) {
+    return {
+      table: 'product_plans',
+      id: plan,
+      productId: product,
+      back: encode('emjp', product),
+      redraw: async (tx) => {
+        const buttons = await emojiPlans(tx, product);
+        return { buttons, keyboard: menu.emojiPlanList(buttons, product) };
+      },
+    };
+  }
+  return null;
+}
+
+/**
  * A message an admin sent so the bot could read a premium emoji off it.
  *
  * This is the whole reason the flow asks for a MESSAGE rather than a link or a
@@ -1112,24 +1171,22 @@ async function handlePremiumEmoji(
     return reply(menu.EMOJI_NONE_FOUND, menu.promptMenu(encode('emj')));
   }
 
-  // A plan rather than a keyboard button. Same one-emoji rule, same opt-in,
-  // and the write goes to `product_plans.badge` instead of the layout.
-  const planId = Number(session.data['plan']);
-  const productId = Number(session.data['product']);
-  if (Number.isSafeInteger(planId) && Number.isSafeInteger(productId) && planId > 0) {
-    if (found.length !== 1) {
-      return reply(menu.EMOJI_ONE_REQUIRED, menu.promptMenu(encode('emjp', productId)));
-    }
-    const placed = await setPlanEmoji(tx, productId, planId, found[0]!);
+  // A catalogue button rather than a keyboard button — a category, a service
+  // or a plan. Same one-emoji rule, same opt-in; the write goes to that row's
+  // badge instead of the layout, and the screen it came from is redrawn.
+  const catalog = catalogTarget(session.data);
+  if (catalog) {
+    if (found.length !== 1) return reply(menu.EMOJI_ONE_REQUIRED, menu.promptMenu(catalog.back));
+    const placed = await setBadgeEmoji(tx, catalog.table, catalog.id, found[0]!, catalog.productId);
     await clearSession(tx, user.id);
-    const plans = await emojiPlans(tx, productId);
+    const { buttons, keyboard } = await catalog.redraw(tx);
     if (!placed.ok) {
-      const label = plans.find((p) => p.id === planId)?.label ?? '';
-      return reply(menu.planEmojiRefused(placed.reason, label), menu.emojiPlanList(plans, productId));
+      const label = buttons.find((b) => b.id === catalog.id)?.label ?? '';
+      return reply(menu.catalogEmojiRefused(placed.reason, label), keyboard);
     }
     await enableCustomEmoji(tx);
     await rememberEmoji(tx, found);
-    return reply(menu.emojiChanged(placed.label), menu.emojiPlanList(plans, productId));
+    return reply(menu.emojiChanged(placed.label), keyboard);
   }
 
   const slot = Number(session.data['slot']);
@@ -3245,6 +3302,35 @@ async function handleCallback(
       if (!target) return screen(menu.EMOJI_NO_PLANS, menu.emojiPlanList(plans, service.id));
       await ask(tx, user.id, 'emoji', { product: service.id, plan: target.id }, editId);
       return screen(menu.askPremiumEmoji(target.label), menu.promptMenu(encode('emjp', service.id)));
+    }
+
+    // emjq:<product>            ask for one emoji for the service's own button
+    case 'emjq': {
+      if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+      const service = (await emojiServices(tx)).find((s) => s.id === action.id);
+      if (!service) {
+        return screen(menu.EMOJI_NO_SERVICES, menu.emojiServiceList(await emojiServices(tx)));
+      }
+      await ask(tx, user.id, 'emoji', { service: service.id }, editId);
+      return screen(menu.askPremiumEmoji(service.label), menu.promptMenu(encode('emjp', service.id)));
+    }
+
+    // emjc                      which category?
+    // emjc:<category>           ask for one emoji for it
+    case 'emjc': {
+      if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+      const categories = await emojiCategories(tx);
+      const target = action.id === undefined ? undefined : categories.find((c) => c.id === action.id);
+      if (!target) {
+        // Also the cancel button on the one-emoji prompt: drop the chosen row.
+        await clearSession(tx, user.id);
+        return screen(
+          categories.length === 0 ? menu.EMOJI_NO_CATEGORIES : menu.emojiCategoriesHome(),
+          menu.emojiCategoryList(categories),
+        );
+      }
+      await ask(tx, user.id, 'emoji', { category: target.id }, editId);
+      return screen(menu.askPremiumEmoji(target.label), menu.promptMenu(encode('emjc')));
     }
 
     case 'wal': {
