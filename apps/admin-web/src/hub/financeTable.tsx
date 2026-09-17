@@ -258,7 +258,7 @@ export function FinanceTable({
                 ))}
               </>
             )}
-            {nowhere.bankInflowCount > 0 && (
+            {(nowhere.bankInflowCount > 0 || (nowhere.bankOutflowCount ?? 0) > 0) && (
               <tr className="fin-table__account fin-table__account--orphans">
                 <th scope="row" className="fin-table__name">
                   <strong>واریزی بدون حساب</strong>

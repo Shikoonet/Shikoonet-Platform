@@ -7,7 +7,7 @@
  * figure computed by the code under test is never the thing checked against.
  */
 
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPostgresD1 } from '@shikoo/db';
 import {
   accountStatement,
@@ -26,7 +26,11 @@ const ACCT = `${P}acct`;
 const ACCT2 = `${P}acct-2`;
 const DEVICE = `${P}device`;
 const DAY = 86_400_000;
-const month = parseJalaliMonth(undefined)!;
+// Pinned mid-month: `T(day)` must be in the past for `openBooks` (below) and
+// a live clock on the 1st of a Jalali month would put it in the future.
+const NOW = Date.UTC(2026, 8, 17, 9, 0, 0);
+vi.spyOn(Date, 'now').mockReturnValue(NOW);
+const month = parseJalaliMonth(undefined, NOW)!;
 const T = (day: number, hour = 12) => month.start + day * DAY + hour * 3_600_000;
 
 let seq = 0;
@@ -118,6 +122,7 @@ beforeEach(async () => {
 afterAll(async () => {
   await purge();
   await pool.end();
+  vi.restoreAllMocks();
 });
 
 describe('parseJalaliMonth', () => {

@@ -1486,10 +1486,16 @@ function EntryForm({
     api
       .withdrawalsNear(accountId, spentOnIso)
       .then((r) => {
-        if (live) setWithdrawals(r.items);
+        if (!live) return;
+        setWithdrawals(r.items);
+        // A date moved far enough that the chosen SMS left the window: the
+        // select would show nothing while the submit still sent the old id.
+        setWithdrawalId((id) => (id && r.items.some((w) => w.id === id) ? id : ''));
       })
       .catch(() => {
-        if (live) setWithdrawals([]);
+        if (!live) return;
+        setWithdrawals([]);
+        setWithdrawalId('');
       });
     return () => {
       live = false;
@@ -1550,6 +1556,11 @@ function EntryForm({
       onError('شرح لازم است.');
       return;
     }
+    const feeToman = tomanField(fee);
+    if (fee.trim() && (!Number.isInteger(feeToman) || feeToman < 0)) {
+      onError('کارمزد درست نیست.');
+      return;
+    }
     setBusy(true);
     try {
       // One of the two shapes the server accepts, never both. For a foreign
@@ -1561,7 +1572,6 @@ function EntryForm({
       const spentOn = jalaliToIsoDate(jDate);
 
       if (recurrence) {
-        const feeToman = tomanField(fee);
         const res = await api.postExpenseRecurrence(recurrence.id, {
           ...money,
           spentOn,
@@ -1576,11 +1586,6 @@ function EntryForm({
         return;
       }
 
-      const feeToman = tomanField(fee);
-      if (fee.trim() && (!Number.isInteger(feeToman) || feeToman < 0)) {
-        onError('کارمزد درست نیست.');
-        return;
-      }
       const rest = {
         kind,
         direction,

@@ -2087,8 +2087,10 @@ export const api = {
       opening: BooksOpening | null;
     }>(`/books/statement?${qs}`);
   },
-  booksStatementCsvUrl(month: string) {
-    return `${BASE}/books/statement.csv?${new URLSearchParams({ month })}`;
+  booksStatementCsvUrl(month: string, accountId?: string) {
+    const qs = new URLSearchParams({ month });
+    if (accountId) qs.set('accountId', accountId);
+    return `${BASE}/books/statement.csv?${qs}`;
   },
   booksOffBooks(month: string, accountId?: string, category?: OffBooksCategory) {
     const qs = new URLSearchParams({ month });

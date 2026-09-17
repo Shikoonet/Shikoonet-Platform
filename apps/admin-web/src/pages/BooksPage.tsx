@@ -206,7 +206,7 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
               </option>
             ))}
           </select>
-          <a className="btn" href={api.booksStatementCsvUrl(month)} download>
+          <a className="btn" href={api.booksStatementCsvUrl(month, accountId || undefined)} download>
             خروجی صورت‌حساب
           </a>
         </div>

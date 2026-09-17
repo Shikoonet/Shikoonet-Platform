@@ -10,7 +10,7 @@
  * the bank.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseJalaliMonth } from '@shikoo/domain';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
@@ -32,7 +32,12 @@ const json = (method: string, path: string, body: unknown, email = ADMIN) =>
   );
 const get = (path: string, email = ADMIN) => app.request(path, {}, envAs(email));
 
-const month = parseJalaliMonth(undefined)!;
+// Pinned mid-month (2026-09-17 12:30 Tehran = ۲۶ شهریور), so every `T(day)`
+// below is in the past for `openBooks`, which takes nothing after «now».
+// Live time would put T(1)…T(2) in the future on the first days of a month.
+const NOW = Date.UTC(2026, 8, 17, 9, 0, 0);
+vi.spyOn(Date, 'now').mockReturnValue(NOW);
+const month = parseJalaliMonth(undefined, NOW)!;
 const DAY = 86_400_000;
 /** Inside the month, in order; never in the future relative to each other. */
 const T = (day: number, hour = 12) => month.start + day * DAY + hour * 3_600_000;
@@ -118,7 +123,10 @@ beforeAll(async () => {
 });
 
 beforeEach(purge);
-afterAll(purge);
+afterAll(async () => {
+  await purge();
+  vi.restoreAllMocks();
+});
 
 describe('an expense knows its account', () => {
   it('stores the account, the fee, and the withdrawal it is', async () => {

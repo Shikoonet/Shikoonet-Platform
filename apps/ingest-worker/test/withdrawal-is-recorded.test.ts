@@ -8,12 +8,14 @@
  * `reconciliation_matches` — the row was recorded, not matched.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/index.js';
 import { applySchema, env } from './helpers/env.js';
 
 const API_KEY = 'd'.repeat(40);
 const DEVICE = 'phone-debit';
+const NOW = Date.UTC(2026, 8, 17, 9, 0, 0);
+vi.spyOn(Date, 'now').mockReturnValue(NOW);
 
 async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
@@ -56,8 +58,8 @@ async function postSms(message: string): Promise<Response> {
         deviceName: 'Debit Phone',
         message,
         sender: 'BANK',
-        timestamp: String(Date.now()),
-        checksum: crypto.randomUUID().replace(/-/g, ''),
+        timestamp: String(NOW),
+        checksum: 'd'.repeat(32),
       }),
     }),
     env,
@@ -68,6 +70,8 @@ beforeAll(async () => {
   await applySchema();
   await seedDevice();
 });
+
+afterAll(() => vi.restoreAllMocks());
 
 describe('a withdrawal SMS', () => {
   it('is stored as a DEBIT row with its balance, and matched to nothing', async () => {

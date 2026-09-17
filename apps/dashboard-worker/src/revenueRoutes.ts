@@ -628,10 +628,13 @@ async function withdrawalFor(
   const txId =
     body.transactionCandidateId === undefined ? prev.transaction_candidate_id : body.transactionCandidateId;
   if (!txId) return { ok: true, link: { financial_account_id: accountId, transaction_candidate_id: null } };
+  // FOR UPDATE: the same row lock `declineIncomeTransaction` takes, so the
+  // off-books check here and the expense check there cannot both pass on
+  // the same withdrawal at once. Every caller is inside `withSession`.
   const tx = await db
     .prepare(
       `SELECT t.direction, t.financial_account_id, (${TX_OFF_BOOKS}) AS off_books
-         FROM transaction_candidates t WHERE t.id = ?1`,
+         FROM transaction_candidates t WHERE t.id = ?1 FOR UPDATE`,
     )
     .bind(txId)
     .first<{ direction: string; financial_account_id: string | null; off_books: boolean }>();
@@ -651,6 +654,13 @@ async function withdrawalFor(
 
 const isWithdrawalTaken = (err: unknown): boolean =>
   /idx_revenue_adjustments_withdrawal/.test(String(err));
+
+/** Thrown inside a session to roll it back with the link's own reason. */
+class LinkRefused extends Error {
+  constructor(public readonly reason: AccountLinkError) {
+    super(reason);
+  }
+}
 
 export function registerRevenueRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
@@ -1293,14 +1303,15 @@ export function registerRevenueRoutes(
     // to decide, and no second reading of `direction` can disagree.
     const amountIrr = signedIrr(body.data.kind, magnitude, body.data.direction);
 
-    const linked = await withdrawalFor(c.env.DB, body.data, {
-      financial_account_id: null,
-      transaction_candidate_id: null,
-    });
-    if (!linked.ok) return c.json({ ok: false, error: linked.error }, 400);
     let row: { id: number } | null;
     try {
-      row = await c.env.DB.prepare(
+      row = await c.env.DB.withSession(async (tx) => {
+        const linked = await withdrawalFor(tx, body.data, {
+          financial_account_id: null,
+          transaction_candidate_id: null,
+        });
+        if (!linked.ok) throw new LinkRefused(linked.error);
+        return tx.prepare(
         `INSERT INTO revenue_adjustments
            (amount_irr, note, created_by, created_at, kind, category_id, spent_on,
             currency, original_amount, fx_rate_irr,
@@ -1327,7 +1338,10 @@ export function registerRevenueRoutes(
           linked.link.transaction_candidate_id,
         )
         .first<{ id: number }>();
+      });
     } catch (err) {
+      if (isWithdrawalTaken(err)) return c.json({ ok: false, error: 'withdrawal_taken' }, 409);
+      if (err instanceof LinkRefused) return c.json({ ok: false, error: err.reason }, 400);
       if (isWithdrawalTaken(err)) return c.json({ ok: false, error: 'withdrawal_taken' }, 409);
       throw err;
     }
