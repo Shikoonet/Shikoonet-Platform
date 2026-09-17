@@ -742,14 +742,16 @@ describe('PaymentsView tabs', () => {
   });
 
   // The row names the account the customer was sent to and the card as it
-  // was shown to them (Sam, 2026-09-17) — never the raw sixteen digits.
+  // was shown to them (Sam, 2026-09-17) — never the raw sixteen digits. The
+  // account goes by its own name, not its bank: the shop has several at Melli.
   it('names the account and the displayed card on the row, never the raw digits', async () => {
     mockApi({ needs_review: [item({ id: 'p1' })] });
     const { container } = renderView();
     await goOpenQueue();
     await screen.findByText(/سفارش A12B/);
     expect(container.textContent).not.toContain(FULL_CARD);
-    expect(container.textContent).toContain('Melli6006');
+    expect(container.textContent).toContain('Melli Main6006');
+    expect(container.textContent).not.toContain('Melli6006');
     expect(container.textContent).toContain('کارت 5054-1617-0627-5678');
   });
 
