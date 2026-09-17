@@ -214,6 +214,21 @@ function fxColumns(b: MoneyIn) {
 }
 
 
+/**
+ * Where the money left from — Sam, 2026-09-17 (0072).
+ *
+ * `financialAccountId` is the account that paid; `feeToman` what the bank
+ * took on top, kept apart from the amount so «کارمزدهای بانکی» stays its own
+ * figure; `transactionCandidateId` the withdrawal SMS this row IS. The link
+ * is checked in `withdrawalFor`, not here: a schema cannot know whether the
+ * SMS is a debit on that account or already explains another row.
+ */
+const ACCOUNT_FIELDS = {
+  financialAccountId: z.string().trim().min(1).max(64).nullable().optional(),
+  feeToman: z.number().int().min(0).max(MAX_ADJUSTMENT_TOMAN).optional(),
+  transactionCandidateId: z.string().trim().min(1).max(64).nullable().optional(),
+};
+
 const AdjustmentBody = z
   .object({
     /**
@@ -250,6 +265,7 @@ const AdjustmentBody = z
     // Required, like the legacy form. An unexplained line in the books is the
     // one thing nobody can reconstruct later.
     note: z.string().trim().min(1).max(500),
+    ...ACCOUNT_FIELDS,
   })
   .strict()
   .refine(
@@ -274,6 +290,7 @@ const EditBody = z
     note: z.string().trim().min(1).max(500).optional(),
     /** Goes to `audit_logs.reason`, so the history says why and not only what. */
     reason: z.string().trim().max(200).optional(),
+    ...ACCOUNT_FIELDS,
   })
   .strict()
   .refine(
@@ -387,6 +404,10 @@ interface AdjustmentRow {
   original_amount: string | number | null;
   fx_rate_irr: string | number | null;
   recurrence_id: number | null;
+  financial_account_id: string | null;
+  account_name: string | null;
+  fee_irr: string | number;
+  transaction_candidate_id: string | null;
   created_by: string | null;
   created_at: string;
   voided_at: string | null;
@@ -416,6 +437,13 @@ function shape(r: AdjustmentRow) {
     /** Rial per unit, as stored. The screen divides by ten to show Toman. */
     fxRateIrr: r.fx_rate_irr === null ? null : Number(r.fx_rate_irr),
     recurrenceId: r.recurrence_id === null ? null : Number(r.recurrence_id),
+    /** Which account paid (0072) — null on rows from before the books knew. */
+    financialAccountId: r.financial_account_id,
+    accountName: r.account_name,
+    /** What the bank charged on top, IRR; the screen shows Toman. */
+    feeIrr: Number(r.fee_irr ?? 0),
+    /** The withdrawal SMS this row is, when the operator linked one. */
+    transactionCandidateId: r.transaction_candidate_id,
     createdBy: r.created_by,
     createdAt: r.created_at,
     voidedAt: r.voided_at,
@@ -527,6 +555,7 @@ const SELECT_COLUMNS = `
   ra.id, ra.amount_irr, ra.note, ra.kind, ra.category_id, ec.name AS category_name,
   ra.spent_on::text AS spent_on, ra.created_by, ra.created_at,
   ra.currency, ra.original_amount, ra.fx_rate_irr, ra.recurrence_id,
+  ra.financial_account_id, fa.display_name AS account_name, ra.fee_irr, ra.transaction_candidate_id,
   ra.voided_at, ra.voided_by, ra.void_reason,
   edits.n AS edit_count,
   -- Epoch milliseconds, because that is what audit_logs.created_at is: the
@@ -539,6 +568,7 @@ const SELECT_COLUMNS = `
 const FROM_LEDGER = `
   FROM revenue_adjustments ra
   LEFT JOIN expense_categories ec ON ec.id = ra.category_id
+  LEFT JOIN financial_accounts fa ON fa.id = ra.financial_account_id
   ${EDIT_HISTORY_JOIN}`;
 
 /**
@@ -570,6 +600,46 @@ const KIND_FA: Record<Kind, string> = {
   REVENUE_FIX: 'اصلاح درآمد',
   MANUAL_INCOME: 'درآمد دستی',
 };
+
+/**
+ * The account and withdrawal an expense claims, checked against the bank.
+ *
+ * A linked withdrawal must exist, be a DEBIT, and sit on the account the row
+ * names — or the row takes the account from the SMS when it named none. A
+ * withdrawal already explaining a live row is refused: the partial unique
+ * index (0072) is the last word, and the 23505 it raises is turned into a
+ * 409 the screen can say something about. `null` clears both.
+ */
+type AccountLink = { financial_account_id: string | null; transaction_candidate_id: string | null };
+type AccountLinkError = 'withdrawal_not_found' | 'withdrawal_not_a_debit' | 'withdrawal_on_other_account';
+
+async function withdrawalFor(
+  db: Pick<D1Database, 'prepare'>,
+  body: { financialAccountId?: string | null | undefined; transactionCandidateId?: string | null | undefined },
+  prev: AccountLink,
+): Promise<{ ok: true; link: AccountLink } | { ok: false; error: AccountLinkError }> {
+  const accountId =
+    body.financialAccountId === undefined ? prev.financial_account_id : body.financialAccountId;
+  const txId =
+    body.transactionCandidateId === undefined ? prev.transaction_candidate_id : body.transactionCandidateId;
+  if (!txId) return { ok: true, link: { financial_account_id: accountId, transaction_candidate_id: null } };
+  const tx = await db
+    .prepare(`SELECT direction, financial_account_id FROM transaction_candidates WHERE id = ?1`)
+    .bind(txId)
+    .first<{ direction: string; financial_account_id: string | null }>();
+  if (!tx) return { ok: false, error: 'withdrawal_not_found' };
+  if (tx.direction !== 'DEBIT') return { ok: false, error: 'withdrawal_not_a_debit' };
+  if (accountId && tx.financial_account_id && tx.financial_account_id !== accountId) {
+    return { ok: false, error: 'withdrawal_on_other_account' };
+  }
+  return {
+    ok: true,
+    link: { financial_account_id: accountId ?? tx.financial_account_id, transaction_candidate_id: txId },
+  };
+}
+
+const isWithdrawalTaken = (err: unknown): boolean =>
+  /idx_revenue_adjustments_withdrawal/.test(String(err));
 
 export function registerRevenueRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
@@ -1203,29 +1273,44 @@ export function registerRevenueRoutes(
     // to decide, and no second reading of `direction` can disagree.
     const amountIrr = signedIrr(body.data.kind, magnitude, body.data.direction);
 
-    const row = await c.env.DB.prepare(
-      `INSERT INTO revenue_adjustments
-         (amount_irr, note, created_by, created_at, kind, category_id, spent_on,
-          currency, original_amount, fx_rate_irr)
-       VALUES (?1, ?2, ?3, now(), ?4, ?5,
-               COALESCE(?6::date, (now() AT TIME ZONE 'Asia/Tehran')::date),
-               ?7, ?8, ?9)
-       RETURNING id`,
-    )
-      .bind(
-        amountIrr,
-        body.data.note,
-        ident.email,
-        body.data.kind,
-        // Only spending has a purpose to record; a correction's category would
-        // be a field nobody fills and a filter nobody trusts.
-        body.data.kind === 'EXPENSE' ? (body.data.categoryId ?? null) : null,
-        body.data.spentOn ?? null,
-        fx.currency,
-        fx.original_amount,
-        fx.fx_rate_irr,
+    const linked = await withdrawalFor(c.env.DB, body.data, {
+      financial_account_id: null,
+      transaction_candidate_id: null,
+    });
+    if (!linked.ok) return c.json({ ok: false, error: linked.error }, 400);
+    let row: { id: number } | null;
+    try {
+      row = await c.env.DB.prepare(
+        `INSERT INTO revenue_adjustments
+           (amount_irr, note, created_by, created_at, kind, category_id, spent_on,
+            currency, original_amount, fx_rate_irr,
+            financial_account_id, fee_irr, transaction_candidate_id)
+         VALUES (?1, ?2, ?3, now(), ?4, ?5,
+                 COALESCE(?6::date, (now() AT TIME ZONE 'Asia/Tehran')::date),
+                 ?7, ?8, ?9, ?10, ?11, ?12)
+         RETURNING id`,
       )
-      .first<{ id: number }>();
+        .bind(
+          amountIrr,
+          body.data.note,
+          ident.email,
+          body.data.kind,
+          // Only spending has a purpose to record; a correction's category would
+          // be a field nobody fills and a filter nobody trusts.
+          body.data.kind === 'EXPENSE' ? (body.data.categoryId ?? null) : null,
+          body.data.spentOn ?? null,
+          fx.currency,
+          fx.original_amount,
+          fx.fx_rate_irr,
+          linked.link.financial_account_id,
+          (body.data.feeToman ?? 0) * IRR_PER_TOMAN,
+          linked.link.transaction_candidate_id,
+        )
+        .first<{ id: number }>();
+    } catch (err) {
+      if (isWithdrawalTaken(err)) return c.json({ ok: false, error: 'withdrawal_taken' }, 409);
+      throw err;
+    }
     if (!row) return c.json({ ok: false, error: 'insert_failed' }, 500);
 
     await audit(
@@ -1273,7 +1358,8 @@ export function registerRevenueRoutes(
         const before = await tx
           .prepare(
             `SELECT amount_irr, note, kind, category_id, spent_on::text AS spent_on,
-                    currency, original_amount, fx_rate_irr, voided_at
+                    currency, original_amount, fx_rate_irr, voided_at,
+                    financial_account_id, fee_irr, transaction_candidate_id
                FROM revenue_adjustments WHERE id = ?1 FOR UPDATE`,
           )
           .bind(id)
@@ -1287,6 +1373,9 @@ export function registerRevenueRoutes(
             original_amount: string | number | null;
             fx_rate_irr: string | number | null;
             voided_at: string | null;
+            financial_account_id: string | null;
+            fee_irr: string | number;
+            transaction_candidate_id: string | null;
           }>();
         if (!before) return { status: 404 as const, error: 'not_found' };
         // A voided row exists; it is simply not editable. 409, not 400 — the
@@ -1307,7 +1396,13 @@ export function registerRevenueRoutes(
           original_amount:
             before.original_amount === null ? null : Number(before.original_amount),
           fx_rate_irr: before.fx_rate_irr === null ? null : Number(before.fx_rate_irr),
+          financial_account_id: before.financial_account_id,
+          fee_irr: Number(before.fee_irr ?? 0),
+          transaction_candidate_id: before.transaction_candidate_id,
         };
+
+        const linked = await withdrawalFor(tx, patch, prev);
+        if (!linked.ok) return { status: 400 as const, error: linked.error };
 
         const kind = patch.kind ?? prev.kind;
         // The magnitude is unchanged unless the caller restated it whole, but
@@ -1343,6 +1438,8 @@ export function registerRevenueRoutes(
               : null,
           spent_on: patch.spentOn ?? prev.spent_on,
           ...fx,
+          ...linked.link,
+          fee_irr: patch.feeToman === undefined ? prev.fee_irr : patch.feeToman * IRR_PER_TOMAN,
         };
 
         const was: Record<string, unknown> = {};
@@ -1363,7 +1460,8 @@ export function registerRevenueRoutes(
           .prepare(
             `UPDATE revenue_adjustments
                 SET amount_irr = ?2, note = ?3, kind = ?4, category_id = ?5, spent_on = ?6::date,
-                    currency = ?7, original_amount = ?8, fx_rate_irr = ?9
+                    currency = ?7, original_amount = ?8, fx_rate_irr = ?9,
+                    financial_account_id = ?10, fee_irr = ?11, transaction_candidate_id = ?12
               WHERE id = ?1`,
           )
           .bind(
@@ -1376,6 +1474,9 @@ export function registerRevenueRoutes(
             next.currency,
             next.original_amount,
             next.fx_rate_irr,
+            next.financial_account_id,
+            next.fee_irr,
+            next.transaction_candidate_id,
           )
           .run();
 
@@ -1388,6 +1489,7 @@ export function registerRevenueRoutes(
       if (result.status !== 200) return c.json({ ok: false, error: result.error }, result.status);
       return c.json({ ok: true, changed: result.changed });
     } catch (err) {
+      if (isWithdrawalTaken(err)) return c.json({ ok: false, error: 'withdrawal_taken' }, 409);
       // The CHECK in `revenue_adjustments_kind_sign` is the last word on
       // whether a kind may carry a sign, and it answering here means this
       // handler and the schema disagreed — a bug, not bad input.

@@ -458,6 +458,13 @@ describe('every write route, asked directly', () => {
     // free trial again (Sam: «برای همه … یا برای گروه خاصی»). It hands out
     // free panel accounts, so ADMIN-only like the credit beside it, audited,
     // and refused for a REVIEWER and a READ_ONLY by the three tests above.
-    expect(writeRoutes().length).toBe(161);
+    //
+    // 162, 2026-09-17: `POST /admin/books/open` — the fresh start: writes
+    // every live account's last bank balance as its opening (0072). It moves
+    // no money and creates nothing customers see, but it is the line the
+    // monthly statement to the head admin starts from, so ADMIN-only,
+    // audited, refused twice unless told to overwrite; `books.test.ts` pins
+    // the 409 and the REVIEWER 403.
+    expect(writeRoutes().length).toBe(162);
   });
 });

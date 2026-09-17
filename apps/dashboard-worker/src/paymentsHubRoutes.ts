@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { SQL, type D1Database } from '@shikoo/database';
 import {
+  OFF_BOOKS_CATEGORIES,
   classifyResellerTransaction,
   createReseller,
   declineAllActiveIncome,
@@ -574,6 +575,8 @@ export function registerPaymentsHubRoutes(
   const DeclineBody = z
     .object({
       reason: z.string().max(2000).optional(),
+      /** Which kind of «not ours» — 0072. Absent means the pre-0072 OTHER. */
+      category: z.enum(OFF_BOOKS_CATEGORIES).optional(),
     })
     .strict();
 
@@ -588,6 +591,7 @@ export function registerPaymentsHubRoutes(
       transactionId,
       actorEmail: ident.email,
       reason: parsed.data.reason ?? null,
+      category: parsed.data.category ?? null,
     });
 
     if (!result.ok) {

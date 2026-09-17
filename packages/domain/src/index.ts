@@ -44,3 +44,4 @@ export * from './botToken.js';
 export * from './continuityMode.js';
 export * from './fulfilWithoutPayment.js';
 export * from './retryProvisioning.js';
+export * from './books.js';

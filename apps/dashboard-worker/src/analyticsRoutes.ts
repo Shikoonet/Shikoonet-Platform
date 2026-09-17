@@ -7,6 +7,7 @@ import type { D1Database } from '@shikoo/database';
 import { Hono } from 'hono';
 import {
   BANK_INCOME_TX_WHERE,
+  BANK_OUTFLOW_TX_WHERE,
   MIRZABOT_SOURCE,
   SALE_CLAIM_WHERE,
   SETTLED_MATCH_SUBQUERY,
@@ -249,6 +250,30 @@ async function loadAccountBankInflow(
   return { amountIrr: row?.amount_irr ?? 0, count: row?.count ?? 0 };
 }
 
+/** Money that left the account in range — debits the phone relayed, off-books excluded (0072). */
+async function loadAccountBankOutflow(
+  db: D1Database,
+  accountId: string | null,
+  start: number | null,
+  end: number | null,
+) {
+  const binds: unknown[] = [accountId];
+  const p = (v: unknown) => {
+    binds.push(v);
+    return `?${binds.length}`;
+  };
+  const rangeFilter = rangeSql('t.bank_timestamp', start, end, p);
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(SUM(t.amount_irr), 0) AS amount_irr, COUNT(*) AS count
+       FROM transaction_candidates t
+       WHERE t.financial_account_id IS NOT DISTINCT FROM ?1 AND ${BANK_OUTFLOW_TX_WHERE}${rangeFilter}`,
+    )
+    .bind(...binds)
+    .first<{ amount_irr: number; count: number }>();
+  return { amountIrr: row?.amount_irr ?? 0, count: row?.count ?? 0 };
+}
+
 async function loadAccountUnassignedIncome(
   db: D1Database,
   /** `null`: deposits that resolved to no account — the ones no row would own. */
@@ -399,29 +424,32 @@ export async function loadAccountAnalytics(
 ) {
   const { start, end } = historyRangeBounds(range, now, day);
   const balanceData = await loadAccountBalances(db, now, true);
-  const [cardCounts, deviceObservations, devicesLookup, nowhereInflow, nowhereUnassigned] = await Promise.all([
-    db
-      .prepare(
-        `SELECT financial_account_id, COUNT(*) AS n
-         FROM payment_cards GROUP BY financial_account_id`,
-      )
-      .all<{ financial_account_id: string; n: number }>(),
-    loadAccountDeviceObservations(db),
-    loadDevicesLookup(db),
-    loadAccountBankInflow(db, null, start, end),
-    loadAccountUnassignedIncome(db, null, start, end),
-  ]);
+  const [cardCounts, deviceObservations, devicesLookup, nowhereInflow, nowhereUnassigned, nowhereOutflow] =
+    await Promise.all([
+      db
+        .prepare(
+          `SELECT financial_account_id, COUNT(*) AS n
+           FROM payment_cards GROUP BY financial_account_id`,
+        )
+        .all<{ financial_account_id: string; n: number }>(),
+      loadAccountDeviceObservations(db),
+      loadDevicesLookup(db),
+      loadAccountBankInflow(db, null, start, end),
+      loadAccountUnassignedIncome(db, null, start, end),
+      loadAccountBankOutflow(db, null, start, end),
+    ]);
   const cardsByAccount = new Map(
     (cardCounts.results ?? []).map((r) => [r.financial_account_id, r.n]),
   );
 
   const items = [];
   for (const acc of balanceData.accounts) {
-    const [sales, bankInflow, unassigned, reseller] = await Promise.all([
+    const [sales, bankInflow, unassigned, reseller, outflow] = await Promise.all([
       loadSalesMetrics(db, start, end, acc.accountId),
       loadAccountBankInflow(db, acc.accountId, start, end),
       loadAccountUnassignedIncome(db, acc.accountId, start, end),
       loadAccountReseller(db, acc.accountId, start, end),
+      loadAccountBankOutflow(db, acc.accountId, start, end),
     ]);
     items.push({
       accountId: acc.accountId,
@@ -451,6 +479,10 @@ export async function loadAccountAnalytics(
       bankInflowCount: bankInflow.count,
       unassignedIncomeIrr: unassigned.amountIrr,
       unassignedIncomeCount: unassigned.count,
+      // «برداشت» — what left, per the bank. Not subtracted from anything here:
+      // the balance beside it is the bank's own and already has it.
+      bankOutflowIrr: outflow.amountIrr,
+      bankOutflowCount: outflow.count,
       resellerAmountIrr: reseller.amountIrr,
       resellerCount: reseller.count,
       ...inferPrimaryDevice(deviceObservations.get(acc.accountId) ?? [], devicesLookup),
@@ -490,6 +522,8 @@ export async function loadAccountAnalytics(
       bankInflowCount: nowhereInflow.count,
       unassignedIncomeIrr: nowhereUnassigned.amountIrr,
       unassignedIncomeCount: nowhereUnassigned.count,
+      bankOutflowIrr: nowhereOutflow.amountIrr,
+      bankOutflowCount: nowhereOutflow.count,
     },
     items: items.map((i) => ({
       ...i,

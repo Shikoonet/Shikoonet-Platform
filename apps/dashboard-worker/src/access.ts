@@ -59,6 +59,10 @@ const PERSONAL_DATA_PREFIXES = [
   // تعدیل‌ها» for a READ_ONLY operator, and a section hidden in the sidebar
   // while the API still answers is decoration rather than a boundary.
   '/api/v1/admin/revenue-adjustments',
+  // The books themselves — statements, the off-books list, the fresh start.
+  // Same reason as the ledger above: what the shop's accounts hold and how
+  // the money moved is the owner's to read.
+  '/api/v1/admin/books',
   // What the software noticed. Not personal data either, and on the list for
   // the third reason: an event carries a stack trace and a `ref` that names an
   // order, and reading the shop's faults is the owner's job rather than a

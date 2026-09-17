@@ -297,6 +297,8 @@ describe('GET /api/v1/analytics', () => {
         bankInflowCount: 1,
         unassignedIncomeIrr: 4_000_000,
         unassignedIncomeCount: 1,
+        bankOutflowIrr: 0,
+        bankOutflowCount: 0,
       });
       // The rows reach the total — the whole point.
       const rows = body.items.reduce((s, i) => s + i.bankInflowIrr, 0) + body.unaccounted.bankInflowIrr;
