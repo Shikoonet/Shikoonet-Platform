@@ -4,6 +4,7 @@ import {
   categoriesForUser,
   plansInProduct,
   plansOnPanel,
+  renewalPanelsFor,
   productsForUser,
   purchasablePlan,
 } from '../src/catalog.js';
@@ -383,6 +384,22 @@ describe('what the shop shows a customer', () => {
 
   it('returns nothing for a panel the customer may not open', async () => {
     expect(await plansOnPanel(db, customer, [await providerId('sim-off')])).toEqual([]);
+  });
+
+  it('does not take two address-less rows for one panel (renewalPanelsFor)', async () => {
+    // NULL never equals NULL, but '' equals '' — and a manual row may carry
+    // either. Two panels with no address are two panels.
+    const shop = await providerId('sim-shop');
+    const empty = await providerId('sim-empty');
+    await db
+      .prepare(`UPDATE provisioning_providers SET base_url = '' WHERE id IN (?1, ?2)`)
+      .bind(shop, empty)
+      .run();
+    try {
+      expect(await renewalPanelsFor(db, shop)).toEqual([shop]);
+    } finally {
+      await ensureCatalog();
+    }
     expect(await plansOnPanel(db, customer, [await providerId('sim-empty')])).toEqual([]);
   });
 

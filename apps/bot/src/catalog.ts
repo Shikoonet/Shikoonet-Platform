@@ -662,10 +662,13 @@ export async function tariffForUser(db: Db, userId: number): Promise<CatalogPlan
 export async function renewalPanelsFor(db: Db, providerId: number): Promise<number[]> {
   const rows = await db
     .prepare(
+      // NULLIF: two rows with no address are not one panel. NULL never equals
+      // NULL, but '' equals '' — and a manual row may carry either.
       `SELECT id FROM provisioning_providers
         WHERE id = ?1
            OR (status = 'ACTIVE'
-               AND base_url = (SELECT base_url FROM provisioning_providers WHERE id = ?1))`,
+               AND NULLIF(base_url, '') =
+                   (SELECT NULLIF(base_url, '') FROM provisioning_providers WHERE id = ?1))`,
     )
     .bind(providerId)
     .all<{ id: number }>();

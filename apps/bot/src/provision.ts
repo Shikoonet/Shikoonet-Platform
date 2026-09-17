@@ -42,6 +42,7 @@ import {
   type ProviderContext,
   type ProvisionRequest,
 } from '@shikoo/domain';
+import { renewalPanelsFor } from './catalog.js';
 import * as menu from './menu.js';
 import type { InlineKeyboard } from './telegram.js';
 import { enqueue } from './notify.js';
@@ -1305,6 +1306,14 @@ async function renew(
   // under the tier list said so.
   const tierChange =
     addon === null && row.plan_provider_id !== null && row.plan_provider_id !== row.provider_id;
+  // Asked again here, with the same rule the list used: the order carries no
+  // panel snapshot, and between checkout and this sweep a product can be
+  // moved to another panel from the dashboard. A plan whose row no longer
+  // shares the account's address is not this account's tier any more.
+  if (tierChange && !(await renewalPanelsFor(db, row.provider_id!)).includes(row.plan_provider_id!)) {
+    const refunded = await fail(db, row.order_id, 'the plan is no longer on the panel this service lives on');
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
+  }
   const mode = tierChange ? 'RESET' : addon === null ? renewModeFor(row.provider_config ?? {}) : 'ADD';
 
   // The cashback rate is read here, before the panel call, and that placement

@@ -816,6 +816,26 @@ describe('changing tier across rows of one panel', () => {
     });
     expect(await orderRow(order.id)).toMatchObject({ status: 'COMPLETED' });
   });
+
+  it('stops for a human when the plan’s row left the address between checkout and delivery', async () => {
+    const { updateId, telegramId } = ids();
+    const target = await onGold(telegramId, true);
+    const thirty = (await planIdsIn('sim-vip-platinum'))[0]!;
+    await handleUpdate(db, press(updateId, telegramId, `rord:${target.subId}:${thirty}`));
+    const order = await markPaid(target.userId);
+    // The dashboard moved sim-gold to its own host after the order was paid.
+    await setPanelConfig(otherPanelId, { status_extend: 'on_extend' }, 'https://gold.renew.test');
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 10 * GIB },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts).toEqual([]);
+    expect(panel.resets).toEqual([]);
+    expect(await orderRow(order.id)).toMatchObject({ status: 'FAILED' });
+    expect((await subscriptionRow(target.subId))?.plan_id).toBeNull();
+  });
 });
 
 describe('placing the order', () => {
