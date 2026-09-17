@@ -10,6 +10,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within, act } from '@testing-library/react';
 import { createCache } from '../../src/hub/query.js';
 import { PaymentsView } from '../../src/hub/PaymentsView.js';
+import { formatTimeSeconds } from '../../src/hub/format.js';
 import {
   reasonText,
   defaultCandidateId,
@@ -740,13 +741,39 @@ describe('PaymentsView tabs', () => {
     expect(within(drawer).queryByRole('button', { name: 'رد پرداخت' })).toBeNull();
   });
 
-  it('never renders a full card number in the list', async () => {
+  // The row names the account the customer was sent to and the card as it
+  // was shown to them (Sam, 2026-09-17) — never the raw sixteen digits. The
+  // account goes by its own name, not its bank: the shop has several at Melli.
+  it('names the account and the displayed card on the row, never the raw digits', async () => {
     mockApi({ needs_review: [item({ id: 'p1' })] });
     const { container } = renderView();
     await goOpenQueue();
     await screen.findByText(/سفارش A12B/);
     expect(container.textContent).not.toContain(FULL_CARD);
-    expect(container.textContent).toContain('****6006');
+    expect(container.textContent).toContain('Melli Main6006');
+    expect(container.textContent).not.toContain('Melli6006');
+    expect(container.textContent).toContain('کارت 5054-1617-0627-5678');
+  });
+
+  it('links the user id on the row to the customer file without opening the review', async () => {
+    mockApi({ needs_review: [item({ id: 'p1', customerUserId: 7 })] });
+    renderView();
+    await goOpenQueue();
+    await screen.findByText(/سفارش A12B/);
+    const link = screen.getByRole('link', { name: '42' });
+    expect(link.getAttribute('href')).toContain('id=7');
+    fireEvent.click(link);
+    expect(screen.queryByTestId('review-page')).toBeNull();
+  });
+
+  it('shows when the customer pressed «پرداخت کردم» on the review page', async () => {
+    mockApi({ needs_review: [item({ id: 'p1' })] });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
+    const drawer = await openReviewPanel();
+    expect(within(drawer).getByText('زمان درخواست')).toBeTruthy();
+    expect(within(drawer).getByText(formatTimeSeconds(BASE))).toBeTruthy();
   });
 });
 
