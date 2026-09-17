@@ -22,6 +22,7 @@ import {
   planDisplayName,
   toman,
   tomanCompact,
+  whatWasBought,
 } from '../src/format.js';
 
 describe('IRR to Toman', () => {
@@ -247,5 +248,17 @@ describe('a plan name with its price baked in', () => {
     // price: «1ماهه-100گیگ» must not lose its size.
     expect(planDisplayName('1ماهه-100گیگ')).toBe('1ماهه-100گیگ');
     expect(planDisplayName(null)).toBe(null);
+  });
+});
+
+describe('what an order was for', () => {
+  it('names a wallet top-up, which has no plan', () => {
+    // The customer page printed «—» for a 2,000,000 Toman top-up: the row has
+    // a kind but no plan, and the plan was the only thing the cell read.
+    expect(whatWasBought({ kind: 'WALLET_TOPUP', quantity: 1, planName: null })).toBe('شارژ کیف پول');
+    expect(whatWasBought({ kind: 'ADD_VOLUME', quantity: 20, planName: null })).toBe('۲۰ گیگ');
+    expect(whatWasBought({ kind: 'NEW_PURCHASE', quantity: 1, planName: '1ماهه-50گیگ-195.000ت' })).toBe(
+      '1ماهه-50گیگ',
+    );
   });
 });
