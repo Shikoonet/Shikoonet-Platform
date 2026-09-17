@@ -28,6 +28,8 @@ export interface OwnedOrder {
   status: string;
   total_irr: number;
   plan_id: number | null;
+  /** The invoice deadline as an ISO timestamp; null for a trial or a pre-0057 row. */
+  expires_at: string | null;
   /**
    * What the order IS, so a caller cannot act on one kind as if it were
    * another.
@@ -48,7 +50,7 @@ export interface OwnedOrder {
  * somebody else. The caller cannot tell those apart, which is deliberate: a
  * different answer for "not yours" turns this into an enumeration oracle.
  */
-const ORDER_FOR_USER = `SELECT id, public_id, status, total_irr, plan_id, kind
+const ORDER_FOR_USER = `SELECT id, public_id, status, total_irr, plan_id, kind, expires_at
      FROM orders
     WHERE id = ?1 AND user_id = ?2`;
 

@@ -32,7 +32,12 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { isPermanentRejection, type InlineKeyboard, type TelegramApi } from './telegram.js';
+import {
+  isPermanentRejection,
+  TelegramRejection,
+  type InlineKeyboard,
+  type TelegramApi,
+} from './telegram.js';
 import { copyLinkMenu } from './menu.js';
 import { qrPng } from './qr.js';
 import { createLogger } from '@shikoo/domain';
@@ -70,6 +75,17 @@ export interface PendingNotification {
    * long URL they have to select without a keyboard.
    */
   qrPayload?: string | null;
+  /**
+   * A message of ours to REPLACE with this text instead of sending a new one.
+   *
+   * The expiry sweep uses it to turn the invoice itself into «منقضی شد», so
+   * the card number stops standing in the customer's chat. Best effort: an
+   * edit Telegram refuses — the message is older than 48 hours, the customer
+   * deleted it — falls back to a fresh message, exactly as `poll.ts` does for
+   * a reply. A message that is not delivered at all is the failure this table
+   * exists to prevent; a message in the wrong place is not.
+   */
+  editMessageId?: number | null;
 }
 
 /** Attempts before a message stops being retried and starts needing a human. */
@@ -108,8 +124,9 @@ export async function enqueue(tx: D1DatabaseSession, note: PendingNotification):
   const written = await tx
     .prepare(
       `INSERT INTO bot_notifications
-         (dedupe_key, chat_id, body, reply_markup, qr_payload, message_thread_id)
-       VALUES (?1, ?2, ?3, ?4::jsonb, ?5, ?6)
+         (dedupe_key, chat_id, body, reply_markup, qr_payload, message_thread_id,
+          edit_message_id)
+       VALUES (?1, ?2, ?3, ?4::jsonb, ?5, ?6, ?7)
        ON CONFLICT (dedupe_key) DO NOTHING`,
     )
     .bind(
@@ -121,6 +138,7 @@ export async function enqueue(tx: D1DatabaseSession, note: PendingNotification):
       note.keyboard ? JSON.stringify(note.keyboard) : null,
       note.qrPayload ?? null,
       note.threadId ?? null,
+      note.editMessageId ?? null,
     )
     .run();
   return written.meta.changes > 0;
@@ -142,6 +160,7 @@ interface DueRow {
   qr_payload: string | null;
   qr_sent_at: string | null;
   message_thread_id: number | null;
+  edit_message_id: number | null;
 }
 
 /**
@@ -171,6 +190,51 @@ function keyboardOf(row: DueRow): InlineKeyboard | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether the message a row wants to edit is, RIGHT NOW, somebody's live
+ * invoice. Asked at send time and not at enqueue time, because the two can be
+ * an hour apart: an expiry row whose edit failed once is retried later, and by
+ * then the customer may have drawn a fresh invoice on the same screen — a
+ * button press edits the screen it came from, so one message carries invoice
+ * after invoice. Editing it then would replace a live card number with «this
+ * expired», about a different order. A live invoice is never edited from here;
+ * the notice goes out as a new message instead.
+ */
+async function isLiveInvoice(db: D1Database, chatId: number, messageId: number): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS live
+         FROM payments p JOIN users u ON u.id = p.user_id
+        WHERE u.telegram_id = ?1 AND p.invoice_message_id = ?2
+          AND p.status IN ('PENDING', 'AWAITING_REVIEW')
+        LIMIT 1`,
+    )
+    .bind(chatId, messageId)
+    .first<{ live: number }>();
+  return row !== null;
+}
+
+/**
+ * The text itself: an edit of the message the producer named, or a new one.
+ *
+ * The edit falls back rather than fails, for the reason on `editMessageId`.
+ * Only a `TelegramRejection` falls back — a refused edit is Telegram saying
+ * «not that message»; a socket that closed says nothing about the message and
+ * must reach the retry logic in the caller as what it is.
+ */
+async function deliver(db: D1Database, api: TelegramApi, row: DueRow): Promise<void> {
+  if (row.edit_message_id !== null && !(await isLiveInvoice(db, row.chat_id, row.edit_message_id))) {
+    try {
+      await api.editMessageText(row.chat_id, row.edit_message_id, row.body, keyboardOf(row));
+      return;
+    } catch (err) {
+      if (!(err instanceof TelegramRejection)) throw err;
+      log.warn('notify.edit_failed', { ref: String(row.id), fallback: 'new message' }, err);
+    }
+  }
+  await api.sendMessage(row.chat_id, row.body, keyboardOf(row), row.message_thread_id);
 }
 
 /**
@@ -221,7 +285,8 @@ export async function flush(
                  next_attempt_at = ?1 + ?3
            WHERE id IN (SELECT id FROM due)
           RETURNING id, dedupe_key, chat_id, body, attempt_count,
-                    reply_markup, qr_payload, qr_sent_at, message_thread_id`,
+                    reply_markup, qr_payload, qr_sent_at, message_thread_id,
+                    edit_message_id`,
       )
       .bind(now, limit, LEASE_MS)
       .all<DueRow>();
@@ -266,7 +331,7 @@ export async function flush(
           log.warn('notify.qr_failed', { ref: String(row.id), fallback: 'text only' }, err);
         }
       }
-      await api.sendMessage(row.chat_id, row.body, keyboardOf(row), row.message_thread_id);
+      await deliver(db, api, row);
       await settle(db, row.id, 'SENT', null, null);
       result.sent += 1;
       continue;

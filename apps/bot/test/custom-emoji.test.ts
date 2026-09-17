@@ -333,7 +333,7 @@ describe('sending it, and being refused', () => {
       return new Response(
         JSON.stringify(
           answer === 'ok'
-            ? { ok: true, result: {} }
+            ? { ok: true, result: { message_id: 42 } }
             : {
                 ok: false,
                 error_code: 400,
@@ -378,7 +378,9 @@ describe('sending it, and being refused', () => {
       onCustomEmojiRefused: refused,
     });
 
-    await expect(api.sendMessage(1, `خوش آمدید ${FIRE}`)).resolves.toBeUndefined();
+    // The id of the message that LANDED — the plain one — comes back, so the
+    // caller remembering which message an invoice is gets the right one.
+    await expect(api.sendMessage(1, `خوش آمدید ${FIRE}`)).resolves.toEqual({ messageId: 42 });
     expect(bodies).toHaveLength(2);
     // The customer got the screen, with the fallback emoji in it.
     expect(bodies[1]!['text']).toBe('خوش آمدید 🔥');
@@ -433,7 +435,7 @@ describe('sending it, and being refused', () => {
 
     await expect(
       api.sendMessage(1, 'یک متن ساده', [[{ text: `${FIRE} پلاتینیوم`, callback_data: 'x' }]]),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ messageId: 42 });
 
     expect(bodies).toHaveLength(2);
     const second = (bodies[1]!['reply_markup'] as { inline_keyboard: Record<string, unknown>[][] })

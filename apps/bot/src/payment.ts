@@ -24,7 +24,7 @@ import {
   storedReceipt,
   type RejectionReason,
 } from '@shikoo/contracts';
-import type { D1DatabaseSession } from '@shikoo/database';
+import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import {
   cardHeldUntilSql,
   fulfilMirzabotClaimWithoutPayment,
@@ -250,6 +250,39 @@ export async function checkoutFor(
     cardHolder: card.holder_name,
     claimed: false,
   };
+}
+
+/**
+ * Which Telegram message the invoice is drawn on, so `expire.ts` can turn that
+ * message into «مهلت تمام شد» instead of leaving the card number in the chat.
+ *
+ * Called from `poll.ts` after the send, outside the transaction that drew the
+ * invoice — a fresh message has no id until Telegram answers. One statement:
+ * the invoice takes the message, and any OTHER invoice of the same customer
+ * that was drawn on the same message lets go of it. A customer who opens an
+ * invoice, goes back, and buys something else on the same screen has two open
+ * orders and one message; without the release, the first order's expiry would
+ * overwrite the second order's live invoice.
+ *
+ * Only a PENDING checkout is written: an invoice already claimed is shown as
+ * «paidAlready», not as an invoice, and its message is nobody's to edit.
+ */
+export async function rememberInvoiceMessage(
+  db: D1Database,
+  publicId: string,
+  messageId: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE payments
+          SET invoice_message_id = CASE WHEN public_id = ?1 THEN ?2 END
+        WHERE (public_id = ?1 AND status = 'PENDING')
+           OR (invoice_message_id = ?2
+               AND public_id <> ?1
+               AND user_id = (SELECT user_id FROM payments WHERE public_id = ?1))`,
+    )
+    .bind(publicId, messageId)
+    .run();
 }
 
 export type PaidResult =

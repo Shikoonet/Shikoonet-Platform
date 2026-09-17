@@ -85,6 +85,12 @@ const EntitySchema = z.object({
   custom_emoji_id: z.string().optional(),
 });
 
+/** What `sendMessage` gives back: the id Telegram assigned, when it said. */
+export interface SentMessage {
+  messageId: number | null;
+}
+const SentMessageSchema = z.object({ message_id: z.number().int() });
+
 const MessageSchema = z.object({
   message_id: z.number().int(),
   from: TelegramUserSchema.optional(),
@@ -339,7 +345,7 @@ export interface TelegramApi {
      * reported a screen with no buttons.
      */
     replyKeyboard?: ReplyKeyboard,
-  ): Promise<void>;
+  ): Promise<SentMessage>;
   /**
    * Re-sends a photo we were sent, by its `file_id`.
    *
@@ -801,7 +807,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     keyboard: InlineKeyboard | undefined,
     send: (body: Record<string, unknown>) => Promise<unknown>,
     replyKeyboard?: ReplyKeyboard,
-  ): Promise<void> {
+  ): Promise<unknown> {
     const clamped = clamp(text);
     // The KEYBOARD is built in here rather than by the caller, and that is the
     // point of the second parameter. While the caller spread its own
@@ -817,17 +823,13 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       hasCustomEmoji(clamped) ||
       keyboardHasCustomEmoji(keyboard) ||
       replyHasCustomEmoji(replyKeyboard);
-    if (!rich) {
-      await send({ text: clamped, ...both(false) });
-      return;
-    }
+    if (!rich) return send({ text: clamped, ...both(false) });
     let richError: unknown;
     try {
       // `parse_mode` is decided by the TEXT alone. A plain sentence under a
       // button that carries an emoji must not be sent as HTML: nothing escaped
       // it, and a Persian «قیمت < ۱۰۰ هزار» would reach Telegram's parser.
-      await send({ ...richText(clamped), ...both(true) });
-      return;
+      return await send({ ...richText(clamped), ...both(true) });
     } catch (err) {
       // Descriptions are not an API and Telegram does not document the exact
       // sentence for every custom-emoji refusal. A 400 earns one plain probe;
@@ -837,7 +839,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       if (!(err instanceof TelegramRejection) || err.code !== 400 || isNotModified(err)) throw err;
       richError = err;
     }
-    await send({ text: stripCustomEmoji(clamped), ...both(false) });
+    const landed = await send({ text: stripCustomEmoji(clamped), ...both(false) });
     log.warn('telegram.custom_emoji_refused', {}, richError);
     // `DOCUMENT_INVALID` names the emoji, not the bot's entitlement — and on
     // staging it named emoji that were valid. Three refusals (2026-09-07, -08,
@@ -848,8 +850,9 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     // one-screen blip into a shop-wide outage. Ceiling: an id that is
     // PERSISTENTLY invalid — typed by hand into a badge — costs its screen a
     // doubled send and one warning per draw, with no rest to cap it.
-    if (isDocumentInvalid(richError)) return;
+    if (isDocumentInvalid(richError)) return landed;
     await options.onCustomEmojiRefused?.();
+    return landed;
   }
 
   return {
@@ -907,12 +910,17 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       if (keyboard !== undefined && replyKeyboard !== undefined) {
         throw new Error('sendMessage takes an inline keyboard or a bottom one, not both');
       }
-      await withEmojiFallback(
+      const result = await withEmojiFallback(
         text,
         keyboard,
         (body) => call('sendMessage', { chat_id: chatId, ...body, ...topic(threadId) }, 15_000),
         replyKeyboard,
       );
+      // Lenient on purpose: a result without an id is still a delivered
+      // message, and the only caller that reads the id (`poll.ts`, to remember
+      // which message an invoice is) can live without it.
+      const parsed = SentMessageSchema.safeParse(result);
+      return { messageId: parsed.success ? parsed.data.message_id : null };
     },
 
     async deleteMessage(chatId, messageId) {
