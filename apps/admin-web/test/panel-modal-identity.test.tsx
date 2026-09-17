@@ -38,6 +38,7 @@ function panel(id: number, code: string, name: string): PanelItem {
     extraVolumeMinGb: null,
     extraTimeMinDays: null,
     newcomersOnly: false,
+    dashboardPath: null,
     renewEnabled: true,
     usernameMode: 'TELEGRAM_ID',
     usernameText: null,

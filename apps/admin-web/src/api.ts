@@ -1087,6 +1087,8 @@ export interface PanelItem {
   extraTimeMinDays: number | null;
   /** A starter panel: only customers who own nothing can see it. */
   newcomersOnly: boolean;
+  /** Where the panel's web UI lives under `baseUrl`; null = `/dashboard/`. */
+  dashboardPath: string | null;
   renewEnabled: boolean;
   /*
    * The rest of the panel's settings, derived on the server the same way and
@@ -2435,6 +2437,8 @@ export const api = {
       extraVolumeMinGb?: number | null;
       extraTimeMinDays?: number | null;
       newcomersOnly?: boolean;
+      /** Null puts the account links back on `/dashboard/`. */
+      dashboardPath?: string | null;
       renewEnabled?: boolean;
       /**
        * Re-probe and let the answer set the status. Ignored when `status` is in

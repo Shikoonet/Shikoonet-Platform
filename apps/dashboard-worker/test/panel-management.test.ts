@@ -544,3 +544,22 @@ describe('none of it leaks the panel config', () => {
     expect(String(id).length).toBeGreaterThan(0);
   });
 });
+
+describe('مسیر داشبورد', () => {
+  it('saves the path, reads it back, and null clears it', async () => {
+    const id = await makePanel('dash-path');
+    expect((await patch(id, { dashboardPath: '/KNJhbhbjkd/' })).status).toBe(200);
+    expect((await configOf(id))['dashboard_path']).toBe('/KNJhbhbjkd/');
+
+    let res = await app.request('/api/v1/admin/panels', {}, envAs(ADMIN));
+    let body = (await res.json()) as { items: { id: number; dashboardPath: string | null }[] };
+    expect(body.items.find((p) => p.id === id)?.dashboardPath).toBe('/KNJhbhbjkd/');
+
+    // Empty and null both mean «back to /dashboard» — a cleared box sends ''.
+    expect((await patch(id, { dashboardPath: '' })).status).toBe(200);
+    expect((await configOf(id))['dashboard_path']).toBeNull();
+    res = await app.request('/api/v1/admin/panels', {}, envAs(ADMIN));
+    body = (await res.json()) as { items: { id: number; dashboardPath: string | null }[] };
+    expect(body.items.find((p) => p.id === id)?.dashboardPath).toBeNull();
+  });
+});
