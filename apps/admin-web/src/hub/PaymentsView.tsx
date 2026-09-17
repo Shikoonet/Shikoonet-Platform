@@ -5,7 +5,7 @@
  * looks suspicious, what the engine handled, and the full history.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { Cache, QueryStatus } from './query.js';
 import { QK } from './queries.js';
 import { formatTomanFromIrr, formatTimeSeconds } from './format.js';
@@ -1324,6 +1324,84 @@ function paymentDeviceLine(item: PaymentItem): string {
   return `دستگاه: ${deviceInlineLabel(item.device)}`;
 }
 
+/**
+ * The row's clickable body. A `div[role=button]`, not a `<button>`, because
+ * the identity inside it is now a real `<a>` to the customer's file
+ * (`CustomerLink`) and an anchor inside a button is invalid HTML that Firefox
+ * simply refuses to follow. Enter/Space keep it a button for the keyboard.
+ */
+function RowBody({
+  onClick,
+  ariaLabel,
+  children,
+}: {
+  onClick: () => void;
+  ariaLabel?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className="hub-list-row__button"
+      aria-label={ariaLabel}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * «@username · <link to the user>» on a row — the id is the same door every
+ * other screen draws (Sam, 2026-09-17: «بتونم برم توی اکانت طرف»). The click
+ * stops at the link so the row underneath does not also open the review.
+ */
+function PaymentRowIdentity({ item }: { item: PaymentItem }) {
+  if (!item.telegramUsername && !item.telegramUserId) return null;
+  return (
+    <strong>
+      {item.telegramUsername && <>@{item.telegramUsername}</>}
+      {item.telegramUsername && item.telegramUserId && ' · '}
+      {item.telegramUserId && (
+        <span onClick={(e) => e.stopPropagation()}>
+          <CustomerLink
+            customer={{ id: item.customerUserId ?? null, telegramId: item.telegramUserId }}
+          />
+        </span>
+      )}
+    </strong>
+  );
+}
+
+/**
+ * Which account the customer was told to pay into, and the card it was shown
+ * as — bank/name and hint from `AccountRef`, then the card. The old
+ * «****70008» was the account hint with stars in front, which told nobody
+ * which of the shop's accounts it was.
+ */
+function PaymentRowAccount({ item }: { item: PaymentItem }) {
+  const card = item.cardDisplay ?? item.cardMasked;
+  return (
+    <>
+      <AccountRef account={item} />
+      {card && (
+        <>
+          {' '}
+          · کارت <IdentifierText value={card} />
+        </>
+      )}
+    </>
+  );
+}
+
 function NeedsReviewRow({
   item,
   isNew,
@@ -1334,34 +1412,28 @@ function NeedsReviewRow({
   onReview: () => void;
 }) {
   const identity = paymentIdentityLine(item);
-  const masked = maskAccountHint(item.accountHint, item.cardMasked);
 
   return (
     <li className={`hub-list-row hub-list-row--review${isNew ? ' hub-list-row--new' : ''}`}>
-      <button
-        type="button"
-        className="hub-list-row__button"
-        aria-label={`Review payment from ${identity || item.orderId}`}
-        onClick={onReview}
-      >
+      <RowBody ariaLabel={`Review payment from ${identity || item.orderId}`} onClick={onReview}>
         <div className="hub-list-row__line1">
           <span className="hub-list-row__identity">
             <NewBadge isNew={isNew} />
-            {identity && <strong>{identity}</strong>}
+            <PaymentRowIdentity item={item} />
           </span>
           <span className="hub-list-row__amount tabular-nums">
             {formatToman(item.expectedAmountToman)}
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
+          سفارش {item.orderId} · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="review">نیاز به بررسی</StatusBadge>
           <span className="payment-reason__text">{reasonText(item.suspectReason)}</span>
           <ReceiptMark item={item} />
         </div>
-      </button>
+      </RowBody>
     </li>
   );
 }
@@ -1390,8 +1462,6 @@ function ReceiptMark({ item }: { item: PaymentItem }) {
 }
 
 function WaitingRow({ item, onDetails }: { item: PaymentItem; onDetails: () => void }) {
-  const identity = paymentIdentityLine(item);
-  const masked = maskAccountHint(item.accountHint, item.cardMasked);
   const waitNote =
     item.waitingRemainingMs != null
       ? formatRelativeFuture(item.waitingRemainingMs)
@@ -1399,21 +1469,21 @@ function WaitingRow({ item, onDetails }: { item: PaymentItem; onDetails: () => v
 
   return (
     <li className="hub-list-row hub-list-row--waiting">
-      <button type="button" className="hub-list-row__button" onClick={onDetails}>
+      <RowBody onClick={onDetails}>
         <div className="hub-list-row__line1">
-          <span className="hub-list-row__identity">{identity && <strong>{identity}</strong>}</span>
+          <span className="hub-list-row__identity"><PaymentRowIdentity item={item} /></span>
           <span className="hub-list-row__amount tabular-nums">
             {formatToman(item.expectedAmountToman)}
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
+          سفارش {item.orderId} · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="waiting">{waitNote}</StatusBadge>
           <ReceiptMark item={item} />
         </div>
-      </button>
+      </RowBody>
     </li>
   );
 }
@@ -1438,7 +1508,6 @@ function NoTransferRow({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [busy, setBusy] = useState(false);
   const identity = paymentIdentityLine(item);
-  const masked = maskAccountHint(item.accountHint, item.cardMasked);
 
   async function runPark() {
     setBusy(true);
@@ -1465,29 +1534,24 @@ function NoTransferRow({
 
   return (
     <li className={`hub-list-row${isNew ? ' hub-list-row--new' : ''}`}>
-      <button
-        type="button"
-        className="hub-list-row__button"
-        aria-label={`Review payment with no bank transfer from ${identity || item.orderId}`}
-        onClick={onReview}
-      >
+      <RowBody ariaLabel={`Review payment with no bank transfer from ${identity || item.orderId}`} onClick={onReview}>
         <div className="hub-list-row__line1">
           <span className="hub-list-row__identity">
             <NewBadge isNew={isNew} />
-            {identity && <strong>{identity}</strong>}
+            <PaymentRowIdentity item={item} />
           </span>
           <span className="hub-list-row__amount tabular-nums">
             {formatToman(item.expectedAmountToman)}
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
+          سفارش {item.orderId} · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="no-transfer">{reasonText(item.suspectReason)}</StatusBadge>
           <ReceiptMark item={item} />
         </div>
-      </button>
+      </RowBody>
       <div className="hub-list-row__inline-actions">
         {/*
           «بررسی» first, and it is new.
@@ -1546,15 +1610,6 @@ function NoTransferRow({
   );
 }
 
-function maskAccountHint(hint: string | null, cardMasked: string | null): string {
-  if (hint) return `****${hint.replace(/\s/g, '')}`;
-  if (cardMasked) {
-    const digits = cardMasked.replace(/\D/g, '');
-    if (digits.length >= 4) return `****${digits.slice(-4)}`;
-  }
-  return '****';
-}
-
 function ManuallyVerifiedRow({
   item,
   onOpen,
@@ -1565,8 +1620,6 @@ function ManuallyVerifiedRow({
   onReopen: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const identity = paymentIdentityLine(item);
-  const masked = maskAccountHint(item.accountHint, item.cardMasked);
   const verifiedAt = item.matchedTransaction?.verifiedAt;
   const operator = item.matchedTransaction?.verifiedBy;
   const txLabel = item.matchedTransaction
@@ -1577,10 +1630,10 @@ function ManuallyVerifiedRow({
 
   return (
     <li className="hub-list-row hub-list-row--manual">
-      <button type="button" className="hub-list-row__button" onClick={onOpen}>
+      <RowBody onClick={onOpen}>
         <div className="hub-list-row__line1">
           <span className="hub-list-row__identity">
-            {identity && <strong>{identity}</strong>}
+            <PaymentRowIdentity item={item} />
             <span className="muted">سفارش {item.orderId}</span>
           </span>
           <span className="hub-list-row__amount tabular-nums">
@@ -1588,13 +1641,13 @@ function ManuallyVerifiedRow({
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          {masked}
+          <PaymentRowAccount item={item} />
           {verifiedAt != null && <> · تایید {formatTimeAgo(verifiedAt)}</>}
           {operator && <> · توسط {operator}</>}
           <> · تراکنش {txLabel}</>
           <> · تحویل {item.fulfillmentState ?? 'نامشخص'}</>
         </div>
-      </button>
+      </RowBody>
       <div className="hub-list-row__menu">
         <button
           type="button"
@@ -1687,6 +1740,10 @@ function ReopenVerificationModal({
           <dd>{identity || '—'}</dd>
           <dt>سفارش</dt>
           <dd>{item.orderId}</dd>
+          <dt>زمان درخواست</dt>
+          <dd className="tabular-nums">
+            {formatTimeSeconds(item.paidClickedAt ?? item.createdAt)}
+          </dd>
           <dt>مبلغ مورد انتظار</dt>
           <dd className="tabular-nums">{formatToman(item.expectedAmountToman)}</dd>
           {operator && (
@@ -1762,15 +1819,13 @@ function CustomerTypeMark({ item }: { item: PaymentItem }) {
 }
 
 function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
-  const identity = paymentIdentityLine(item);
-  const masked = maskAccountHint(item.accountHint, item.cardMasked);
 
   return (
     <li className="hub-list-row">
-      <button type="button" className="hub-list-row__button" onClick={onOpen}>
+      <RowBody onClick={onOpen}>
         <div className="hub-list-row__line1">
           <span className="hub-list-row__identity">
-            {identity && <strong>{identity}</strong>}
+            <PaymentRowIdentity item={item} />
             <span className={`status-pill status-pill--${item.reviewState.toLowerCase()}`}>
               {stateLabel(item.reviewState)}
             </span>
@@ -1781,10 +1836,10 @@ function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
+          سفارش {item.orderId} · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
           <ReceiptMark item={item} />
         </div>
-      </button>
+      </RowBody>
     </li>
   );
 }
@@ -1873,17 +1928,15 @@ function ContinuityRow({
   isNew?: boolean;
   onOpen: () => void;
 }) {
-  const identity = paymentIdentityLine(item);
-  const masked = maskAccountHint(item.accountHint, item.cardMasked);
   const reconciled = item.reconciledAt != null;
 
   return (
     <li className={`hub-list-row${isNew ? ' hub-list-row--new' : ''}`}>
-      <button type="button" className="hub-list-row__button" onClick={onOpen}>
+      <RowBody onClick={onOpen}>
         <div className="hub-list-row__line1">
           <span className="hub-list-row__identity">
             <NewBadge isNew={isNew} />
-            {identity && <strong>{identity}</strong>}
+            <PaymentRowIdentity item={item} />
             <span className="status-pill status-pill--fulfilled_unreconciled">حالت تداوم</span>
           </span>
           <span className="hub-list-row__amount tabular-nums">
@@ -1891,7 +1944,7 @@ function ContinuityRow({
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · {masked}
+          سفارش {item.orderId} · <PaymentRowAccount item={item} />
           {item.fulfilledAt != null && <> · تحویل {formatExactDateTime(item.fulfilledAt)}</>}
         </div>
         <div className="hub-list-row__line3 payment-reason">
@@ -1914,7 +1967,7 @@ function ContinuityRow({
           <ReconcileNote item={item} />
           <ReceiptMark item={item} />
         </div>
-      </button>
+      </RowBody>
     </li>
   );
 }
@@ -2263,6 +2316,10 @@ function ReviewPanel({
       <section className="drawer-section">
         <h3 className="drawer-section__heading">پرداخت</h3>
         <dl className="payment-review__facts">
+          <dt>زمان درخواست</dt>
+          <dd className="tabular-nums">
+            {formatTimeSeconds(item.paidClickedAt ?? item.createdAt)}
+          </dd>
           <dt>مبلغ مورد انتظار</dt>
           <dd className="tabular-nums">{formatToman(item.expectedAmountToman)}</dd>
           <dt>کارت نمایش‌داده‌شده</dt>
