@@ -42,6 +42,7 @@ import {
   actionForLabel,
   MAX_LABEL_LENGTH,
   MENUS,
+  MENU_IDS,
   buildMainMenu,
   buildReplyMenu,
   buildMenu,
@@ -330,13 +331,13 @@ export function resetContent(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * The main menu's buttons as the shop has them, for the admin's picker.
+ * One keyboard's buttons as the shop has them, for the admin's picker.
  *
- * `layout('main')` and not `DEFAULT_LAYOUTS`: the point of the screen is to put
+ * `layout(menuId)` and not `DEFAULT_LAYOUTS`: the point of the screen is to put
  * an emoji on a button this shop actually draws, and a shop that renamed or
  * reordered its menu would otherwise be offered the shipped one.
  */
-export function mainMenuButtons(): { action: string; label: string; slot: number }[] {
+export function menuButtons(menuId: MenuId): { action: string; label: string; slot: number }[] {
   // `slot` indexes the DECLARED order in `MENUS`, which is a constant in the
   // source, and it is 1-based because `parseId` refuses a zero.
   //
@@ -345,8 +346,8 @@ export function mainMenuButtons(): { action: string; label: string; slot: number
   // being pressed would shift every later position by one, and the emoji would
   // land on a button they did not choose. Nothing would error. The same shape
   // as the `ROW_NUMBER` trap in the purchase counter.
-  const declared: string[] = MENUS['main'].buttons.map((b) => b.action);
-  const live = layout('main');
+  const declared: string[] = MENUS[menuId].buttons.map((b) => b.action);
+  const live = layout(menuId);
   return live
     .filter((b) => b.visible && declared.includes(b.action))
     .map((b) => ({
@@ -356,35 +357,72 @@ export function mainMenuButtons(): { action: string; label: string; slot: number
     }));
 }
 
-/** The declared action a slot names, or null if the number means nothing. */
-export function mainMenuActionAt(slot: number): string | null {
-  return MENUS['main'].buttons[slot - 1]?.action ?? null;
+/**
+ * Every keyboard an admin can put an emoji on, numbered the same way a button
+ * is: by its declared order in `MENUS`, 1-based. A keyboard with nothing
+ * visible on it is left out — there would be nothing to press.
+ */
+export function emojiMenus(): { id: MenuId; label: string; no: number }[] {
+  return MENU_IDS.map((id, i) => ({ id, label: MENUS[id].label, no: i + 1 })).filter(
+    (m) => menuButtons(m.id).length > 0,
+  );
+}
+
+/** The keyboard a menu number names, or null if the number means nothing. */
+export function emojiMenuAt(no: number): MenuId | null {
+  return MENU_IDS[no - 1] ?? null;
 }
 
 /**
- * The first screen: which button are we changing?
+ * The first screen: which keyboard are we changing?
+ *
+ * Sam, 2026-09-17: the picker used to offer the main menu only, and every
+ * other screen — buying, my services, renewal, the wallet — had to be edited
+ * from the panel by hand. Now every keyboard is here, one per group, and the
+ * buttons of the chosen one come next.
+ */
+export function emojiHome(): string {
+  return ['🎨 ایموجی پریمیوم', '', 'کدام منو را می‌خواهی عوض کنی؟'].join('\n');
+}
+
+/** The keyboards, two to a row so twenty of them fit on a phone. */
+export function emojiMenuList(menus: { label: string; no: number }[]): InlineKeyboard {
+  const rows: InlineKeyboard = [];
+  for (let i = 0; i < menus.length; i += 2) {
+    rows.push(
+      menus.slice(i, i + 2).map((m) => ({ text: m.label, callback_data: encode('emjs', m.no) })),
+    );
+  }
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+/**
+ * The second screen: which button of that keyboard?
  *
  * Button first, emoji second — Sam, 2026-09-03: «برم تو منوی ایموجی، منو رو
  * انتخاب کنم، و وقتی ایموجی‌ای که می‌خوام رو می‌زنم همون جایگزین بشه». The first
  * build asked for the emoji first and then where to put it, which reads
  * backwards: you go in knowing which button you are unhappy with.
  */
-export function emojiHome(): string {
-  return [
-    '🎨 ایموجی پریمیوم',
-    '',
-    'کدام دکمه را می‌خواهی عوض کنی؟',
-  ].join('\n');
+export function emojiButtonsHome(menuId: MenuId): string {
+  return ['🎨 ایموجی پریمیوم', '', `«${MENUS[menuId].label}» — کدام دکمه را می‌خواهی عوض کنی؟`].join(
+    '\n',
+  );
 }
 
-/** The buttons of the main menu, drawn as they are drawn for a customer. */
-export function emojiHomeMenu(buttons: { label: string; slot: number }[]): InlineKeyboard {
+/** The buttons of one keyboard, drawn as they are drawn for a customer. */
+export function emojiHomeMenu(
+  buttons: { label: string; slot: number }[],
+  menuNo: number,
+): InlineKeyboard {
   const rows: InlineKeyboard = buttons.map((b) => [
     // The label with its markup INTACT, so `keyboardFor` turns a tag it already
     // carries into this button's icon. An admin looking at this list is looking
     // at what the customer sees — including which buttons already have one.
-    { text: b.label, callback_data: encode('emjb', b.slot) },
+    { text: b.label, callback_data: encode('emjs', menuNo, b.slot) },
   ]);
+  rows.push([{ text: '⬅️ منوهای دیگر', callback_data: encode('emj') }]);
   rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
   return rows;
 }
@@ -424,7 +462,7 @@ export function emojiChanged(label: string): string {
     `✅ ایموجی پریمیوم «${stripCustomEmoji(label).trim()}» تغییر کرد.`,
     '',
     'ایموجی قبلی، اگر وجود داشت، حذف شد و فقط ایموجی جدید روی دکمه ماند.',
-    'برای تغییر دکمهٔ دیگر، آن را از فهرست زیر انتخاب کن.',
+    'برای تغییر دکمهٔ دیگر، آن را از فهرست زیر انتخاب کن — یا با «منوهای دیگر» سراغ منوی دیگری برو.',
   ].join('\n');
 }
 

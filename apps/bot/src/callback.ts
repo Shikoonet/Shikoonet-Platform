@@ -78,10 +78,13 @@ export const CALLBACK_ACTIONS = [
   // being undrawn is not being closed: `callback_data` is unsigned, so anybody
   // can post these three. `handleCallback` re-reads `is_admin` before acting on
   // any of them, which is where the door actually is.
-  'emj', // the admin's premium-emoji screen: which main-menu button to change
+  'emj', // the admin's premium-emoji screen: which keyboard to change
+  'emjs', // <menuNo>[:<buttonSlot>] — that keyboard's buttons, or ask for the
+  //         new emoji of one of them. Both numbers index the DECLARED order in
+  //         `MENUS`, never a position on the screen (see `menuButtons`).
   'emja', // [buttonSlot] — legacy prompts already visible in chat history
-  'emjb', // <buttonSlot>[:<emojiId>] — ask for its new emoji; the optional
-  //         emoji id keeps tiles from the previous picker usable
+  'emjb', // <buttonSlot>[:<emojiId>] — the main menu only, from before `emjs`;
+  //         the optional emoji id keeps tiles from the previous picker usable
   'wal', // the balance and the last movements on it
   'top', // the deposit amounts on offer
   'tp', // <presetIndex> — deposit that preset. An INDEX, never an amount:
@@ -149,7 +152,7 @@ const ActionSchema = z.enum(CALLBACK_ACTIONS);
  * yet" is not a property anybody can rely on, and an action's arity is part of
  * its shape in the same way its name is.
  */
-const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord', 'emjb', 'rnwl', 'rnwp']);
+const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord', 'emjb', 'emjs', 'rnwl', 'rnwp']);
 
 /**
  * Telegram's limit is 64 bytes. Our longest is `order:<bigint>` — well inside
