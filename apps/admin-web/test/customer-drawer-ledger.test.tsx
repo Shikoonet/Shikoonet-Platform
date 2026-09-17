@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
 import { CustomersPage } from '../src/pages/CustomersPage.js';
-import type { CustomerDetail, CustomerListItem, OrderRow } from '../src/api.js';
+import type { CustomerDetail, CustomerListItem, OrderRow, SubscriptionRow } from '../src/api.js';
 
 const LIST: CustomerListItem[] = [
   {
@@ -97,6 +97,65 @@ const ORDERS: OrderRow[] = [
     completedAt: '2026-09-17T06:22:00Z',
     customer: { id: 7, telegramId: 7_137_494_513, username: 'reza_kh' },
     planName: null,
+    remoteUsername: null,
+    cardMasked: null,
+  },
+  {
+    id: 92,
+    publicId: 'SH-92',
+    kind: 'NEW_PURCHASE',
+    status: 'COMPLETED',
+    quantity: 1,
+    unitPriceIrr: 3_990_000,
+    discountIrr: 0,
+    totalIrr: 3_990_000,
+    failureReason: null,
+    deliveryState: 'DELIVERED',
+    createdAt: '2026-09-17T06:30:00Z',
+    completedAt: '2026-09-17T06:30:00Z',
+    customer: { id: 7, telegramId: 7_137_494_513, username: 'reza_kh' },
+    planName: '1ماهه-100گیگ',
+    remoteUsername: 'reza_7613',
+    cardMasked: '**** **** **** 7613',
+  },
+];
+
+// One account on a panel that still exists, one whose panel is gone: the
+// first is a link, the second is only a name.
+const SUBS: SubscriptionRow[] = [
+  {
+    id: 51,
+    publicId: 'SUB-51',
+    status: 'ACTIVE',
+    panelUserUrl: 'https://pg.example:8000/dashboard/#/users?search=reza_7613',
+    planName: '1ماهه-100گیگ',
+    providerName: 'سرویس تیتانیوم',
+    priceIrr: 3_990_000,
+    volumeGb: 100,
+    durationDays: 30,
+    remoteUsername: 'reza_7613',
+    purchasedAt: '2026-09-17T06:30:00Z',
+    expiresAt: '2026-10-17T06:30:00Z',
+    lastSyncedAt: null,
+    usedBytes: null,
+    customer: { id: 7, telegramId: 7_137_494_513, username: 'reza_kh' },
+  },
+  {
+    id: 52,
+    publicId: 'SUB-52',
+    status: 'DISABLED',
+    panelUserUrl: null,
+    planName: 'پلن قدیمی',
+    providerName: 'پنل قدیمی',
+    priceIrr: 1_000,
+    volumeGb: null,
+    durationDays: null,
+    remoteUsername: 'old_acct',
+    purchasedAt: '2026-01-01T06:30:00Z',
+    expiresAt: null,
+    lastSyncedAt: null,
+    usedBytes: null,
+    customer: { id: 7, telegramId: 7_137_494_513, username: 'reza_kh' },
   },
 ];
 
@@ -117,8 +176,8 @@ vi.mock('../src/api.js', async () => {
       customers: async () => ({ ok: true, total: 1, page: 1, pageSize: 25, items: LIST }),
       customer: async () => ({ ok: true, customer: detail, entries: ENTRIES }),
       adjustWallet: (id: number, body: { amountIrr: number }) => adjustWallet(id, body),
-      orders: async () => ({ ok: true, total: 1, page: 1, pageSize: 10, items: ORDERS }),
-      subscriptions: async () => ({ ok: true, total: 0, page: 1, pageSize: 10, items: [] }),
+      orders: async () => ({ ok: true, total: ORDERS.length, page: 1, pageSize: 10, items: ORDERS }),
+      subscriptions: async () => ({ ok: true, total: SUBS.length, page: 1, pageSize: 10, items: SUBS }),
       customerHistory: async () => ({ ok: true, items: [] }),
     },
   };
@@ -154,6 +213,33 @@ describe('the wallet ledger in a customer’s card', () => {
 
     // The order list names the top-up rather than leaving its cell blank.
     expect(await screen.findByText('شارژ کیف پول')).toBeTruthy();
+  });
+});
+
+describe('the orders and services in a customer’s card', () => {
+  it('names the card each order was paid into, and links each account to its panel', async () => {
+    window.history.replaceState(null, '', '/customers?id=7');
+    render(
+      <RoleProvider role="ADMIN">
+        <CustomersPage />
+      </RoleProvider>,
+    );
+
+    // The order: which card, and which account it made.
+    expect(await screen.findByText('**** **** **** 7613')).toBeTruthy();
+
+    // The service: the same account name, as a link straight onto the panel
+    // — in a new tab, so the customer's card stays where the operator was.
+    const links = (await screen.findAllByText('reza_7613')).filter((el) => el.tagName === 'A');
+    expect(links).toHaveLength(1);
+    const link = links[0] as HTMLAnchorElement;
+    expect(link.href).toBe('https://pg.example:8000/dashboard/#/users?search=reza_7613');
+    expect(link.target).toBe('_blank');
+
+    // No panel to open → a name, never a dead link.
+    const old = screen.getByText('old_acct');
+    expect(old.tagName).not.toBe('A');
+    expect(old.querySelector('a')).toBeNull();
   });
 });
 

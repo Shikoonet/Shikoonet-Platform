@@ -1172,12 +1172,18 @@ export interface OrderRow {
   completedAt: string | null;
   customer: CustomerRef;
   planName: string | null;
+  /** The panel account this order made or was for; null for a top-up. */
+  remoteUsername: string | null;
+  /** The card the customer was told to pay into, masked. */
+  cardMasked: string | null;
 }
 
 export interface SubscriptionRow {
   id: number;
   publicId: string;
   status: string;
+  /** The account's own page on its panel; null when there is none to open. */
+  panelUserUrl: string | null;
   planName: string;
   providerName: string | null;
   priceIrr: number;

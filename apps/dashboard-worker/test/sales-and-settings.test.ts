@@ -504,6 +504,90 @@ describe('the read-only ledgers', () => {
     expect(mine?.planName).toBe('1ماهه-20گیگ-119.000ت');
   });
 
+  it('names the card an order was paid into and the account it made, and links the account to its panel', async () => {
+    // What the customer's card asks of these two rows: «به کدام کارت پرداخت
+    // شد، اسم اکانتش چیست، و کجای پاسارگارد است». The card is on the
+    // payment, the name on the subscription, and the panel address on the
+    // provider — three tables, one row each on the screen.
+    const { id: userId } = await makeUser();
+    const tag = `zzsales-${seq}`;
+    await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind, status, base_url)
+       VALUES (?1, 'پنل تست', 'pasarguard', 'ACTIVE', 'https://pg.example:8000/')
+       ON CONFLICT (code) DO UPDATE SET base_url = EXCLUDED.base_url, kind = EXCLUDED.kind`,
+    )
+      .bind(tag)
+      .run();
+    const provider = await baseEnv.DB.prepare(`SELECT id FROM provisioning_providers WHERE code = ?1`)
+      .bind(tag)
+      .first<{ id: number }>();
+    try {
+      await baseEnv.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', 3990000, 1, 0, 3990000, 'COMPLETED')`,
+      )
+        .bind(tag, userId)
+        .run();
+      const order = await baseEnv.DB.prepare(`SELECT id FROM orders WHERE public_id = ?1`)
+        .bind(tag)
+        .first<{ id: number }>();
+      // Two payments on one order — the first attempt expired, the second
+      // paid — so the row has to pick, and it must pick the one that paid.
+      await baseEnv.DB.prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, assigned_card_number, created_at)
+         VALUES (?1 || '-expired', ?2, ?3, 3990000, 'CARD_TO_CARD', 'EXPIRED', '6037991111111111', now() - interval '1 hour'),
+                (?1 || '-paid',    ?2, ?3, 3990000, 'CARD_TO_CARD', 'PAID',    '6037997777777613', now() - interval '2 hours')`,
+      )
+        .bind(tag, userId, order!.id)
+        .run();
+      await baseEnv.DB.prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, order_id, provider_id, plan_name_at_sale, provider_name_at_sale,
+            price_irr, status, purchased_at, remote_username)
+         VALUES (?1, ?2, ?3, ?4, '1ماهه-100گیگ', 'پنل تست', 3990000, 'ACTIVE', now(), 'reza 7613')`,
+      )
+        .bind(tag, userId, order!.id, provider!.id)
+        .run();
+
+      const orders = (await (
+        await app.request(`/api/v1/admin/orders?customerId=${userId}`, {}, envAs(ADMIN))
+      ).json()) as { items: Array<{ cardMasked: string | null; remoteUsername: string | null }> };
+      expect(orders.items).toHaveLength(1);
+      expect(orders.items[0]).toMatchObject({
+        remoteUsername: 'reza 7613',
+        cardMasked: '**** **** **** 7613',
+      });
+      // Never the full number, on any screen.
+      expect(JSON.stringify(orders)).not.toContain('6037997777777613');
+
+      const subs = (await (
+        await app.request(`/api/v1/admin/subscriptions?customerId=${userId}`, {}, envAs(ADMIN))
+      ).json()) as { items: Array<{ panelUserUrl: string | null; remoteUsername: string | null }> };
+      expect(subs.items).toHaveLength(1);
+      // Trailing slash folded, name URL-encoded, and PasarGuard's hash route
+      // — see `panelUserUrl` for why the `#` is there.
+      expect(subs.items[0]!.panelUserUrl).toBe(
+        'https://pg.example:8000/dashboard/#/users?search=reza%207613',
+      );
+
+      // A panel of a kind this code has not verified a deep link for gets
+      // none, rather than a guessed one that lands on a 404.
+      await baseEnv.DB.prepare(`UPDATE provisioning_providers SET kind = 'hiddify' WHERE id = ?1`)
+        .bind(provider!.id)
+        .run();
+      const other = (await (
+        await app.request(`/api/v1/admin/subscriptions?customerId=${userId}`, {}, envAs(ADMIN))
+      ).json()) as { items: Array<{ panelUserUrl: string | null }> };
+      expect(other.items[0]!.panelUserUrl).toBeNull();
+    } finally {
+      // `payments.user_id` is ON DELETE RESTRICT, so `purge` cannot take the
+      // user while these rows stand; and a provider is not a fixture row the
+      // helper knows about.
+      await baseEnv.DB.prepare(`DELETE FROM payments WHERE public_id LIKE ?1 || '-%'`).bind(tag).run();
+      await baseEnv.DB.prepare(`DELETE FROM provisioning_providers WHERE code = ?1`).bind(tag).run();
+    }
+  });
+
   it('lists subscriptions under the names they carried at sale', async () => {
     const { id: userId, telegramId } = await makeUser();
     await baseEnv.DB.prepare(
