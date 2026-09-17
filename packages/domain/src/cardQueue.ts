@@ -87,3 +87,15 @@ export function cardHeldUntilSql(amountParam?: string): string {
 }
 
 export const CARD_HELD_UNTIL_SQL = cardHeldUntilSql();
+
+/**
+ * Where the outer `pc` stands in the line, 1-based, among every card in
+ * service — across accounts, which is why nothing here is scoped. The order is
+ * the picker's own last tie-break, `(rotation_cursor, id)`; the hold is not
+ * folded in because the dashboard shows it as its own badge beside this one.
+ */
+export const CARD_QUEUE_POSITION_SQL = `(
+  SELECT COUNT(*)::int + 1 FROM payment_cards o
+    JOIN financial_accounts ofa ON ofa.id = o.financial_account_id
+   WHERE o.status = 'ACTIVE' AND ofa.active = 1 AND ofa.status = 'ACTIVE'
+     AND (o.rotation_cursor, o.id) < (pc.rotation_cursor, pc.id))`;

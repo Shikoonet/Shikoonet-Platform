@@ -119,6 +119,10 @@ export interface AccountListItem {
     holder_name: string | null;
     /** ACTIVE | DISABLED. A list that omits it draws a dead card as a live one. */
     status?: string;
+    /** Where the card stands in the bakery queue, among every card in service. */
+    queue_position?: number;
+    /** Epoch ms while an open invoice has this card; null when it is free. */
+    held_until?: number | null;
   }>;
 }
 

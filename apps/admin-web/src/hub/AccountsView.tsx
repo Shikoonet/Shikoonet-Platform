@@ -61,6 +61,29 @@ function formatPaymentCardCell(a: AccountListItem): string {
   return '—';
 }
 
+/**
+ * The list's «حساب / کارت» cell, as badges rather than a sentence — the same
+ * badges the editor's card panel draws, so an operator no longer has to open
+ * every account to learn whose turn it is (Sam, 2026-09-17). Falls back to
+ * the text form for an account that has no card mapped.
+ */
+function PaymentCardCell({ a }: { a: AccountListItem }) {
+  const mapped = a.payment_cards ?? [];
+  if (mapped.length === 0) {
+    return a.card_last_four ? <IdentifierText value={`*${a.card_last_four}`} /> : null;
+  }
+  return (
+    <span className="payment-card-cell">
+      {mapped.map((c) => (
+        <span key={c.id} className="payment-card-cell__card">
+          <IdentifierText value={c.display} {...(c.holder_name ? { label: c.holder_name } : {})} />
+          <CardStateBadges card={c} accountActive={a.active !== 0} />
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export function AccountsView({ cache }: AccountsViewProps) {
   const w = useWriteProps();
   const { data: accountsPayload } = cache.useQuery<{
@@ -479,13 +502,20 @@ export function AccountsView({ cache }: AccountsViewProps) {
             </thead>
             <tbody>
               {sortedAccounts.map((a) => {
-                const idDisplay = accountCellAccessor('account_hint')(a);
                 return (
                   <tr key={a.id} className={a.active ? '' : 'dim'}>
                     <td>{a.display_name}</td>
                     <td>{a.bank_name}</td>
                     <td>
-                      <IdentifierText value={String(idDisplay || '')} />
+                      {a.account_hint || a.iban || accountCellAccessor('account_hint')(a) ? (
+                        <span className="ids">
+                          {a.account_hint && <IdentifierText value={a.account_hint} />}
+                          <PaymentCardCell a={a} />
+                          {a.iban && <IdentifierText value={a.iban} />}
+                        </span>
+                      ) : (
+                        <IdentifierText value={null} />
+                      )}
                     </td>
                     <td>
                       <span className={`status-pill status-pill--${a.status.toLowerCase()}`}>
@@ -811,11 +841,7 @@ function AccountCard({
           <span className="label">شناسه‌ها</span>
           <span className="ids">
             <IdentifierText value={a.account_hint} />
-            {(a.payment_cards?.length ?? 0) > 0 ? (
-              <IdentifierText value={formatPaymentCardCell(a)} />
-            ) : a.card_last_four ? (
-              <IdentifierText value={`*${a.card_last_four}`} />
-            ) : null}
+            <PaymentCardCell a={a} />
             {a.account_last_four ? <IdentifierText value={`*${a.account_last_four}`} /> : null}
             <IdentifierText value={a.iban} />
           </span>
@@ -911,6 +937,50 @@ interface PaymentCardRow {
   held_until: number | null;
   bank_name: string | null;
   luhn_ok: boolean;
+}
+
+/**
+ * A card's state, the way the bot sees it, as badges. Drawn in the editor's
+ * card panel and on every row of the accounts list — one component, so the
+ * two cannot say different things about the same card.
+ *
+ * Three states, not two. «خاموش» on a card somebody switched off is a sentence
+ * they can act on; «خاموش» on a card whose ACCOUNT is off sends them to the
+ * wrong switch. The state badge is drawn in BOTH directions on purpose: while
+ * «خاموش» was the only badge, a live card said nothing at all and the two
+ * states looked identical at a glance.
+ *
+ * Then the queue, as the bot walks it: a card that took money goes to the
+ * back, and a card in a customer's hands is skipped until their ten minutes
+ * are up or their claim is settled. Both badges are what «چرا این کارت نشان
+ * داده نمی‌شود» is answered with, so they sit beside the state rather than in
+ * a tooltip. An older list response carries neither field; then only the
+ * state is drawn.
+ */
+function CardStateBadges({
+  card: c,
+  accountActive,
+}: {
+  card: { status?: string; queue_position?: number; held_until?: number | null };
+  accountActive: boolean;
+}) {
+  // `!== 'DISABLED'` rather than `=== 'ACTIVE'`: an older response with no
+  // status must read as live, which is what it always was.
+  const cardOn = c.status !== 'DISABLED';
+  const on = cardOn && accountActive;
+  return (
+    <>
+      <span className={`badge ${on ? 'badge-active' : 'badge-block'}`}>
+        {on ? 'در گردش' : cardOn ? 'حساب خاموش است' : 'خاموش'}
+      </span>
+      {on && c.queue_position != null && (
+        <span className="badge">نوبت {count(c.queue_position)}</span>
+      )}
+      {on && c.held_until != null && (
+        <span className="badge badge-warning">در دست مشتری تا {formatTime(c.held_until)}</span>
+      )}
+    </>
+  );
 }
 
 export function PaymentCardsPanel({
@@ -1066,7 +1136,6 @@ export function PaymentCardsPanel({
           // that is ACTIVE on an account that is not is a card nobody will ever
           // be shown — and this badge is the only place that says so.
           const on = c.status === 'ACTIVE' && accountActive;
-          const offBecauseAccount = c.status === 'ACTIVE' && !accountActive;
           return (
             <li key={c.id} className={on ? undefined : 'is-off'}>
               {/* Line one is the card's identity and its one state. The state
@@ -1074,23 +1143,7 @@ export function PaymentCardsPanel({
                   the only badge, a live card said nothing at all and the two
                   states looked identical at a glance. */}
               <div className="payment-card__identity">
-                <span className={`badge ${on ? 'badge-active' : 'badge-block'}`}>
-                  {/* Three states, not two. «خاموش» on a card somebody switched
-                      off is a sentence they can act on; «خاموش» on a card whose
-                      ACCOUNT is off sends them to the wrong switch. */}
-                  {on ? 'در گردش' : offBecauseAccount ? 'حساب خاموش است' : 'خاموش'}
-                </span>
-                {/* The queue, as the bot walks it: a card that took money goes to
-                    the back, and a card in a customer's hands is skipped until
-                    their ten minutes are up or their claim is settled. Both
-                    badges are what «چرا این کارت نشان داده نمی‌شود» is answered
-                    with, so they sit beside the state rather than in a tooltip. */}
-                {on && <span className="badge">نوبت {count(c.queue_position)}</span>}
-                {on && c.held_until != null && (
-                  <span className="badge badge-warning">
-                    در دست مشتری تا {formatTime(c.held_until)}
-                  </span>
-                )}
+                <CardStateBadges card={c} accountActive={accountActive} />
                 <IdentifierText value={c.display} />
                 {c.bank_name && <span className="badge">{c.bank_name}</span>}
                 {/* A card number that fails its own check digit cannot exist. One

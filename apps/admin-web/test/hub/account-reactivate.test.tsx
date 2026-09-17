@@ -200,8 +200,41 @@ describe('an account that has been switched off', () => {
 
     render(<AccountsView cache={createCache()} />);
 
-    const cells = await screen.findAllByText(/6037-0000-0000-0095/);
-    expect(cells[0]!.textContent).toContain('خاموش');
+    // The mock answers the review-queue fetch with the same rows, and that
+    // block still prints the card as a sentence — so pick the list's cell.
+    const cell = (await screen.findAllByText(/6037-0000-0000-0095/))
+      .map((el) => el.closest('.payment-card-cell__card'))
+      .find(Boolean)!;
+    expect(cell.textContent).toContain('خاموش');
+  });
+
+  /**
+   * The queue, on the list. The editor's card panel said «نوبت ۳ · در دست
+   * مشتری تا …» and the list — nineteen rows on production — said only the
+   * number, so learning whose turn it was meant opening every account
+   * (Sam, 2026-09-17). Same badges, same component, on the row.
+   */
+  it('shows on the row where the card stands and who is holding it', async () => {
+    rows = [
+      account({
+        id: 'acc-queue',
+        display_name: 'حساب در صف',
+        active: 1,
+        payment_cards: [
+          { id: 'c3', card_digits: '6037000000000095', masked: '****0095', display: '6037-0000-0000-0095', holder_name: 'پویان بهمن', status: 'ACTIVE', queue_position: 3, held_until: Date.UTC(2026, 8, 15, 10, 0) },
+        ],
+      }),
+    ];
+
+    render(<AccountsView cache={createCache()} />);
+
+    const cell = (await screen.findAllByText(/6037-0000-0000-0095/))
+      .map((el) => el.closest('.payment-card-cell__card'))
+      .find(Boolean)!;
+    expect(cell.textContent).toContain('در گردش');
+    expect(cell.textContent).toContain('نوبت ۳');
+    expect(cell.textContent).toContain('در دست مشتری تا');
+    expect(cell.textContent).toContain('پویان بهمن');
   });
 
   it('leaves a live account alone — it still only offers the way out', async () => {

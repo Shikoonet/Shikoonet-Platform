@@ -3078,6 +3078,22 @@
   min-width: 0;
 }
 
+/* The same card, on a row of the accounts list: one line per card, its badges
+   beside it. `.ids` around it lays identifiers out inline, and a card with
+   three badges wants its own line. */
+.payment-card-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.payment-card-cell__card {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+
 /* The number is the card's name. Everything beside it is an annotation, so it
    gets the size and they keep theirs. */
 .payment-card__identity code {
