@@ -17,6 +17,8 @@ import { useEffect, useState } from 'react';
 import { api, type BulkSend } from '../api.js';
 import { count } from '../format.js';
 
+const SHOW_FINISHED_FOR_MS = 10 * 60 * 1000;
+
 export function BroadcastProgress() {
   const [send, setSend] = useState<BulkSend | null>(null);
   const p = send?.progress ?? null;
@@ -36,19 +38,22 @@ export function BroadcastProgress() {
     return () => clearInterval(t);
   }, [left > 0]);
 
-  if (p === null || left <= 0) return null;
+  // Stays up for a while after the last row goes: a test send to one customer
+  // is over in under a second, and a bar that only exists while something is
+  // unsent was never on screen long enough to be seen. Sam, 2026-09-17: «خیلی
+  // مهمه برام». Ten minutes is long enough to walk back from another screen.
+  const recent = send !== null && Date.now() - send.at < SHOW_FINISHED_FOR_MS;
+  if (p === null || p.total === 0 || (left <= 0 && !recent)) return null;
 
   return (
-    <span
-      className="broadcast-progress"
-      role="status"
-      title={p.failed > 0 ? `${count(p.failed)} نفر نرسید` : undefined}
-    >
+    <span className="broadcast-progress" role="status">
       {/* The native element for «this much of a known total»; `accent-color`
           is how a browser is told what colour to draw it. */}
       <progress value={done} max={p.total} />
       <span>
-        {count(Math.floor((done / p.total) * 100))}٪ رفته — {count(left)} مانده
+        {count(Math.floor((done / p.total) * 100))}٪ رفته —{' '}
+        {left > 0 ? `${count(left)} مانده` : 'تمام شد'}
+        {p.failed > 0 ? `، ${count(p.failed)} نرسید` : ''}
       </span>
     </span>
   );
