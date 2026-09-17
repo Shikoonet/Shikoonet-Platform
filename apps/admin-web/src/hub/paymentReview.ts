@@ -68,6 +68,8 @@ export type PaymentTab =
    * and a pending claim that fell into it was on no screen in the panel.
    */
   | 'open'
+  /** `open` rows the operator set aside to wait for the bank SMS. */
+  | 'parked'
   | 'needs_review'
   | 'declined_income'
   | 'waiting'

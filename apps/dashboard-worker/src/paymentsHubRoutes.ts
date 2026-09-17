@@ -39,6 +39,8 @@ import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 export type PaymentTab =
   | 'income'
   | 'open'
+  /** `open` rows an operator set aside to wait for the bank SMS (`parked_at`). */
+  | 'parked'
   | 'needs_review'
   | 'declined_income'
   | 'waiting'
@@ -61,7 +63,13 @@ type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
  * `open` joins them for exactly that reason, and it is the tab that made the
  * point: the claim Sam could not find was three days old.
  */
-const OPEN_QUEUE_TABS = new Set<PaymentTab>(['open', 'needs_review', 'waiting', 'suspected_fake']);
+const OPEN_QUEUE_TABS = new Set<PaymentTab>([
+  'open',
+  'parked',
+  'needs_review',
+  'waiting',
+  'suspected_fake',
+]);
 
 function rangeClause(
   column: string,

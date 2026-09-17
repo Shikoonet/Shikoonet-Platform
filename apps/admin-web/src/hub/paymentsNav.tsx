@@ -10,6 +10,7 @@ import {
   IconPayments,
   IconReseller,
   IconReview,
+  IconWaiting,
 } from './paymentsIcons.js';
 
 /*
@@ -58,6 +59,19 @@ const REVIEW_TABS = [
     countKey: 'open' as const,
     unreadKey: 'needsReviewUnread' as const,
     Icon: IconReview,
+  },
+  /**
+   * «در انتظار بررسی» minus what the operator set aside. A claim whose
+   * customer never sent a receipt and whose SMS has not come has nothing to
+   * decide yet; parking it keeps the work queue honest. It is still PENDING,
+   * so the matcher settles it and it leaves this tab on its own.
+   */
+  {
+    value: 'parked' as const,
+    label: 'کنار گذاشته',
+    shortLabel: 'کنار',
+    countKey: 'parked' as const,
+    Icon: IconWaiting,
   },
   {
     value: 'continuity' as const,
@@ -127,6 +141,7 @@ export function parsePaymentTabFromLocation(search = window.location.search): Pa
   const allowed: PaymentTab[] = [
     'income',
     'open',
+    'parked',
     'needs_review',
     'declined_income',
     'waiting',
