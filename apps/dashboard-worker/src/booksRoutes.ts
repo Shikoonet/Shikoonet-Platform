@@ -46,6 +46,7 @@ export const OFF_BOOKS_CATEGORY_FA: Record<OffBooksCategory, string> = {
   PERSONAL: 'شخصی',
   MISTAKE_RETURNED: 'اشتباهی و برگشت‌داده‌شده',
   BANK_FEE: 'کارمزد بانک',
+  BANK_INTEREST: 'سود بانکی',
   OTHER: 'سایر',
 };
 
@@ -72,6 +73,8 @@ function statementTotals(accounts: AccountStatement[]) {
     ledgerFeeIrr: sum((s) => s.ledger.feeIrr),
     gapIrr: sum((s) => s.gapIrr ?? 0),
     accountsWithGap: accounts.filter((s) => s.gapIrr !== null && s.gapIrr !== 0).length,
+    /** Rows whose opening or closing the bank never said — «می‌خواند» cannot be claimed over them. */
+    accountsUnknown: accounts.filter((s) => s.gapIrr === null).length,
   };
 }
 
@@ -114,9 +117,9 @@ export function registerBooksRoutes(
     const header = [
       'حساب', 'بانک', 'شماره', 'وضعیت',
       'موجودی اول ماه', 'واریز مشتری‌ها', 'تعداد واریز',
-      'جابه‌جایی (واریز)', 'شخصی (واریز)', 'اشتباهی (واریز)', 'سایر (واریز)',
+      'جابه‌جایی (واریز)', 'شخصی (واریز)', 'اشتباهی (واریز)', 'سود بانکی (واریز)', 'سایر (واریز)',
       'برداشت با هزینهٔ ثبت‌شده', 'برداشت بی‌توضیح', 'تعداد بی‌توضیح',
-      'جابه‌جایی (برداشت)', 'شخصی (برداشت)', 'اشتباهی (برداشت)', 'کارمزد بانک', 'سایر (برداشت)',
+      'جابه‌جایی (برداشت)', 'شخصی (برداشت)', 'اشتباهی (برداشت)', 'کارمزد بانک', 'سود بانکی (برداشت)', 'سایر (برداشت)',
       'هزینه‌های دفتر', 'کارمزد دفتر', 'موجودی آخر ماه', 'اختلاف با بانک',
     ];
     const line = (lines: AccountStatement['offBooksCredits'], cat: OffBooksCategory) =>
@@ -127,10 +130,10 @@ export function registerBooksRoutes(
         s.opening ? toman(s.opening.balanceIrr) : '',
         toman(s.customerIncome.amountIrr), s.customerIncome.count,
         line(s.offBooksCredits, 'TRANSFER'), line(s.offBooksCredits, 'PERSONAL'),
-        line(s.offBooksCredits, 'MISTAKE_RETURNED'), line(s.offBooksCredits, 'OTHER'),
+        line(s.offBooksCredits, 'MISTAKE_RETURNED'), line(s.offBooksCredits, 'BANK_INTEREST'), line(s.offBooksCredits, 'OTHER'),
         toman(s.explainedWithdrawals.amountIrr), toman(s.unexplainedWithdrawals.amountIrr), s.unexplainedWithdrawals.count,
         line(s.offBooksDebits, 'TRANSFER'), line(s.offBooksDebits, 'PERSONAL'),
-        line(s.offBooksDebits, 'MISTAKE_RETURNED'), line(s.offBooksDebits, 'BANK_FEE'), line(s.offBooksDebits, 'OTHER'),
+        line(s.offBooksDebits, 'MISTAKE_RETURNED'), line(s.offBooksDebits, 'BANK_FEE'), line(s.offBooksDebits, 'BANK_INTEREST'), line(s.offBooksDebits, 'OTHER'),
         toman(s.ledger.expenseIrr), toman(s.ledger.feeIrr),
         s.closing ? toman(s.closing.balanceIrr) : '',
         s.gapIrr === null ? '' : toman(s.gapIrr),
@@ -267,6 +270,15 @@ export function registerBooksRoutes(
     const month = parseJalaliMonth(c.req.query('month'));
     const accountId = c.req.query('accountId');
     if (!month || !accountId) return c.json({ ok: false, error: 'invalid_query' }, 400);
+    // Nothing before the fresh start, the same cut the statement makes: a
+    // list that showed the old rows beside a statement that ignores them
+    // read as a disagreement on the walk of 2026-09-17.
+    const openedAt = await c.env.DB.prepare(
+      `SELECT as_of FROM account_opening_balances WHERE financial_account_id = ?1`,
+    )
+      .bind(accountId)
+      .first<{ as_of: string | number }>();
+    const from = Math.max(month.start, openedAt ? Number(openedAt.as_of) + 1 : month.start);
     const rows = await c.env.DB.prepare(
       `SELECT t.id, t.direction, t.amount_irr, t.balance_irr, t.bank_timestamp, t.status,
               idt.category AS off_books_category, idt.reason AS off_books_note,
@@ -283,7 +295,7 @@ export function registerBooksRoutes(
           AND t.bank_timestamp >= ?2 AND t.bank_timestamp < ?3
         ORDER BY t.bank_timestamp DESC LIMIT 1000`,
     )
-      .bind(accountId, month.start, month.end)
+      .bind(accountId, from, month.end)
       .all<{
         id: string;
         direction: 'CREDIT' | 'DEBIT';

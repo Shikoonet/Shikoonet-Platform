@@ -616,13 +616,14 @@ export interface WithdrawalOption {
   linkedExpenseId: number | null;
 }
 
-export type OffBooksCategory = 'TRANSFER' | 'PERSONAL' | 'MISTAKE_RETURNED' | 'BANK_FEE' | 'OTHER';
+export type OffBooksCategory = 'TRANSFER' | 'PERSONAL' | 'MISTAKE_RETURNED' | 'BANK_FEE' | 'BANK_INTEREST' | 'OTHER';
 
 export const OFF_BOOKS_CATEGORY_FA: Record<OffBooksCategory, string> = {
   TRANSFER: 'جابه‌جایی بین حساب‌های خودمان',
   PERSONAL: 'شخصی',
   MISTAKE_RETURNED: 'اشتباهی و برگشت‌داده‌شده',
   BANK_FEE: 'کارمزد بانک',
+  BANK_INTEREST: 'سود بانکی',
   OTHER: 'سایر',
 };
 
@@ -654,6 +655,7 @@ export interface AccountStatement {
   ledger: { expenseCount: number; expenseIrr: number; feeIrr: number; unlinkedCount: number; unlinkedIrr: number };
   bankDeltaIrr: number;
   gapIrr: number | null;
+  beforeStart: boolean;
 }
 
 export interface StatementTotals {
@@ -671,6 +673,7 @@ export interface StatementTotals {
   ledgerFeeIrr: number;
   gapIrr: number;
   accountsWithGap: number;
+  accountsUnknown: number;
 }
 
 export interface BooksOpening {

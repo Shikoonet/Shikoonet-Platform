@@ -87,7 +87,14 @@ export const BANK_OUTFLOW_TX_WHERE = `
  * any live debit. A credit the bot already spent on a claim is not a
  * candidate — refusing that money is a claim decision, not a bookkeeping one.
  */
+export const TX_EXPLAINED_BY_EXPENSE = `
+  EXISTS (
+    SELECT 1 FROM revenue_adjustments ra
+     WHERE ra.transaction_candidate_id = t.id AND ra.voided_at IS NULL
+  )`;
+
 export const OFF_BOOKS_ELIGIBLE_TX_WHERE = `
   ((${INCOME_TX_WHERE})
    OR (t.direction = 'DEBIT' AND t.status NOT IN ('REJECTED','IGNORED')
-       AND NOT ${TX_OFF_BOOKS}))`;
+       AND NOT ${TX_OFF_BOOKS}
+       AND NOT ${TX_EXPLAINED_BY_EXPENSE}))`;

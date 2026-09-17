@@ -83,7 +83,7 @@ import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import type { EnvName } from '@shikoo/contracts';
 import { jalaliPeriodLabel, nextJalaliDue } from '@shikoo/contracts';
-import { parseStatsDay, parseStatsRange, statsRangeBounds } from '@shikoo/domain';
+import { TX_OFF_BOOKS, parseStatsDay, parseStatsRange, statsRangeBounds } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 /**
@@ -612,7 +612,11 @@ const KIND_FA: Record<Kind, string> = {
  * 409 the screen can say something about. `null` clears both.
  */
 type AccountLink = { financial_account_id: string | null; transaction_candidate_id: string | null };
-type AccountLinkError = 'withdrawal_not_found' | 'withdrawal_not_a_debit' | 'withdrawal_on_other_account';
+type AccountLinkError =
+  | 'withdrawal_not_found'
+  | 'withdrawal_not_a_debit'
+  | 'withdrawal_on_other_account'
+  | 'withdrawal_off_books';
 
 async function withdrawalFor(
   db: Pick<D1Database, 'prepare'>,
@@ -625,11 +629,17 @@ async function withdrawalFor(
     body.transactionCandidateId === undefined ? prev.transaction_candidate_id : body.transactionCandidateId;
   if (!txId) return { ok: true, link: { financial_account_id: accountId, transaction_candidate_id: null } };
   const tx = await db
-    .prepare(`SELECT direction, financial_account_id FROM transaction_candidates WHERE id = ?1`)
+    .prepare(
+      `SELECT t.direction, t.financial_account_id, (${TX_OFF_BOOKS}) AS off_books
+         FROM transaction_candidates t WHERE t.id = ?1`,
+    )
     .bind(txId)
-    .first<{ direction: string; financial_account_id: string | null }>();
+    .first<{ direction: string; financial_account_id: string | null; off_books: boolean }>();
   if (!tx) return { ok: false, error: 'withdrawal_not_found' };
   if (tx.direction !== 'DEBIT') return { ok: false, error: 'withdrawal_not_a_debit' };
+  // A loan instalment is not a server bill: a movement the operator took off
+  // the books cannot also be the shop's expense.
+  if (tx.off_books === true) return { ok: false, error: 'withdrawal_off_books' };
   if (accountId && tx.financial_account_id && tx.financial_account_id !== accountId) {
     return { ok: false, error: 'withdrawal_on_other_account' };
   }

@@ -9,7 +9,7 @@ import type { D1Database } from '@shikoo/database';
 import { INCOME_TX_WHERE, OFF_BOOKS_ELIGIBLE_TX_WHERE, TX_INCOME_DECLINED } from './incomeEligibility.js';
 
 /** Why a movement is not the shop's — 0072. `OTHER` is the pre-0072 rows. */
-export const OFF_BOOKS_CATEGORIES = ['TRANSFER', 'PERSONAL', 'MISTAKE_RETURNED', 'BANK_FEE', 'OTHER'] as const;
+export const OFF_BOOKS_CATEGORIES = ['TRANSFER', 'PERSONAL', 'MISTAKE_RETURNED', 'BANK_FEE', 'BANK_INTEREST', 'OTHER'] as const;
 export type OffBooksCategory = (typeof OFF_BOOKS_CATEGORIES)[number];
 
 export { TX_INCOME_DECLINED };

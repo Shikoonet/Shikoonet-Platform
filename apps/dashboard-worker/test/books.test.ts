@@ -230,6 +230,40 @@ describe('off the books', () => {
     expect(list.totals.MISTAKE_RETURNED).toEqual({ count: 1, creditIrr: 1_000_000, debitIrr: 0 });
   });
 
+  it('can be tagged again after being put back — the history stays', async () => {
+    const w = await tx({ direction: 'DEBIT', amountIrr: 5, balanceIrr: null, at: T(6) });
+    expect((await json('POST', `/api/v1/transactions/${w}/decline-income`, { category: 'PERSONAL' })).status).toBe(200);
+    expect((await json('POST', `/api/v1/transactions/${w}/restore-income`, {})).status).toBe(200);
+    expect((await json('POST', `/api/v1/transactions/${w}/decline-income`, { category: 'BANK_FEE' })).status).toBe(200);
+    const rows = await baseEnv.DB.prepare(
+      `SELECT category, restored_at IS NOT NULL AS restored FROM income_declined_transactions
+        WHERE transaction_candidate_id = ?1 ORDER BY declined_at`,
+    )
+      .bind(w)
+      .all<{ category: string; restored: boolean }>();
+    expect(rows.results).toEqual([
+      { category: 'PERSONAL', restored: true },
+      { category: 'BANK_FEE', restored: false },
+    ]);
+  });
+
+  it('refuses to take a withdrawal off the books while an expense explains it, and the reverse', async () => {
+    const w = await tx({ direction: 'DEBIT', amountIrr: 500_000, balanceIrr: null, at: T(6) });
+    const r = await json('POST', '/api/v1/admin/revenue-adjustments', {
+      amountToman: 50_000, kind: 'EXPENSE', note: `${P}explained`, transactionCandidateId: w,
+    });
+    expect(r.status).toBe(200);
+    expect((await json('POST', `/api/v1/transactions/${w}/decline-income`, { category: 'PERSONAL' })).status).toBe(409);
+
+    const loan = await tx({ direction: 'DEBIT', amountIrr: 3_000_000, balanceIrr: null, at: T(6) });
+    await json('POST', `/api/v1/transactions/${loan}/decline-income`, { category: 'PERSONAL' });
+    const link = await json('POST', '/api/v1/admin/revenue-adjustments', {
+      amountToman: 300_000, kind: 'EXPENSE', note: `${P}not-ours`, transactionCandidateId: loan,
+    });
+    expect(link.status).toBe(400);
+    expect(((await link.json()) as { error: string }).error).toBe('withdrawal_off_books');
+  });
+
   it('refuses a category it does not know', async () => {
     const w = await tx({ direction: 'DEBIT', amountIrr: 1, balanceIrr: null, at: T(6) });
     const r = await json('POST', `/api/v1/transactions/${w}/decline-income`, { category: 'GIFT' });
@@ -329,6 +363,20 @@ describe('the monthly statement', () => {
     expect(s.gapIrr).toBe(300_000);
   });
 
+  it('measures the gap up to the last balance the bank gave, not past it', async () => {
+    await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 1_000_000, at: month.start - DAY });
+    await tx({ direction: 'CREDIT', amountIrr: 200_000, balanceIrr: 1_200_000, at: T(2) });
+    // A later SMS the parser could not read a balance from: real money, no
+    // figure to check against. Not a gap — the bank never disagreed.
+    await tx({ direction: 'CREDIT', amountIrr: 50_000, balanceIrr: null, at: T(3) });
+    const s = ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{ gapIrr: number; customerIncome: { amountIrr: number }; closing: { balanceIrr: number } }>;
+    }).accounts[0]!;
+    expect(s.customerIncome.amountIrr).toBe(250_000);
+    expect(s.closing.balanceIrr).toBe(1_200_000);
+    expect(s.gapIrr).toBe(0);
+  });
+
   it('exports the month as CSV with one row per account', async () => {
     await tx({ direction: 'CREDIT', amountIrr: 1_000, balanceIrr: 1_000, at: T(1) });
     const r = await get(`/api/v1/admin/books/statement.csv?month=${MONTH_Q}`);
@@ -382,7 +430,32 @@ describe('the fresh start', () => {
     expect(s.closing.balanceIrr).toBe(9_990_000);
     expect(s.gapIrr).toBe(0);
 
+    // The month before the start is not a statement: nothing in it counts.
+    const prevKey = month.month === 1 ? `${month.year - 1}-12` : `${month.year}-${String(month.month - 1).padStart(2, '0')}`;
+    const before = ((await (await get(`/api/v1/admin/books/statement?month=${prevKey}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{ beforeStart: boolean; opening: unknown; customerIncome: { count: number } }>;
+    }).accounts[0]!;
+    expect(before.beforeStart).toBe(true);
+    expect(before.opening).toBeNull();
+    expect(before.customerIncome.count).toBe(0);
+
+    // The month after: no SMS since the start — it opens on the start and moves nothing.
+    const nextKey = month.month === 12 ? `${month.year + 1}-01` : `${month.year}-${String(month.month + 1).padStart(2, '0')}`;
+    const after = ((await (await get(`/api/v1/admin/books/statement?month=${nextKey}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{ opening: { balanceIrr: number; source: string }; closing: { balanceIrr: number }; gapIrr: number }>;
+    }).accounts[0]!;
+    expect(after.opening).toMatchObject({ balanceIrr: 9_990_000, source: 'sms' });
+    expect(after.closing.balanceIrr).toBe(9_990_000);
+    expect(after.gapIrr).toBe(0);
+
     const status = (await (await get('/api/v1/admin/books/opening')).json()) as { opening: { accounts: number } | null };
     expect(status.opening?.accounts).toBeGreaterThanOrEqual(2);
+
+    // The movements list makes the same cut: the 9M and the 1M before the
+    // start are not shown beside a statement that does not count them.
+    const moves = (await (await get(`/api/v1/admin/books/movements?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      items: Array<{ amountIrr: number }>;
+    };
+    expect(moves.items.map((m) => m.amountIrr)).toEqual([1_990_000]);
   });
 });

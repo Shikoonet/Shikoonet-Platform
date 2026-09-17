@@ -88,8 +88,15 @@ export interface AccountStatement {
   ledger: { expenseCount: number; expenseIrr: number; feeIrr: number; unlinkedCount: number; unlinkedIrr: number };
   /** Every valid credit minus every valid debit, off-books included. */
   bankDeltaIrr: number;
-  /** closing − (opening + bankDelta); null when either balance is unknown. */
+  /**
+   * closing − (opening + every movement up to the closing SMS); null when
+   * either balance is unknown. Movements after the last balance-bearing SMS
+   * are in the boxes above but not in this check — the bank gave no figure
+   * to hold them against.
+   */
   gapIrr: number | null;
+  /** The whole month lies before the fresh start: nothing in it counts. */
+  beforeStart: boolean;
 }
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -130,6 +137,32 @@ export async function accountStatement(
     .first<{ balance_irr: string | number; as_of: string | number }>();
   let opening: BalancePoint | null = null;
   const openingAsOf = openingRow ? num(openingRow.as_of) : null;
+  const base = {
+    accountId: acc.id,
+    displayName: acc.display_name,
+    bankName: acc.bank_name,
+    accountHint: acc.account_hint,
+    active: (acc.active === true || acc.active === 1) && acc.status === 'ACTIVE',
+  };
+  if (openingAsOf !== null && openingAsOf >= month.end) {
+    // Before the books existed. Shown empty rather than as history, so the
+    // fresh start means what it says.
+    const none = { count: 0, amountIrr: 0 };
+    return {
+      ...base,
+      opening: null,
+      closing: null,
+      customerIncome: none,
+      offBooksCredits: [],
+      explainedWithdrawals: none,
+      unexplainedWithdrawals: none,
+      offBooksDebits: [],
+      ledger: { expenseCount: 0, expenseIrr: 0, feeIrr: 0, unlinkedCount: 0, unlinkedIrr: 0 },
+      bankDeltaIrr: 0,
+      gapIrr: null,
+      beforeStart: true,
+    };
+  }
   if (openingRow && openingAsOf !== null && openingAsOf >= month.start && openingAsOf < month.end) {
     // The books opened inside this month: nothing before that instant counts.
     opening = { balanceIrr: num(openingRow.balance_irr), asOf: openingAsOf, source: 'opening' };
@@ -186,15 +219,18 @@ export async function accountStatement(
     .bind(...bind)
     .first<{ explained_n: number; explained_irr: string | number; unexplained_n: number; unexplained_irr: string | number }>();
 
-  // The whole bank month, off-books included — what the balances must agree with.
+  // The whole bank month, off-books included — what the balances must agree
+  // with. Bounded by the closing SMS: a movement after the last balance the
+  // bank stated has nothing to be checked against.
   const delta = await db
     .prepare(
       `SELECT COALESCE(SUM(CASE WHEN t.direction = 'CREDIT' THEN t.amount_irr ELSE -t.amount_irr END),0) AS irr
          FROM transaction_candidates t
         WHERE t.financial_account_id = ?1 AND t.direction IN ('CREDIT','DEBIT')
-          AND t.status NOT IN ('REJECTED','IGNORED') ${range}`,
+          AND t.status NOT IN ('REJECTED','IGNORED') ${range}
+          AND t.bank_timestamp <= ?4`,
     )
-    .bind(...bind)
+    .bind(...bind, closing ? closing.asOf : month.end)
     .first<{ irr: string | number }>();
 
   const ledger = await db
@@ -223,11 +259,7 @@ export async function accountStatement(
         : null;
 
   return {
-    accountId: acc.id,
-    displayName: acc.display_name,
-    bankName: acc.bank_name,
-    accountHint: acc.account_hint,
-    active: (acc.active === true || acc.active === 1) && acc.status === 'ACTIVE',
+    ...base,
     opening,
     closing,
     customerIncome: { count: income?.n ?? 0, amountIrr: num(income?.irr) },
@@ -244,6 +276,7 @@ export async function accountStatement(
     },
     bankDeltaIrr,
     gapIrr,
+    beforeStart: false,
   };
 }
 

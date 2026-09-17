@@ -68,7 +68,18 @@ CREATE VIEW shop_books AS
 -- ---------------------------------------------------------------------------
 ALTER TABLE income_declined_transactions
   ADD COLUMN category text NOT NULL DEFAULT 'OTHER'
-    CHECK (category IN ('TRANSFER', 'PERSONAL', 'MISTAKE_RETURNED', 'BANK_FEE', 'OTHER'));
+    CHECK (category IN ('TRANSFER', 'PERSONAL', 'MISTAKE_RETURNED', 'BANK_FEE', 'BANK_INTEREST', 'OTHER'));
+
+-- One LIVE tag per movement, history kept. 0004 made `transaction_candidate_id`
+-- UNIQUE outright, so a movement put back on the books could never be taken
+-- off again — the restored row still held the key. Nobody hit it while the
+-- button was a rarity; with a loan instalment every month it would be the
+-- first thing the operator hit.
+ALTER TABLE income_declined_transactions
+  DROP CONSTRAINT income_declined_transactions_transaction_candidate_id_key;
+CREATE UNIQUE INDEX idx_income_declined_live
+  ON income_declined_transactions(transaction_candidate_id)
+  WHERE restored_at IS NULL;
 
 -- The five rows production had on 2026-09-17: one «jabejaei», one «اشتباه»,
 -- three with nothing useful. Only the two that say something are mapped.
