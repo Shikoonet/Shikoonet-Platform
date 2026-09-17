@@ -45,7 +45,7 @@ async function seedDevice(): Promise<void> {
     .run();
 }
 
-function postSms(message: string): Promise<Response> {
+async function postSms(message: string): Promise<Response> {
   return app.fetch(
     new Request('https://example.com/api/v1/sms', {
       method: 'POST',
