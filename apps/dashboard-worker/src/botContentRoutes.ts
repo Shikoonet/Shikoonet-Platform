@@ -28,7 +28,7 @@ import {
   checkOverride,
   DEFAULT_LAYOUTS,
   isTextKey,
-  MAX_LABEL_LENGTH,
+  MAX_LABEL_RAW_LENGTH,
   MAX_TEXT_LENGTH,
   isMenuId,
   MENU_IDS,
@@ -57,11 +57,9 @@ const LayoutBody = z
         z
           .object({
             action: z.string().min(1).max(32),
-            // Only a body-size bound. The real cap is `checkLayout`, which
-            // measures the *rendered* label: a `<tg-emoji>` tag is 52 raw
-            // characters that draw as one glyph, and capping the raw string at
-            // MAX_LABEL_LENGTH here refused every keyboard with one on it.
-            label: z.string().max(256),
+            // A size bound only; the 64-character rule is `checkLayout`'s,
+            // measured on the rendered label. See MAX_LABEL_RAW_LENGTH.
+            label: z.string().max(MAX_LABEL_RAW_LENGTH),
             rowIndex: z.number().int().min(0).max(19),
             colIndex: z.number().int().min(0).max(7),
             visible: z.boolean(),
@@ -348,7 +346,6 @@ export function registerBotContentRoutes(
       // The palette: everything this screen can carry, so the admin can add
       // back a button they removed.
       actions: MENUS[menu].buttons,
-      maxLabelLength: MAX_LABEL_LENGTH,
     });
   });
 

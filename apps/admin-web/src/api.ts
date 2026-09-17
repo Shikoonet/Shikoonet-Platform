@@ -2815,7 +2815,6 @@ export const api = {
       customised: boolean;
       buttons: KeyboardButton[];
       actions: MenuActionInfo[];
-      maxLabelLength: number;
     }>(`/bot-keyboard/${menu}`);
   },
 

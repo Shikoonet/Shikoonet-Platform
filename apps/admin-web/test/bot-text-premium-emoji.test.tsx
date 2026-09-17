@@ -87,7 +87,6 @@ describe('a premium emoji in the panel', () => {
       menu: 'main',
       menus: [{ id: 'main', label: 'منوی اصلی', hint: '' }],
       customised: true,
-      maxLabelLength: 64,
       buttons: [
         {
           action: 'buy',

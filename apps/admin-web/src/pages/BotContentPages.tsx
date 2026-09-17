@@ -28,6 +28,7 @@ import { useAdminWriteProps } from '../role.js';
 import { ButtonGrid, GRID_HELP, type GridRows } from './ButtonGrid.js';
 import {
   BUTTON_STYLES,
+  MAX_LABEL_RAW_LENGTH,
   premiumEmojiTag,
   stripCustomEmoji,
   type ButtonStyle,
@@ -499,7 +500,6 @@ export function KeyboardPage() {
   const [buttons, setButtons] = useState<KeyboardButton[]>([]);
   const [actions, setActions] = useState<MenuActionInfo[]>([]);
   const [customised, setCustomised] = useState(false);
-  const [maxLabel, setMaxLabel] = useState(64);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -512,7 +512,6 @@ export function KeyboardPage() {
       setActions(d.actions);
       setMenus(d.menus);
       setCustomised(d.customised);
-      setMaxLabel(d.maxLabelLength);
     } catch (e) {
       setErr(message(e));
     }
@@ -720,7 +719,10 @@ export function KeyboardPage() {
                       <input
                         className="form-control"
                         type="text"
-                        maxLength={maxLabel}
+                        // Raw bound only — a label with a premium-emoji tag
+                        // is longer on the wire than on the screen, and the
+                        // server measures what is drawn.
+                        maxLength={MAX_LABEL_RAW_LENGTH}
                         value={b.label}
                         onChange={(e) => update(b.action, { label: e.target.value })}
                       />

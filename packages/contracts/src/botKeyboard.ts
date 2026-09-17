@@ -712,6 +712,18 @@ export type LayoutProblem =
 export const MAX_LABEL_LENGTH = 64;
 
 /**
+ * The most raw characters a label may carry on the wire: the cap above plus
+ * one `<tg-emoji>` tag, which is ~52 characters that draw as one glyph.
+ *
+ * This is a size bound, not the rule. The rule is `renderedLabelLength(label)
+ * <= MAX_LABEL_LENGTH`, and it is measured by `checkLayout`, the bot's writer
+ * and migration 0053. Capping the raw string at MAX_LABEL_LENGTH — which the
+ * route's schema and the panel's input both did — refused every label the
+ * emoji screen had already written.
+ */
+export const MAX_LABEL_RAW_LENGTH = 128;
+
+/**
  * A label's length as everything that measures it counts.
  *
  * Two decisions, and both were wrong once before this existed:
