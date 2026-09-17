@@ -35,6 +35,7 @@ function continuityClaim(over: Partial<PaymentItem> = {}): PaymentItem {
     expectedAmountIrr: 2_000_000,
     expectedAmountToman: 200_000,
     cardMasked: null,
+    cardDisplay: null,
     accountId: null,
     accountDisplay: null,
     accountBank: null,

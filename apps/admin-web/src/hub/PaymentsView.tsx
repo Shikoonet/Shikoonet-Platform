@@ -2231,7 +2231,7 @@ function ReviewPanel({
           <dt>مبلغ مورد انتظار</dt>
           <dd className="tabular-nums">{formatToman(item.expectedAmountToman)}</dd>
           <dt>کارت نمایش‌داده‌شده</dt>
-          <dd>{item.cardMasked ?? '—'}</dd>
+          <dd className="ltr tabular-nums">{item.cardDisplay ?? item.cardMasked ?? '—'}</dd>
           <dt>وضعیت</dt>
           <dd>{stateLabel(item.reviewState)}</dd>
         </dl>

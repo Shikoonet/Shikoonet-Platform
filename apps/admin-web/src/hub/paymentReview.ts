@@ -165,6 +165,7 @@ export interface PaymentItem {
   expectedAmountIrr: number;
   expectedAmountToman: number;
   cardMasked: string | null;
+  cardDisplay: string | null;
   accountId: string | null;
   accountDisplay: string | null;
   accountBank: string | null;

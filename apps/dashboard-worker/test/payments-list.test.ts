@@ -149,6 +149,7 @@ type PaymentsBody = {
     id: string;
     reviewState: string;
     cardMasked: string | null;
+    cardDisplay: string | null;
     suspectReason: string | null;
     device: { id: string; name: string } | null;
     candidates: Array<{ id: string; timeDeltaSeconds: number | null; alreadyConsumed: boolean }>;
@@ -380,11 +381,11 @@ describe('GET /api/v1/payments', () => {
     }
   });
 
-  it('masks the card number and never returns the full PAN', async () => {
+  it('returns both the masked card and the full one for the review page', async () => {
     await seedClaim('c-card', { suspectReason: 'UNMAPPED_CARD' });
     const body = await get('tab=needs_review');
     expect(body.items[0]!.cardMasked).toBe('**** **** **** 5678');
-    expect(JSON.stringify(body)).not.toContain(CARD);
+    expect(body.items[0]!.cardDisplay).toBe('5054-1617-0627-5678');
   });
 
   it('exposes the exact candidate set the matcher considered', async () => {

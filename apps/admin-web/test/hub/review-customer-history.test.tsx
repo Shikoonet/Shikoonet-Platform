@@ -24,6 +24,7 @@ function claim(over: Partial<PaymentItem> = {}): PaymentItem {
     expectedAmountIrr: 1_500_000,
     expectedAmountToman: 150_000,
     cardMasked: null,
+    cardDisplay: null,
     accountId: null,
     accountDisplay: null,
     accountBank: null,

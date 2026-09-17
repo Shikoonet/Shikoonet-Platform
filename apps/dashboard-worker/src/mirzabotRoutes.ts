@@ -1626,6 +1626,9 @@ export function registerMirzabotRoutes(
           expectedAmountIrr: row.expected_amount_irr,
           expectedAmountToman: Math.floor(row.expected_amount_irr / 10),
           cardMasked: cardDigits ? maskCardDigits(cardDigits) : null,
+          // The review page shows the whole number — the admin compares it
+          // against the receipt, and a masked one cannot be compared.
+          cardDisplay: cardDigits ? formatCardDigitsForDisplay(cardDigits) : null,
           accountId: row.target_financial_account_id,
           accountDisplay: row.account_display,
           accountBank: row.account_bank,
