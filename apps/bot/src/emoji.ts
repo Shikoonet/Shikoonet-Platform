@@ -32,6 +32,7 @@ import {
   labelMarkupProblem,
   renderedLabelLength,
   splitCustomEmojiLabel,
+  type MenuId,
 } from '@shikoo/contracts';
 import { invalidateBotContent } from './botContent.js';
 
@@ -218,6 +219,7 @@ export type EmojiPlacement = { ok: true; label: string } | { ok: false; reason: 
 
 export async function setButtonEmoji(
   db: Db,
+  menu: MenuId,
   action: string,
   emoji: { customEmojiId: string; fallbackEmoji: string },
 ): Promise<EmojiPlacement> {
@@ -271,18 +273,20 @@ export async function setButtonEmoji(
   // with this one label changed. That is also what the panel's own save does,
   // which keeps the two writers producing the same kind of row.
   const anySaved = await db
-    .prepare(`SELECT 1 AS present FROM bot_keyboard_buttons WHERE menu = 'main' LIMIT 1`)
+    .prepare(`SELECT 1 AS present FROM bot_keyboard_buttons WHERE menu = ?1 LIMIT 1`)
+    .bind(menu)
     .first<{ present: number }>();
 
   if (!anySaved) {
-    for (const b of DEFAULT_LAYOUTS['main']) {
+    for (const b of DEFAULT_LAYOUTS[menu]) {
       await db
         .prepare(
           `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
-           VALUES ('main', ?1, ?2, ?3, ?4, ?5)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
            ON CONFLICT (menu, action) DO NOTHING`,
         )
         .bind(
+          menu,
           b.action,
           b.label,
           b.rowIndex,
@@ -308,8 +312,8 @@ export async function setButtonEmoji(
   // the old glyph as plain text, so each replacement would still visibly
   // accumulate despite there being only one tag.
   const stored = await db
-    .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = ?1`)
-    .bind(action)
+    .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = ?1 AND action = ?2`)
+    .bind(menu, action)
     .first<{ label: string }>();
   if (!stored) return { ok: false, reason: 'GONE' };
   const label = withEmoji(stored.label);
@@ -318,11 +322,11 @@ export async function setButtonEmoji(
 
   const updated = await db
     .prepare(
-      `UPDATE bot_keyboard_buttons SET label = ?2
-        WHERE menu = 'main' AND action = ?1
+      `UPDATE bot_keyboard_buttons SET label = ?3
+        WHERE menu = ?1 AND action = ?2
        RETURNING action`,
     )
-    .bind(action, label)
+    .bind(menu, action, label)
     .first<{ action: string }>();
   // Nothing came back, so nothing was written. Two ways to arrive: the button
   // is in `MENUS` but absent from this shop's saved layout — an admin removed

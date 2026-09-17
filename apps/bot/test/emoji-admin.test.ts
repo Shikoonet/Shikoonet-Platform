@@ -195,7 +195,7 @@ describe('who may open it', () => {
     await makeCustomer(telegramId);
     await makeAdmin(telegramId, 'SUPPORT');
     const out = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
-    expect(out.replies[0]?.text ?? '').not.toContain('کدام دکمه');
+    expect(out.replies[0]?.text ?? '').not.toContain('کدام منو');
   });
 
   it('refuses a customer who posts the callback anyway', async () => {
@@ -219,15 +219,24 @@ describe('the order the screens ask in', () => {
     await makeCustomer(telegramId);
     await makeAdmin(telegramId);
 
+    // Keyboard first, then its buttons: the picker used to be the main menu
+    // only, and every other screen had to be edited from the panel by hand.
     const home = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
-    expect(home.replies[0]?.text ?? '').toContain('کدام دکمه');
-    const labels = (home.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
+    expect(home.replies[0]?.text ?? '').toContain('کدام منو');
+    const menus = (home.replies[0]?.keyboard ?? []).flat();
+    expect(menus.find((b) => b.text === 'منوی اصلی')?.callback_data).toBe('emjs:1');
+    expect(menus.some((b) => b.text === 'سرویس‌های من')).toBe(true);
+    expect(menus.some((b) => b.text === 'کیف پول')).toBe(true);
+
+    const main = await handleUpdate(db, press(ids().updateId, telegramId, 'emjs:1'));
+    expect(main.replies[0]?.text ?? '').toContain('کدام دکمه');
+    const labels = (main.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
     expect(labels.some((l) => l.includes('تمدید'))).toBe(true);
 
-    const ask = await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    const ask = await handleUpdate(db, press(ids().updateId, telegramId, 'emjs:1:1'));
     expect(ask.replies[0]?.text ?? '').toContain('یک ایموجی پریمیوم');
     expect(ask.replies[0]?.text ?? '').toContain('تمدید');
-    expect((ask.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data)).toEqual(['emj']);
+    expect((ask.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data)).toEqual(['emjs:1']);
 
     const done = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
     expect(done.replies[0]?.text ?? '').toContain('تغییر کرد');
@@ -257,12 +266,55 @@ describe('the order the screens ask in', () => {
     // Both settings and content caches were invalidated by the write. Opening
     // the picker again immediately must retain the premium id rather than
     // exposing only its ordinary fallback glyph.
-    const reopened = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
+    const reopened = await handleUpdate(db, press(ids().updateId, telegramId, 'emjs:1'));
     expect(
       (reopened.replies[0]?.keyboard ?? [])
         .flat()
         .some((b) => b.text.includes(FIRE_ID) && b.text.includes('تمدید')),
     ).toBe(true);
+  });
+
+  it('puts an emoji on a button of a keyboard other than the main menu', async () => {
+    // Sam, 2026-09-17: «تمام منوها رو به من نشون بده» — the wallet's «کد هدیه»
+    // button, reached through the wallet keyboard, written to the wallet's
+    // rows and nobody else's.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+
+    const home = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
+    const wallet = (home.replies[0]?.keyboard ?? []).flat().find((b) => b.text === 'کیف پول');
+    expect(wallet?.callback_data).toBeDefined();
+
+    const list = await handleUpdate(db, press(ids().updateId, telegramId, wallet!.callback_data!));
+    expect(list.replies[0]?.text ?? '').toContain('کیف پول');
+    const topup = (list.replies[0]?.keyboard ?? []).flat().find((b) => b.text.includes('کد هدیه'));
+    expect(topup?.callback_data).toMatch(/^emjs:\d+:\d+$/);
+
+    const ask = await handleUpdate(db, press(ids().updateId, telegramId, topup!.callback_data!));
+    expect(ask.replies[0]?.text ?? '').toContain('کد هدیه');
+    expect((ask.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data)).toEqual([
+      wallet!.callback_data,
+    ]);
+
+    const done = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    expect(done.replies[0]?.text ?? '').toContain('تغییر کرد');
+    const rows = await db
+      .prepare(`SELECT menu, label FROM bot_keyboard_buttons WHERE label LIKE '%' || ?1 || '%'`)
+      .bind(FIRE_ID)
+      .all<{ menu: string; label: string }>();
+    expect(rows.results.map((r) => r.menu)).toEqual(['wallet']);
+    expect(rows.results[0]?.label).toContain('کد هدیه');
+    // The wallet's whole shipped layout was seeded around it, not one row.
+    const seeded = await db
+      .prepare(`SELECT count(*)::int AS n FROM bot_keyboard_buttons WHERE menu = 'wallet'`)
+      .first<{ n: number }>();
+    expect(seeded?.n).toBe(DEFAULT_LAYOUTS['wallet'].length);
+    // And the main menu was left alone.
+    const main = await db
+      .prepare(`SELECT count(*)::int AS n FROM bot_keyboard_buttons WHERE menu = 'main'`)
+      .first<{ n: number }>();
+    expect(main?.n).toBe(0);
   });
 
   it('replaces the previous premium icon through the direct flow', async () => {
@@ -304,7 +356,7 @@ describe('the order the screens ask in', () => {
     ];
     let label = '♻️ تمدید سرویس';
     for (const emoji of seq) {
-      const next = await setButtonEmoji(db, 'renew', emoji);
+      const next = await setButtonEmoji(db, 'main', 'renew', emoji);
       // The result says WHY when it refuses, so a failure here names its own
       // reason instead of arriving as a bare null.
       expect(next).toMatchObject({ ok: true });
@@ -322,7 +374,7 @@ describe('the order the screens ask in', () => {
   });
 
   it('also replaces flag and keycap icons at the front of a label', async () => {
-    await setButtonEmoji(db, 'renew', { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' });
+    await setButtonEmoji(db, 'main', 'renew', { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' });
 
     for (const oldIcon of ['🇺🇸', '1️⃣']) {
       await db
@@ -333,7 +385,7 @@ describe('the order the screens ask in', () => {
         .bind(`${oldIcon} تمدید سرویس`)
         .run();
 
-      const placed = await setButtonEmoji(db, 'renew', {
+      const placed = await setButtonEmoji(db, 'main', 'renew', {
         customEmojiId: FIRE_ID,
         fallbackEmoji: '🔥',
       });
@@ -549,7 +601,7 @@ describe('putting it on a button', () => {
       },
     } as unknown as typeof db;
 
-    const placed = await setButtonEmoji(racing, 'renew', {
+    const placed = await setButtonEmoji(racing, 'main', 'renew', {
       customEmojiId: FIRE_ID,
       fallbackEmoji: '🔥',
     });
@@ -580,7 +632,7 @@ describe('putting it on a button', () => {
      * does not have to be edited every time a shop rewords a line.
      */
     // A fallback that is not one emoji cannot be drawn at all.
-    const bad = await setButtonEmoji(db, 'renew', {
+    const bad = await setButtonEmoji(db, 'main', 'renew', {
       customEmojiId: FIRE_ID,
       fallbackEmoji: 'not an emoji',
     });
@@ -595,7 +647,7 @@ describe('putting it on a button', () => {
 
     // An action this shop's layout does not carry. `zzz-not-a-button` is in no
     // layout, shipped or saved, so the row read comes back empty.
-    const gone = await setButtonEmoji(db, 'zzz-not-a-button', {
+    const gone = await setButtonEmoji(db, 'main', 'zzz-not-a-button', {
       customEmojiId: FIRE_ID,
       fallbackEmoji: '🔥',
     });
