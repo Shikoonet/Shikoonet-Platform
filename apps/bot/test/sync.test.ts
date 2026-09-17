@@ -208,6 +208,25 @@ describe('refreshing what the customer sees', () => {
     expect((await readService(id))?.subscription_url).toBe('https://sync.test/sub/u_c');
   });
 
+  it('refreshes a service still on hold — it is live, and 707 imported ones were frozen', async () => {
+    // ON_HOLD is a paid, unstarted account (`send_on_hold` in the PHP). Every
+    // one of the 707 imported rows had `panel_status` NULL on 2026-09-17
+    // because this sweep read only ACTIVE.
+    const userId = await makeCustomer(nextTelegramId());
+    const id = await makeService(userId, panelId, {
+      publicId: 'sync-hold',
+      username: 'u_hold',
+      usedBytes: null,
+      status: 'ON_HOLD',
+    });
+    const panel = fakePanel([{ username: 'u_hold', used: 2 * GIB }]);
+
+    const summary = await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
+
+    expect(summary).toMatchObject({ panels: 1, updated: 1 });
+    expect((await readService(id))?.used_bytes).toBe(2 * GIB);
+  });
+
   it('never touches a subscription that is not active', async () => {
     const userId = await makeCustomer(nextTelegramId());
     // One live row so the sweep has a reason to call this panel at all.

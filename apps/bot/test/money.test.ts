@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatToman, nameMentionsPrice, priceForUser } from '../src/money.js';
+import { formatToman, nameMentionsPrice, priceForUser, withoutQuotedPrice } from '../src/money.js';
 import { discountFor } from '../src/discount.js';
 
 describe('formatToman', () => {
@@ -156,5 +156,22 @@ describe('priceForUser', () => {
   it('refuses a price that is not an amount', () => {
     expect(() => priceForUser(-1, 0)).toThrow();
     expect(() => priceForUser(Number.NaN, 0)).toThrow();
+  });
+});
+
+describe('withoutQuotedPrice', () => {
+  it('drops the price the legacy schema typed into the name, and nothing else', () => {
+    expect(withoutQuotedPrice('1️⃣ 1ماهه-100گیگ-چند کاربر-280.000ت🚀')).toBe('1️⃣ 1ماهه-100گیگ-چند کاربر🚀');
+    expect(withoutQuotedPrice('6️⃣ 6ماهه-300گیگ-چند کاربر-1.300.000ت🚀')).toBe('6️⃣ 6ماهه-300گیگ-چند کاربر🚀');
+    expect(withoutQuotedPrice('نامحدود - تک لوکیشن - 250.000 تومان')).toBe('نامحدود - تک لوکیشن');
+    expect(withoutQuotedPrice('نامحدود - تک کاربر - 15 روزه -150.000 ت')).toBe('نامحدود - تک کاربر - 15 روزه');
+    expect(withoutQuotedPrice('💎1ماهه-10گیگ-چند کاربر-100.000')).toBe('💎1ماهه-10گیگ-چند کاربر');
+    expect(withoutQuotedPrice('۱ماهه - ۵۰ گیگ - ۱۹۵٫۰۰۰ تومان')).toBe('۱ماهه - ۵۰ گیگ');
+  });
+
+  it('leaves a name that quotes no price alone — sizes and counts are not prices', () => {
+    expect(withoutQuotedPrice('سرویس تست')).toBe('سرویس تست');
+    expect(withoutQuotedPrice('🥇30گیگ - VIP - 1.5 ترابایت')).toBe('🥇30گیگ - VIP - 1.5 ترابایت');
+    expect(withoutQuotedPrice('پلاتینیوم — ۵۰ گیگ')).toBe('پلاتینیوم — ۵۰ گیگ');
   });
 });

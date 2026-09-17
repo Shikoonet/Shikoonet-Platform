@@ -30,6 +30,11 @@
  *   - Anything at all when the panel does not answer. A failed listing leaves
  *     every row exactly as it was, showing slightly old numbers rather than
  *     none.
+ *
+ * Which rows: ACTIVE and ON_HOLD. An ON_HOLD service is paid for and waiting
+ * for its first connection, and the panel knows things about it we do not —
+ * the 707 imported ones sat with `panel_status` NULL until 2026-09-17 because
+ * only ACTIVE was read.
  */
 
 import type { D1Database } from '@shikoo/database';
@@ -87,7 +92,7 @@ async function isDue(db: D1Database, now: number): Promise<boolean> {
   const row = await db
     .prepare(
       `SELECT MAX(last_synced_at) AS newest FROM subscriptions
-        WHERE status = 'ACTIVE' AND remote_username IS NOT NULL`,
+        WHERE status IN ('ACTIVE', 'ON_HOLD') AND remote_username IS NOT NULL`,
     )
     .first<{ newest: string | null }>();
   if (!row || row.newest === null) return true;
@@ -117,7 +122,7 @@ export async function syncSubscriptions(
          FROM provisioning_providers pv
          LEFT JOIN provider_secrets ps ON ps.provider_id = pv.id
          JOIN subscriptions s ON s.provider_id = pv.id
-        WHERE s.status = 'ACTIVE' AND s.remote_username IS NOT NULL
+        WHERE s.status IN ('ACTIVE', 'ON_HOLD') AND s.remote_username IS NOT NULL
         ORDER BY pv.id`,
     )
     .all<ProviderRow>();
@@ -207,7 +212,7 @@ async function writeAccounts(
                           AS t(username, used_bytes, url, expires_ms,
                                panel_status, panel_online_at)) v
           WHERE s.provider_id = ?1
-            AND s.status = 'ACTIVE'
+            AND s.status IN ('ACTIVE', 'ON_HOLD')
             AND s.remote_username = v.username`,
       )
       .bind(

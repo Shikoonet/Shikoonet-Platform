@@ -60,7 +60,14 @@ import {
   type Texts,
   stripCustomEmoji,
 } from '@shikoo/contracts';
-import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
+import {
+  formatToman,
+  nameMentionsPrice,
+  priceForUser,
+  tomanDigits,
+  withoutQuotedPrice,
+  type Price,
+} from './money.js';
 import {
   MAX_COPY_TEXT_LENGTH,
   type ButtonStyle,
@@ -2416,7 +2423,10 @@ export function renewIntro(
   const lines = [
     t.raw('RENEW_INTRO_TITLE'),
     '',
-    t.render('RENEW_INTRO_SERVICE', { service: service.plan_name_at_sale }),
+    // Without the price the legacy name quotes: the plan chosen below is
+    // priced on this screen, and a second number is the one the customer
+    // paid last time (`withoutQuotedPrice`).
+    t.render('RENEW_INTRO_SERVICE', { service: withoutQuotedPrice(service.plan_name_at_sale) }),
     t.render('RENEW_INTRO_ID', { id: service.public_id }),
   ];
   if (service.expires_at !== null) {
@@ -2596,7 +2606,7 @@ export function renewCheckout(
     t.raw('CHECKOUT_INTRO_RENEW'),
     '',
     t.render('CHECKOUT_ORDER_ID', { id: publicId }),
-    t.render('CHECKOUT_RENEW_SERVICE', { service: serviceName }),
+    t.render('CHECKOUT_RENEW_SERVICE', { service: withoutQuotedPrice(serviceName) }),
     // `soldAs`, not the product name alone — the same helper the button the
     // customer just pressed uses, and the same one the purchase invoice uses.
     //
@@ -2676,7 +2686,7 @@ export function timeRunningOut(serviceName: string, daysLeft: number): string {
   return [
     t.raw('WARN_TIME_TITLE'),
     '',
-    t.render('WARN_SERVICE', { service: serviceName }),
+    t.render('WARN_SERVICE', { service: withoutQuotedPrice(serviceName) }),
     t.render('WARN_TIME_DAYS', { days: daysLeft.toLocaleString('en-US') }),
     '',
     t.render('WARN_RENEW_HINT', { renewButton: renewButtonLabel() }),
@@ -2688,7 +2698,7 @@ export function volumeRunningOut(serviceName: string, remainingBytes: number): s
   return [
     t.raw('WARN_VOLUME_TITLE'),
     '',
-    t.render('WARN_SERVICE', { service: serviceName }),
+    t.render('WARN_SERVICE', { service: withoutQuotedPrice(serviceName) }),
     t.render('WARN_VOLUME_REMAINING', { remaining: formatGigabytes(remainingBytes) }),
     '',
     t.render('WARN_RENEW_HINT', { renewButton: renewButtonLabel() }),

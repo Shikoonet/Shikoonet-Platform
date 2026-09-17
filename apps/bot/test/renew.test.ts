@@ -166,6 +166,7 @@ async function makeService(
     planId?: number | null;
     durationDays?: number | null;
     planNameAtSale?: string;
+    status?: 'ACTIVE' | 'ON_HOLD';
   },
 ): Promise<number> {
   const row = await db
@@ -175,7 +176,7 @@ async function makeService(
           remote_username, subscription_url, volume_gb, used_bytes,
           status, purchased_at, expires_at, notify, plan_id, duration_days)
        VALUES (?1, ?2, ?3, ?9, 1950000, ?4, ?5, ?6, ?7,
-               'ACTIVE', now(), ?8, '{"time":true}'::jsonb, ?10, ?11)
+               ?12, now(), ?8, '{"time":true}'::jsonb, ?10, ?11)
        RETURNING id`,
     )
     .bind(
@@ -192,6 +193,7 @@ async function makeService(
       fields.planNameAtSale ?? 'سرویس قدیمی',
       fields.planId ?? null,
       fields.durationDays ?? null,
+      fields.status ?? 'ACTIVE',
     )
     .first<{ id: number }>();
   if (!row) throw new Error('renew fixture failed');
@@ -308,6 +310,49 @@ describe('choosing what to renew', () => {
 
     const buttons = out.replies[0]?.keyboard?.flat() ?? [];
     expect(buttons.map((b) => b.callback_data)).toContain(`rnw:${subId}`);
+  });
+
+  it('lists a service still on hold — the PHP did, and 707 imported ones are', async () => {
+    // Production, 2026-09-17: 707 `send_on_hold` services came through the
+    // import as ON_HOLD and vanished from «تمدید سرویس» while staying on
+    // «سرویس‌های من». Mirzabot's extend list (`index.php:6355`) takes
+    // `send_on_hold` alongside `active`; so does this one now.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-hold`,
+      username: `u_${telegramId}`,
+      expiresInDays: null,
+      status: 'ON_HOLD',
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'renew'));
+
+    const buttons = out.replies[0]?.keyboard?.flat() ?? [];
+    expect(buttons.map((b) => b.callback_data)).toContain(`rnw:${subId}`);
+  });
+
+  it('names the service without the price its legacy name quotes', async () => {
+    // Production, 2026-09-16 23:37 UTC: a service sold as «…-280.000ت» renewed
+    // onto a 399,000 plan. The intro and the invoice both printed the old name,
+    // so the invoice carried two prices — and the customer paid the old one.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-q`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      planNameAtSale: '1️⃣ 1ماهه-100گیگ-چند کاربر-280.000ت🚀',
+    });
+    const plan = await planId('sim-vip-1m-50');
+
+    const intro = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
+    expect(intro.replies[0]?.text).toContain('1ماهه-100گیگ-چند کاربر🚀');
+    expect(intro.replies[0]?.text).not.toContain('280');
+
+    const invoice = await handleUpdate(db, press(updateId + 1, telegramId, `rord:${subId}:${plan}`));
+    expect(invoice.replies[0]?.text).toContain('تمدید سرویس: 1️⃣ 1ماهه-100گیگ-چند کاربر🚀');
+    expect(invoice.replies[0]?.text).not.toContain('280');
   });
 
   it('offers plans that carry both the service and the plan', async () => {
@@ -725,7 +770,11 @@ describe('placing the order', () => {
 
 describe('applying it', () => {
   async function paidRenewal(
-    options: { expiresInDays?: number | null; volumeGb?: number | null } = {},
+    options: {
+      expiresInDays?: number | null;
+      volumeGb?: number | null;
+      status?: 'ACTIVE' | 'ON_HOLD';
+    } = {},
   ) {
     const { updateId, telegramId } = ids();
     const userId = await makeCustomer(telegramId);
@@ -734,6 +783,7 @@ describe('applying it', () => {
       username: `u_${telegramId}`,
       expiresInDays: options.expiresInDays === undefined ? 5 : options.expiresInDays,
       volumeGb: options.volumeGb === undefined ? 50 : options.volumeGb,
+      status: options.status ?? 'ACTIVE',
     });
     const plan = await planId('sim-vip-1m-50');
     await handleUpdate(db, press(updateId, telegramId, `rord:${subId}:${plan}`));
@@ -783,6 +833,18 @@ describe('applying it', () => {
     expect(sub?.last_synced_at).toBeNull();
     expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
     expect(notes.some((n) => n.chatId === target.telegramId)).toBe(true);
+  });
+
+  it('brings a service on hold back to ACTIVE — the way the PHP wrote `active` after an extend', async () => {
+    const target = await paidRenewal({ status: 'ON_HOLD', expiresInDays: null });
+    const panel = fakePanel({
+      [target.username]: { expire: null, data_limit: 50 * GIB },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
+    expect((await subscriptionRow(target.subId))?.status).toBe('ACTIVE');
   });
 
   it('writes down a reset it could not finish, so somebody can see it', async () => {
