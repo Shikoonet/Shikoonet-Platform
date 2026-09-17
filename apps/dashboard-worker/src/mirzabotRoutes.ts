@@ -351,11 +351,10 @@ type ClaimRow = {
   customer_status: string | null;
   customer_blocked_reason: string | null;
   effective_ts: number;
-  // DEV-only: present when the worker is built with ENABLE_PURCHASE_TYPE=true
-  // and the dev D1 has these columns. Production D1 doesn't have them and the
-  // SELECT omits them, so these fields are simply absent there.
-  purchase_type?: string | null;
-  operation_type?: string | null;
+  // NULL on an imported Mirzabot claim the backfill could not classify; the
+  // bot writes it from the order's kind (0069).
+  purchase_type: string | null;
+  operation_type: string | null;
 };
 
 type DeviceRef = { id: string; name: string };
@@ -718,10 +717,9 @@ export function registerMirzabotRoutes(
     Bindings: {
       DB: D1Database;
       ENV_NAME: EnvName;
-      // DEV-only feature flags. Production workers never set these, so they
-      // are intentionally optional. Cast through Partial to keep the existing
-      // Bindings type unchanged for callers that don't need the flags.
-      ENABLE_PURCHASE_TYPE?: string;
+      // DEV-only feature flag. Production workers never set it, so it is
+      // intentionally optional. Cast through Partial to keep the existing
+      // Bindings type unchanged for callers that don't need the flag.
       DEV_BLOCK_DEVICE_ADMIN?: string;
       INGEST_URL?: string;
     };
@@ -1237,15 +1235,13 @@ export function registerMirzabotRoutes(
     // wrong -- and the row count sits in the response, so the operator can see
     // that it was.
     const EXPORT_MAX = 5000;
-    // DEV-only: purchase_type filter (only valid for bot_auto_verified tab).
+    // «خریدهای جدید | تمدیدها» — only the auto-verified tab draws it. Until
+    // 2026-09-17 this sat behind ENABLE_PURCHASE_TYPE, which production never
+    // set, so the toggle changed the URL and nothing else.
     const purchaseTypeFilter = url.searchParams.get('purchaseType');
-    const featureEnabled = c.env?.ENABLE_PURCHASE_TYPE === 'true';
     const allowedPurchaseTypes = new Set(['NEW_PURCHASE', 'RENEWAL', 'UNKNOWN']);
     const purchaseTypeForQuery =
-      featureEnabled &&
-      tab === 'bot_auto_verified' &&
-      purchaseTypeFilter &&
-      allowedPurchaseTypes.has(purchaseTypeFilter)
+      tab === 'bot_auto_verified' && purchaseTypeFilter && allowedPurchaseTypes.has(purchaseTypeFilter)
         ? purchaseTypeFilter
         : null;
 
@@ -1327,22 +1323,6 @@ export function registerMirzabotRoutes(
     const order =
       tab === 'needs_review' || tab === 'waiting' || tab === 'suspected_fake' ? 'ASC' : 'DESC';
 
-    // DEV-only: when feature flag is on, project purchase_type/operation_type columns
-    // back to the dashboard. When off, the SELECT is identical to the production shape,
-    // so production D1 (without these columns) is unaffected.
-    //
-    // DATA LIMITATION (DEV only):
-    //   Historical AUTO_VERIFIED rows have purchase_type because of the one-shot backfill
-    //   that joined Mirzabot MySQL.Payment_report.id_invoice.
-    //   Future claims ingested after this dev deploy WILL NOT auto-populate
-    //   purchase_type unless the prepared ingest patch (which extends
-    //   apps/ingest-worker/src/integrations/mirzabot.ts to read
-    //   operationType/purchaseType from the body and write them via the
-    //   prepared `insertPaymentClaimWithPurchaseType` helper) is approved
-    //   and deployed.  Until then, any new claim renders with
-    //   purchase_type='UNKNOWN'.
-    const projectionExtras = featureEnabled ? 'c.purchase_type, c.operation_type,' : '';
-
     /*
      * How many rows the filters actually match — asked separately, because the
      * page cannot count what it did not fetch.
@@ -1411,7 +1391,7 @@ export function registerMirzabotRoutes(
               c.suspect_metadata_json, c.metadata_json, c.status,
               c.fulfilment_mode, c.fulfilled_at, c.fulfilled_by,
               c.fulfilment_reason, c.reconciled_at,
-              ${projectionExtras}
+              c.purchase_type, c.operation_type,
               fa.display_name AS account_display, fa.bank_name AS account_bank,
               fa.account_hint,
               m.status AS match_status, m.mismatch_reasons_json AS match_mismatch_reasons_json,
@@ -1624,14 +1604,8 @@ export function registerMirzabotRoutes(
           claimStatus: row.status,
           matchStatus: row.match_status,
           suspectReason: row.suspect_reason,
-          // DEV-only: present when the worker is built with ENABLE_PURCHASE_TYPE=true.
-          // In production, the SELECT omits these columns and these fields are absent.
-          ...(featureEnabled
-            ? {
-                purchaseType: row.purchase_type ?? 'UNKNOWN',
-                operationType: row.operation_type ?? null,
-              }
-            : {}),
+          purchaseType: row.purchase_type ?? 'UNKNOWN',
+          operationType: row.operation_type ?? null,
           waitingRemainingMs,
           waitingElapsedMs,
           timeDeltaMs: suspectMeta.timeDeltaMs ?? null,

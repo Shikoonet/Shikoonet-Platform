@@ -86,7 +86,7 @@ export function useBotAutoVerifiedFilter(): {
   setDate: (d: BotAutoVerifiedDateFilter) => void;
   /**
    * URL params to append to /api/v1/payments. The worker reads:
-   *   purchaseType=NEW_PURCHASE|RENEWAL  (only when ENABLE_PURCHASE_TYPE=true)
+   *   purchaseType=NEW_PURCHASE|RENEWAL
    *   range=today
    *   day=YYYY-MM-DD                     (Tehran calendar day)
    */

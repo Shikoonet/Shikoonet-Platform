@@ -341,8 +341,10 @@ export async function recordPaidClick(
       `INSERT INTO payment_claims
          (id, external_order_id, customer_reference, expected_amount_irr,
           target_financial_account_id, card_digits, submitted_at, paid_clicked_at,
-          source_system, metadata_json, status, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, 'PENDING', ?7, ?7)
+          source_system, metadata_json, status, created_at, updated_at,
+          purchase_type)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, 'PENDING', ?7, ?7,
+               (SELECT claim_purchase_type(kind) FROM orders WHERE id = ?10))
        ON CONFLICT (external_order_id) DO NOTHING`,
     )
     .bind(
@@ -355,6 +357,10 @@ export async function recordPaidClick(
       now,
       MIRZABOT_SOURCE,
       JSON.stringify({ telegramUserId: String(telegramId), bot: 'shikoo' }),
+      // «خریدهای جدید | تمدیدها» on the review screen filters this. The
+      // mapping from the order's kind lives in the database (0069), so the
+      // backfill and this insert cannot drift apart.
+      orderId,
     )
     .run();
 

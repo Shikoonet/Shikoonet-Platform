@@ -158,8 +158,7 @@ export interface Env {
   // Injected at deploy time by scripts/release.sh via `wrangler deploy --var`,
   // because dev and production share one SPA bundle and one source tree.
   APP_VERSION?: string;
-  // DEV-only feature flags. Production workers never set these.
-  ENABLE_PURCHASE_TYPE?: string;
+  // DEV-only feature flag. Production workers never set it.
   DEV_BLOCK_DEVICE_ADMIN?: string;
   /** Where the Android relay posts. No default — see `ingestUrl` below. */
   INGEST_URL?: string;

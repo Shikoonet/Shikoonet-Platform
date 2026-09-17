@@ -1,10 +1,5 @@
 /**
- * DEV-only tests for the purchase_type feature flag.
- *
- *  TEST MODE 2: FEATURE ON / DEV SCHEMA
- *  - Applies migrations 0001..0015 (production is only at 0014)
- *  - ENABLE_PURCHASE_TYPE=true
- *  - Mirrors the dev D1 shape exactly
+ * «خریدهای جدید | تمدیدها» on the auto-verified tab.
  *
  *  Scenarios covered:
  *    1. NEW_PURCHASE row (getconfigafterpay)
@@ -17,39 +12,21 @@
  *  Date filter: Today / Yesterday / Day Before Yesterday / All, with explicit
  *  Asia/Tehran boundaries. Boundary timestamps around midnight are tested.
  *
- *  Query safety: every SELECT / WHERE must reference only columns that exist
- *  after migration 0015 when ENABLE_PURCHASE_TYPE=true.
+ * Until 2026-09-17 all of this sat behind ENABLE_PURCHASE_TYPE — a flag from
+ * the D1 era, when production lacked the column. Production never set it, so
+ * the toggle changed the URL and nothing else. The column has been in every
+ * platform migration since 0004; the flag is gone and the filter is simply on.
  */
 
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app, type Env } from '../src/index.js';
 
-// The prod/dev schema split this file used to build is gone: the platform's
-// own migrations always include operation_type and purchase_type, so there is
-// no column gap left for the flag to paper over. The flag itself still gates
-// whether the columns are *read*, which is what the scenarios below cover.
-
-/**
- * Returns a request env with ENABLE_PURCHASE_TYPE=true and a TEST_ACCESS_USER
- * so the access middleware accepts the call.
- */
+/** Returns a request env with a TEST_ACCESS_USER so the access middleware accepts the call. */
 function devEnv(): Env {
   const e = baseEnv as unknown as Env;
   return new Proxy(e, {
     get(target, prop) {
-      if (prop === 'ENABLE_PURCHASE_TYPE') return 'true';
-      if (prop === 'TEST_ACCESS_USER') return EMAIL;
-      return (target as any)[prop];
-    },
-  }) as Env;
-}
-
-function prodEnv(): Env {
-  const e = baseEnv as unknown as Env;
-  return new Proxy(e, {
-    get(target, prop) {
-      if (prop === 'ENABLE_PURCHASE_TYPE') return 'false';
       if (prop === 'TEST_ACCESS_USER') return EMAIL;
       return (target as any)[prop];
     },
@@ -163,7 +140,7 @@ async function seedClaim(opts: {
   }
 }
 
-describe('DEV — purchase_type feature flag', () => {
+describe('purchase_type on the auto-verified tab', () => {
   beforeEach(async () => {
     await applySchema();
     // Allow TEST_ACCESS_USER to access the API.
@@ -209,8 +186,8 @@ describe('DEV — purchase_type feature flag', () => {
   });
 
   // ───────────────────────── Query safety ─────────────────────────
-  describe('Query safety with FEATURE ON', () => {
-    it('selects only columns that exist after migration 0015', async () => {
+  describe('Projection', () => {
+    it('returns purchaseType and operationType on every row', async () => {
       await seedClaim({
         id: 'qs-1',
         orderId: 'ord-qs-1',
@@ -481,116 +458,6 @@ describe('DEV — purchase_type feature flag', () => {
       );
       const r = await callPayments('tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today');
       expect(hasClaim(r.body.items, 'bnd-1')).toBe(true);
-    });
-  });
-
-  // ───────────────────────── FEATURE OFF SQL safety ─────────────────────────
-  describe('FEATURE OFF — generated SQL must not reference dev-only columns', () => {
-    it('omits purchase_type / operation_type when ENABLE_PURCHASE_TYPE=false', async () => {
-      // Re-apply production schema (no purchase_type column).
-      const e = baseEnv as unknown as Env;
-      // Wipe everything to get a clean schema-only-DB.
-      const tables = [
-        'reconciliation_matches',
-        'payment_claims',
-        'integration_events',
-        'transaction_candidates',
-        'raw_sms_events',
-        'financial_account_identifiers',
-        'financial_accounts',
-        'devices',
-        'access_users',
-      ];
-      for (const t of tables) {
-        try {
-          await e.DB.prepare(`DELETE FROM ${t}`).run();
-        } catch {
-          /* table may not exist */
-        }
-      }
-      // Apply production-only schema.
-      await applySchema();
-      // Seed an access user.
-      await e.DB.prepare(
-        `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at)
-         VALUES (?1, ?2, 'ADMIN', 1, ?3, ?3)`,
-      )
-        .bind(crypto.randomUUID(), EMAIL, NOW_MS)
-        .run();
-      // Make a basic claim + auto-verified match so the query has something.
-      await e.DB.prepare(
-        `INSERT OR IGNORE INTO financial_accounts
-          (id, bank_name, display_name, owner_label, account_type, account_hint,
-           card_last_four, account_last_four, device_id, active, parser_configuration,
-           created_at, updated_at)
-         VALUES ('a1', 'Melli', 'Melli Main', NULL, 'CARD', '6006', NULL, NULL,
-                 NULL, 1, '{}', ?1, ?1)`,
-      )
-        .bind(NOW_MS)
-        .run();
-      await e.DB.prepare(
-        `INSERT INTO payment_claims
-          (id, external_order_id, customer_reference, expected_amount_irr,
-           target_financial_account_id, submitted_at, source_system, metadata_json,
-           status, paid_clicked_at, receipt_submitted_at, card_digits,
-           created_at, updated_at)
-         VALUES ('po-1','mirzabot:test:po-1','42',1950000,'a1',?1,'MIRZABOT','{}','VERIFIED',
-                 ?1,?1,'5054161706275678',?1,?1)`,
-      )
-        .bind(NOW_MS)
-        .run();
-      await e.DB.prepare(
-        `INSERT INTO devices
-          (id, device_code, display_name, active, created_at, updated_at)
-         VALUES ('dev-ptd', 'ptd', 'PTD', 1, ?1, ?1)`,
-      )
-        .bind(NOW_MS)
-        .run();
-      await e.DB.prepare(
-        `INSERT INTO raw_sms_events
-          (id, device_id, sender, encrypted_or_protected_body, normalized_body,
-           body_sha256, app_checksum, sms_timestamp, received_at, classification,
-           parser_status, parser_id, parser_version, created_at)
-         VALUES ('sms-po-1', 'dev-ptd', 'TEST', NULL, 'seed', 'h', 'c', ?1, ?1, 'BANK_CREDIT',
-                 'OK', 'test', 'v1', ?1)`,
-      )
-        .bind(NOW_MS)
-        .run();
-      await e.DB.prepare(
-        `INSERT INTO transaction_candidates
-          (id, raw_sms_event_id, financial_account_id, direction, amount_irr,
-           balance_irr, transaction_reference, bank_timestamp, confidence,
-           parser_id, parser_version, parser_evidence_json, status,
-           created_at, updated_at)
-         VALUES ('tx-po-1','sms-po-1','a1','CREDIT',1950000,NULL,NULL,?1,1.0,
-                 'test','v1','{}','MATCHED',?1,?1)`,
-      )
-        .bind(NOW_MS)
-        .run();
-      await e.DB.prepare(
-        `INSERT INTO reconciliation_matches
-          (id, payment_claim_id, transaction_candidate_id, status, score,
-           matching_reasons_json, mismatch_reasons_json, reviewed_at, reviewed_by,
-           created_at, updated_at)
-         VALUES ('po-1','po-1','tx-po-1','AUTO_VERIFIED',1.0,'{}','[]',?1,'system',?1,?1)`,
-      )
-        .bind(NOW_MS)
-        .run();
-      // Production schema has no purchase_type column. The OFF path must
-      // not SELECT it, so the response is a 200 with NO purchaseType field.
-      const res = await app.fetch(
-        new Request('https://example.com/api/v1/payments?tab=bot_auto_verified&range=today', {
-          method: 'GET',
-        }),
-        prodEnv(),
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { items?: any[] };
-      const items = body.items ?? [];
-      for (const it of items) {
-        expect(it.purchaseType).toBeUndefined();
-        expect(it.operationType).toBeUndefined();
-      }
     });
   });
 });
