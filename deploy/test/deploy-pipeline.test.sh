@@ -2045,7 +2045,8 @@ assert_pwf 'the confirmation is a choice, not free text' 'type: choice'
 assert_pwf 'its default is not promotion' "default: 'no — cancel'"
 assert_pwf 'only the exact word PROMOTE continues' "!= 'PROMOTE'"
 # shellcheck disable=SC2016
-assert_pwf 'the actor must be the allowlisted owner' '"$ACTOR" != "$OWNER"'
+assert_pwf 'the actor must be an allowlisted production owner' '[ "$ACTOR" = "$owner" ]'
+assert_pwf 'production owners are named in the workflow, not a secret' 'PRODUCTION_OWNERS: Isusami,arshiajacki'
 assert_pwf 'the manifest is verified before anything is deployed' 'verify-release-manifest.sh'
 assert_pwf 'the staging run is chosen, never a digest' 'pick-staging-run.sh'
 
