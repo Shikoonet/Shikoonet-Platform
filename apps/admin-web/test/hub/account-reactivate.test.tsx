@@ -237,6 +237,27 @@ describe('an account that has been switched off', () => {
     expect(cell.textContent).toContain('پویان بهمن');
   });
 
+  /** «گروه‌بندی»: a view over the rows, chosen from the toolbar, nothing stored. */
+  it('buckets the rows under a heading when asked to group them', async () => {
+    rows = [
+      account({ id: 'a1', display_name: 'ملت-پویان', bank_name: 'MELLAT', active: 1, payment_cards: [
+        { id: 'k1', card_digits: '6104000000000000', masked: '****0000', display: '6104-0000-0000-0000', holder_name: 'پویان بهمن', status: 'ACTIVE' },
+      ] }),
+      account({ id: 'a2', display_name: 'شهر-سارا', bank_name: 'SHAHR', active: 1, payment_cards: [
+        { id: 'k2', card_digits: '5047000000000000', masked: '****0000', display: '5047-0000-0000-0000', holder_name: 'پریینچی', status: 'ACTIVE' },
+      ] }),
+    ];
+
+    render(<AccountsView cache={createCache()} />);
+    await screen.findAllByText('ملت-پویان');
+    expect(screen.queryByText(/پویان بهمن \(۱\)/)).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('گروه‌بندی:'), { target: { value: 'holder' } });
+
+    expect(screen.getAllByText(/پویان بهمن \(۱\)/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/پریینچی \(۱\)/).length).toBeGreaterThan(0);
+  });
+
   it('leaves a live account alone — it still only offers the way out', async () => {
     rows = [account({ id: 'acc-on', display_name: 'حساب زنده', active: 1 })];
 

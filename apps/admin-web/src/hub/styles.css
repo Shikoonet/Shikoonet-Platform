@@ -2738,6 +2738,34 @@
   min-width: 8rem;
 }
 
+/* The «گروه‌بندی» dropdown sits inside the accounts header toolbar; nested, the
+   toolbar's own bottom padding and border would push it out of line. */
+.accounts .toolbar .sort-dropdown {
+  flex-wrap: nowrap;
+  align-items: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.accounts .toolbar .sort-dropdown > * {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+/* A group heading inside the accounts table, and its twin in the phone list. */
+.data-table .group-row th {
+  text-align: start;
+  background: var(--surface-2);
+  font-weight: 600;
+  padding-block: 0.4rem;
+}
+.card-list__group {
+  list-style: none;
+  font-weight: 600;
+  padding-block: 0.4rem 0.2rem;
+  color: var(--text-muted);
+}
+
 /* === Identifier text (LTR, monospace, selectable) === */
 .identifier-text {
   display: inline-block;

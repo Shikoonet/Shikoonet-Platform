@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import type { Cache } from './query.js';
 import { useMediaQuery } from './useMediaQuery.js';
 import { forMutation, QK } from './queries.js';
@@ -25,6 +25,43 @@ const ACCOUNTS_COLUMNS = [
   { key: 'account_hint', label: 'حساب / کارت', type: 'identifier' as ColumnType },
   { key: 'status', label: 'وضعیت', type: 'text' as ColumnType },
 ];
+
+/**
+ * «گروه‌بندی» — a view over the rows, nothing stored (Sam, 2026-09-17).
+ * The holder comes from the mapped cards' «به نام», which is the name the
+ * account rows themselves encode by hand («پارسیان-۱-پویان», «شهر-سارا»).
+ */
+const GROUP_OPTIONS = [
+  { value: '', label: 'بدون گروه' },
+  { value: 'bank', label: 'بانک' },
+  { value: 'holder', label: 'صاحب کارت' },
+  { value: 'status', label: 'وضعیت' },
+];
+
+function groupLabel(a: AccountListItem, by: string): string {
+  switch (by) {
+    case 'bank':
+      return a.bank_name || '—';
+    case 'holder': {
+      const names = new Set((a.payment_cards ?? []).map((c) => c.holder_name).filter(Boolean));
+      return [...names].join('، ') || 'بدون کارت';
+    }
+    case 'status':
+      return a.active === 0 ? 'خاموش' : statusLabel(a.status);
+    default:
+      return '';
+  }
+}
+
+/** Rows bucketed under their label, buckets in label order, rows in the order given. */
+function groupAccounts(items: AccountListItem[], by: string): [string, AccountListItem[]][] {
+  const groups = new Map<string, AccountListItem[]>();
+  for (const a of items) {
+    const label = groupLabel(a, by);
+    groups.set(label, [...(groups.get(label) ?? []), a]);
+  }
+  return [...groups.entries()].sort(([x], [y]) => x.localeCompare(y, 'fa'));
+}
 
 const MOBILE_SORT_OPTIONS = [
   { value: 'name-asc', label: 'نام: صعودی', column: 'display_name', direction: 'asc' as const },
@@ -130,6 +167,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
 
   const items = accountsPayload?.items ?? [];
   const pendingItems = pendingPayload?.items ?? [];
+  const [groupBy, setGroupBy] = useState('');
 
   // Per-table URL-persisted sort state.
   const [accountsSort, setAccountsSort] = useTableSortState('accounts', {
@@ -148,6 +186,8 @@ export function AccountsView({ cache }: AccountsViewProps) {
       : null,
     accountsSort.direction,
   );
+
+  const groupedAccounts = groupAccounts(sortedAccounts, groupBy);
 
   // For mobile, derive a coarse dropdown sort.
   const mobileSortKey = `${accountsSort.column ?? 'display_name'}:${accountsSort.direction}`;
@@ -344,6 +384,15 @@ export function AccountsView({ cache }: AccountsViewProps) {
       <div className="row toolbar">
         <h2>حساب‌ها ({count(items.length)})</h2>
         <div className="spacer" />
+        {items.length > 0 && (
+          <SortDropdown
+            id="group"
+            label="گروه‌بندی"
+            value={groupBy}
+            options={GROUP_OPTIONS}
+            onChange={setGroupBy}
+          />
+        )}
         <button type="button" className="primary" onClick={() => setCreating(true)} {...w}>
           + حساب تازه
         </button>
@@ -453,7 +502,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
         />
       )}
 
-      {items.length === 0 ? (
+            {items.length === 0 ? (
         <p className="empty">هیچ حسابی ثبت نشده.</p>
       ) : isMobile ? (
         <>
@@ -464,7 +513,14 @@ export function AccountsView({ cache }: AccountsViewProps) {
             onChange={onMobileSort}
           />
           <ul className="card-list" aria-label="حساب‌ها">
-            {sortedAccounts.map((a) => (
+            {groupedAccounts.map(([label, rows]) => (
+              <Fragment key={label}>
+                {groupBy && (
+                  <li className="card-list__group">
+                    {label} ({count(rows.length)})
+                  </li>
+                )}
+                {rows.map((a) => (
               <AccountCard
                 key={a.id}
                 a={a}
@@ -480,6 +536,8 @@ export function AccountsView({ cache }: AccountsViewProps) {
                 onUnmute={() => runStatusTransition(a.id, 'unmute')}
                 onRestore={() => runStatusTransition(a.id, 'restore')}
               />
+                ))}
+              </Fragment>
             ))}
           </ul>
         </>
@@ -501,7 +559,16 @@ export function AccountsView({ cache }: AccountsViewProps) {
               </tr>
             </thead>
             <tbody>
-              {sortedAccounts.map((a) => {
+              {groupedAccounts.map(([label, rows]) => (
+              <Fragment key={label}>
+              {groupBy && (
+                <tr className="group-row">
+                  <th colSpan={ACCOUNTS_COLUMNS.length + 1} scope="rowgroup">
+                    {label} ({count(rows.length)})
+                  </th>
+                </tr>
+              )}
+              {rows.map((a) => {
                 return (
                   <tr key={a.id} className={a.active ? '' : 'dim'}>
                     <td>{a.display_name}</td>
@@ -632,6 +699,8 @@ export function AccountsView({ cache }: AccountsViewProps) {
                   </tr>
                 );
               })}
+              </Fragment>
+              ))}
             </tbody>
           </table>
         </div>
@@ -900,11 +969,13 @@ function AccountCard({
 }
 
 function SortDropdown({
+  id = 'sort',
   label,
   value,
   options,
   onChange,
 }: {
+  id?: string;
   label: string;
   value: string;
   options: { value: string; label: string }[];
@@ -912,8 +983,8 @@ function SortDropdown({
 }) {
   return (
     <div className="row toolbar sort-dropdown">
-      <label htmlFor="sort">{label}:</label>
-      <select id="sort" value={value} onChange={(e) => onChange(e.target.value)}>
+      <label htmlFor={id}>{label}:</label>
+      <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
         {options.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
