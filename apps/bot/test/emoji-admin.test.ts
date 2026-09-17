@@ -25,7 +25,7 @@ import { db, resetBot } from './helpers/env.js';
 import { makeCustomer, planIdIn, productId } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import { invalidateBotContent } from '../src/botContent.js';
-import { customEmojiIn, setButtonEmoji, setPlanEmoji } from '../src/emoji.js';
+import { customEmojiIn, setBadgeEmoji, setButtonEmoji } from '../src/emoji.js';
 import * as menu from '../src/menu.js';
 import { DEFAULT_LAYOUTS } from '@shikoo/contracts';
 
@@ -824,12 +824,12 @@ describe('the catalogue: a service, then one of its plans', () => {
   const PLAN = '۵۰ گیگ - یک‌ماهه';
 
   afterEach(async () => {
-    // Shared fixture rows: put the badge back so the shop suites draw what
+    // Shared fixture rows: put the badges back so the shop suites draw what
     // they expect.
-    await db
-      .prepare(`UPDATE product_plans SET badge = NULL WHERE product_id = ?1`)
-      .bind(await productId(PRODUCT))
-      .run();
+    const pid = await productId(PRODUCT);
+    await db.prepare(`UPDATE product_plans SET badge = NULL WHERE product_id = ?1`).bind(pid).run();
+    await db.prepare(`UPDATE products SET badge = NULL WHERE id = ?1`).bind(pid).run();
+    await db.prepare(`UPDATE product_categories SET badge = '📦' WHERE name = 'اکانت‌ها'`).run();
   });
 
   it('walks service → plan → emoji, and writes the plan’s badge', async () => {
@@ -854,6 +854,8 @@ describe('the catalogue: a service, then one of its plans', () => {
     expect(plans.replies[0]?.text ?? '').toContain('کدام پلن');
     const pl = (plans.replies[0]?.keyboard ?? []).flat();
     expect(pl.find((b) => b.text === PLAN)?.callback_data).toBe(`emjp:${pid}:${plid}`);
+    // The service's own button leads the list.
+    expect(pl[0]?.callback_data).toBe(`emjq:${pid}`);
 
     const ask = await handleUpdate(db, press(ids().updateId, telegramId, `emjp:${pid}:${plid}`));
     expect(ask.replies[0]?.text ?? '').toContain(PLAN);
@@ -884,9 +886,9 @@ describe('the catalogue: a service, then one of its plans', () => {
     const pid = await productId(PRODUCT);
     const plid = await planIdIn(PRODUCT, PLAN);
     await db.prepare(`UPDATE product_plans SET badge = '🆕 آف' WHERE id = ?1`).bind(plid).run();
-    const first = await setPlanEmoji(db, pid, plid, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' });
+    const first = await setBadgeEmoji(db, 'product_plans', plid, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' }, pid);
     expect(first).toEqual({ ok: true, label: `<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji> آف ${PLAN}` });
-    const second = await setPlanEmoji(db, pid, plid, { customEmojiId: '5411394265924257943', fallbackEmoji: '👋' });
+    const second = await setBadgeEmoji(db, 'product_plans', plid, { customEmojiId: '5411394265924257943', fallbackEmoji: '👋' }, pid);
     expect(second.ok && second.label).toBe(`<tg-emoji emoji-id="5411394265924257943">👋</tg-emoji> آف ${PLAN}`);
   });
 
@@ -896,15 +898,94 @@ describe('the catalogue: a service, then one of its plans', () => {
     await db.prepare(`UPDATE product_plans SET badge = ?2 WHERE id = ?1`).bind(plid, 'x'.repeat(24)).run();
     // Twenty-four plus the glyph and its space is twenty-six as drawn — over the
     // cap 0060 enforces, said in words rather than as a constraint name.
-    expect(await setPlanEmoji(db, pid, plid, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' })).toEqual({
+    expect(await setBadgeEmoji(db, 'product_plans', plid, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' }, pid)).toEqual({
       ok: false,
       reason: 'TOO_LONG',
     });
     // The pair is checked together: this plan is not in `sim-gold-10`.
     const other = await productId('sim-gold-10');
-    expect(await setPlanEmoji(db, other, plid, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' })).toEqual({
+    expect(await setBadgeEmoji(db, 'product_plans', plid, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' }, other)).toEqual({
       ok: false,
       reason: 'GONE',
     });
+  });
+});
+
+describe('the catalogue: the service’s own button, and a category', () => {
+  // Sam, 2026-09-17: «واسه خودِ دسته‌بندی‌ها و سرویس هم بتونم ایموجی پریمیوم
+  // بزنم». Same flow; the badge written is `products.badge` or
+  // `product_categories.badge`, the two the tier screen and the first screen
+  // draw from.
+  const PRODUCT = 'sim-vip-platinum';
+
+  afterEach(async () => {
+    await db.prepare(`UPDATE products SET badge = NULL WHERE code = ?1`).bind(PRODUCT).run();
+    await db.prepare(`UPDATE product_categories SET badge = '📦' WHERE name = 'اکانت‌ها'`).run();
+  });
+
+  it('puts the emoji on the service itself, from the top of its plan list', async () => {
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+    const pid = await productId(PRODUCT);
+
+    const ask = await handleUpdate(db, press(ids().updateId, telegramId, `emjq:${pid}`));
+    expect(ask.replies[0]?.text ?? '').toContain('پلاتینیوم');
+    expect((ask.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data)).toEqual([`emjp:${pid}`]);
+
+    const done = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    expect(done.replies[0]?.text ?? '').toContain('تغییر کرد');
+    const saved = await db.prepare(`SELECT badge FROM products WHERE id = ?1`).bind(pid).first<{ badge: string }>();
+    expect(saved?.badge).toBe(`<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji>`);
+    // Back on the plan list, whose first row is the service, not on the plans.
+    const after = (done.replies[0]?.keyboard ?? []).flat();
+    expect(after[0]?.callback_data).toBe(`emjq:${pid}`);
+    expect(after.some((b) => b.text.includes(FIRE_ID))).toBe(false);
+
+    // The customer's tier screen wears it.
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const cat = await db.prepare(`SELECT category_id FROM products WHERE id = ?1`).bind(pid).first<{ category_id: number }>();
+    const tiers = await handleUpdate(db, press(ids().updateId, customer, `cat:${cat!.category_id}`));
+    const drawn = (tiers.replies[0]?.keyboard ?? []).flat().find((b) => b.callback_data === `prd:${pid}`);
+    expect(drawn?.text.startsWith(`<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji> پلاتینیوم`)).toBe(true);
+  });
+
+  it('walks category → emoji, replacing the seeded glyph and keeping nothing else', async () => {
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+    const cat = await db
+      .prepare(`SELECT id FROM product_categories WHERE name = 'اکانت‌ها'`)
+      .first<{ id: number }>();
+
+    const list = await handleUpdate(db, press(ids().updateId, telegramId, 'emjc'));
+    expect(list.replies[0]?.text ?? '').toContain('کدام دسته‌بندی');
+    const rows = (list.replies[0]?.keyboard ?? []).flat();
+    expect(rows.find((b) => b.text === '📦 اکانت‌ها')?.callback_data).toBe(`emjc:${cat!.id}`);
+    // A switched-off category is not on the customer's screen, so not here.
+    expect(rows.some((b) => b.text.includes('موقتاً بسته'))).toBe(false);
+
+    await handleUpdate(db, press(ids().updateId, telegramId, `emjc:${cat!.id}`));
+    const done = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    expect(done.replies[0]?.text ?? '').toContain('تغییر کرد');
+    // «📦» was the old icon; it is replaced, not kept beside the new one.
+    const saved = await db
+      .prepare(`SELECT badge FROM product_categories WHERE id = ?1`)
+      .bind(cat!.id)
+      .first<{ badge: string }>();
+    expect(saved?.badge).toBe(`<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji>`);
+    expect(
+      (done.replies[0]?.keyboard ?? []).flat().find((b) => b.callback_data === `emjc:${cat!.id}`)?.text,
+    ).toBe(`<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji> اکانت‌ها`);
+  });
+
+  it('refuses a category that has been switched off', async () => {
+    const off = await db
+      .prepare(`SELECT id FROM product_categories WHERE name = 'موقتاً بسته'`)
+      .first<{ id: number }>();
+    expect(
+      await setBadgeEmoji(db, 'product_categories', off!.id, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' }),
+    ).toEqual({ ok: false, reason: 'GONE' });
   });
 });

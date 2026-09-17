@@ -366,30 +366,33 @@ export interface CatalogButton {
   label: string;
 }
 
-/** ACTIVE services, in the shop's own order. A hidden one has no button to icon. */
-export async function emojiServices(db: Db): Promise<CatalogButton[]> {
+/**
+ * The three catalogue tables a badge lives on, and how each says «still drawn».
+ *
+ * A category has `active`; the other two have `status`. One map rather than
+ * three functions, so the reader and the writer below cannot disagree about
+ * which rows are buttons.
+ */
+export type BadgeTable = 'product_categories' | 'products' | 'product_plans';
+const DRAWN: Record<BadgeTable, string> = {
+  product_categories: 'active',
+  products: "status = 'ACTIVE'",
+  product_plans: "status = 'ACTIVE'",
+};
+
+/** The buttons of one table, in the shop's own order. A hidden row has none to icon. */
+async function catalogButtons(db: Db, table: BadgeTable, where = '', ...args: unknown[]): Promise<CatalogButton[]> {
   const { results } = await db
-    .prepare(
-      `SELECT id, name, badge FROM products
-        WHERE status = 'ACTIVE'
-        ORDER BY sort_order, id`,
-    )
+    .prepare(`SELECT id, name, badge FROM ${table} WHERE ${DRAWN[table]} ${where} ORDER BY sort_order, id`)
+    .bind(...args)
     .all<{ id: number; name: string; badge: string | null }>();
   return (results ?? []).map((r) => ({ id: r.id, label: badgedLabel(r.badge, r.name) }));
 }
 
-/** The ACTIVE plans of one service, in the order the price list draws them. */
-export async function emojiPlans(db: Db, productId: number): Promise<CatalogButton[]> {
-  const { results } = await db
-    .prepare(
-      `SELECT id, name, badge FROM product_plans
-        WHERE product_id = ?1 AND status = 'ACTIVE'
-        ORDER BY sort_order, id`,
-    )
-    .bind(productId)
-    .all<{ id: number; name: string; badge: string | null }>();
-  return (results ?? []).map((r) => ({ id: r.id, label: badgedLabel(r.badge, r.name) }));
-}
+export const emojiCategories = (db: Db) => catalogButtons(db, 'product_categories');
+export const emojiServices = (db: Db) => catalogButtons(db, 'products');
+export const emojiPlans = (db: Db, productId: number) =>
+  catalogButtons(db, 'product_plans', 'AND product_id = ?1', productId);
 
 /** The same shape `menu.ts`'s `badged()` draws — not exported from there. */
 function badgedLabel(badge: string | null, name: string): string {
@@ -398,31 +401,35 @@ function badgedLabel(badge: string | null, name: string): string {
 }
 
 /**
- * Puts the emoji at the front of one plan's badge, and answers with the
- * label as the plan's button now reads.
+ * Puts the emoji at the front of one catalogue button's badge — a category, a
+ * service or a plan — and answers with the label as that button now reads.
  *
- * The rest of the badge stays: «🔥 آف» becomes «<tag> آف», not «<tag>». A plan
+ * The rest of the badge stays: «🔥 آف» becomes «<tag> آف», not «<tag>». A row
  * with no badge gets the tag alone, which draws as the icon and nothing else —
  * `renderedLabelLength` of it is 1, inside 0060's `BETWEEN 1 AND 24`.
  *
- * The write is scoped to `product_id` as well as the plan's own id, so a
- * forged `emjp:<a>:<b>` cannot icon a plan through a service it is not in —
- * the same «an id out of callback_data never selects a row on its own» rule
- * `callback.ts` states, applied to the one table an admin may write here.
+ * A plan's write is scoped to `productId` as well as its own id, so a forged
+ * `emjp:<a>:<b>` cannot icon a plan through a service it is not in — the same
+ * «an id out of callback_data never selects a row on its own» rule
+ * `callback.ts` states, applied to the tables an admin may write here.
  */
-export async function setPlanEmoji(
+export async function setBadgeEmoji(
   db: Db,
-  productId: number,
-  planId: number,
+  table: BadgeTable,
+  id: number,
   emoji: { customEmojiId: string; fallbackEmoji: string },
+  productId?: number,
 ): Promise<EmojiPlacement> {
   if (labelMarkupProblem(iconInFront('', emoji))) return { ok: false, reason: 'BAD_EMOJI' };
+  // A plan carries its service as one more bound parameter; the other two
+  // tables bind only their own id.
+  const plan = table === 'product_plans';
   const row = await db
     .prepare(
-      `SELECT name, badge FROM product_plans
-        WHERE id = ?1 AND product_id = ?2 AND status = 'ACTIVE'`,
+      `SELECT name, badge FROM ${table}
+        WHERE id = ?1 ${plan ? 'AND product_id = ?2' : ''} AND ${DRAWN[table]}`,
     )
-    .bind(planId, productId)
+    .bind(...(plan ? [id, productId ?? null] : [id]))
     .first<{ name: string; badge: string | null }>();
   if (!row) return { ok: false, reason: 'GONE' };
   const badge = iconInFront(row.badge ?? '', emoji).trim();
@@ -430,11 +437,11 @@ export async function setPlanEmoji(
   if (renderedLabelLength(badge) > MAX_BADGE_LENGTH) return { ok: false, reason: 'TOO_LONG' };
   const updated = await db
     .prepare(
-      `UPDATE product_plans SET badge = ?3, updated_at = now()
-        WHERE id = ?1 AND product_id = ?2
+      `UPDATE ${table} SET badge = ?2
+        WHERE id = ?1 ${plan ? 'AND product_id = ?3' : ''} AND ${DRAWN[table]}
        RETURNING id`,
     )
-    .bind(planId, productId, badge)
+    .bind(...(plan ? [id, badge, productId ?? null] : [id, badge]))
     .first<{ id: number }>();
   if (!updated) return { ok: false, reason: 'GONE' };
   return { ok: true, label: badgedLabel(badge, row.name) };

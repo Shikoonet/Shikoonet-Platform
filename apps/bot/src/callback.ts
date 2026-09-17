@@ -88,6 +88,9 @@ export const CALLBACK_ACTIONS = [
   'emjp', // [productId[:planId]] — the same picker for the catalogue: the
   //         services, the plans of one, or ask for the emoji of one plan. Real
   //         row ids, re-read from the database before anything is written.
+  'emjq', // <productId> — ask for the emoji of the SERVICE's own button, the
+  //         one the tier screen draws (`products.badge`)
+  'emjc', // [categoryId] — the categories, or ask for the emoji of one
   'wal', // the balance and the last movements on it
   'top', // the deposit amounts on offer
   'tp', // <presetIndex> — deposit that preset. An INDEX, never an amount:

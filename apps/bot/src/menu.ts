@@ -395,10 +395,29 @@ export function emojiMenuList(menus: { label: string; no: number }[]): InlineKey
   }
   // The catalogue is not a keyboard in `MENUS` — its buttons are rows of
   // `products` and `product_plans` — so it gets a door of its own here.
-  rows.push([{ text: '🛒 سرویس‌ها و پلن‌ها', callback_data: encode('emjp') }]);
+  rows.push([
+    { text: '📂 دسته‌بندی‌ها', callback_data: encode('emjc') },
+    { text: '🛒 سرویس‌ها و پلن‌ها', callback_data: encode('emjp') },
+  ]);
   rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
   return rows;
 }
+
+/** The categories — the shop's first screen — one level, so the tap asks straight away. */
+export function emojiCategoriesHome(): string {
+  return ['🎨 ایموجی پریمیوم', '', 'کدام دسته‌بندی؟'].join('\n');
+}
+
+export function emojiCategoryList(categories: { id: number; label: string }[]): InlineKeyboard {
+  const rows: InlineKeyboard = categories.map((c) => [
+    { text: c.label, callback_data: encode('emjc', c.id) },
+  ]);
+  rows.push([{ text: '⬅️ منوهای دیگر', callback_data: encode('emj') }]);
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+export const EMOJI_NO_CATEGORIES = '❌ دسته‌بندی فعالی نیست.';
 
 /**
  * The catalogue's two screens: which service, then which of its plans.
@@ -432,9 +451,12 @@ export function emojiPlanList(
   plans: { id: number; label: string }[],
   productId: number,
 ): InlineKeyboard {
-  const rows: InlineKeyboard = plans.map((p) => [
-    { text: p.label, callback_data: encode('emjp', productId, p.id) },
-  ]);
+  // The service's own button first — the one the tier screen draws — then
+  // its plans. Sam, 2026-09-17: «واسه خودِ سرویس هم بتونم ایموجی بزنم».
+  const rows: InlineKeyboard = [
+    [{ text: '🔘 دکمهٔ خودِ سرویس', callback_data: encode('emjq', productId) }],
+    ...plans.map((p) => [{ text: p.label, callback_data: encode('emjp', productId, p.id) }]),
+  ];
   rows.push([{ text: '⬅️ سرویس‌های دیگر', callback_data: encode('emjp') }]);
   rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
   return rows;
@@ -565,15 +587,15 @@ export function emojiRefused(reason: 'TOO_LONG' | 'GONE' | 'BAD_EMOJI', label: s
   return reason === 'GONE' ? EMOJI_BUTTON_GONE : EMOJI_NOT_AN_EMOJI;
 }
 
-/** The same three, for a plan — whose cap is its badge's and whose editor is «محصولات». */
-export function planEmojiRefused(reason: 'TOO_LONG' | 'GONE' | 'BAD_EMOJI', label: string): string {
+/** The same three, for a catalogue button — whose cap is its badge's and whose editor is the panel. */
+export function catalogEmojiRefused(reason: 'TOO_LONG' | 'GONE' | 'BAD_EMOJI', label: string): string {
   if (reason === 'TOO_LONG') {
     return [
       `❌ روی «${stripCustomEmoji(label).trim()}» جا نشد.`,
-      'نشانِ این پلن با ایموجی از ۲۴ نویسه بیشتر می‌شود؛ اول در پنل › محصولات کوتاهش کن.',
+      'نشانِ این دکمه با ایموجی از ۲۴ نویسه بیشتر می‌شود؛ اول در پنل کوتاهش کن.',
     ].join('\n');
   }
-  return reason === 'GONE' ? '❌ این پلن دیگر فعال نیست.' : EMOJI_NOT_AN_EMOJI;
+  return reason === 'GONE' ? '❌ این دکمه دیگر فعال نیست.' : EMOJI_NOT_AN_EMOJI;
 }
 
 export function mainMenu(viewer: MenuViewer): InlineKeyboard {
