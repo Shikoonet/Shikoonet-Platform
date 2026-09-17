@@ -255,7 +255,7 @@ export async function accountStatement(
     opening && closing && closing.asOf > opening.asOf
       ? closing.balanceIrr - (opening.balanceIrr + bankDeltaIrr)
       : opening && closing
-        ? -bankDeltaIrr
+        ? 0 - bankDeltaIrr || 0 // `|| 0` turns the -0 of an unmoved month into 0
         : null;
 
   return {
