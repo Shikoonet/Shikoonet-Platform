@@ -443,8 +443,14 @@ export interface AccountRefLike {
   accountDisplay: string | null;
 }
 
+/**
+ * The account's own name («مهر-پویان»), falling back to the bank. Sam,
+ * 2026-09-17: the shop has several accounts at the same bank, so «Mehr» on a
+ * claim or a transaction named none of them; the display name is what the
+ * accounts page calls it.
+ */
 export function bankName(item: AccountRefLike): string | null {
-  return item.accountBank ?? item.accountDisplay;
+  return item.accountDisplay ?? item.accountBank;
 }
 
 export { formatToman } from './format.js';
