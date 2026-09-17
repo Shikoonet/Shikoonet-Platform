@@ -120,11 +120,20 @@ const deadPanel = (async () =>
  * service, and `shop-settings.test.ts` then failed in a full run while passing
  * on its own. Two files, one row, and only one of them knew.
  */
-async function setPanelConfig(provider: number, config: Record<string, unknown>): Promise<void> {
+async function setPanelConfig(
+  provider: number,
+  config: Record<string, unknown>,
+  /**
+   * The address. Two rows at ONE address are tiers of each other since issue
+   * #271, so the second panel gets its own by default — the tests that share
+   * one say so.
+   */
+  host = 'https://renew.test',
+): Promise<void> {
   await db
     .prepare(
       `UPDATE provisioning_providers
-          SET base_url = 'https://renew.test', secret_ref = ?2, kind = 'pasarguard',
+          SET base_url = ?4, secret_ref = ?2, kind = 'pasarguard',
               -- renew_mode is stripped before the merge, and that is not tidiness.
               --
               -- Every caller below sets the mode through the LEGACY key
@@ -149,7 +158,7 @@ async function setPanelConfig(provider: number, config: Record<string, unknown>)
                        || ?3::jsonb
         WHERE id = ?1`,
     )
-    .bind(provider, PROVIDER_CODE, JSON.stringify(config))
+    .bind(provider, PROVIDER_CODE, JSON.stringify(config), host)
     .run();
 }
 
@@ -204,11 +213,13 @@ async function subscriptionRow(id: number) {
   return db
     .prepare(
       `SELECT plan_id, plan_name_at_sale, volume_gb, used_bytes, duration_days,
-              expires_at, notify, last_synced_at, status
+              expires_at, notify, last_synced_at, status, provider_id, provider_name_at_sale
          FROM subscriptions WHERE id = ?1`,
     )
     .bind(id)
     .first<{
+      provider_id: number;
+      provider_name_at_sale: string | null;
       plan_id: number | null;
       plan_name_at_sale: string;
       volume_gb: number | null;
@@ -280,7 +291,7 @@ beforeEach(async () => {
     )
     .run();
   await setPanelConfig(panelId, { Methodextend: 'ریست حجم و زمان', status_extend: 'on_extend' });
-  await setPanelConfig(otherPanelId, { status_extend: 'on_extend' });
+  await setPanelConfig(otherPanelId, { status_extend: 'on_extend' }, 'https://gold.renew.test');
 });
 
 afterEach(() => {
@@ -702,6 +713,96 @@ describe('choosing what to renew', () => {
     );
 
     expect(out.replies[0]?.text).toBe(menu.RENEWAL_GONE);
+  });
+});
+
+/**
+ * Tier change across admins — issue #271, Sam 2026-09-17: «the simplest
+ * thing, no sudo user».
+ *
+ * In production every tier is its own panel row with its own admin on ONE
+ * PasarGuard, so «طلایی → تیتانیوم» never had a second product on the
+ * service's row to offer. Two rows at one address are now tiers of each
+ * other: the sibling's plan is offered, and the account is renewed where it
+ * is — under its own admin — with the sibling's numbers and groups. Nothing
+ * moves, nothing is sudo.
+ *
+ * `sim-gold` plays the tier the customer is on and `sim-vip` the one they
+ * pick; the latter carries `group_ids`, so the PUT can be checked for the new
+ * tier's groups and not only its numbers.
+ */
+describe('changing tier across rows of one panel', () => {
+  async function onGold(telegramId: number, sameHost: boolean) {
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, otherPanelId, {
+      publicId: `ren-${telegramId}-tc`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      planNameAtSale: 'سرویس طلایی',
+    });
+    if (sameHost) await setPanelConfig(otherPanelId, { status_extend: 'on_extend' });
+    return { userId, subId, username: `u_${telegramId}` };
+  }
+
+  it('offers the other row’s tier when the two rows share an address, and not otherwise', async () => {
+    const { updateId, telegramId } = ids();
+    const { subId } = await onGold(telegramId, false);
+    const platinum = await productId('sim-vip-platinum');
+
+    const apart = (await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`))).replies[0];
+    const apartData = apart?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    expect(apartData.filter((d) => d?.startsWith('rnwp:'))).toEqual([]);
+
+    await setPanelConfig(otherPanelId, { status_extend: 'on_extend' });
+    const together = (await handleUpdate(db, press(updateId + 1, telegramId, `rnw:${subId}`))).replies[0];
+    const data = together?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    expect(data).toContain(`rnwp:${subId}:${platinum}`);
+    // …and gold's own size is still there — the matched confirmation is
+    // looked for on the service's own row, not among the siblings.
+    expect(data).toContain(`rord:${subId}:${await planId('sim-gold-10')}`);
+  });
+
+  it('accepts the sibling’s plan at «rord» only when the rows share an address', async () => {
+    const { updateId, telegramId } = ids();
+    const { userId, subId } = await onGold(telegramId, false);
+    const thirty = (await planIdsIn('sim-vip-platinum'))[0]!;
+
+    const refused = await handleUpdate(db, press(updateId, telegramId, `rord:${subId}:${thirty}`));
+    expect(refused.replies[0]?.text).toBe(menu.PLAN_GONE);
+
+    await setPanelConfig(otherPanelId, { status_extend: 'on_extend' });
+    const out = await handleUpdate(db, press(updateId + 1, telegramId, `rord:${subId}:${thirty}`));
+    expect(out.replies[0]?.text).toContain('پلاتینیوم');
+    const order = await markPaid(userId);
+    expect(await orderRow(order.id)).toMatchObject({ kind: 'RENEWAL', target_subscription_id: subId });
+  });
+
+  it('renews the account where it is, with the new tier’s numbers, groups and name', async () => {
+    const { updateId, telegramId } = ids();
+    const target = await onGold(telegramId, true);
+    const thirty = (await planIdsIn('sim-vip-platinum'))[0]!;
+    await handleUpdate(db, press(updateId, telegramId, `rord:${target.subId}:${thirty}`));
+    const order = await markPaid(target.userId);
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 10 * GIB },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    // One PUT, to the account's own row (the fake answers any address; the
+    // row is what the sweep resolved), carrying the sibling tier's groups.
+    expect(panel.puts).toHaveLength(1);
+    expect(panel.puts[0]?.username).toBe(target.username);
+    expect(panel.puts[0]?.body['group_ids']).toEqual([6, 7]);
+    expect(panel.puts[0]?.body['data_limit']).toBe(30 * GIB);
+    expect(await subscriptionRow(target.subId)).toMatchObject({
+      // Still gold's account — the admin did not change — sold as platinum.
+      provider_id: otherPanelId,
+      provider_name_at_sale: '🥇 سرویس VIP (شبیه‌سازی)',
+      plan_id: thirty,
+      status: 'ACTIVE',
+    });
+    expect(await orderRow(order.id)).toMatchObject({ status: 'COMPLETED' });
   });
 });
 

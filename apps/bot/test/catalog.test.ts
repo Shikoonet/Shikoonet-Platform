@@ -355,15 +355,15 @@ describe('what the shop shows a customer', () => {
   });
 
   it('lists the plans on a panel and hides the hidden one', async () => {
-    const names = (await plansOnPanel(db, customer, vip)).map((p) => p.productName);
+    const names = (await plansOnPanel(db, customer, [vip])).map((p) => p.productName);
     expect(names).toContain('۱ماهه - ۲۰ گیگ - چند کاربر');
     expect(names).toContain('۱ماهه - ۵۰ گیگ - چند کاربر');
     expect(names).not.toContain('۱ماهه - ۱۰۰ گیگ - پنهان');
   });
 
   it('keeps a resellers-only plan away from a customer and gives it to a reseller', async () => {
-    const forCustomer = (await plansOnPanel(db, customer, vip)).map((p) => p.productName);
-    const forReseller = (await plansOnPanel(db, reseller, vip)).map((p) => p.productName);
+    const forCustomer = (await plansOnPanel(db, customer, [vip])).map((p) => p.productName);
+    const forReseller = (await plansOnPanel(db, reseller, [vip])).map((p) => p.productName);
     expect(forCustomer).not.toContain('پک نمایندگی - ۱۰ کاربر');
     expect(forReseller).toContain('پک نمایندگی - ۱۰ کاربر');
     // The approved departure from legacy: a reseller sees the ordinary catalog
@@ -372,9 +372,9 @@ describe('what the shop shows a customer', () => {
   });
 
   it('offers a first-purchase plan only until the first purchase', async () => {
-    const fresh = (await plansOnPanel(db, customer, vip)).map((p) => p.productName);
-    const after = (await plansOnPanel(db, returning, vip)).map((p) => p.productName);
-    const afterTrial = (await plansOnPanel(db, tried, vip)).map((p) => p.productName);
+    const fresh = (await plansOnPanel(db, customer, [vip])).map((p) => p.productName);
+    const after = (await plansOnPanel(db, returning, [vip])).map((p) => p.productName);
+    const afterTrial = (await plansOnPanel(db, tried, [vip])).map((p) => p.productName);
     expect(fresh).toContain('اکانت تست - ۱ روزه - ۱ گیگ');
     expect(after).not.toContain('اکانت تست - ۱ روزه - ۱ گیگ');
     // A free trial is not the first purchase (Sam, 2026-09-16).
@@ -382,12 +382,12 @@ describe('what the shop shows a customer', () => {
   });
 
   it('returns nothing for a panel the customer may not open', async () => {
-    expect(await plansOnPanel(db, customer, await providerId('sim-off'))).toEqual([]);
-    expect(await plansOnPanel(db, customer, await providerId('sim-empty'))).toEqual([]);
+    expect(await plansOnPanel(db, customer, [await providerId('sim-off')])).toEqual([]);
+    expect(await plansOnPanel(db, customer, [await providerId('sim-empty')])).toEqual([]);
   });
 
   it('carries the price and the panel on every listed plan', async () => {
-    const plan = (await plansOnPanel(db, customer, vip)).find(
+    const plan = (await plansOnPanel(db, customer, [vip])).find(
       (p) => p.productName === '۱ماهه - ۵۰ گیگ - چند کاربر',
     );
     expect(plan?.priceIrr).toBe(1_950_000);
@@ -471,7 +471,7 @@ describe('purchasablePlan answers the same question as the list', () => {
       .run();
     try {
       expect(await purchasablePlan(db, customer, plan)).toBeNull();
-      expect((await plansOnPanel(db, customer, sold!.providerId)).map((p) => p.planId)).not.toContain(
+      expect((await plansOnPanel(db, customer, [sold!.providerId])).map((p) => p.planId)).not.toContain(
         plan,
       );
       expect((await productsForUser(db, customer)).map((p) => p.productId)).not.toContain(
@@ -646,11 +646,11 @@ describe('the panel cap', () => {
     expect(await sellsFrom(vip)).toBe(false);
     // ...and the renewal list is untouched, which is the cap staying out of a
     // question it has no answer to.
-    expect((await plansOnPanel(db, customer, vip)).length).toBeGreaterThan(0);
+    expect((await plansOnPanel(db, customer, [vip])).length).toBeGreaterThan(0);
 
     // And the gate behind that list agrees with it, or the customer picks a
     // plan and is told it is gone.
-    const offered = (await plansOnPanel(db, customer, vip))[0]!;
+    const offered = (await plansOnPanel(db, customer, [vip]))[0]!;
     expect(await purchasablePlan(db, customer, offered.planId, true)).not.toBeNull();
     // The same plan, asked as a NEW purchase, is correctly refused.
     expect(await purchasablePlan(db, customer, offered.planId)).toBeNull();

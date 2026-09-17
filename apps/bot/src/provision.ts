@@ -105,6 +105,12 @@ interface PendingOrder {
   provider_secret_ref: string | null;
   provider_sealed: string | null;
   provider_config: Record<string, unknown> | null;
+  /**
+   * The name of the PLAN's panel row — the account's own for every renewal
+   * but a tier change onto a sibling row (issue #271), where it is the tier
+   * the customer just bought and the name «لوکیشن» should now show.
+   */
+  plan_provider_name: string | null;
 }
 
 /**
@@ -523,7 +529,8 @@ export async function provisionPaidOrders(
               -- the ACCOUNT's panel, a new purchase against the plan's, a trial
               -- against the one it named.
               COALESCE(sps.sealed, ps.sealed, ops.sealed) AS provider_sealed,
-              COALESCE(spv.config, pv.config, opv.config)         AS provider_config
+              COALESCE(spv.config, pv.config, opv.config)         AS provider_config,
+              pv.name                                             AS plan_provider_name
          FROM orders o
          JOIN users u              ON u.id = o.user_id
          LEFT JOIN product_plans pl ON pl.id = o.plan_id
@@ -1490,6 +1497,11 @@ async function renew(
         `UPDATE subscriptions
             SET plan_id           = ?2,
                 plan_name_at_sale = ?3,
+                -- The tier's name, for the «لوکیشن» line: on a sibling row's
+                -- plan (issue #271) the account stays under its own admin but
+                -- was sold as the other tier, and the service screen should
+                -- say so. Same name as before on every other renewal.
+                provider_name_at_sale = COALESCE(?8, provider_name_at_sale),
                 duration_days     = ?4,
                 volume_gb         = ?5,
                 expires_at        = ?6,
@@ -1523,6 +1535,7 @@ async function renew(
         result.volumeGb ?? null,
         expiresAt === null ? null : expiresAt.toISOString(),
         mode === 'RESET',
+        row.plan_provider_name,
       )
       .run();
     await complete(tx, row.order_id, shop.commissionPercent);
