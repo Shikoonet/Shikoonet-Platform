@@ -63,7 +63,7 @@ async function recent(as = ADMIN) {
         at: number;
         count: number;
         amountIrr: number | null;
-        progress: { total: number; sent: number; failed: number } | null;
+        progress: { total: number; sent: number; failed: number; lastAt: number | null } | null;
       } | null;
     },
   };
@@ -202,11 +202,11 @@ describe('the last send, so nobody repeats it by hand', () => {
     expect(body.broadcast?.id).toBe(broadcastId);
     const total = body.broadcast?.progress?.total ?? 0;
     expect(total).toBeGreaterThanOrEqual(3);
-    expect(body.broadcast?.progress).toEqual({ total, sent: 0, failed: 0 });
+    expect(body.broadcast?.progress).toEqual({ total, sent: 0, failed: 0, lastAt: null });
 
     // The sweep's three outcomes, one row each. SENDING is still «to come».
     await baseEnv.DB.prepare(
-      `UPDATE broadcast_recipients SET status = 'SENT'
+      `UPDATE broadcast_recipients SET status = 'SENT', sent_at = now()
         WHERE broadcast_id = ?1 AND telegram_id = ?2`,
     )
       .bind(broadcastId, TG_BASE + seq)
@@ -224,7 +224,14 @@ describe('the last send, so nobody repeats it by hand', () => {
       .bind(broadcastId, TG_BASE + seq - 2)
       .run();
     ({ body } = await recent());
-    expect(body.broadcast?.progress).toEqual({ total, sent: 1, failed: 1 });
+    expect(body.broadcast?.progress).toEqual({
+      total,
+      sent: 1,
+      failed: 1,
+      // The SENT row's clock, as a number the browser can subtract from now.
+      lastAt: expect.any(Number),
+    });
+    expect(Math.abs(Date.now() - (body.broadcast?.progress?.lastAt ?? 0))).toBeLessThan(60_000);
   });
 
   it('is readable by an operator who cannot send', async () => {

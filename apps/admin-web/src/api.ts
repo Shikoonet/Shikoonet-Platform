@@ -937,7 +937,13 @@ export interface BulkSend {
    * has one — a credit is over the moment the route answers. What is neither
    * `sent` nor `failed` is still to come.
    */
-  progress?: { total: number; sent: number; failed: number } | null;
+  progress?: {
+    total: number;
+    sent: number;
+    failed: number;
+    /** When the last row moved, epoch ms; null while nothing has. */
+    lastAt: number | null;
+  } | null;
 }
 
 /** What «تست ارتباط» answers. Never the panel's response body — see panelRoutes.ts. */
