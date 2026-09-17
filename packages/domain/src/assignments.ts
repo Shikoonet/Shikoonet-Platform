@@ -268,7 +268,7 @@ export async function backfillAssignmentsForIdentifier(
       `SELECT DISTINCT tdi.transaction_candidate_id AS tx_id
          FROM transaction_detected_identifiers tdi
          JOIN transaction_candidates tc ON tc.id = tdi.transaction_candidate_id
-        WHERE tdi.identifier_type = ?1
+        WHERE ${SQL.detectedIdentifierTypeIs('?1')}
           AND tdi.normalized_value = ?2
           AND tc.financial_account_id IS NULL
           AND ${SQL.actionableTransactionWhereTc}`,
