@@ -264,7 +264,7 @@ describe('purchase_type on the auto-verified tab', () => {
         .run();
     }
 
-    it('lists the first paid service and not the second; خریدهای جدید still lists both', async () => {
+    it('خرید اولی‌ها lists the first paid service, خرید چندم the second, NEW_PURCHASE both', async () => {
       const e = baseEnv as unknown as Env;
       for (const t of ['payments', 'subscriptions', 'orders']) {
         await e.DB.prepare(`DELETE FROM ${t}`).run();
@@ -297,11 +297,16 @@ describe('purchase_type on the auto-verified tab', () => {
       const first = await callPayments(
         'tab=bot_auto_verified&purchaseType=FIRST_PURCHASE&range=today',
       );
+      const repeat = await callPayments(
+        'tab=bot_auto_verified&purchaseType=REPEAT_PURCHASE&range=today',
+      );
       const newP = await callPayments(
         'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
       );
       expect(hasClaim(first.body.items, 'fp-1')).toBe(true);
       expect(hasClaim(first.body.items, 'fp-2')).toBe(false);
+      expect(hasClaim(repeat.body.items, 'fp-1')).toBe(false);
+      expect(hasClaim(repeat.body.items, 'fp-2')).toBe(true);
       expect(hasClaim(newP.body.items, 'fp-1')).toBe(true);
       expect(hasClaim(newP.body.items, 'fp-2')).toBe(true);
     });
