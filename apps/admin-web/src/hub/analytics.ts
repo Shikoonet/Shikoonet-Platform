@@ -24,6 +24,8 @@ export interface AnalyticsResponse {
   botAutoVerified: { count: number; amountIrr: number };
   manualVerified: { count: number; amountIrr: number };
   bankInflowIrr: number;
+  /** Withdrawals in range, per the bank — 0073. Optional: older servers. */
+  bankOutflowIrr?: number;
   reseller: { count: number; amountIrr: number };
   unassignedIncome: { count: number; amountIrr: number };
   balances: {
@@ -64,6 +66,9 @@ export interface AccountAnalyticsItem {
   bankInflowCount: number;
   unassignedIncomeIrr: number;
   unassignedIncomeCount: number;
+  /** What left the account in range, per the bank; off the books excluded. */
+  bankOutflowIrr?: number;
+  bankOutflowCount?: number;
   resellerAmountIrr: number;
   resellerCount: number;
   purchaseBarPercent: number;
@@ -98,6 +103,8 @@ export interface AccountAnalyticsResponse {
     bankInflowCount: number;
     unassignedIncomeIrr: number;
     unassignedIncomeCount: number;
+    bankOutflowIrr?: number;
+    bankOutflowCount?: number;
   };
 }
 

@@ -62,6 +62,10 @@ const ROWS: RevenueAdjustmentRow[] = [
     originalAmount: null,
     fxRateIrr: null,
     recurrenceId: null,
+    financialAccountId: null,
+    accountName: null,
+    feeIrr: 0,
+    transactionCandidateId: null,
   },
   {
     ...{
@@ -84,6 +88,10 @@ const ROWS: RevenueAdjustmentRow[] = [
       originalAmount: null,
       fxRateIrr: null,
       recurrenceId: null,
+      financialAccountId: null,
+      accountName: null,
+      feeIrr: 0,
+      transactionCandidateId: null,
     },
   },
 ];

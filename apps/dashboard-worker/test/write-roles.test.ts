@@ -465,6 +465,13 @@ describe('every write route, asked directly', () => {
     // claim between «در انتظار بررسی» and «کنار گذاشته». A view flag on a
     // PENDING row, no money and no status change, so a REVIEWER may (it is
     // their queue); READ_ONLY refused by the first test above.
-    expect(writeRoutes().length).toBe(162);
+    //
+    // 163, 2026-09-17: `POST /admin/books/open` — the fresh start: writes
+    // every live account's last bank balance as its opening (0073). It moves
+    // no money and creates nothing customers see, but it is the line the
+    // monthly statement to the head admin starts from, so ADMIN-only,
+    // audited, refused twice unless told to overwrite; `books.test.ts` pins
+    // the 409 and the REVIEWER 403.
+    expect(writeRoutes().length).toBe(163);
   });
 });

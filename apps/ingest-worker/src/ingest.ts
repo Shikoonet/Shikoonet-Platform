@@ -261,15 +261,20 @@ export async function ingest(
   // Only run the parser side-effects on the winning insert.
   //
   // CREDIT-only product rule: only `direction === 'CREDIT'` is actionable.
-  // Both DEBIT (outgoing) and UNKNOWN (direction uncertain) short-circuit
-  // before persistTransaction. The raw SMS is still persisted above for
-  // audit, but NO transaction_candidate row is created and no matching /
-  // auto-assign / identifier resolution runs. The phone must not retry
-  // these SMS.
+  // UNKNOWN (direction uncertain) short-circuits before persistTransaction:
+  // the raw SMS is persisted above for audit and nothing else happens. DEBIT
+  // is persisted as a row (below) and skips the matching side-effects.
   const isOutgoingTransaction = !wasDuplicate && !isRedactable && result.direction === 'DEBIT';
   const isDirectionUncertain = !wasDuplicate && !isRedactable && result.direction === 'UNKNOWN';
   const skipSideEffects = isOutgoingTransaction || isDirectionUncertain;
 
+  // A withdrawal is recorded (0073) — balance, account, disposition
+  // OUTGOING_IGNORED — and then left alone: no matching, no suggestion, no
+  // claim rematch. The phone still hears `outgoing_ignored`; its contract is
+  // frozen and «do not retry» is still the right answer.
+  if (isOutgoingTransaction) {
+    await persistTransaction(db, finalEventId, smsTimestamp, result, normalizedBody);
+  }
   if (!wasDuplicate && !isRedactable && !skipSideEffects) {
     const txRow = await persistTransaction(db, finalEventId, smsTimestamp, result, normalizedBody);
     if (txRow) {

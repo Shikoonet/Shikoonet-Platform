@@ -6,7 +6,11 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { INCOME_TX_WHERE, TX_INCOME_DECLINED } from './incomeEligibility.js';
+import { INCOME_TX_WHERE, OFF_BOOKS_ELIGIBLE_TX_WHERE, TX_INCOME_DECLINED } from './incomeEligibility.js';
+
+/** Why a movement is not the shop's — 0073. `OTHER` is the pre-0073 rows. */
+export const OFF_BOOKS_CATEGORIES = ['TRANSFER', 'PERSONAL', 'MISTAKE_RETURNED', 'BANK_FEE', 'BANK_INTEREST', 'OTHER'] as const;
+export type OffBooksCategory = (typeof OFF_BOOKS_CATEGORIES)[number];
 
 export { TX_INCOME_DECLINED };
 
@@ -37,44 +41,67 @@ export async function wouldReturnToIncome(db: D1Database, transactionId: string)
   return isIncomeEligible(db, transactionId);
 }
 
+/** A credit the income queue would show, or any live debit (0073). */
+export async function isOffBooksEligible(
+  db: Pick<D1Database, 'prepare'>,
+  transactionId: string,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS ok FROM transaction_candidates t WHERE t.id = ?1 AND ${OFF_BOOKS_ELIGIBLE_TX_WHERE}`,
+    )
+    .bind(transactionId)
+    .first<{ ok: number }>();
+  return row?.ok === 1;
+}
+
 export async function declineIncomeTransaction(
   db: D1Database,
-  args: { transactionId: string; actorEmail: string; reason?: string | null },
+  args: {
+    transactionId: string;
+    actorEmail: string;
+    reason?: string | null;
+    category?: OffBooksCategory | null;
+  },
 ): Promise<DeclineIncomeResult> {
-  const tx = await db
-    .prepare(`SELECT id FROM transaction_candidates WHERE id = ?1`)
-    .bind(args.transactionId)
-    .first<{ id: string }>();
-  if (!tx) return { ok: false, error: 'TRANSACTION_NOT_FOUND' };
-
-  const eligible = await isIncomeEligible(db, args.transactionId);
-  if (!eligible) {
-    const declined = await db
-      .prepare(
-        `SELECT id FROM income_declined_transactions
-         WHERE transaction_candidate_id = ?1 AND restored_at IS NULL`,
-      )
+  // One session, and the movement's row locked for it: the eligibility
+  // check and the insert must see the same world. Without the lock, this
+  // and the expense route (`withdrawalFor`, which takes the same lock) could
+  // each pass their check and both land — a withdrawal that is at once a
+  // server bill and a loan instalment. Same rule as the money paths: the
+  // guard is in the statement, not in a read that came before it.
+  return db.withSession(async (session) => {
+    const tx = await session
+      .prepare(`SELECT id FROM transaction_candidates WHERE id = ?1 FOR UPDATE`)
       .bind(args.transactionId)
       .first<{ id: string }>();
-    if (declined) return { ok: false, error: 'ALREADY_DECLINED' };
-    return { ok: false, error: 'NOT_INCOME_ELIGIBLE' };
-  }
+    if (!tx) return { ok: false, error: 'TRANSACTION_NOT_FOUND' as const };
 
-  const now = Date.now();
-  const id = crypto.randomUUID();
-  try {
-    await db
+    const eligible = await isOffBooksEligible(session, args.transactionId);
+    if (!eligible) {
+      const declined = await session
+        .prepare(
+          `SELECT id FROM income_declined_transactions
+           WHERE transaction_candidate_id = ?1 AND restored_at IS NULL`,
+        )
+        .bind(args.transactionId)
+        .first<{ id: string }>();
+      if (declined) return { ok: false, error: 'ALREADY_DECLINED' as const };
+      return { ok: false, error: 'NOT_INCOME_ELIGIBLE' as const };
+    }
+
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    await session
       .prepare(
         `INSERT INTO income_declined_transactions
-           (id, transaction_candidate_id, declined_by, declined_at, reason, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+           (id, transaction_candidate_id, declined_by, declined_at, reason, created_at, category)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
       )
-      .bind(id, args.transactionId, args.actorEmail, now, args.reason ?? null, now)
+      .bind(id, args.transactionId, args.actorEmail, now, args.reason ?? null, now, args.category ?? 'OTHER')
       .run();
-  } catch {
-    return { ok: false, error: 'ALREADY_DECLINED' };
-  }
-  return { ok: true, id, transactionId: args.transactionId };
+    return { ok: true as const, id, transactionId: args.transactionId };
+  });
 }
 
 export async function restoreIncomeTransaction(

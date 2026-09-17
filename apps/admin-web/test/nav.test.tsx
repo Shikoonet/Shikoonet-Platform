@@ -61,7 +61,7 @@ describe('navigation', () => {
     // screen leaving its group is the regression. Written this way, only the
     // second one goes red.
     const groupOf = (id: PageId) => NAV.find((g) => g.items.some((i) => i.id === id))!.label;
-    for (const id of ['payments', 'today', 'transactions', 'expenses', 'accounts', 'banks', 'devices'] as const) {
+    for (const id of ['payments', 'today', 'transactions', 'expenses', 'books', 'accounts', 'banks', 'devices'] as const) {
       expect(groupOf(id), `${id} belongs with the money`).toBe('پول');
     }
     for (const id of ['panels', 'catalog', 'categories', 'discounts', 'stock'] as const) {
@@ -105,6 +105,8 @@ describe('navigation', () => {
       // of it until 2026-08-16; production has 136 entries that would have
       // migrated in and stayed invisible.
       'expenses',
+      // «دفتر بانک», 2026-09-17: the statement to the head admin.
+      'books',
       'dashboard',
       'customers',
       // «آمار فروشگاه», 2026-08-29. The eighteen figures the PHP bot draws

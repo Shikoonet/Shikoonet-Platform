@@ -101,6 +101,7 @@ function CardRow({ c }: { c: CardAnalyticsItem }) {
         )}
       </th>
       <Blank title="واریز بانکی روی حساب ثبت می‌شود، نه کارت" />
+      <Blank title="برداشت روی حساب ثبت می‌شود، نه کارت" />
       <Money irr={c.takingsIrr} n={c.verifiedCount} />
       <Money irr={c.botAmountIrr} n={c.botCount} />
       <Money irr={c.manualAmountIrr} n={c.manualCount} />
@@ -124,6 +125,7 @@ function AccountRow({ a, cards }: { a: AccountAnalyticsItem; cards: CardAnalytic
           </small>
         </th>
         <Money irr={a.bankInflowIrr} n={a.bankInflowCount} />
+        <Money irr={a.bankOutflowIrr ?? 0} n={a.bankOutflowCount ?? 0} />
         <Money irr={a.salesAmountIrr} n={a.salesCount} />
         <Money irr={a.botAmountIrr} n={a.botCount} />
         <Money irr={a.manualAmountIrr} n={a.manualCount} />
@@ -209,6 +211,10 @@ export function FinanceTable({
             <tr>
               <th scope="col">حساب / کارت</th>
               <th scope="col">واریز بانکی</th>
+              {/* What left, per the bank. Off-books movements (a loan, a
+                  transfer to our other account) are in neither column; the
+                  balance beside them is the bank's own and already has it. */}
+              <th scope="col">برداشت</th>
               <th scope="col">فروش تاییدشده</th>
               <th scope="col">تایید ربات</th>
               <th scope="col">تایید دستی</th>
@@ -227,7 +233,7 @@ export function FinanceTable({
             {archived.length > 0 && (
               <>
                 <tr className="fin-table__account fin-table__account--orphans">
-                  <th scope="row" className="fin-table__name" colSpan={8}>
+                  <th scope="row" className="fin-table__name" colSpan={9}>
                     <strong>حساب‌های غیرفعال</strong>
                     <small className="muted">
                       خاموش شده‌اند و ربات کارتی از آن‌ها نمی‌دهد — پولی که به آن‌ها رسیده همین‌جاست
@@ -242,7 +248,7 @@ export function FinanceTable({
             {orphans.length > 0 && (
               <>
                 <tr className="fin-table__account fin-table__account--orphans">
-                  <th scope="row" className="fin-table__name" colSpan={8}>
+                  <th scope="row" className="fin-table__name" colSpan={9}>
                     <strong>کارت‌های نگاشت‌نشده</strong>
                     <small className="muted">{exclusionReasonFa('card_not_mapped')}</small>
                   </th>
@@ -252,7 +258,7 @@ export function FinanceTable({
                 ))}
               </>
             )}
-            {nowhere.bankInflowCount > 0 && (
+            {(nowhere.bankInflowCount > 0 || (nowhere.bankOutflowCount ?? 0) > 0) && (
               <tr className="fin-table__account fin-table__account--orphans">
                 <th scope="row" className="fin-table__name">
                   <strong>واریزی بدون حساب</strong>
@@ -261,6 +267,7 @@ export function FinanceTable({
                   </small>
                 </th>
                 <Money irr={nowhere.bankInflowIrr} n={nowhere.bankInflowCount} />
+                <Money irr={nowhere.bankOutflowIrr ?? 0} n={nowhere.bankOutflowCount ?? 0} />
                 <Blank />
                 <Blank />
                 <Blank />
@@ -277,6 +284,7 @@ export function FinanceTable({
                   جمع همه
                 </th>
                 <Money irr={analytics.bankInflowIrr} />
+                <Money irr={analytics.bankOutflowIrr ?? 0} />
                 <Money irr={analytics.sales.amountIrr} n={analytics.sales.count} />
                 <Money irr={analytics.botAutoVerified.amountIrr} n={analytics.botAutoVerified.count} />
                 <Money irr={analytics.manualVerified.amountIrr} n={analytics.manualVerified.count} />

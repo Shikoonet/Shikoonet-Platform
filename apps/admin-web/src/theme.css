@@ -425,6 +425,9 @@ body {
   font-size: 12.5px;
 }
 .stat-card__icon {
+  /* Never squeezed by a long figure beside it — a clipped icon read as a
+     rendering bug on «دفتر بانک», where five tiles share a row. */
+  flex-shrink: 0;
   width: 52px;
   height: 52px;
   border-radius: 14px;

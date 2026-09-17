@@ -60,6 +60,7 @@ import { StockPage } from './pages/StockPage.js';
 import { CronPage } from './pages/CronPage.js';
 import { ResellersPage } from './pages/ResellersPage.js';
 import { ExpensesPage } from './pages/ExpensesPage.js';
+import { BooksPage } from './pages/BooksPage.js';
 import { DiscountsPage } from './pages/DiscountsPage.js';
 import { OrdersPage, SubscriptionsPage, TransactionsPage } from './pages/LedgerPages.js';
 import { SettingsPage, RequestsPage } from './pages/SettingsPage.js';
@@ -131,6 +132,8 @@ function Body({
       return <ResellersPage />;
     case 'expenses':
       return <ExpensesPage />;
+    case 'books':
+      return <BooksPage role={role} />;
     case 'discounts':
       return <DiscountsPage />;
     case 'orders':
