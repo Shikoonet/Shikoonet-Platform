@@ -237,9 +237,14 @@ export interface RenewableSubscription {
  * `status = 'ACTIVE'` includes services whose date has passed. Those are the
  * ones most in need of renewal, and the row's status does not move on its own
  * (see `menu.serviceState`).
+ *
+ * ON_HOLD too — a paid account nobody has connected to yet (`send_on_hold` in
+ * the PHP, which lists it for renewal beside `active`, `index.php:6355`). The
+ * import brought 707 of them, and until 2026-09-17 every one was on «سرویس‌های
+ * من» and missing from «تمدید سرویس».
  */
 const RENEWABLE = `
-  s.status = 'ACTIVE'
+  s.status IN ('ACTIVE', 'ON_HOLD')
   AND s.remote_username IS NOT NULL
   AND pv.status = 'ACTIVE'
   -- An account from the shelf is bought, not extended: there is no panel to
