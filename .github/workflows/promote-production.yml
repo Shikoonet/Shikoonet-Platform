@@ -118,8 +118,8 @@ jobs:
           # actor is checked here rather than inferred from whoever holds a
           # token. Whole-element match, never a substring.
           allowed=0
-          IFS=',' read -ra owners <<<"$OWNERS"
-          for owner in "${owners[@]}"; do
+          IFS=',' read -ra allowlist <<<"$OWNERS"
+          for owner in "${allowlist[@]}"; do
             owner=$(printf '%s' "$owner" | tr -d '[:space:]')
             if [ -n "$owner" ] && [ "$ACTOR" = "$owner" ]; then allowed=1; fi
           done
