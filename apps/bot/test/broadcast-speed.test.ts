@@ -194,6 +194,58 @@ describe('a broadcast, sent', () => {
 });
 
 /**
+ * Stopping mid-batch — what a `Promote Production` does to a running broadcast.
+ *
+ * The sweep claims 200 rows and the pool holds twelve. Until 2026-09-17 an
+ * abort left everything claimed-but-not-sent as SENDING for ever: never
+ * retried by policy, never closed by `closeFinishedBroadcasts`, and shown to
+ * the shop as «مانده» on a number that stopped moving after every deploy.
+ * Only a send that was actually in flight is unknowable; the rest was never
+ * offered to Telegram and goes back to PENDING for the next process.
+ */
+describe('a broadcast, stopped', () => {
+  it('puts back what it claimed and never sent, and strands nothing', async () => {
+    const id = await queueBroadcast(30);
+    const controller = new AbortController();
+    let sent = 0;
+    const api = stubApi({
+      sendMessage: async () => {
+        sent += 1;
+        if (sent === 1) controller.abort();
+        await new Promise((r) => setTimeout(r, ROUND_TRIP_MS));
+        return { messageId: null };
+      },
+    });
+
+    await sweepBroadcasts(db, api, controller.signal, 30);
+
+    const rows = await db
+      .prepare(
+        `SELECT status, COUNT(*)::int AS n FROM broadcast_recipients
+          WHERE broadcast_id = ?1 GROUP BY status`,
+      )
+      .bind(id)
+      .all<{ status: string; n: number }>();
+    const by = Object.fromEntries((rows.results ?? []).map((r) => [r.status, r.n]));
+    // The sends already in flight are awaited and recorded, not abandoned.
+    expect(by['SENT']).toBe(sent);
+    expect(sent).toBeLessThan(30);
+    // Everything else is the next container's ordinary work, and it is
+    // unclaimed: a stale claimed_at would make it look abandoned.
+    expect(by['PENDING']).toBe(30 - sent);
+    expect(by['SENDING']).toBeUndefined();
+    const stale = await db
+      .prepare(
+        `SELECT COUNT(*)::int AS n FROM broadcast_recipients
+          WHERE broadcast_id = ?1 AND status = 'PENDING' AND claimed_at IS NOT NULL`,
+      )
+      .bind(id)
+      .first<{ n: number }>();
+    expect(stale?.n).toBe(0);
+  });
+});
+
+/**
  * The loop around the sweep — the half that decides how many SECONDS a
  * broadcast takes, where the pool decides how many milliseconds a batch does.
  *
