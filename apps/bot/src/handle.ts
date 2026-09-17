@@ -38,6 +38,7 @@ import {
   plansInProduct,
   tariffForUser,
   plansOnPanel,
+  renewalPanelsFor,
   productsForUser,
   purchasablePlan,
   type TrialPanel,
@@ -1711,7 +1712,12 @@ async function handleRenewalCode(
     );
   }
   await ask(tx, user.id, 'coder:held', { subscriptionId, code: check.code.code }, screenOf(session));
-  const plans = await plansOnPanel(tx, user.id, service.provider_id, service.family);
+  const plans = await plansOnPanel(
+    tx,
+    user.id,
+    await renewalPanelsFor(tx, service.provider_id),
+    service.family,
+  );
   return answer(
     menu.discountHeldForRenewal(check.code.code),
     menu.renewPlanMenu(service.id, plans, user.discount_percent, check.code.code),
@@ -1800,8 +1806,15 @@ async function renewPlansScreen(
   productId: number | null = null,
 ): Promise<HandleOutcome> {
   // Same panel AND same kind. The panel keeps the account; the kind keeps a
-  // VPN renewal out of the Spotify shelf if one panel ever sells both.
-  const plans = await plansOnPanel(tx, user.id, service.provider_id, service.family);
+  // VPN renewal out of the Spotify shelf if one panel ever sells both. «Same
+  // panel» is by address, not by row: in production each tier is another
+  // admin's row on the one panel (`renewalPanelsFor`).
+  const plans = await plansOnPanel(
+    tx,
+    user.id,
+    await renewalPanelsFor(tx, service.provider_id),
+    service.family,
+  );
   if (plans.length === 0) {
     return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
   }
@@ -1827,12 +1840,20 @@ async function renewPlansScreen(
   if (productId !== null) {
     const inTier = plans.filter((p) => p.productId === productId);
     if (inTier.length === 0) return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
+    // A tier on a sibling row is delivered RESET whatever this row's mode
+    // says (`provision.ts`), so the promise above the list must say so too.
+    const tierMode = inTier[0]!.providerId === service.provider_id ? mode : 'RESET';
     return screen(
-      menu.renewIntro(service, mode, now),
+      menu.renewIntro(service, tierMode, now),
       menu.renewPlanMenu(service.id, inTier, user.discount_percent, heldName, false, null),
     );
   }
-  const match = all ? null : matchingRenewalPlan(service, plans);
+  // Matched on the service's OWN row only: a sibling row's plan of the same
+  // size is another tier, not «the plan it was sold under», and letting it in
+  // made every such service ambiguous and sent it to the tier list.
+  const match = all
+    ? null
+    : matchingRenewalPlan(service, plans.filter((p) => p.providerId === service.provider_id));
   if (match === null) {
     // The family's section: with one tier, the flat paged list of sizes; with
     // several — a trial, a migrated service, a sale whose plan is gone, or
@@ -2918,8 +2939,9 @@ async function handleCallback(
       const plan = await purchasablePlan(tx, user.id, action.id2, true);
       // A plan from another panel is not a renewal of THIS service, whatever
       // the button said. Checking the provider is what stops a cheap plan on
-      // one panel being used to extend an expensive service on another.
-      if (!plan || plan.providerId !== service.provider_id) {
+      // one panel being used to extend an expensive service on another —
+      // «panel» meaning address, as the list meant it (`renewalPanelsFor`).
+      if (!plan || !(await renewalPanelsFor(tx, service.provider_id)).includes(plan.providerId)) {
         return screen(menu.PLAN_GONE, menu.afterPaidMenu());
       }
       // Same panel is not enough: a panel may sell more than one KIND of
@@ -2965,6 +2987,7 @@ async function handleCallback(
             checkout.cardHolder,
             held ? appliedOf(held, plan) : null,
             placed.expiresAt,
+            plan.providerId !== service.provider_id,
           ),
           menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
             balanceIrr: await balanceFor(tx, user.id),

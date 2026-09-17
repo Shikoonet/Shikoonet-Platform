@@ -645,10 +645,41 @@ export async function tariffForUser(db: Db, userId: number): Promise<CatalogPlan
  * offered everything the panel sells, labelled by product because on this list
  * the product is what tells two rows apart.
  */
+/**
+ * The panel rows a service on `providerId` may be renewed from: its own, and
+ * every ACTIVE row at the same address.
+ *
+ * Production (issue #271) is one PasarGuard with one admin per tier, each
+ * admin its own row — so «طلایی → تیتانیوم» never had a second product on
+ * the service's row to offer. The rows differ in admin and price, and on the
+ * panel the tiers are the same group (#2) or a group the row's own admin can
+ * set. So a sibling row's plan renews the account where it is, under its own
+ * admin, with the sibling's numbers and groups; nothing moves. Sam,
+ * 2026-09-17: the simplest thing, no sudo admin.
+ *
+ * One DB query and no panel call — this runs on a button press.
+ */
+export async function renewalPanelsFor(db: Db, providerId: number): Promise<number[]> {
+  const rows = await db
+    .prepare(
+      // NULLIF: two rows with no address are not one panel. NULL never equals
+      // NULL, but '' equals '' — and a manual row may carry either.
+      `SELECT id FROM provisioning_providers
+        WHERE id = ?1
+           OR (status = 'ACTIVE'
+               AND NULLIF(base_url, '') =
+                   (SELECT NULLIF(base_url, '') FROM provisioning_providers WHERE id = ?1))`,
+    )
+    .bind(providerId)
+    .all<{ id: number }>();
+  return rows.results.map((r) => r.id);
+}
+
 export async function plansOnPanel(
   db: Db,
   userId: number,
-  providerId: number,
+  /** `renewalPanelsFor` — the service's own row and the rows sharing its address. */
+  providerIds: number[],
   /**
    * `products.kind` to stay inside — a renewal passes the service's own
    * `family`, so a VPN account on a panel that also sells Spotify is never
@@ -659,10 +690,10 @@ export async function plansOnPanel(
   const rows = await db
     .prepare(
       `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
-        WHERE pr.id = ?2 AND (?3::text IS NULL OR p.kind = ?3) AND ${PURCHASABLE}
+        WHERE pr.id = ANY(?2) AND (?3::text IS NULL OR p.kind = ?3) AND ${PURCHASABLE}
         ORDER BY p.sort_order, pl.sort_order, pl.price_irr`,
     )
-    .bind(userId, providerId, kind)
+    .bind(userId, providerIds, kind)
     .all<PlanRow>();
   return rows.results.map(toPlan);
 }

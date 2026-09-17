@@ -460,6 +460,12 @@ export const TEXTS = {
     screen: 'checkout',
     hint: 'پلن تمدید روی فاکتور',
   },
+  CHECKOUT_TIER_CHANGE: {
+    default: '🔁 تبدیل سطح — حجم و زمان از نو شروع می‌شود و باقی‌ماندهٔ قبلی نمی‌ماند',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'وقتی تمدید، سرویس را به سطح دیگری می‌برد',
+  },
   CHECKOUT_ADDON_ITEM: {
     default: '📦 {what} برای «{service}»',
     placeholders: ['what', 'service'],

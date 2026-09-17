@@ -114,7 +114,7 @@ describe('a panel hidden from one customer', () => {
   it('disappears from the listing for the customer it is hidden from', async () => {
     await hide(blockedId);
     expect(await productsForUser(db, blockedId, vipPanel)).toEqual([]);
-    expect(await plansOnPanel(db, blockedId, vipPanel)).toEqual([]);
+    expect(await plansOnPanel(db, blockedId, [vipPanel])).toEqual([]);
   });
 
   it('leaves everybody else alone', async () => {
