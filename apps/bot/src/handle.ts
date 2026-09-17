@@ -1821,8 +1821,11 @@ async function renewPlansScreen(
   if (productId !== null) {
     const inTier = plans.filter((p) => p.productId === productId);
     if (inTier.length === 0) return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
+    // A tier on a sibling row is delivered RESET whatever this row's mode
+    // says (`provision.ts`), so the promise above the list must say so too.
+    const tierMode = inTier[0]!.providerId === service.provider_id ? mode : 'RESET';
     return screen(
-      menu.renewIntro(service, mode, now),
+      menu.renewIntro(service, tierMode, now),
       menu.renewPlanMenu(service.id, inTier, user.discount_percent, heldName, false, null),
     );
   }
@@ -2959,6 +2962,7 @@ async function handleCallback(
           checkout.cardDigits,
           checkout.cardHolder,
           held ? appliedOf(held, plan) : null,
+          plan.providerId !== service.provider_id,
         ),
         menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
           balanceIrr: await balanceFor(tx, user.id),

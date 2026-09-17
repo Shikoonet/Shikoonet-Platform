@@ -2605,6 +2605,8 @@ export function renewCheckout(
   cardDigits: string,
   cardHolder: string | null,
   applied?: AppliedCode | null,
+  /** The plan is another tier's row (issue #271): delivered from zero, and said here. */
+  tierChange = false,
 ): string {
   const t = TEXTS_NOW;
   const lines = [
@@ -2624,6 +2626,7 @@ export function renewCheckout(
     // not reach.
     t.render('CHECKOUT_RENEW_PLAN', { plan: soldAs(plan.productName, plan.planName) }),
   ];
+  if (tierChange) lines.push(t.raw('CHECKOUT_TIER_CHANGE'));
   if (applied && applied.discountIrr > 0) {
     lines.push(
       t.render('CHECKOUT_CODE_DISCOUNT', {

@@ -111,6 +111,7 @@ interface PendingOrder {
    * the customer just bought and the name «لوکیشن» should now show.
    */
   plan_provider_name: string | null;
+  plan_provider_id: number | null;
 }
 
 /**
@@ -530,7 +531,8 @@ export async function provisionPaidOrders(
               -- against the one it named.
               COALESCE(sps.sealed, ps.sealed, ops.sealed) AS provider_sealed,
               COALESCE(spv.config, pv.config, opv.config)         AS provider_config,
-              pv.name                                             AS plan_provider_name
+              pv.name                                             AS plan_provider_name,
+              pv.id                                               AS plan_provider_id
          FROM orders o
          JOIN users u              ON u.id = o.user_id
          LEFT JOIN product_plans pl ON pl.id = o.plan_id
@@ -1296,7 +1298,14 @@ async function renew(
   // An add-on always ADDs. RESET is a renewal's business — it hands the account
   // the plan again from zero — and applying it to "five more gigabytes" would
   // throw away everything the customer had left.
-  const mode = addon === null ? renewModeFor(row.provider_config ?? {}) : 'ADD';
+  //
+  // A tier change — the plan on a sibling row of the same address (issue
+  // #271) — is RESET whatever the row says: the new tier is given whole and
+  // the old one's remainder burns. Sam's decision 2, 2026-09-17; the intro
+  // under the tier list said so.
+  const tierChange =
+    addon === null && row.plan_provider_id !== null && row.plan_provider_id !== row.provider_id;
+  const mode = tierChange ? 'RESET' : addon === null ? renewModeFor(row.provider_config ?? {}) : 'ADD';
 
   // The cashback rate is read here, before the panel call, and that placement
   // is the whole of the fix.

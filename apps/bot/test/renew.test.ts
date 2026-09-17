@@ -740,7 +740,11 @@ describe('changing tier across rows of one panel', () => {
       expiresInDays: 5,
       planNameAtSale: 'سرویس طلایی',
     });
-    if (sameHost) await setPanelConfig(otherPanelId, { status_extend: 'on_extend' });
+    // Gold ADDs on its own renewals — so a tier change resetting is the
+    // tier change's doing, not the row's mode.
+    if (sameHost) {
+      await setPanelConfig(otherPanelId, { Methodextend: 'اضافه شدن زمان و حجم به ماه بعد', status_extend: 'on_extend' });
+    }
     return { userId, subId, username: `u_${telegramId}` };
   }
 
@@ -773,6 +777,8 @@ describe('changing tier across rows of one panel', () => {
     await setPanelConfig(otherPanelId, { status_extend: 'on_extend' });
     const out = await handleUpdate(db, press(updateId + 1, telegramId, `rord:${subId}:${thirty}`));
     expect(out.replies[0]?.text).toContain('پلاتینیوم');
+    // The invoice says what the tier change costs — the remainder.
+    expect(out.replies[0]?.text).toContain('تبدیل سطح');
     const order = await markPaid(userId);
     expect(await orderRow(order.id)).toMatchObject({ kind: 'RENEWAL', target_subscription_id: subId });
   });
@@ -794,12 +800,18 @@ describe('changing tier across rows of one panel', () => {
     expect(panel.puts).toHaveLength(1);
     expect(panel.puts[0]?.username).toBe(target.username);
     expect(panel.puts[0]?.body['group_ids']).toEqual([6, 7]);
+    // From zero, on a row whose own mode is ADD: the counter reset, the
+    // quota the plan's and not 10 + 30, the clock from today and not from
+    // the five days left.
+    expect(panel.resets).toEqual([target.username]);
     expect(panel.puts[0]?.body['data_limit']).toBe(30 * GIB);
+    expect(panel.puts[0]?.body['expire']).toBe(Math.floor((NOW_MS + 30 * DAY) / 1000));
     expect(await subscriptionRow(target.subId)).toMatchObject({
       // Still gold's account — the admin did not change — sold as platinum.
       provider_id: otherPanelId,
       provider_name_at_sale: '🥇 سرویس VIP (شبیه‌سازی)',
       plan_id: thirty,
+      used_bytes: 0,
       status: 'ACTIVE',
     });
     expect(await orderRow(order.id)).toMatchObject({ status: 'COMPLETED' });
