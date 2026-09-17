@@ -265,6 +265,37 @@ export function planDisplayName(name: string | null): string | null {
   return trimmed.trim() === '' ? name : trimmed.trim();
 }
 
+export const ORDER_KIND_FA: Record<string, string> = {
+  NEW_PURCHASE: 'خرید جدید',
+  RENEWAL: 'تمدید',
+  ADD_VOLUME: 'حجم اضافه',
+  ADD_TIME: 'زمان اضافه',
+  WALLET_TOPUP: 'شارژ کیف پول',
+  TRANSFER: 'انتقال',
+};
+
+/**
+ * What was bought, for an order whose product is not a plan.
+ *
+ * `ADD_VOLUME` and `ADD_TIME` are placed with `plan_id = NULL` — the customer
+ * is not buying a plan, they are typing a number between one and a thousand
+ * (`ADDON_MAX`) and buying that much of something they already have. So the
+ * quantity is not a detail of the order, it IS the order, and until 2026-08-22
+ * this column rendered «—» for it: «حجم اضافه · — · ۵۰٬۰۰۰ تومان» told an
+ * admin nothing about what the customer received. The legacy dump has 37 of
+ * these purchases, so it is a live flow and not a hypothetical one.
+ *
+ * A `WALLET_TOPUP` has no plan either, and until 2026-09-17 the customer
+ * drawer printed «—» for a 2,000,000 Toman top-up. The kind is the fallback —
+ * for that, and for a retired plan whose name is now NULL: the order still
+ * happened.
+ */
+export function whatWasBought(o: { kind: string; quantity: number; planName: string | null }): string {
+  if (o.kind === 'ADD_VOLUME') return `${count(o.quantity)} گیگ`;
+  if (o.kind === 'ADD_TIME') return `${count(o.quantity)} روز`;
+  return planDisplayName(o.planName) ?? ORDER_KIND_FA[o.kind] ?? '—';
+}
+
 /**
  * A sale's status and a service's status, in the panel's own words — and the
  * colour that goes with either.

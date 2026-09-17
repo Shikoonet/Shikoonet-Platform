@@ -45,9 +45,9 @@ import {
   dateTime,
   entryNoteFa,
   irrToToman,
-  planDisplayName,
   statusTone,
   toman,
+  whatWasBought,
 } from '../format.js';
 
 /**
@@ -1095,7 +1095,7 @@ function CustomerDrawer({
                 {orders?.items.map((o) => (
                   <tr key={o.id}>
                     <td>{dateTime(o.createdAt)}</td>
-                    <td>{planDisplayName(o.planName) ?? '—'}</td>
+                    <td>{whatWasBought(o)}</td>
                     <td>{toman(o.totalIrr)}</td>
                     <td>
                       <span className={statusTone(o.status)}>

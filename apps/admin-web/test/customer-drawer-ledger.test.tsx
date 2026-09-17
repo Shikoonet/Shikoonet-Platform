@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
 import { CustomersPage } from '../src/pages/CustomersPage.js';
-import type { CustomerDetail, CustomerListItem } from '../src/api.js';
+import type { CustomerDetail, CustomerListItem, OrderRow } from '../src/api.js';
 
 const LIST: CustomerListItem[] = [
   {
@@ -79,6 +79,27 @@ const ENTRIES = [
   },
 ];
 
+// A top-up is an order with no plan. The «چه چیزی» cell read only the plan
+// name and printed «—» for it until 2026-09-17.
+const ORDERS: OrderRow[] = [
+  {
+    id: 91,
+    publicId: 'SH-91',
+    kind: 'WALLET_TOPUP',
+    status: 'COMPLETED',
+    quantity: 1,
+    unitPriceIrr: 20_000_000,
+    discountIrr: 0,
+    totalIrr: 20_000_000,
+    failureReason: null,
+    deliveryState: 'DELIVERED',
+    createdAt: '2026-09-17T06:22:00Z',
+    completedAt: '2026-09-17T06:22:00Z',
+    customer: { id: 7, telegramId: 7_137_494_513, username: 'reza_kh' },
+    planName: null,
+  },
+];
+
 // Mutable so one test can open the drawer on a customer who has money.
 let detail: CustomerDetail = DETAIL;
 const adjustWallet = vi.fn(async (_id: number, body: { amountIrr: number }) => ({
@@ -96,7 +117,7 @@ vi.mock('../src/api.js', async () => {
       customers: async () => ({ ok: true, total: 1, page: 1, pageSize: 25, items: LIST }),
       customer: async () => ({ ok: true, customer: detail, entries: ENTRIES }),
       adjustWallet: (id: number, body: { amountIrr: number }) => adjustWallet(id, body),
-      orders: async () => ({ ok: true, total: 0, page: 1, pageSize: 10, items: [] }),
+      orders: async () => ({ ok: true, total: 1, page: 1, pageSize: 10, items: ORDERS }),
       subscriptions: async () => ({ ok: true, total: 0, page: 1, pageSize: 10, items: [] }),
       customerHistory: async () => ({ ok: true, items: [] }),
     },
@@ -130,6 +151,9 @@ describe('the wallet ledger in a customer’s card', () => {
     expect(screen.getByText('sam@samsos.org')).toBeTruthy();
     expect(screen.queryByText('legacy balance carried over unchanged')).toBeNull();
     expect(screen.queryByText('SYSTEM')).toBeNull();
+
+    // The order list names the top-up rather than leaving its cell blank.
+    expect(await screen.findByText('شارژ کیف پول')).toBeTruthy();
   });
 });
 

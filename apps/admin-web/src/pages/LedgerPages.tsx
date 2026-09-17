@@ -27,6 +27,7 @@ import {
   type LedgerQuery,
 } from '../api.js';
 import {
+  ORDER_KIND_FA,
   ORDER_STATUS_FA,
   SUB_STATUS_FA,
   actorFa,
@@ -34,22 +35,13 @@ import {
   dateTime,
   entryNoteFa,
   gigabytes,
-  planDisplayName,
   statusTone,
   toman,
+  whatWasBought,
 } from '../format.js';
 import { CustomerLink } from '../CustomerLink.js';
 import { ListPage, type FetchParams } from '../ListPage.js';
 import { useWriteProps } from '../role.js';
-
-const ORDER_KIND_FA: Record<string, string> = {
-  NEW_PURCHASE: 'خرید جدید',
-  RENEWAL: 'تمدید',
-  ADD_VOLUME: 'حجم اضافه',
-  ADD_TIME: 'زمان اضافه',
-  WALLET_TOPUP: 'شارژ کیف پول',
-  TRANSFER: 'انتقال',
-};
 
 const ENTRY_KIND_FA: Record<string, string> = {
   OPENING: 'موجودی اولیه',
@@ -71,24 +63,6 @@ function message(e: unknown): string {
     return e.detail ?? e.code;
   }
   return e instanceof Error ? e.message : String(e);
-}
-
-/**
- * What was bought, for an order whose product is not a plan.
- *
- * `ADD_VOLUME` and `ADD_TIME` are placed with `plan_id = NULL` — the customer
- * is not buying a plan, they are typing a number between one and a thousand
- * (`ADDON_MAX`) and buying that much of something they already have. So the
- * quantity is not a detail of the order, it IS the order, and until 2026-08-22
- * this column rendered «—» for it: «حجم اضافه · — · ۵۰٬۰۰۰ تومان» told an
- * admin nothing about what the customer received. The legacy dump has 37 of
- * these purchases, so it is a live flow and not a hypothetical one.
- */
-function whatWasBought(o: OrderRow): string {
-  if (o.kind === 'ADD_VOLUME') return `${count(o.quantity)} گیگ`;
-  if (o.kind === 'ADD_TIME') return `${count(o.quantity)} روز`;
-  // NULL after the plan is retired — the order still happened.
-  return planDisplayName(o.planName) ?? '—';
 }
 
 /** Green for a good end state, red for a bad one, plain for in-flight. */
