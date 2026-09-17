@@ -85,6 +85,9 @@ export const CALLBACK_ACTIONS = [
   'emja', // [buttonSlot] — legacy prompts already visible in chat history
   'emjb', // <buttonSlot>[:<emojiId>] — the main menu only, from before `emjs`;
   //         the optional emoji id keeps tiles from the previous picker usable
+  'emjp', // [productId[:planId]] — the same picker for the catalogue: the
+  //         services, the plans of one, or ask for the emoji of one plan. Real
+  //         row ids, re-read from the database before anything is written.
   'wal', // the balance and the last movements on it
   'top', // the deposit amounts on offer
   'tp', // <presetIndex> — deposit that preset. An INDEX, never an amount:
@@ -152,7 +155,7 @@ const ActionSchema = z.enum(CALLBACK_ACTIONS);
  * yet" is not a property anybody can rely on, and an action's arity is part of
  * its shape in the same way its name is.
  */
-const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord', 'emjb', 'emjs', 'rnwl', 'rnwp']);
+const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord', 'emjb', 'emjs', 'emjp', 'rnwl', 'rnwp']);
 
 /**
  * Telegram's limit is 64 bytes. Our longest is `order:<bigint>` — well inside
