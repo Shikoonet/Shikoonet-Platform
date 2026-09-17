@@ -2344,13 +2344,73 @@ app.patch('/api/v1/accounts/:id', async (c) => {
     values.push(typeof v === 'boolean' ? (v ? 1 : 0) : (v as string | number | null));
   }
   if (fields.length === 0) return c.json({ ok: true });
+  const now = Date.now();
   fields.push(`updated_at = ?${i++}`);
-  values.push(Date.now());
+  values.push(now);
   values.push(id);
+  /*
+   * The number moves in both tables, or in neither.
+   *
+   * `POST /accounts` writes each canonical column twice — on the row and as a
+   * `financial_account_identifiers` row of the same kind — because the
+   * resolver probes both. This route rewrote only the column, so the
+   * identifier table kept whatever the operator typed FIRST. On 2026-09-16
+   * «گردشگری1» was created with «گردشگری2»'s number and corrected a minute
+   * later; from then on every deposit into «گردشگری2» matched both accounts
+   * (`account.identifier_ambiguous`) and two real payments sat in
+   * NEEDS_REVIEW with nobody able to settle them. Three of sixteen production
+   * accounts carried a stale identifier that day.
+   *
+   * Only the identifier that mirrors the column follows it — the row whose
+   * value IS the old column value. Rows «assign identifier» added by hand
+   * mirror no column and stay. The insert refuses (23505, the
+   * `idx_fai_unique_active_value` index) when another account already
+   * answers to the new number, and the batch is one transaction, so the
+   * column cannot claim a number the resolver would call ambiguous.
+   */
+  const identifierStmts: D1PreparedStatement[] = [];
+  const mirrored = {
+    account_hint: 'ACCOUNT_HINT',
+    card_last_four: 'CARD_LAST_FOUR',
+    account_last_four: 'ACCOUNT_LAST_FOUR',
+    iban: 'IBAN',
+  } as const;
+  for (const [column, kind] of Object.entries(mirrored)) {
+    const next = parsed.data[column as keyof typeof mirrored];
+    if (next === undefined) continue;
+    const prev = (before as Record<string, unknown>)[column] as string | null;
+    if ((prev ?? null) === (next ?? null)) continue;
+    if (prev) {
+      identifierStmts.push(
+        c.env.DB.prepare(
+          `DELETE FROM financial_account_identifiers
+            WHERE financial_account_id = ?1 AND kind = ?2 AND value = ?3`,
+        ).bind(id, kind, prev),
+      );
+    }
+    if (next) {
+      // `WHERE NOT EXISTS` for the same account, not `ON CONFLICT DO NOTHING`:
+      // the latter would also swallow the cross-account violation this route
+      // must surface as 409.
+      identifierStmts.push(
+        c.env.DB.prepare(
+          `INSERT INTO financial_account_identifiers
+             (id, financial_account_id, kind, value, label, created_at)
+           SELECT ?1, ?2, ?3, ?4, NULL, ?5
+            WHERE NOT EXISTS (
+              SELECT 1 FROM financial_account_identifiers
+               WHERE financial_account_id = ?2 AND kind = ?3 AND value = ?4)`,
+        ).bind(crypto.randomUUID(), id, kind, next, now),
+      );
+    }
+  }
   try {
-    await c.env.DB.prepare(`UPDATE financial_accounts SET ${fields.join(', ')} WHERE id = ?${i}`)
-      .bind(...(values as unknown[]))
-      .run();
+    await c.env.DB.batch([
+      c.env.DB.prepare(`UPDATE financial_accounts SET ${fields.join(', ')} WHERE id = ?${i}`).bind(
+        ...(values as unknown[]),
+      ),
+      ...identifierStmts,
+    ]);
   } catch (e) {
     if (isUniqueViolation(e)) {
       return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
