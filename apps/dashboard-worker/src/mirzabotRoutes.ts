@@ -644,7 +644,8 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
          SUM(CASE WHEN ${EFFECTIVE_TS} BETWEEN ?2 AND ?3 THEN 1 ELSE 0 END) AS n_today,
          SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' THEN 1 ELSE 0 END) AS continuity_n,
          SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' AND c.reconciled_at IS NULL
-                  THEN 1 ELSE 0 END) AS continuity_pending_n
+                  THEN 1 ELSE 0 END) AS continuity_pending_n,
+         SUM(CASE WHEN c.parked_at IS NOT NULL AND ${PENDING_CLAIM} THEN 1 ELSE 0 END) AS parked_n
        FROM payment_claims c
        LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_ID})
        WHERE c.source_system = ?1
@@ -665,6 +666,7 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
       n_today: number;
       continuity_n: number;
       continuity_pending_n: number;
+      parked_n: number;
     }>();
 
   const total: Record<ReviewState, number> = {
@@ -682,11 +684,13 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
   let all = 0;
   let continuity = 0;
   let continuityPending = 0;
+  let parked = 0;
   for (const r of rows.results ?? []) {
     // `all` counts rows, so a state nobody can list still shows up there.
     all += r.n;
     continuity += r.continuity_n ?? 0;
     continuityPending += r.continuity_pending_n ?? 0;
+    parked += r.parked_n ?? 0;
     if (r.review_state == null) continue;
     total[r.review_state] += r.n;
     today[r.review_state] += r.n_today ?? 0;
@@ -725,7 +729,8 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
        * These three are exactly `PENDING`/`MATCH_SUGGESTED` — every other state
        * in this record is a decision somebody already made.
        */
-      open: total.NEEDS_REVIEW + total.WAITING + total.NO_TRANSFER_FOUND,
+      open: total.NEEDS_REVIEW + total.WAITING + total.NO_TRANSFER_FOUND - parked,
+      parked,
       autoVerified: total.AUTO_VERIFIED,
       botAutoVerified: total.AUTO_VERIFIED,
       manuallyVerified: total.MANUALLY_VERIFIED,
@@ -1078,6 +1083,7 @@ export function registerMirzabotRoutes(
       const allowed: PaymentTab[] = [
         'income',
         'open',
+        'parked',
         'needs_review',
         'declined_income',
         'waiting',
@@ -1310,7 +1316,10 @@ export function registerMirzabotRoutes(
       // and between them left a gap; this one describes the only thing that
       // actually matters to an operator — nobody has decided about it yet — so
       // there is no shape left for a row to fall between.
-      if (tab === 'open') where.push(PENDING_CLAIM);
+      if (tab === 'open') where.push(`${PENDING_CLAIM} AND c.parked_at IS NULL`);
+      // Same population, the half the operator set aside. Still PENDING, so
+      // the matcher settles it and it leaves here by itself.
+      if (tab === 'parked') where.push(`${PENDING_CLAIM} AND c.parked_at IS NOT NULL`);
       if (tab === 'continuity') {
         where.push(`c.fulfilment_mode = 'CONTINUITY'`);
         if (continuityState === 'pending') where.push(`c.reconciled_at IS NULL`);
@@ -1887,6 +1896,29 @@ export function registerMirzabotRoutes(
       comment: z.string().max(2000).optional(),
     })
     .strict();
+  /*
+   * «کنار بگذار» / «برگردان». A view flag on a still-PENDING claim: it moves
+   * the row between «در انتظار بررسی» and «کنار گذاشته» and decides nothing,
+   * so no audit row and no transition check — only an undecided claim can be
+   * parked, and unparking is always allowed.
+   */
+  const ParkBody = z.object({ parked: z.boolean() }).strict();
+  app.post('/api/v1/suspects/:claimId/park', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = ParkBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const now = Date.now();
+    const r = await c.env.DB.prepare(
+      `UPDATE payment_claims c SET parked_at = ?2, updated_at = ?3
+        WHERE c.id = ?1 AND (?2::bigint IS NULL OR ${PENDING_CLAIM})`,
+    )
+      .bind(c.req.param('claimId'), parsed.data.parked ? now : null, now)
+      .run();
+    if (!r.meta.changes) return c.json({ ok: false, error: 'not_found' }, 404);
+    return c.json({ ok: true });
+  });
+
   app.post('/api/v1/suspects/:claimId/reject', async (c) => {
     const ident = c.get('identity');
     if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
