@@ -570,6 +570,22 @@ describe('the read-only ledgers', () => {
         'https://pg.example:8000/dashboard/#/users?search=reza%207613',
       );
 
+      // A panel hidden behind PasarGuard's `DASHBOARD_PATH`: the operator's
+      // path replaces `/dashboard`, however they typed the slashes.
+      await baseEnv.DB.prepare(
+        `UPDATE provisioning_providers
+            SET config = config || '{"dashboard_path":"KNJhbhbjkd/"}'::jsonb
+          WHERE id = ?1`,
+      )
+        .bind(provider!.id)
+        .run();
+      const hidden = (await (
+        await app.request(`/api/v1/admin/subscriptions?customerId=${userId}`, {}, envAs(ADMIN))
+      ).json()) as { items: Array<{ panelUserUrl: string | null }> };
+      expect(hidden.items[0]!.panelUserUrl).toBe(
+        'https://pg.example:8000/KNJhbhbjkd/#/users?search=reza%207613',
+      );
+
       // A panel of a kind this code has not verified a deep link for gets
       // none, rather than a guessed one that lands on a 404.
       await baseEnv.DB.prepare(`UPDATE provisioning_providers SET kind = 'hiddify' WHERE id = ?1`)

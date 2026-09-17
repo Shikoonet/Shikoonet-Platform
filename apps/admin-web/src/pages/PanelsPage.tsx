@@ -933,6 +933,7 @@ function PanelModal({
   const [minVolume, setMinVolume] = useState(numText(panel?.extraVolumeMinGb));
   const [minTime, setMinTime] = useState(numText(panel?.extraTimeMinDays));
   const [newcomersOnly, setNewcomersOnly] = useState(panel?.newcomersOnly ?? false);
+  const [dashboardPath, setDashboardPath] = useState(panel?.dashboardPath ?? '');
   /** The panel's login name, fetched once when the modal opens. Never a password. */
   const [storedUsername, setStoredUsername] = useState<string | null>(null);
   const [credentialSetBy, setCredentialSetBy] = useState<string | null>(null);
@@ -1056,6 +1057,7 @@ function PanelModal({
         trialVolumeGb !== panel.trial.volumeGb ||
         trialDurationHours !== panel.trial.durationHours;
 
+      const dashboardPathValue = dashboardPath.trim() === '' ? null : dashboardPath.trim();
       const updated = await api.updatePanel(panel.id, {
         name: name.trim(),
         baseUrl: baseUrl.trim() === '' ? null : baseUrl.trim(),
@@ -1077,6 +1079,7 @@ function PanelModal({
         ...(minVolumeValue === panel.extraVolumeMinGb ? {} : { extraVolumeMinGb: minVolumeValue }),
         ...(minTimeValue === panel.extraTimeMinDays ? {} : { extraTimeMinDays: minTimeValue }),
         ...(newcomersOnly === panel.newcomersOnly ? {} : { newcomersOnly }),
+        ...(dashboardPathValue === panel.dashboardPath ? {} : { dashboardPath: dashboardPathValue }),
       });
       setNote(statusNote(updated.panel, updated.probe));
       setPassword('');
@@ -1173,6 +1176,30 @@ function PanelModal({
               onChange={(e) => setBaseUrl(e.target.value)}
               {...w}
             />
+            {editing && kind === 'pasarguard' && (
+              <>
+                <label
+                  className="form-label"
+                  htmlFor="panel-dashboard-path"
+                  style={{ marginBlockStart: 10 }}
+                >
+                  مسیر داشبورد <span className="muted">(خالی = /dashboard)</span>
+                </label>
+                <input
+                  id="panel-dashboard-path"
+                  className="form-control ltr"
+                  type="text"
+                  placeholder="/dashboard"
+                  value={dashboardPath}
+                  onChange={(e) => setDashboardPath(e.target.value)}
+                  {...w}
+                />
+                <p className="muted" style={{ marginBlockStart: 4 }}>
+                  همان مسیری که پنل را در مرورگر با آن باز می‌کنید؛ لینک اکانت‌ها در صفحهٔ
+                  مشتری از این‌جا ساخته می‌شود.
+                </p>
+              </>
+            )}
 
             <div className="filters" style={{ marginBlockStart: 10 }}>
               <div className="grow">

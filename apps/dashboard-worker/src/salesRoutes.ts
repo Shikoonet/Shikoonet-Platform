@@ -34,15 +34,22 @@ import { csvCell, IRR_PER_TOMAN } from './revenueRoutes.js';
  * so `?search=` is honoured on open. Checked against PasarGuard/panel main
  * on 2026-09-17. Other kinds have no deep link this code has verified, and
  * get null rather than a guess.
+ *
+ * `/dashboard/` is only the DEFAULT: PasarGuard's `DASHBOARD_PATH` env moves
+ * it, and an operator who has hidden the panel behind a random path stores
+ * that path as `config.dashboard_path` (the «مسیر داشبورد» box on the panel
+ * form). Sam hit this 2026-09-17 — every account link opened a 404.
  */
 export function panelUserUrl(
   kind: string | null,
   baseUrl: string | null,
   username: string | null,
+  dashboardPath: string | null = null,
 ): string | null {
   if (!baseUrl || !username) return null;
   if (kind !== 'pasarguard') return null;
-  return `${baseUrl.replace(/\/+$/, '')}/dashboard/#/users?search=${encodeURIComponent(username)}`;
+  const path = (dashboardPath?.trim() || '/dashboard').replace(/^\/*/, '/').replace(/\/+$/, '');
+  return `${baseUrl.replace(/\/+$/, '')}${path}/#/users?search=${encodeURIComponent(username)}`;
 }
 
 const PAGE_SIZE_MAX = 100;
@@ -593,7 +600,8 @@ export function registerSalesRoutes(
               s.price_irr, s.volume_gb, s.duration_days, s.remote_username,
               s.purchased_at, s.expires_at, s.last_synced_at, s.used_bytes,
               u.id AS user_id, u.telegram_id, u.username,
-              pr.kind AS provider_kind, pr.base_url AS provider_base_url
+              pr.kind AS provider_kind, pr.base_url AS provider_base_url,
+              pr.config->>'dashboard_path' AS provider_dashboard_path
          ${from}
          LEFT JOIN provisioning_providers pr ON pr.id = s.provider_id
          ${whereSql}
@@ -620,6 +628,7 @@ export function registerSalesRoutes(
         username: string | null;
         provider_kind: string | null;
         provider_base_url: string | null;
+        provider_dashboard_path: string | null;
       }>();
 
     return c.json({
@@ -633,7 +642,12 @@ export function registerSalesRoutes(
         status: r.status,
         // Where to open this account on its panel, or null when there is no
         // panel to open — a retired provider, a manual one, or no name yet.
-        panelUserUrl: panelUserUrl(r.provider_kind, r.provider_base_url, r.remote_username),
+        panelUserUrl: panelUserUrl(
+          r.provider_kind,
+          r.provider_base_url,
+          r.remote_username,
+          r.provider_dashboard_path,
+        ),
         // The names as they were at the moment of sale, not as they are now:
         // renaming a plan must not rewrite what a customer bought.
         planName: r.plan_name_at_sale,
