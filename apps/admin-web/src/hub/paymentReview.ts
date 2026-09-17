@@ -223,6 +223,10 @@ export interface PaymentItem {
   customerUserId?: number | null;
   customerStatus?: string | null;
   customerBlockedReason?: string | null;
+  /** Everything ever provisioned for this customer; null when there is no customer. */
+  customerSubscriptions?: number | null;
+  /** Of those, ACTIVE or ON_HOLD right now. */
+  customerLiveSubscriptions?: number | null;
   fulfilmentMode?: 'MANUAL' | 'CONTINUITY' | null;
   fulfilledAt?: number | null;
   fulfilledBy?: string | null;

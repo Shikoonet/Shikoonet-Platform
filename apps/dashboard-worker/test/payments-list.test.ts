@@ -818,6 +818,62 @@ describe('filtering the payments list by card and by customer', () => {
   });
 });
 
+describe('the customer behind a claim', () => {
+  const TG = 900_000_777;
+
+  async function seedCustomer(subs: string[]) {
+    const u = await baseEnv.DB.prepare(
+      `INSERT INTO users (telegram_id, username, registered_at) VALUES (?1, 'hist', now())
+       ON CONFLICT (telegram_id) DO UPDATE SET username = EXCLUDED.username RETURNING id`,
+    )
+      .bind(TG)
+      .first<{ id: number }>();
+    await baseEnv.DB.prepare(`DELETE FROM subscriptions WHERE user_id = ?1`).bind(u!.id).run();
+    for (const [i, status] of subs.entries()) {
+      await baseEnv.DB.prepare(
+        `INSERT INTO subscriptions (public_id, user_id, plan_name_at_sale, price_irr, status, purchased_at)
+         VALUES (?1, ?2, 'p', 0, ?3, now())`,
+      )
+        .bind(`hist-${i}`, u!.id, status)
+        .run();
+    }
+    return Number(u!.id);
+  }
+
+  /**
+   * «تا حالا چند تا اکانت خریده، چند تا فعال داره» on the review page (Sam,
+   * 2026-09-17). Bought is everything that was ever provisioned; live is what
+   * panelRoutes calls live, ACTIVE or ON_HOLD — so a subscription that never
+   * got paid for is neither.
+   */
+  it('says how many accounts they bought and how many are live', async () => {
+    const userId = await seedCustomer(['ACTIVE', 'ON_HOLD', 'DISABLED', 'PENDING_PAYMENT']);
+    await seedClaim('hist-c', { status: 'VERIFIED', customerReference: String(TG) });
+
+    const body = await get('tab=all&range=all');
+    const item = body.items.find((i) => i.id === 'hist-c') as unknown as {
+      customerUserId: number | null;
+      customerSubscriptions: number | null;
+      customerLiveSubscriptions: number | null;
+    };
+    expect(item.customerUserId).toBe(userId);
+    expect(item.customerSubscriptions).toBe(3);
+    expect(item.customerLiveSubscriptions).toBe(2);
+  });
+
+  it('says nothing, not zero, when the reference matches no customer', async () => {
+    await seedClaim('hist-n', { status: 'VERIFIED', customerReference: 'Poyan test payment' });
+
+    const body = await get('tab=all&range=all');
+    const item = body.items.find((i) => i.id === 'hist-n') as unknown as {
+      customerUserId: number | null;
+      customerSubscriptions: number | null;
+    };
+    expect(item.customerUserId).toBeNull();
+    expect(item.customerSubscriptions).toBeNull();
+  });
+});
+
 describe('the payments list is paginated rather than silently cut', () => {
   /**
    * 210 claims, because the old behaviour was a hard `LIMIT 200`.

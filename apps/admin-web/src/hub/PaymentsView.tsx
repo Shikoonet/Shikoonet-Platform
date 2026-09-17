@@ -37,6 +37,7 @@ import {
 } from './financialHub.js';
 import { BulkSelectionToolbar, HistoryDateNav } from './historyRangeNav.js';
 import { NewBadge } from './NewBadge.js';
+import { CustomerLink } from '../CustomerLink.js';
 import {
   BotVerifiedMetrics,
   BotVerifiedTable,
@@ -93,14 +94,42 @@ function AccountRef({ account }: { account: AccountRefLike }) {
   );
 }
 
+/**
+ * Who is paying — and, since 2026-09-17, a way to them and how much of a
+ * customer they are. The id used to be text the reviewer copied into the
+ * «کاربران» search box; now it is the same link every other screen draws, and
+ * the line under it says «تا حالا N اکانت خریده، M فعال» so a first buyer and
+ * a regular are told apart without leaving the page. Both are absent, not
+ * zero, when the reference matched no customer.
+ */
 function PaymentIdentity({ item }: { item: PaymentItem }) {
+  const history = item.customerSubscriptions;
   return (
     <div className="payment-identity">
       {item.telegramUsername && <strong>@{item.telegramUsername}</strong>}
-      {item.telegramUserId && <span className="muted">User ID: {item.telegramUserId}</span>}
+      {item.telegramUserId && (
+        <span className="muted">
+          User ID:{' '}
+          <CustomerLink
+            customer={{ id: item.customerUserId ?? null, telegramId: item.telegramUserId }}
+          />
+        </span>
+      )}
       <span className="muted">سفارش: {item.orderId}</span>
+      {history != null && (
+        <span className="muted payment-identity__history">
+          تا حالا {count(history)} اکانت خریده، {count(item.customerLiveSubscriptions ?? 0)} فعال
+        </span>
+      )}
     </div>
   );
+}
+
+/** «خرید جدید» or «تمدید» beside the title — the same buckets the auto-verified tab filters by. */
+function PurchaseTypeBadge({ item }: { item: PaymentItem }) {
+  if (item.purchaseType === 'NEW_PURCHASE') return <span className="badge badge-info">خرید جدید</span>;
+  if (item.purchaseType === 'RENEWAL') return <span className="badge">تمدید</span>;
+  return null;
 }
 
 interface Filters {
@@ -507,6 +536,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   → بازگشت به صف
                 </button>
                 <h2 className="review-page__title">بررسی پرداخت</h2>
+                {reviewing && <PurchaseTypeBadge item={reviewing} />}
                 {/*
                   The fulfil action used to live here, in the page bar, and that
                   is half of why «هیچ کاری نمی‌شود کرد» was the report. It moved

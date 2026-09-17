@@ -765,7 +765,8 @@ describe('review drawer', () => {
     const drawer = await openReviewPanel();
     expect(within(drawer).getByText('بررسی پرداخت')).toBeTruthy();
     expect(within(drawer).getByText('سفارش: A12B')).toBeTruthy();
-    expect(within(drawer).getByText('User ID: 42')).toBeTruthy();
+    // The id is a link now, so the label and the number are two elements.
+    expect(within(drawer).getByRole('link', { name: '42' })).toBeTruthy();
     expect(within(drawer).getByText('تراکنش')).toBeTruthy();
     expect(within(drawer).getAllByRole('radio')).toHaveLength(2);
     expect(within(drawer).getByText(/Δ 21 sec/)).toBeTruthy();
