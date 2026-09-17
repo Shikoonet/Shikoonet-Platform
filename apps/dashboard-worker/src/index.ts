@@ -2305,6 +2305,19 @@ app.post('/api/v1/accounts', async (c) => {
   return c.json({ ok: true, id });
 });
 
+/**
+ * The four columns `POST /accounts` also writes as identifier rows, and the
+ * kind each one becomes. PATCH and move-references both keep the pair in
+ * step through this one map — see the comments on each.
+ */
+const MIRRORED_IDENTIFIER_KINDS = {
+  account_hint: 'ACCOUNT_HINT',
+  card_last_four: 'CARD_LAST_FOUR',
+  account_last_four: 'ACCOUNT_LAST_FOUR',
+  iban: 'IBAN',
+} as const;
+type MirroredColumns = Record<keyof typeof MIRRORED_IDENTIFIER_KINDS, string | null>;
+
 const AccountUpdate = AccountCreate.partial().extend({
   active: z.boolean().optional(),
 });
@@ -2369,14 +2382,8 @@ app.patch('/api/v1/accounts/:id', async (c) => {
    * column cannot claim a number the resolver would call ambiguous.
    */
   const identifierStmts: D1PreparedStatement[] = [];
-  const mirrored = {
-    account_hint: 'ACCOUNT_HINT',
-    card_last_four: 'CARD_LAST_FOUR',
-    account_last_four: 'ACCOUNT_LAST_FOUR',
-    iban: 'IBAN',
-  } as const;
-  for (const [column, kind] of Object.entries(mirrored)) {
-    const next = parsed.data[column as keyof typeof mirrored];
+  for (const [column, kind] of Object.entries(MIRRORED_IDENTIFIER_KINDS)) {
+    const next = parsed.data[column as keyof MirroredColumns];
     if (next === undefined) continue;
     const prev = (before as Record<string, unknown>)[column] as string | null;
     if ((prev ?? null) === (next ?? null)) continue;
@@ -4601,17 +4608,21 @@ app.post('/api/v1/accounts/:id/move-references', async (c) => {
   if (sourceId === targetAccountId) {
     return c.json({ ok: false, error: 'same_account' }, 400);
   }
-  const target = await c.env.DB.prepare(`SELECT id, active FROM financial_accounts WHERE id = ?1`)
+  const target = await c.env.DB.prepare(
+    `SELECT id, active, account_hint, card_last_four, account_last_four, iban
+       FROM financial_accounts WHERE id = ?1`,
+  )
     .bind(targetAccountId)
-    .first<{ id: string; active: number }>();
+    .first<{ id: string; active: number } & MirroredColumns>();
   if (!target) return c.json({ ok: false, error: 'target_not_found' }, 404);
   if (!target.active) return c.json({ ok: false, error: 'target_inactive' }, 409);
 
   const source = await c.env.DB.prepare(
-    `SELECT id, display_name, bank_name, active FROM financial_accounts WHERE id = ?1`,
+    `SELECT id, display_name, bank_name, active, account_hint, card_last_four, account_last_four, iban
+       FROM financial_accounts WHERE id = ?1`,
   )
     .bind(sourceId)
-    .first<{ id: string; display_name: string; bank_name: string; active: number }>();
+    .first<{ id: string; display_name: string; bank_name: string; active: number } & MirroredColumns>();
   if (!source) return c.json({ ok: false, error: 'source_not_found' }, 404);
 
   const now = Date.now();
@@ -4673,9 +4684,25 @@ app.post('/api/v1/accounts/:id/move-references', async (c) => {
     );
   }
 
-  // 3. Move identifiers. Use the canonical columns first; fall back to the
-  //    identifiers table. Conflicts on UNIQUE indexes are surfaced as
+  // 3. Move identifiers. Conflicts on UNIQUE indexes are surfaced as
   //    `identifier_conflict` and the batch aborts.
+  //
+  //    A number lives in one place. The identifier rows used to move while
+  //    the source's own columns — account_hint, card_last_four,
+  //    account_last_four, iban — went on saying the number was still its,
+  //    and the resolver probes both. Production, 2026-09-17 10:51: «ملی-آینده»
+  //    moved into «رسالت-هنرمند» with the source kept and switched back on,
+  //    card still in the queue; the next deposit into it would have resolved
+  //    to two accounts (`account.identifier_ambiguous`). The same shape #270
+  //    closed on PATCH, through a different door.
+  //
+  //    So the column that mirrors a moved identifier is cleared on the source
+  //    in the same batch, and the target's EMPTY column of that kind adopts
+  //    the value — the screen then shows what ingest matches on. A target that
+  //    already has a number of that kind keeps it; the moved one stays an
+  //    identifier beside it, which is what the table is for. Source first,
+  //    then target: `idx_fa_unique_active_account_hint` is checked per
+  //    statement, and two live accounts cannot share a hint even for one.
   if (options.moveIdentifiers) {
     const idents = await c.env.DB.prepare(
       `SELECT id, kind, value, label FROM financial_account_identifiers WHERE financial_account_id = ?1`,
@@ -4687,6 +4714,33 @@ app.post('/api/v1/accounts/:id/move-references', async (c) => {
         c.env.DB.prepare(
           `UPDATE financial_account_identifiers SET financial_account_id = ?2 WHERE id = ?1`,
         ).bind(ident.id, targetAccountId),
+      );
+    }
+    const clearSource: string[] = [];
+    const adopt: Array<[column: string, value: string]> = [];
+    for (const [column, kind] of Object.entries(MIRRORED_IDENTIFIER_KINDS)) {
+      const value = source[column as keyof MirroredColumns];
+      if (!value) continue;
+      if (!idents.results.some((i) => i.kind === kind && i.value === value)) continue;
+      clearSource.push(column);
+      if (!target[column as keyof MirroredColumns]) adopt.push([column, value]);
+    }
+    if (clearSource.length > 0) {
+      stmts.push(
+        c.env.DB.prepare(
+          `UPDATE financial_accounts
+              SET ${clearSource.map((col) => `${col} = NULL`).join(', ')}, updated_at = ?2
+            WHERE id = ?1`,
+        ).bind(sourceId, now),
+      );
+    }
+    if (adopt.length > 0) {
+      stmts.push(
+        c.env.DB.prepare(
+          `UPDATE financial_accounts
+              SET ${adopt.map(([col], n) => `${col} = ?${n + 3}`).join(', ')}, updated_at = ?2
+            WHERE id = ?1`,
+        ).bind(targetAccountId, now, ...adopt.map(([, value]) => value)),
       );
     }
   }

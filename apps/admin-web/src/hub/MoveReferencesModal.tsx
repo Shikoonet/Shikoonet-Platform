@@ -185,7 +185,7 @@ export function MoveReferencesModal({
                   checked={options.moveIdentifiers}
                   onChange={(e) => setOptions((o) => ({ ...o, moveIdentifiers: e.target.checked }))}
                 />
-                <span>انتقال شناسه‌ها</span>
+                <span>انتقال شناسه‌ها — شماره‌ها از حساب مبدأ برداشته می‌شوند و به مقصد می‌روند</span>
               </label>
               <label className="row checkbox-row">
                 <input
