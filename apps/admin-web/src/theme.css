@@ -1813,6 +1813,18 @@ button.cat-card--new:hover {
   flex: 1 1 auto;
   justify-content: flex-end;
 }
+.broadcast-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--success);
+  white-space: nowrap;
+}
+.broadcast-progress progress {
+  width: 120px;
+  accent-color: var(--success);
+}
 .app-header__center {
   display: flex;
   align-items: center;
@@ -1857,6 +1869,16 @@ button.cat-card--new:hover {
     order: 3;
     flex-basis: 100%;
     justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  /* Its own row, and the bar stretches to fill it: at 120px + a sentence it
+     pushed the tools row 54px past a phone screen (CI, 2026-09-17). */
+  .broadcast-progress {
+    flex-basis: 100%;
+  }
+  .broadcast-progress progress {
+    flex: 1 1 auto;
+    width: auto;
   }
   #main-content {
     margin-block-start: 0;
