@@ -1076,6 +1076,8 @@ function CustomerDrawer({
                 <tr>
                   <th>زمان</th>
                   <th>چه چیزی</th>
+                  <th>اکانت</th>
+                  <th>کارت</th>
                   <th>مبلغ</th>
                   <th>وضعیت</th>
                 </tr>
@@ -1083,7 +1085,7 @@ function CustomerDrawer({
               <tbody>
                 {(orders?.items.length ?? 0) === 0 && (
                   <tr>
-                    <td className="empty" colSpan={4}>
+                    <td className="empty" colSpan={6}>
                       {listsLoading
                         ? 'در حال بارگذاری…'
                         : orders === null
@@ -1096,6 +1098,8 @@ function CustomerDrawer({
                   <tr key={o.id}>
                     <td>{dateTime(o.createdAt)}</td>
                     <td>{whatWasBought(o)}</td>
+                    <td className="ltr">{o.remoteUsername ?? '—'}</td>
+                    <td className="ltr">{o.cardMasked ?? '—'}</td>
                     <td>{toman(o.totalIrr)}</td>
                     <td>
                       <span className={statusTone(o.status)}>
@@ -1125,6 +1129,7 @@ function CustomerDrawer({
               <thead>
                 <tr>
                   <th>سرویس</th>
+                  <th>اکانت</th>
                   <th>پنل</th>
                   <th>انقضا</th>
                   <th>وضعیت</th>
@@ -1133,7 +1138,7 @@ function CustomerDrawer({
               <tbody>
                 {(subs?.items.length ?? 0) === 0 && (
                   <tr>
-                    <td className="empty" colSpan={4}>
+                    <td className="empty" colSpan={5}>
                       {listsLoading
                         ? 'در حال بارگذاری…'
                         : subs === null
@@ -1149,6 +1154,19 @@ function CustomerDrawer({
                         customer agreed to, and there is no «مبلغ» column
                         beside it to contradict. */}
                     <td>{v.planName}</td>
+                    {/* The name on the panel, and a way onto the panel: the
+                        link lands on PasarGuard's users list filtered to this
+                        one account. Plain text when the panel is gone or has
+                        no address — a dead link is worse than none. */}
+                    <td className="ltr">
+                      {v.panelUserUrl ? (
+                        <a href={v.panelUserUrl} target="_blank" rel="noreferrer">
+                          {v.remoteUsername}
+                        </a>
+                      ) : (
+                        (v.remoteUsername ?? '—')
+                      )}
+                    </td>
                     <td>{v.providerName ?? '—'}</td>
                     <td>{v.expiresAt ? dateTime(v.expiresAt) : '—'}</td>
                     <td>

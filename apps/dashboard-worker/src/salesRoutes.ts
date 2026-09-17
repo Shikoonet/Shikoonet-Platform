@@ -21,8 +21,29 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import type { Ident } from './adminAudit.js';
-import { tehranDayBoundsFromDate } from '@shikoo/domain';
+import { maskCardDigits, tehranDayBoundsFromDate } from '@shikoo/domain';
 import { csvCell, IRR_PER_TOMAN } from './revenueRoutes.js';
+
+/**
+ * The panel's own page for one account, so an operator lands on the user
+ * and not on the login screen with a name to type in.
+ *
+ * PasarGuard serves its dashboard under `/dashboard/` with a HASH router —
+ * `#/users` — and the users table reads its filters back out of the hash
+ * query (`features/users/components/users-table.tsx`, `getSearchParams`),
+ * so `?search=` is honoured on open. Checked against PasarGuard/panel main
+ * on 2026-09-17. Other kinds have no deep link this code has verified, and
+ * get null rather than a guess.
+ */
+export function panelUserUrl(
+  kind: string | null,
+  baseUrl: string | null,
+  username: string | null,
+): string | null {
+  if (!baseUrl || !username) return null;
+  if (kind !== 'pasarguard') return null;
+  return `${baseUrl.replace(/\/+$/, '')}/dashboard/#/users?search=${encodeURIComponent(username)}`;
+}
 
 const PAGE_SIZE_MAX = 100;
 
@@ -384,7 +405,17 @@ export function registerSalesRoutes(
               EXISTS (SELECT 1 FROM wallet_entries w
                        WHERE w.order_id = o.id AND w.kind = 'REFUND') AS refunded,
               u.id AS user_id, u.telegram_id, u.username,
-              COALESCE(pl.name, s.plan_name_at_sale) AS plan_name
+              COALESCE(pl.name, s.plan_name_at_sale) AS plan_name,
+              -- The account this order made, or — for a renewal or add-on —
+              -- the one it was for. Same column either way.
+              COALESCE(s.remote_username, ts.remote_username) AS remote_username,
+              -- Which card the customer was told to pay into. The PAID
+              -- payment if there is one, else the latest attempt — an order
+              -- can carry several payments, the receipt should name one.
+              (SELECT p.assigned_card_number FROM payments p
+                WHERE p.order_id = o.id
+                ORDER BY (p.status = 'PAID') DESC, p.created_at DESC
+                LIMIT 1) AS card_digits
          ${from}
          LEFT JOIN product_plans pl ON pl.id = o.plan_id
          -- Joined for the name only, and safe to join at all because
@@ -392,6 +423,7 @@ export function registerSalesRoutes(
          -- not this query, is what stops a row multiplying. Kept outside the
          -- shared FROM so the COUNT above still counts orders.
          LEFT JOIN subscriptions s ON s.order_id = o.id
+         LEFT JOIN subscriptions ts ON ts.id = o.target_subscription_id
          ${whereSql}
         ${orderClause('orders', sort, dir, 'o.id')}
         LIMIT ?${limitParam} OFFSET ?${params.length}`,
@@ -414,6 +446,8 @@ export function registerSalesRoutes(
         telegram_id: number;
         username: string | null;
         plan_name: string | null;
+        remote_username: string | null;
+        card_digits: string | null;
       }>();
 
     return c.json({
@@ -455,6 +489,9 @@ export function registerSalesRoutes(
         // carries no product name in the legacy database either, and the
         // «نوع» column already says what those orders are.
         planName: r.plan_name,
+        remoteUsername: r.remote_username,
+        // Masked like every other screen; the full number stays in the row.
+        cardMasked: r.card_digits ? maskCardDigits(r.card_digits) : null,
       })),
     });
   });
@@ -555,8 +592,10 @@ export function registerSalesRoutes(
       `SELECT s.id, s.public_id, s.status, s.plan_name_at_sale, s.provider_name_at_sale,
               s.price_irr, s.volume_gb, s.duration_days, s.remote_username,
               s.purchased_at, s.expires_at, s.last_synced_at, s.used_bytes,
-              u.id AS user_id, u.telegram_id, u.username
+              u.id AS user_id, u.telegram_id, u.username,
+              pr.kind AS provider_kind, pr.base_url AS provider_base_url
          ${from}
+         LEFT JOIN provisioning_providers pr ON pr.id = s.provider_id
          ${whereSql}
         ${orderClause('subscriptions', sort, dir, 's.id')}
         LIMIT ?${limitParam} OFFSET ?${params.length}`,
@@ -579,6 +618,8 @@ export function registerSalesRoutes(
         user_id: number;
         telegram_id: number;
         username: string | null;
+        provider_kind: string | null;
+        provider_base_url: string | null;
       }>();
 
     return c.json({
@@ -590,6 +631,9 @@ export function registerSalesRoutes(
         id: r.id,
         publicId: r.public_id,
         status: r.status,
+        // Where to open this account on its panel, or null when there is no
+        // panel to open — a retired provider, a manual one, or no name yet.
+        panelUserUrl: panelUserUrl(r.provider_kind, r.provider_base_url, r.remote_username),
         // The names as they were at the moment of sale, not as they are now:
         // renaming a plan must not rewrite what a customer bought.
         planName: r.plan_name_at_sale,
