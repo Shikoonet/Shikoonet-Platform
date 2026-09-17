@@ -1869,6 +1869,16 @@ button.cat-card--new:hover {
     order: 3;
     flex-basis: 100%;
     justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  /* Its own row, and the bar stretches to fill it: at 120px + a sentence it
+     pushed the tools row 54px past a phone screen (CI, 2026-09-17). */
+  .broadcast-progress {
+    flex-basis: 100%;
+  }
+  .broadcast-progress progress {
+    flex: 1 1 auto;
+    width: auto;
   }
   #main-content {
     margin-block-start: 0;
