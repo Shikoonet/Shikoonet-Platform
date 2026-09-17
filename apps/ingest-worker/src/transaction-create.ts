@@ -53,35 +53,34 @@ export const UPDATE_TRANSACTION_STATUS_SQL = `UPDATE transaction_candidates
   SET status = ?2, updated_at = ?3 WHERE id = ?1`;
 
 /**
- * True ONLY when this parse result is an actionable CREDIT transaction.
+ * Which parse results become a `transaction_candidates` row.
  *
- * Credit-only product invariant:
- *   Only direction === 'CREDIT' may create a transaction_candidates row.
- *   DEBIT (outgoing) and UNKNOWN (direction uncertain) are both excluded
- *   from the actionable product entirely — the raw SMS is still persisted
- *   for audit, but no candidate row is created.
+ * CREDIT, as always — the money the matcher spends on claims. And since
+ * 0072 (2026-09-17) DEBIT too: a withdrawal SMS carries the bank's balance,
+ * and «موجودی فعلی» is read from the last SMS with one, so dropping debits
+ * froze every account's balance after each expense until the next deposit.
+ * The debit row is also what the monthly statement explains an expense with.
  *
- * This is a positive check on CREDIT, not a negative check on DEBIT.
- * "Anything except DEBIT" would let UNKNOWN through, which violates the
- * invariant. UNKNOWN rows must persist the raw SMS only.
+ * UNKNOWN stays out. A row whose direction nobody could read has no column
+ * to sit in, and "anything except DEBIT" would let it through.
  *
- * Defense in depth: the ingest layer already short-circuits DEBIT and
- * UNKNOWN before calling persistTransaction. This guard ensures any
- * other caller (reparse CLI, future routes, tests) cannot violate the
- * invariant.
+ * Defense in depth: this guard runs inside persistTransaction, so a reparse
+ * CLI or a future route cannot bypass it.
  */
 export function shouldCreateTransaction(r: ParseResult): boolean {
-  return r.direction === 'CREDIT';
+  return r.direction === 'CREDIT' || r.direction === 'DEBIT';
 }
 
 /**
- * Compute the `processing_disposition` value to write on insert.
- * Only CREDIT rows reach this function (DEBIT and UNKNOWN short-circuit
- * earlier in the pipeline).
+ * The `processing_disposition` written on insert.
+ *
+ * A debit is `OUTGOING_IGNORED` from birth: every matching and income query
+ * asks for `ACTIONABLE`, so the row is visible to the balance reader and the
+ * statement and to nothing that could pay a claim with it. The same value
+ * `admin/cleanup-debits.ts` retro-fits onto stray non-credit rows.
  */
-export function processingDispositionFor(r: ParseResult): 'ACTIONABLE' {
-  void r;
-  return 'ACTIONABLE';
+export function processingDispositionFor(r: ParseResult): 'ACTIONABLE' | 'OUTGOING_IGNORED' {
+  return r.direction === 'DEBIT' ? 'OUTGOING_IGNORED' : 'ACTIONABLE';
 }
 
 /** Compute the evidence JSON blob (includes warnings array). */

@@ -6,7 +6,11 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { INCOME_TX_WHERE, TX_INCOME_DECLINED } from './incomeEligibility.js';
+import { INCOME_TX_WHERE, OFF_BOOKS_ELIGIBLE_TX_WHERE, TX_INCOME_DECLINED } from './incomeEligibility.js';
+
+/** Why a movement is not the shop's — 0072. `OTHER` is the pre-0072 rows. */
+export const OFF_BOOKS_CATEGORIES = ['TRANSFER', 'PERSONAL', 'MISTAKE_RETURNED', 'BANK_FEE', 'OTHER'] as const;
+export type OffBooksCategory = (typeof OFF_BOOKS_CATEGORIES)[number];
 
 export { TX_INCOME_DECLINED };
 
@@ -37,9 +41,25 @@ export async function wouldReturnToIncome(db: D1Database, transactionId: string)
   return isIncomeEligible(db, transactionId);
 }
 
+/** A credit the income queue would show, or any live debit (0072). */
+export async function isOffBooksEligible(db: D1Database, transactionId: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS ok FROM transaction_candidates t WHERE t.id = ?1 AND ${OFF_BOOKS_ELIGIBLE_TX_WHERE}`,
+    )
+    .bind(transactionId)
+    .first<{ ok: number }>();
+  return row?.ok === 1;
+}
+
 export async function declineIncomeTransaction(
   db: D1Database,
-  args: { transactionId: string; actorEmail: string; reason?: string | null },
+  args: {
+    transactionId: string;
+    actorEmail: string;
+    reason?: string | null;
+    category?: OffBooksCategory | null;
+  },
 ): Promise<DeclineIncomeResult> {
   const tx = await db
     .prepare(`SELECT id FROM transaction_candidates WHERE id = ?1`)
@@ -47,7 +67,7 @@ export async function declineIncomeTransaction(
     .first<{ id: string }>();
   if (!tx) return { ok: false, error: 'TRANSACTION_NOT_FOUND' };
 
-  const eligible = await isIncomeEligible(db, args.transactionId);
+  const eligible = await isOffBooksEligible(db, args.transactionId);
   if (!eligible) {
     const declined = await db
       .prepare(
@@ -66,10 +86,10 @@ export async function declineIncomeTransaction(
     await db
       .prepare(
         `INSERT INTO income_declined_transactions
-           (id, transaction_candidate_id, declined_by, declined_at, reason, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+           (id, transaction_candidate_id, declined_by, declined_at, reason, created_at, category)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
       )
-      .bind(id, args.transactionId, args.actorEmail, now, args.reason ?? null, now)
+      .bind(id, args.transactionId, args.actorEmail, now, args.reason ?? null, now, args.category ?? 'OTHER')
       .run();
   } catch {
     return { ok: false, error: 'ALREADY_DECLINED' };
