@@ -364,6 +364,9 @@ type ClaimRow = {
   customer_user_id: number | null;
   customer_status: string | null;
   customer_blocked_reason: string | null;
+  // «تا حالا چند تا اکانت خریده، چند تا فعال داره» — null with no customer.
+  customer_subscriptions: number | null;
+  customer_live_subscriptions: number | null;
   effective_ts: number;
   // NULL on an imported Mirzabot claim the backfill could not classify; the
   // bot writes it from the order's kind (0069).
@@ -1436,6 +1439,18 @@ export function registerMirzabotRoutes(
               cu.id AS customer_user_id,
               cu.status AS customer_status,
               cu.blocked_reason AS customer_blocked_reason,
+              -- The customer's history in two numbers, so the reviewer can
+              -- tell a first buyer from a regular without leaving the page
+              -- (Sam, 2026-09-17). Everything ever provisioned, and what is
+              -- live now — ACTIVE or ON_HOLD, the same pair panelRoutes calls
+              -- «live», so the two screens count alike. idx_subs_user keeps
+              -- it cheap; cu is null when the reference matched nobody.
+              (SELECT COUNT(*)::int FROM subscriptions s
+                WHERE s.user_id = cu.id
+                  AND s.status NOT IN ('PENDING_PAYMENT', 'FAILED')) AS customer_subscriptions,
+              (SELECT COUNT(*)::int FROM subscriptions s
+                WHERE s.user_id = cu.id
+                  AND s.status IN ('ACTIVE', 'ON_HOLD')) AS customer_live_subscriptions,
               ${EFFECTIVE_TS} AS effective_ts
        ${claimsFrom}
        WHERE ${where.join(' AND ')}
@@ -1605,6 +1620,9 @@ export function registerMirzabotRoutes(
           customerUserId: row.customer_user_id ?? null,
           customerStatus: row.customer_status ?? null,
           customerBlockedReason: row.customer_blocked_reason ?? null,
+          customerSubscriptions: row.customer_user_id != null ? row.customer_subscriptions : null,
+          customerLiveSubscriptions:
+            row.customer_user_id != null ? row.customer_live_subscriptions : null,
           expectedAmountIrr: row.expected_amount_irr,
           expectedAmountToman: Math.floor(row.expected_amount_irr / 10),
           cardMasked: cardDigits ? maskCardDigits(cardDigits) : null,

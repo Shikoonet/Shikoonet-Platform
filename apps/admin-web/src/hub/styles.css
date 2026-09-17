@@ -2483,6 +2483,10 @@
   align-items: baseline;
   margin-bottom: 0.75rem;
 }
+/* The history is a sentence, not an identifier: its own line under the ids. */
+.payment-identity__history {
+  flex-basis: 100%;
+}
 
 .payment-review__reassign,
 .payment-review__manual-anyway,
