@@ -93,10 +93,19 @@ export function verifiedEventId(claimId: string, transactionId: string): string 
  *
  * Hard facts re-checked here (never relaxed, for auto or manual):
  * claim is a live Mirzabot claim, transaction is an actionable CREDIT on the
- * claim's account, amounts are exactly equal, and neither side is already
- * part of a successful match. The ±5m window and uniqueness rules are the
- * matcher's job — a human approving from Suspects is explicitly resolving
- * those, so they are not re-imposed here.
+ * claim's account, and neither side is already part of a successful match.
+ * The ±5m window and uniqueness rules are the matcher's job — a human
+ * approving from Suspects is explicitly resolving those, so they are not
+ * re-imposed here.
+ *
+ * Neither is the exact amount, for a human. Auto still demands equality — it
+ * is condition 6 of the matcher and this is the second lock on it. But an
+ * operator who picks a 120-toman credit for a 119-toman order has looked at
+ * both figures and decided; refusing them here only sent them to a search
+ * page to do the same thing with more clicks (Sam, 2026-09-17). The order is
+ * fulfilled at its own price either way — `settle.ts` reads
+ * `order_total_irr`, not the credit — so the payload below carries the credit
+ * as it was, not the price it was taken for.
  *
  * `enqueueWebhook` adds the legacy bot's fulfilment notice to the same batch.
  * It belongs here rather than at the caller for one reason: the caller can only
@@ -153,7 +162,9 @@ export async function verifyMirzabotClaim(
   if (tx.financial_account_id !== claim.target_financial_account_id) {
     return { ok: false, error: 'ACCOUNT_MISMATCH' };
   }
-  if (tx.amount_irr !== claim.expected_amount_irr) return { ok: false, error: 'AMOUNT_MISMATCH' };
+  if (args.mode === 'AUTO_VERIFIED' && tx.amount_irr !== claim.expected_amount_irr) {
+    return { ok: false, error: 'AMOUNT_MISMATCH' };
+  }
 
   const reseller = await db
     .prepare(`SELECT id FROM reseller_transactions WHERE transaction_candidate_id = ?1`)
@@ -277,7 +288,7 @@ export async function verifyMirzabotClaim(
       matchId,
       transactionId: tx.id,
       expectedAmountIrr: claim.expected_amount_irr,
-      matchedAmountIrr: claim.expected_amount_irr,
+      matchedAmountIrr: tx.amount_irr ?? claim.expected_amount_irr,
       verificationMode: args.mode,
       verifiedAt: now,
     };

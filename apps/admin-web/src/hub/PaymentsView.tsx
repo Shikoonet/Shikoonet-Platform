@@ -2373,6 +2373,14 @@ function ReviewPanel({
                             {c.bankTimestamp ? formatTimeSeconds(c.bankTimestamp) : '—'}
                           </strong>
                           <br />+{formatTomanFromIrr(c.amountIrr)}
+                          {/* The list is wider than exact-amount now; say so
+                              on the row, next to the figure the eye is on. */}
+                          {c.amountIrr !== item.expectedAmountIrr && (
+                            <>
+                              {' '}
+                              · <span className="payment-reason__flag">مبلغ با سفارش فرق دارد</span>
+                            </>
+                          )}
                           <br />
                           <AccountRef account={c} />
                           {c.timeDeltaSeconds != null && <> · Δ {c.timeDeltaSeconds} sec</>}
