@@ -347,11 +347,17 @@ export function registerBulkRoutes(
   app.get('/api/v1/admin/bulk/recent', async (c) => {
     const { results } = await c.env.DB.prepare(
       `SELECT DISTINCT ON (action)
-              action, actor_email, after_json, created_at
+              action, actor_email, entity_id, after_json, created_at
          FROM audit_logs
         WHERE action IN ('customers.bulk_credited', 'customers.broadcast_queued')
         ORDER BY action, created_at DESC`,
-    ).all<{ action: string; actor_email: string; after_json: unknown; created_at: number }>();
+    ).all<{
+      action: string;
+      actor_email: string;
+      entity_id: string;
+      after_json: unknown;
+      created_at: number;
+    }>();
 
     const of = (action: string) => {
       const row = (results ?? []).find((r) => r.action === action);
@@ -361,6 +367,7 @@ export function registerBulkRoutes(
           ? (JSON.parse(row.after_json) as Record<string, unknown>)
           : ((row.after_json ?? {}) as Record<string, unknown>);
       return {
+        id: row.entity_id,
         by: row.actor_email,
         at: Number(row.created_at),
         // `wallets` for a credit, `recipients` for a broadcast — how many rows
@@ -370,10 +377,31 @@ export function registerBulkRoutes(
       };
     };
 
+    const credit = of('customers.bulk_credited');
+    const last = of('customers.broadcast_queued');
+    // A broadcast is queued, not sent: the bot works through the snapshot at
+    // its own pace, so «queued for 16,678» says nothing about how many have
+    // heard yet. The recipient rows are the truth — SENT and FAILED are over,
+    // everything else (PENDING, SENDING, a 429 waiting its turn) is still to
+    // come. Counted from the rows rather than kept in `broadcasts` so it
+    // cannot drift from what the sweep actually did.
+    const progress =
+      last === null
+        ? null
+        : ((await c.env.DB.prepare(
+            `SELECT count(*)::int                                   AS total,
+                    count(*) FILTER (WHERE status = 'SENT')::int   AS sent,
+                    count(*) FILTER (WHERE status = 'FAILED')::int AS failed
+               FROM broadcast_recipients
+              WHERE broadcast_id = ?1`,
+          )
+            .bind(last.id)
+            .first<{ total: number; sent: number; failed: number }>()) ?? null);
+
     return c.json({
       ok: true,
-      credit: of('customers.bulk_credited'),
-      broadcast: of('customers.broadcast_queued'),
+      credit,
+      broadcast: last === null ? null : { ...last, progress },
     });
   });
 

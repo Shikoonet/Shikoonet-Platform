@@ -925,11 +925,19 @@ export interface BulkPricePreview {
  * happened".
  */
 export interface BulkSend {
+  /** The batch id of a credit, the broadcast id of a broadcast. */
+  id: string;
   by: string;
   at: number;
   count: number;
   /** Rial per wallet. Null for a broadcast, which has no amount. */
   amountIrr: number | null;
+  /**
+   * How far the bot has got through the recipient snapshot. Only a broadcast
+   * has one — a credit is over the moment the route answers. What is neither
+   * `sent` nor `failed` is still to come.
+   */
+  progress?: { total: number; sent: number; failed: number } | null;
 }
 
 /** What «تست ارتباط» answers. Never the panel's response body — see panelRoutes.ts. */
