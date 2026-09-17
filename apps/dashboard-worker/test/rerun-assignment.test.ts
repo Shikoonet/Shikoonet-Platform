@@ -772,3 +772,75 @@ describe('POST /rerun-assignment/:previewId/apply', () => {
     expect(body.error).toBe('preview_wrong_status');
   });
 });
+
+/**
+ * A short account number is still the account's number.
+ *
+ * Melli SMS carry a five-digit hint («06006»), too short for
+ * `detectedIdentifierFromRaw`, so `melli.ts` records it as type
+ * `ACCOUNT_HINT` rather than `ACCOUNT_NUMBER`. The preview probed only
+ * `ACCOUNT_NUMBER` for an account's hint — so on 2026-09-17 «اجرای دوبارهٔ
+ * تخصیص» on «ملی-آینده» offered nothing while two Melli deposits for
+ * exactly its number sat unassigned. The same button found all four
+ * Gardeshgari rows a minute earlier, because that parser's numbers are long.
+ */
+describe('POST /rerun-assignment-preview — a hint recorded as ACCOUNT_HINT', () => {
+  it('finds a transaction whose detected identifier is the account hint by the other name', async () => {
+    const accountId = await seedAccount({ displayName: 'ملی-آینده', bank: 'MELLI', accountHint: '06006' });
+    const { deviceId, smsId } = await seedRawSms();
+    const txId = await seedTx({ smsId, deviceId, financialAccountId: null, amountIrr: 2_500_000 });
+    await seedDetectedIdentifier(txId, 'ACCOUNT_HINT', '06006');
+
+    const r = await app.fetch(req('POST', `/api/v1/accounts/${accountId}/rerun-assignment-preview`), ENV);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      previewId: string;
+      counts: { willAssign: number };
+      items: Array<{ transactionId: string; disposition: string }>;
+    };
+    expect(body.counts.willAssign).toBe(1);
+    expect(body.items.map((i) => i.transactionId)).toEqual([txId]);
+
+    const apply = await app.fetch(
+      req('POST', `/api/v1/accounts/${accountId}/rerun-assignment/${body.previewId}/apply`),
+      ENV,
+    );
+    expect(apply.status).toBe(200);
+    const row = await baseEnv.DB.prepare(
+      `SELECT financial_account_id FROM transaction_candidates WHERE id = ?1`,
+    )
+      .bind(txId)
+      .first<{ financial_account_id: string | null }>();
+    expect(row?.financial_account_id).toBe(accountId);
+  });
+
+  it('does the same for a hint that lives only in the identifier table', async () => {
+    const accountId = await seedAccount({ displayName: 'extra', bank: 'MELLI', accountHint: null });
+    await baseEnv.DB.prepare(
+      `INSERT INTO financial_account_identifiers (id, financial_account_id, kind, value, label, created_at)
+       VALUES (?1, ?2, 'ACCOUNT_HINT', '17000', NULL, 1)`,
+    )
+      .bind(crypto.randomUUID(), accountId)
+      .run();
+    const { deviceId, smsId } = await seedRawSms();
+    const txId = await seedTx({ smsId, deviceId, financialAccountId: null });
+    await seedDetectedIdentifier(txId, 'ACCOUNT_HINT', '17000');
+
+    const r = await app.fetch(req('POST', `/api/v1/accounts/${accountId}/rerun-assignment-preview`), ENV);
+    const body = (await r.json()) as { counts: { willAssign: number } };
+    expect(body.counts.willAssign).toBe(1);
+  });
+
+  it('one transaction detected both ways is one row, not two', async () => {
+    const accountId = await seedAccount({ displayName: 'both', bank: 'PARSIAN', accountHint: ACCOUNT_NUMBER });
+    const { deviceId, smsId } = await seedRawSms();
+    const txId = await seedTx({ smsId, deviceId, financialAccountId: null });
+    await seedDetectedIdentifier(txId, 'ACCOUNT_NUMBER', ACCOUNT_NUMBER);
+    await seedDetectedIdentifier(txId, 'ACCOUNT_HINT', ACCOUNT_NUMBER);
+
+    const r = await app.fetch(req('POST', `/api/v1/accounts/${accountId}/rerun-assignment-preview`), ENV);
+    const body = (await r.json()) as { counts: { willAssign: number }; items: unknown[] };
+    expect(body.counts.willAssign).toBe(1);
+    expect(body.items).toHaveLength(1);
+  });
+});
