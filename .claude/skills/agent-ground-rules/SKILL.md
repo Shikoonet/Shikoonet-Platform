@@ -221,13 +221,13 @@ Learned the hard way on 2026-08-29: PR #25 merged, CI went green, and
 not — a divergence whose only symptom is one failed workflow run.
 
 `deploy/approval-gate.sh` runs in `owner-or-approved` mode. **The owners are
-written in the workflow, not in a secret**, and staging and production do NOT
-have the same list:
+written in the workflow, not in a secret**, and staging and production each
+keep their own list — changing one never changes the other:
 
 | | owners | where |
 | --- | --- | --- |
 | Staging | `Isusami,arshiajacki` | `deploy-staging.yml` → `DEPLOY_OWNERS` |
-| Production | `Isusami` alone | each production workflow's `SOLO_DEPLOY_OWNER` |
+| Production | `Isusami,arshiajacki` | `promote-production.yml` → `PRODUCTION_OWNERS` |
 
 `approval-gate.sh` reads `DEPLOY_OWNERS` first and falls back to
 `SOLO_DEPLOY_OWNER` only as the legacy single-name form. Before relying on any

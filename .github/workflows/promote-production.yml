@@ -62,7 +62,11 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
-  SOLO_DEPLOY_OWNER: Isusami
+  # The people who may promote to production. A comma-separated list, matched
+  # on a whole element like DEPLOY_OWNERS in the staging workflow — @Isusami2
+  # does not inherit @Isusami's authority. Everything else about promotion is
+  # unchanged: still by hand, still PROMOTE typed in full, still main only.
+  PRODUCTION_OWNERS: Isusami,arshiajacki
 
 jobs:
   promote-gate:
@@ -98,7 +102,7 @@ jobs:
         env:
           CONFIRM: ${{ inputs.confirm }}
           ACTOR: ${{ github.actor }}
-          OWNER: ${{ env.SOLO_DEPLOY_OWNER }}
+          OWNERS: ${{ env.PRODUCTION_OWNERS }}
         run: |
           set -Eeuo pipefail
           # Typed in full, and compared exactly. A dispatch form remembers its
@@ -109,11 +113,18 @@ jobs:
             echo "::error::type PROMOTE to confirm; got «${CONFIRM}»"
             exit 1
           fi
-          # The same person the gate allows to ship unreviewed. Production is
-          # the half of solo mode that is NOT automatic, so the actor is checked
-          # here rather than inferred from whoever holds a token.
-          if [ "$ACTOR" != "$OWNER" ]; then
-            echo "::error::only @${OWNER} may promote to production; this run was started by @${ACTOR}"
+          # The same people the staging gate allows to ship unreviewed.
+          # Production is the half of that mode that is NOT automatic, so the
+          # actor is checked here rather than inferred from whoever holds a
+          # token. Whole-element match, never a substring.
+          allowed=0
+          IFS=',' read -ra owners <<<"$OWNERS"
+          for owner in "${owners[@]}"; do
+            owner=$(printf '%s' "$owner" | tr -d '[:space:]')
+            if [ -n "$owner" ] && [ "$ACTOR" = "$owner" ]; then allowed=1; fi
+          done
+          if [ "$allowed" != 1 ]; then
+            echo "::error::only @${OWNERS//,/, @} may promote to production; this run was started by @${ACTOR}"
             exit 1
           fi
           echo "confirmed by @${ACTOR}"

@@ -59,17 +59,19 @@ PR #25 مرج شد، CI سبز شد، و `Deploy Staging` در **یازده ثا
   تازه بعد از تایید، تایید را باطل می‌کند، و تاییدِ خودِ نویسنده و ریویوِ بات
   شمرده نمی‌شوند — و باز هم merge باید دستِ مالک باشد.
 
-**استیجینگ دو مالک دارد، پروداکشن یکی.** این را با هم قاطی نکن:
+**استیجینگ و پروداکشن هرکدام فهرست مالک خودشان را دارند** و از هم تغذیه
+نمی‌شوند:
 
 | | مالکان | کجا نوشته شده |
 | --- | --- | --- |
 | Staging | `Isusami,arshiajacki` | `deploy-staging.yml` → `DEPLOY_OWNERS` |
-| Production | فقط `Isusami` | `SOLO_DEPLOY_OWNER` در `promote-production.yml` |
+| Production | `Isusami,arshiajacki` | `promote-production.yml` → `PRODUCTION_OWNERS` |
 
 `approval-gate.sh` اول `DEPLOY_OWNERS` را می‌خواند و `SOLO_DEPLOY_OWNER` فقط
 شکل قدیمیِ تک‌نامی است که هنوز پذیرفته می‌شود. `promote-production.yml`
-`SOLO_DEPLOY_OWNER` خودش را دارد و `github.actor` را مستقیم با آن می‌سنجد — پس
-اضافه‌شدن مالک دوم به استیجینگ، پروداکشن را گشاد نکرد.
+`PRODUCTION_OWNERS` خودش را دارد و `github.actor` را مستقیم با آن می‌سنجد — پس
+تغییر یکی، دیگری را عوض نمی‌کند. تا ۲۰۲۶-۰۹-۱۷ پروداکشن فقط `Isusami` بود؛
+آن روز Sam خواست arshiajacki هم بتواند Promote بزند.
 
 **`Prepare Production` و `Cutover Production` دیگر وجود ندارند** — بوت‌استرپ
 یک‌بارهٔ ۲۰۲۶-۰۹-۰۸ بودند و ۲۰۲۶-۰۹-۱۲ حذف شدند، چون دو بار به‌جای `Promote

@@ -74,9 +74,9 @@ env:
   IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
   DEPLOY_APPROVAL_MODE: owner-or-approved
   # The people trusted to ship their own work to STAGING without a human
-  # review. Production is NOT widened by this: each production workflow sets
-  # its own SOLO_DEPLOY_OWNER and compares github.actor against it directly,
-  # so promotion remains one person. See deploy/README.md.
+  # review. Production is NOT widened by this: the production workflow keeps
+  # its own PRODUCTION_OWNERS list and compares github.actor against it
+  # directly. See deploy/README.md.
   #
   # (Those workflow filenames are deliberately not written here: a test asserts
   # this file never names them, so that staging can never grow a reference to
