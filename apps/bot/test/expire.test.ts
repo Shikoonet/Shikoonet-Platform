@@ -215,15 +215,20 @@ describe('an invoice with a deadline', () => {
     expect(to(b.telegramId)).toHaveLength(1);
   });
 
-  it('is not closed once somebody has said they paid it', async () => {
+  it('is not closed once somebody has said they paid it — only its message is', async () => {
     const sale = await buy('sim-vip-1m-20');
     await handleUpdate(db, press(sale.updateId + 1, sale.telegramId, `paid:${sale.order.id}`));
     await age(sale.order.id);
 
     await expireUnpaidOrders(db);
 
+    // The order and the claim stay for review; the customer is told, once,
+    // that the card on their invoice is no longer theirs and where their
+    // claim stands (`invoice-lifetime.test.ts` has the whole exchange).
     const notes = await pendingNotifications();
-    expect(notes.filter((n) => n.chatId === sale.telegramId)).toEqual([]);
+    const mine = notes.filter((n) => n.chatId === sale.telegramId);
+    expect(mine.map((n) => n.dedupeKey)).toEqual([`deadline:${sale.order.public_id}`]);
+    expect(mine[0]?.text).toContain('در صف بررسی');
     expect(await statuses(sale.order.id)).toEqual({
       order: 'AWAITING_PAYMENT',
       payment: 'AWAITING_REVIEW',

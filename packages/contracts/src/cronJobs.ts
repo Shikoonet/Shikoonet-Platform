@@ -180,7 +180,7 @@ export const CRON_JOBS: readonly CronJob[] = [
   {
     key: 'expire_orders',
     name: 'بستن سفارش پرداخت‌نشده',
-    what: 'سفارشی که فاکتور گرفته و پول برایش نیامده، با تمام‌شدن مهلت کارتش بسته می‌شود و پیام فاکتور در چت مشتری «منقضی شد» می‌شود. مهلت همان «مهلت پرداخت فاکتور و نگه‌داشتن کارت» در تنظیمات است.',
+    what: 'سر مهلت کارت، پیام فاکتور در چت مشتری «منقضی شد» می‌شود و کارت آزاد. فاکتوری که کسی «پرداخت کردم» نزده بسته می‌شود؛ فاکتوری که زده باز می‌ماند تا پرداختش بررسی شود. مهلت همان «مهلت پرداخت فاکتور و نگه‌داشتن کارت» در تنظیمات است.',
     // No switch, and deliberately: an invoice that is never closed holds a
     // reservation for ever. Turning this off does not stop customers from
     // ordering, it stops the shop from ever tidying up after them.

@@ -14,6 +14,7 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_CARD_HOLD_MINUTES } from '@shikoo/domain';
 import { handleUpdate } from '../src/handle.js';
+import * as menu from '../src/menu.js';
 import { enqueue, flush } from '../src/notify.js';
 import { rememberInvoiceMessage } from '../src/payment.js';
 import { pollOnce, run } from '../src/poll.js';
@@ -56,7 +57,7 @@ async function setHoldMinutes(json: string): Promise<void> {
 async function openInvoice(telegramId: number) {
   return db
     .prepare(
-      `SELECT p.public_id, p.invoice_message_id,
+      `SELECT p.public_id, p.invoice_message_id, p.status AS payment_status,
               o.public_id AS order_public_id, o.expires_at, o.status
          FROM payments p JOIN orders o ON o.id = p.order_id JOIN users u ON u.id = o.user_id
         WHERE u.telegram_id = ?1
@@ -66,6 +67,7 @@ async function openInvoice(telegramId: number) {
     .first<{
       public_id: string;
       invoice_message_id: number | null;
+      payment_status: string;
       order_public_id: string;
       expires_at: string;
       status: string;
@@ -266,6 +268,113 @@ describe('when the deadline passes', () => {
     expect(edited).toEqual([]);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.text).toContain('واریز نکنید');
+  });
+
+  it('closes the message of a claimed invoice too, and leaves its order and claim for review', async () => {
+    // Sam, 2026-09-17: one time, and «پرداخت کردم» does not stretch it. The
+    // card is free at the deadline and the invoice in the chat must say so —
+    // but the claim is a customer saying money is coming, and an order marked
+    // EXPIRED under a live claim is money that can never be delivered.
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+    await pollOnce(
+      db,
+      stubApi({ getUpdates: async () => [press(updateId, telegramId, `order:${plan}`)] }),
+      updateId,
+    );
+    const invoice = (await openInvoice(telegramId))!;
+    const orderId = (
+      await db
+        .prepare(`SELECT id FROM orders WHERE public_id = ?1`)
+        .bind(invoice.order_public_id)
+        .first<{ id: number }>()
+    )!.id;
+    await handleUpdate(db, press(updateId + 1, telegramId, `paid:${orderId}`));
+
+    const first = await expireThrough(telegramId);
+
+    expect(first.sent).toEqual([]);
+    expect(first.edited).toHaveLength(1);
+    expect(first.edited[0]?.messageId).toBe(SCREEN);
+    expect(first.edited[0]?.text).toContain('در صف بررسی');
+    const after = (await openInvoice(telegramId))!;
+    expect(after.status).toBe('AWAITING_PAYMENT');
+    expect(after.invoice_message_id).toBeNull();
+    const claim = await db
+      .prepare(`SELECT status FROM payment_claims WHERE external_order_id = ?1`)
+      .bind(`shikoo:${invoice.public_id}`)
+      .first<{ status: string }>();
+    expect(claim?.status).toBe('PENDING');
+
+    // Told once. The claim may sit in review for a day; the sweep runs every
+    // few seconds.
+    const second = await expireThrough(telegramId);
+    expect(second.edited).toEqual([]);
+    expect(second.sent).toEqual([]);
+  });
+});
+
+describe('a press that arrives after the deadline', () => {
+  async function invoicePastDeadline() {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const plan = await planId('sim-gold-10');
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const invoice = (await openInvoice(telegramId))!;
+    const orderId = (
+      await db
+        .prepare(
+          `UPDATE orders SET expires_at = now() - interval '1 second' WHERE public_id = ?1 RETURNING id`,
+        )
+        .bind(invoice.order_public_id)
+        .first<{ id: number }>()
+    )!.id;
+    return { updateId, telegramId, orderId, invoice };
+  }
+
+  it('«پرداخت کردم» opens no claim, even before the sweep has marked the order', async () => {
+    const { updateId, telegramId, orderId, invoice } = await invoicePastDeadline();
+
+    const out = await handleUpdate(db, press(updateId + 1, telegramId, `paid:${orderId}`));
+
+    expect(out.replies[0]?.text).toBe(menu.ORDER_EXPIRED);
+    const claim = await db
+      .prepare(`SELECT 1 FROM payment_claims WHERE external_order_id = ?1`)
+      .bind(`shikoo:${invoice.public_id}`)
+      .first();
+    expect(claim).toBeNull();
+  });
+
+  it('«پرداختی نکردم» takes the claim back but does not print the card again', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await handleUpdate(db, press(updateId, telegramId, `order:${await planId('sim-gold-10')}`));
+    const invoice = (await openInvoice(telegramId))!;
+    const orderId = (
+      await db
+        .prepare(`SELECT id FROM orders WHERE public_id = ?1`)
+        .bind(invoice.order_public_id)
+        .first<{ id: number }>()
+    )!.id;
+    // Claimed in time, then the deadline passes.
+    await handleUpdate(db, press(updateId + 1, telegramId, `paid:${orderId}`));
+    await db
+      .prepare(`UPDATE orders SET expires_at = now() - interval '1 second' WHERE id = ?1`)
+      .bind(orderId)
+      .run();
+
+    const out = await handleUpdate(db, press(updateId + 2, telegramId, `unpd2:${orderId}`));
+
+    // No reopened invoice — that screen would print a card that is somebody
+    // else's to take now — and no fresh PENDING row holding that card again.
+    expect(out.replies[0]?.text).toBe(menu.ORDER_EXPIRED);
+    expect((await openInvoice(telegramId))?.payment_status).toBe('REJECTED');
+    const claim = await db
+      .prepare(`SELECT status FROM payment_claims WHERE external_order_id = ?1`)
+      .bind(`shikoo:${invoice.public_id}`)
+      .first<{ status: string }>();
+    expect(claim?.status).toBe('REJECTED');
   });
 });
 

@@ -3044,6 +3044,10 @@ async function handleCallback(
       }
       const result = await withdrawPaidClick(tx, user.id, order, query.from.id);
       switch (result.outcome) {
+        case 'expired':
+          // The claim is gone; the invoice is not reopened, because its card
+          // has been somebody else's to take since the deadline.
+          return screen(menu.ORDER_EXPIRED, menu.afterPaidMenu());
         case 'withdrawn':
         case 'open':
           // The invoice again, with the same buttons the original carried —
