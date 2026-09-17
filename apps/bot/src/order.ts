@@ -360,6 +360,12 @@ async function place(
           AND quantity = ?6
           AND bonus_volume_gb = ?7
           AND status = 'AWAITING_PAYMENT'
+          -- Not one whose deadline has passed, even if the sweep has not
+          -- reached it yet: its card is already free for the next customer,
+          -- and handing that invoice back would show a card that is no longer
+          -- its own. The sweep closes the old row a cycle later; a new order
+          -- draws a new card now.
+          AND (expires_at IS NULL OR expires_at > now())
         ORDER BY created_at DESC
         LIMIT 1`,
     )

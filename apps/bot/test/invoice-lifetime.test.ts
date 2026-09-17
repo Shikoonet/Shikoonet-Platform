@@ -117,6 +117,29 @@ describe('the deadline on an invoice', () => {
   });
 });
 
+describe('an invoice whose deadline has passed but the sweep has not reached it', () => {
+  it('is not handed back on the next tap — a new order draws a new card', async () => {
+    // The card picker already considers the card free the moment the hold
+    // ends; only the sweep, a cycle later, marks the order. In between, a
+    // customer who taps the plan again must not be shown the old invoice.
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const first = (await openInvoice(telegramId))!;
+    await db
+      .prepare(`UPDATE orders SET expires_at = now() - interval '1 second' WHERE public_id = ?1`)
+      .bind(first.order_public_id)
+      .run();
+
+    await handleUpdate(db, press(updateId + 1, telegramId, `order:${plan}`));
+
+    const second = (await openInvoice(telegramId))!;
+    expect(second.order_public_id).not.toBe(first.order_public_id);
+    expect(new Date(second.expires_at).getTime()).toBeGreaterThan(Date.now());
+  });
+});
+
 describe('which message the invoice is', () => {
   it('is remembered from the screen the invoice was drawn into', async () => {
     const { updateId, telegramId } = ids();
@@ -249,6 +272,43 @@ describe('when the deadline passes', () => {
 describe('an outbox row that edits', () => {
   const CHAT = 742_900_001;
 
+  it('never edits a message that is somebody’s live invoice right now', async () => {
+    // An expiry row whose edit failed is retried up to an hour later. By then
+    // the customer may have drawn a fresh invoice on the same screen — so the
+    // ownership is asked at send time, and a live invoice is left alone.
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const plan = await planId('sim-gold-10');
+    await pollOnce(
+      db,
+      stubApi({ getUpdates: async () => [press(updateId, telegramId, `order:${plan}`)] }),
+      updateId,
+    );
+    expect((await openInvoice(telegramId))?.invoice_message_id).toBe(SCREEN);
+
+    const key = `test:edit-live-${updateId}`;
+    await db.withSession((tx) =>
+      enqueue(tx, { dedupeKey: key, chatId: telegramId, text: 'گذشت', editMessageId: SCREEN }),
+    );
+    let edits = 0;
+    const sent: number[] = [];
+    const api = stubApi({
+      editMessageText: async () => {
+        edits += 1;
+      },
+      sendMessage: async (chatId) => {
+        sent.push(chatId);
+        return { messageId: null };
+      },
+    });
+
+    await flush(db, api, { limit: 50 });
+
+    expect(edits).toBe(0);
+    expect(sent).toContain(telegramId);
+    expect(await statusOf(key)).toBe('SENT');
+  });
+
   async function statusOf(key: string): Promise<string | undefined> {
     const row = await db
       .prepare(`SELECT status FROM bot_notifications WHERE dedupe_key = ?1`)
@@ -258,7 +318,7 @@ describe('an outbox row that edits', () => {
   }
 
   it('lands as a new message when Telegram refuses the edit, and is SENT', async () => {
-    const key = `test:edit-refused-${Date.now()}`;
+    const key = `test:edit-refused-${ids().updateId}`;
     await db.withSession((tx) =>
       enqueue(tx, { dedupeKey: key, chatId: CHAT, text: 'گذشت', editMessageId: 12 }),
     );
@@ -281,7 +341,7 @@ describe('an outbox row that edits', () => {
   });
 
   it('is retried, not re-sent, when the edit fails for a reason that says nothing about the message', async () => {
-    const key = `test:edit-network-${Date.now()}`;
+    const key = `test:edit-network-${ids().updateId}`;
     await db.withSession((tx) =>
       enqueue(tx, { dedupeKey: key, chatId: CHAT, text: 'گذشت', editMessageId: 12 }),
     );

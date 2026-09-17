@@ -193,6 +193,30 @@ function keyboardOf(row: DueRow): InlineKeyboard | undefined {
 }
 
 /**
+ * Whether the message a row wants to edit is, RIGHT NOW, somebody's live
+ * invoice. Asked at send time and not at enqueue time, because the two can be
+ * an hour apart: an expiry row whose edit failed once is retried later, and by
+ * then the customer may have drawn a fresh invoice on the same screen — a
+ * button press edits the screen it came from, so one message carries invoice
+ * after invoice. Editing it then would replace a live card number with «this
+ * expired», about a different order. A live invoice is never edited from here;
+ * the notice goes out as a new message instead.
+ */
+async function isLiveInvoice(db: D1Database, chatId: number, messageId: number): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS live
+         FROM payments p JOIN users u ON u.id = p.user_id
+        WHERE u.telegram_id = ?1 AND p.invoice_message_id = ?2
+          AND p.status IN ('PENDING', 'AWAITING_REVIEW')
+        LIMIT 1`,
+    )
+    .bind(chatId, messageId)
+    .first<{ live: number }>();
+  return row !== null;
+}
+
+/**
  * The text itself: an edit of the message the producer named, or a new one.
  *
  * The edit falls back rather than fails, for the reason on `editMessageId`.
@@ -200,8 +224,8 @@ function keyboardOf(row: DueRow): InlineKeyboard | undefined {
  * «not that message»; a socket that closed says nothing about the message and
  * must reach the retry logic in the caller as what it is.
  */
-async function deliver(api: TelegramApi, row: DueRow): Promise<void> {
-  if (row.edit_message_id !== null) {
+async function deliver(db: D1Database, api: TelegramApi, row: DueRow): Promise<void> {
+  if (row.edit_message_id !== null && !(await isLiveInvoice(db, row.chat_id, row.edit_message_id))) {
     try {
       await api.editMessageText(row.chat_id, row.edit_message_id, row.body, keyboardOf(row));
       return;
@@ -307,7 +331,7 @@ export async function flush(
           log.warn('notify.qr_failed', { ref: String(row.id), fallback: 'text only' }, err);
         }
       }
-      await deliver(api, row);
+      await deliver(db, api, row);
       await settle(db, row.id, 'SENT', null, null);
       result.sent += 1;
       continue;

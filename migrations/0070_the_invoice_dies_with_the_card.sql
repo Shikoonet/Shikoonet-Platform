@@ -30,4 +30,23 @@ ALTER TABLE bot_notifications ADD COLUMN edit_message_id bigint;
 
 DELETE FROM settings WHERE scope = 'bot' AND key = 'order_ttl_hours';
 
+-- The invoices already open were printed with the old day-long deadline, and
+-- their cards have been free for the next customer since their hold lapsed.
+-- Their deadline is pulled in to what it would have been under the new rule —
+-- the hold from the moment they were issued, read from the operator's own
+-- setting the way `cardQueue.ts` reads it — and never pushed out. The next
+-- sweep closes the ones already past it and tells each customer, as a new
+-- message: nothing recorded which message these invoices are. A claimed
+-- invoice (AWAITING_REVIEW) is untouched by the sweep regardless, so nobody
+-- who has said «پرداخت کردم» loses their order to this.
+UPDATE orders
+   SET expires_at = LEAST(
+         expires_at,
+         created_at + make_interval(mins => COALESCE(
+           (SELECT CASE WHEN s.value #>> '{}' ~ '^[1-9][0-9]{0,3}$' THEN (s.value #>> '{}')::int END
+              FROM settings s WHERE s.scope = 'pay' AND s.key = 'card_hold_minutes'),
+           10)))
+ WHERE status = 'AWAITING_PAYMENT'
+   AND expires_at IS NOT NULL;
+
 COMMIT;
