@@ -335,6 +335,29 @@ describe('verifyMirzabotClaim on Postgres', () => {
     ).toEqual({ ok: false, error: 'AMOUNT_MISMATCH' });
   });
 
+  it('lets an operator settle a different amount, and reports the credit as it was', async () => {
+    await db
+      .prepare(`UPDATE transaction_candidates SET amount_irr = ?2 WHERE id = ?1`)
+      .bind('tx-1', AMOUNT + 10_000)
+      .run();
+    const res = await verifyMirzabotClaim(db, {
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'ADMIN_APPROVED',
+      enqueueWebhook: true,
+    });
+    expect(res.ok).toBe(true);
+    const notice = await db
+      .prepare(`SELECT payload_json FROM webhook_deliveries WHERE event_type = 'PAYMENT_VERIFIED'`)
+      .first<{ payload_json: string }>();
+    const payload = JSON.parse(notice!.payload_json) as {
+      expectedAmountIrr: number;
+      matchedAmountIrr: number;
+    };
+    expect(payload.expectedAmountIrr).toBe(AMOUNT);
+    expect(payload.matchedAmountIrr).toBe(AMOUNT + 10_000);
+  });
+
   it('rejects a transaction excluded from processing', async () => {
     await db
       .prepare(

@@ -95,8 +95,9 @@ and inside `rematchMirzabotClaimsForCreditTx`.
 only path allowed to verify a Mirzabot claim. Automatic matching, the Suspects
 approve route, and `/api/v1/match/approve` all go through it.
 
-It re-checks the hard facts (live claim, actionable CREDIT, same account, equal
-amount, neither side consumed) and then writes. Rules for changing it:
+It re-checks the hard facts (live claim, actionable CREDIT, same account,
+neither side consumed — and, for `AUTO_VERIFIED` only, equal amount) and then
+writes. Rules for changing it:
 
 - **Never use `INSERT OR IGNORE` for a consuming match.** The partial unique
   indexes `idx_match_one_confirmed_per_tx/claim` (migration 0001) and
@@ -107,8 +108,13 @@ amount, neither side consumed) and then writes. Rules for changing it:
 - The function re-reads the row afterwards, because the upsert's `WHERE` guard
   can skip silently.
 
-The ±5m window and the uniqueness rules are deliberately **not** re-imposed on
-manual approval — resolving that ambiguity is exactly what the admin is doing.
+The ±5m window, the uniqueness rules and the exact amount are deliberately
+**not** re-imposed on manual approval — resolving that ambiguity is exactly what
+the admin is doing (amount: Sam, 2026-09-17 — a 120-toman credit for a
+119-toman order is the operator's call, and the order is fulfilled at its own
+price regardless). The review panel's candidate list is correspondingly wider
+than the matcher's: same account, exact amount at any time OR any unspent
+credit within ±30 min of the click (`loadCandidates` in `mirzabotRoutes.ts`).
 
 ## Do not let the generic matcher near Mirzabot claims
 

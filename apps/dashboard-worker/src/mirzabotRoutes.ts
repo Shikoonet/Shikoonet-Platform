@@ -568,16 +568,27 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
       .bind(...candidateIds)
       .all<Row>();
   } else if (row.target_financial_account_id) {
+    // Exact amount at any time, OR anything unspent on this account within
+    // half an hour of the click. The second arm is the one an operator
+    // actually needs: a customer who typed 120 for a 119-toman order produced
+    // a credit the exact-amount arm can never show, and the only way to attach
+    // it was to leave this screen and search by hand (Sam, 2026-09-17). The
+    // half hour is the same default the search page opens with.
+    const anchor = row.paid_clicked_at ?? row.receipt_submitted_at ?? row.created_at;
     result = await db
       .prepare(
         `${select}
          WHERE t.financial_account_id = ?1
            AND t.direction = 'CREDIT'
            AND t.processing_disposition = 'ACTIONABLE'
-           AND t.amount_irr = ?2
-         ORDER BY t.bank_timestamp DESC LIMIT 10`,
+           AND (t.amount_irr = ?2
+                OR (t.bank_timestamp BETWEEN ?3::bigint - 1800000 AND ?3::bigint + 1800000
+                    AND NOT EXISTS (SELECT 1 FROM reconciliation_matches m
+                                     WHERE m.transaction_candidate_id = t.id
+                                       AND m.status IN ('AUTO_VERIFIED','CONFIRMED'))))
+         ORDER BY t.bank_timestamp DESC LIMIT 20`,
       )
-      .bind(row.target_financial_account_id, row.expected_amount_irr)
+      .bind(row.target_financial_account_id, row.expected_amount_irr, anchor)
       .all<Row>();
   } else {
     return [];

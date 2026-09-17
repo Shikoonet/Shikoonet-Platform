@@ -156,12 +156,16 @@ describe('manual approval of Mirzabot suspects', () => {
     expect(claim?.status).not.toBe('VERIFIED');
   });
 
-  it('refuses an amount mismatch', async () => {
+  it('takes the amount the operator chose, not the one the order asked for', async () => {
+    // 120 typed for a 119-toman order. The operator looked at both figures
+    // and picked; the server does not second-guess them (Sam, 2026-09-17).
     await seedClaim('c-amt');
-    await seedTx('t-amt', { amount: AMOUNT + 1 });
-    const r = await approve('c-amt', 't-amt');
-    expect(r.status).toBe(409);
-    expect(((await r.json()) as { error: string }).error).toBe('amount_mismatch');
+    await seedTx('t-amt', { amount: AMOUNT + 10_000 });
+    expect((await approve('c-amt', 't-amt')).status).toBe(200);
+    const claim = await baseEnv.DB.prepare(
+      `SELECT status FROM payment_claims WHERE id = 'c-amt'`,
+    ).first<{ status: string }>();
+    expect(claim?.status).toBe('VERIFIED');
   });
 
   it('refuses an account mismatch', async () => {
