@@ -23,6 +23,7 @@ import {
   isManualVerificationReopenEligible,
   inferPrimaryDevice,
   CARD_HELD_UNTIL_SQL,
+  CARD_QUEUE_POSITION_SQL,
   type D1Database as DomainD1Database,
 } from '@shikoo/domain';
 import { MIRZABOT_SOURCE, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
@@ -71,6 +72,10 @@ export type PaymentCardListItem = {
   holder_name: string | null;
   /** ACTIVE | DISABLED — so a list can say why the bot ignored one. */
   status: string;
+  /** Where the card stands in the bakery queue, among every card in service. */
+  queue_position: number;
+  /** Epoch ms while an open invoice has this card; null when it is free. */
+  held_until: number | null;
 };
 
 /** Mirzabot payment_cards for account list views. */
@@ -80,13 +85,18 @@ export async function loadPaymentCardsForAccounts(
 ): Promise<Map<string, PaymentCardListItem[]>> {
   if (accountIds.length === 0) return new Map();
   const placeholders = accountIds.map((_, i) => `?${i + 1}`).join(',');
+  const now = Date.now();
   const rows = await db
     .prepare(
       // `status` too: the accounts list drew a disabled card and a live one
       // identically, so «حساب / کارت» could not say why the bot had ignored one.
-      `SELECT id, financial_account_id, card_digits, holder_name, status
-       FROM payment_cards WHERE financial_account_id IN (${placeholders})
-       ORDER BY created_at ASC`,
+      // And the queue, because the editor's card panel showed it and the list
+      // — nineteen accounts, one row each — did not (Sam, 2026-09-17).
+      `SELECT pc.id, pc.financial_account_id, pc.card_digits, pc.holder_name, pc.status,
+              ${CARD_QUEUE_POSITION_SQL} AS queue_position,
+              ${CARD_HELD_UNTIL_SQL} AS held_until
+         FROM payment_cards pc WHERE pc.financial_account_id IN (${placeholders})
+        ORDER BY pc.created_at ASC`,
     )
     .bind(...accountIds)
     .all<{
@@ -95,6 +105,8 @@ export async function loadPaymentCardsForAccounts(
       card_digits: string;
       holder_name: string | null;
       status: string;
+      queue_position: number;
+      held_until: number | null;
     }>();
   const map = new Map<string, PaymentCardListItem[]>();
   for (const r of rows.results ?? []) {
@@ -105,6 +117,8 @@ export async function loadPaymentCardsForAccounts(
       display: formatCardDigitsForDisplay(r.card_digits),
       holder_name: r.holder_name,
       status: r.status,
+      queue_position: r.queue_position,
+      held_until: r.held_until != null && r.held_until > now ? r.held_until : null,
     };
     const list = map.get(r.financial_account_id) ?? [];
     list.push(item);
@@ -761,10 +775,7 @@ export function registerMirzabotRoutes(
     const rows = await c.env.DB.prepare(
       `SELECT pc.id, pc.financial_account_id, pc.card_digits, pc.holder_name, pc.created_at,
               pc.status, pc.last_assigned_at,
-              (SELECT COUNT(*)::int + 1 FROM payment_cards o
-                 JOIN financial_accounts ofa ON ofa.id = o.financial_account_id
-                WHERE o.status = 'ACTIVE' AND ofa.active = 1 AND ofa.status = 'ACTIVE'
-                  AND (o.rotation_cursor, o.id) < (pc.rotation_cursor, pc.id)) AS queue_position,
+              ${CARD_QUEUE_POSITION_SQL} AS queue_position,
               ${CARD_HELD_UNTIL_SQL} AS held_until
          FROM payment_cards pc
         WHERE pc.financial_account_id = ?1

@@ -200,8 +200,62 @@ describe('an account that has been switched off', () => {
 
     render(<AccountsView cache={createCache()} />);
 
-    const cells = await screen.findAllByText(/6037-0000-0000-0095/);
-    expect(cells[0]!.textContent).toContain('خاموش');
+    // The mock answers the review-queue fetch with the same rows, and that
+    // block still prints the card as a sentence — so pick the list's cell.
+    const cell = (await screen.findAllByText(/6037-0000-0000-0095/))
+      .map((el) => el.closest('.payment-card-cell__card'))
+      .find(Boolean)!;
+    expect(cell.textContent).toContain('خاموش');
+  });
+
+  /**
+   * The queue, on the list. The editor's card panel said «نوبت ۳ · در دست
+   * مشتری تا …» and the list — nineteen rows on production — said only the
+   * number, so learning whose turn it was meant opening every account
+   * (Sam, 2026-09-17). Same badges, same component, on the row.
+   */
+  it('shows on the row where the card stands and who is holding it', async () => {
+    rows = [
+      account({
+        id: 'acc-queue',
+        display_name: 'حساب در صف',
+        active: 1,
+        payment_cards: [
+          { id: 'c3', card_digits: '6037000000000095', masked: '****0095', display: '6037-0000-0000-0095', holder_name: 'پویان بهمن', status: 'ACTIVE', queue_position: 3, held_until: Date.UTC(2026, 8, 15, 10, 0) },
+        ],
+      }),
+    ];
+
+    render(<AccountsView cache={createCache()} />);
+
+    const cell = (await screen.findAllByText(/6037-0000-0000-0095/))
+      .map((el) => el.closest('.payment-card-cell__card'))
+      .find(Boolean)!;
+    expect(cell.textContent).toContain('در گردش');
+    expect(cell.textContent).toContain('نوبت ۳');
+    expect(cell.textContent).toContain('در دست مشتری تا');
+    expect(cell.textContent).toContain('پویان بهمن');
+  });
+
+  /** «گروه‌بندی»: a view over the rows, chosen from the toolbar, nothing stored. */
+  it('buckets the rows under a heading when asked to group them', async () => {
+    rows = [
+      account({ id: 'a1', display_name: 'ملت-پویان', bank_name: 'MELLAT', active: 1, payment_cards: [
+        { id: 'k1', card_digits: '6104000000000000', masked: '****0000', display: '6104-0000-0000-0000', holder_name: 'پویان بهمن', status: 'ACTIVE' },
+      ] }),
+      account({ id: 'a2', display_name: 'شهر-سارا', bank_name: 'SHAHR', active: 1, payment_cards: [
+        { id: 'k2', card_digits: '5047000000000000', masked: '****0000', display: '5047-0000-0000-0000', holder_name: 'پریینچی', status: 'ACTIVE' },
+      ] }),
+    ];
+
+    render(<AccountsView cache={createCache()} />);
+    await screen.findAllByText('ملت-پویان');
+    expect(screen.queryByText(/پویان بهمن \(۱\)/)).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('گروه‌بندی:'), { target: { value: 'holder' } });
+
+    expect(screen.getAllByText(/پویان بهمن \(۱\)/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/پریینچی \(۱\)/).length).toBeGreaterThan(0);
   });
 
   it('leaves a live account alone — it still only offers the way out', async () => {
