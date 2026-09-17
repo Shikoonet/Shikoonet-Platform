@@ -221,6 +221,15 @@ async function loadAccountAndProbes(
     const t = FAI_KIND_TO_PROBE_TYPE[r.kind];
     if (t) probes.push({ type: t, value: r.value, source: 'fai', faiId: r.id });
   }
+  // A parser records the same number under either name. The generic
+  // extractor writes ACCOUNT_NUMBER; melli.ts writes ACCOUNT_HINT because its
+  // five-digit hint («06006») is too short for the extractor. Until
+  // 2026-09-17 only ACCOUNT_NUMBER was probed, so «اجرای دوبارهٔ تخصیص» on a
+  // Melli account offered nothing while two deposits for exactly its number
+  // sat unassigned. Same value, both names; `findCandidateTxs` dedupes on tx.
+  for (const p of [...probes]) {
+    if (p.type === 'ACCOUNT_NUMBER') probes.push({ ...p, type: 'ACCOUNT_HINT' });
+  }
 
   return { kind: 'ok', snapshot, probes };
 }
@@ -263,7 +272,7 @@ async function findCandidateTxs(
                  FROM transaction_detected_identifiers tdi
                  JOIN transaction_candidates tc ON tc.id = tdi.transaction_candidate_id
                  LEFT JOIN financial_accounts fa ON fa.id = tc.financial_account_id
-                WHERE tdi.identifier_type = ?${i * 2 + 1} AND tdi.normalized_value = ?${i * 2 + 2}
+                WHERE ${SQL.detectedIdentifierTypeIs(`?${i * 2 + 1}`)} AND tdi.normalized_value = ?${i * 2 + 2}
                   AND ${SQL.actionableTransactionWhereTc}
                   AND ${SQL.accountStatusWhere}`,
           )

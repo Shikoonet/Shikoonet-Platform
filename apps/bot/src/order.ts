@@ -17,15 +17,21 @@
 
 import { randomBytes } from 'node:crypto';
 import type { D1DatabaseSession } from '@shikoo/database';
-import { isAutomated } from '@shikoo/domain';
+import { CARD_HOLD_MINUTES_SQL, isAutomated } from '@shikoo/domain';
 import type { CatalogPlan } from './catalog.js';
 import { priceForUser, type Price } from './money.js';
-import { loadShopSettings } from './settings.js';
 
 export interface PlacedOrder {
   id: number;
   publicId: string;
   totalIrr: number;
+  /**
+   * When the invoice — and the card printed on it — stops being valid, as an
+   * ISO timestamp. Null for a trial, which has nothing to pay and no card.
+   * Printed on the checkout so the customer knows how long they have before
+   * the card goes to somebody else.
+   */
+  expiresAt: string | null;
   /** True when this returned an order the customer already had. */
   reused: boolean;
 }
@@ -278,7 +284,7 @@ export async function placeTrialOrder(
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (!row) throw new Error('trial order insert returned no row');
 
-  return { id: row.id, publicId: row.public_id, totalIrr: 0, reused: false };
+  return { id: row.id, publicId: row.public_id, totalIrr: 0, expiresAt: null, reused: false };
 }
 async function place(
   tx: D1DatabaseSession,
@@ -344,7 +350,7 @@ async function place(
       // `IS NOT DISTINCT FROM` on plan_id, not `=`: a top-up has no plan, and
       // `NULL = NULL` is unknown, so `=` would never match its own open order
       // and every tap would write another one.
-      `SELECT id, public_id, total_irr
+      `SELECT id, public_id, total_irr, expires_at
          FROM orders
         WHERE user_id = ?1
           AND plan_id IS NOT DISTINCT FROM ?2
@@ -354,11 +360,17 @@ async function place(
           AND quantity = ?6
           AND bonus_volume_gb = ?7
           AND status = 'AWAITING_PAYMENT'
+          -- Not one whose deadline has passed, even if the sweep has not
+          -- reached it yet: its card is already free for the next customer,
+          -- and handing that invoice back would show a card that is no longer
+          -- its own. The sweep closes the old row a cycle later; a new order
+          -- draws a new card now.
+          AND (expires_at IS NULL OR expires_at > now())
         ORDER BY created_at DESC
         LIMIT 1`,
     )
     .bind(userId, planId, price.totalIrr, kind, subscriptionId, quantity, bonusVolumeGb)
-    .first<{ id: number; public_id: string; total_irr: number }>();
+    .first<{ id: number; public_id: string; total_irr: number; expires_at: string | null }>();
   if (open) {
     /*
      * The chosen name is NOT part of the tuple above, and must not become part
@@ -380,7 +392,13 @@ async function place(
         .bind(open.id, usernameText)
         .run();
     }
-    return { id: open.id, publicId: open.public_id, totalIrr: open.total_irr, reused: true };
+    return {
+      id: open.id,
+      publicId: open.public_id,
+      totalIrr: open.total_irr,
+      expiresAt: open.expires_at,
+      reused: true,
+    };
   }
 
   /*
@@ -434,12 +452,14 @@ async function place(
   // the card printed on it — alive indefinitely. `expire.ts` says what that
   // costs.
   //
-  // The length is the shop's, read here rather than in `expire.ts`, because
-  // this is where the deadline is DECIDED. An admin who shortens the window
-  // must not thereby close invoices that were issued under the old one: those
-  // carry the deadline they were printed with, which is the only reading a
-  // customer holding a 24-hour invoice would call fair.
-  const { orderTtlHours } = await loadShopSettings(tx);
+  // The length is the card hold — `pay/card_hold_minutes`, the same fragment
+  // `CARD_HELD_UNTIL_SQL` reads — because an invoice must not outlive the card
+  // printed on it. It used to be its own setting, `order_ttl_hours`, and for
+  // twenty-three hours a day the card on a live invoice belonged to somebody
+  // else (0070 says what that cost). Read here, in the statement, because this
+  // is where the deadline is DECIDED: an admin who shortens the window must not
+  // thereby close invoices issued under the old one — those carry the deadline
+  // they were printed with.
   const row = await tx
     .prepare(
       `INSERT INTO orders
@@ -447,8 +467,8 @@ async function place(
           unit_price_irr, discount_irr, total_irr, status, expires_at, username_text,
           bonus_volume_gb)
        VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8, 'AWAITING_PAYMENT',
-               now() + make_interval(secs => ?10), ?11, ?12)
-       RETURNING id, public_id, total_irr`,
+               now() + make_interval(mins => ${CARD_HOLD_MINUTES_SQL}), ?10, ?11)
+       RETURNING id, public_id, total_irr, expires_at`,
     )
     .bind(
       newPublicId(),
@@ -460,11 +480,10 @@ async function place(
       price.discountIrr,
       price.totalIrr,
       quantity,
-      orderTtlHours * 3600,
       usernameText,
       bonusVolumeGb,
     )
-    .first<{ id: number; public_id: string; total_irr: number }>();
+    .first<{ id: number; public_id: string; total_irr: number; expires_at: string }>();
   if (!row) throw new Error('order insert returned no row');
 
   if (held !== null) {
@@ -480,5 +499,11 @@ async function place(
     if (marked.meta.changes !== 1) throw new Error(`stock #${held} slipped away under its lock`);
   }
 
-  return { id: row.id, publicId: row.public_id, totalIrr: row.total_irr, reused: false };
+  return {
+    id: row.id,
+    publicId: row.public_id,
+    totalIrr: row.total_irr,
+    expiresAt: row.expires_at,
+    reused: false,
+  };
 }

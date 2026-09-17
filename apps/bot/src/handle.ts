@@ -146,6 +146,21 @@ export interface Reply {
    * `sendMessage` refuses both rather than dropping one.
    */
   replyKeyboard?: ReplyKeyboard;
+  /**
+   * The checkout this message IS — `payments.public_id` — when it is one.
+   *
+   * `poll.ts` writes the id Telegram gives the message back onto that row
+   * (`rememberInvoiceMessage`), which is what lets the expiry sweep turn the
+   * invoice into «مهلت تمام شد» in place instead of leaving the card number
+   * standing in the chat above a new message.
+   */
+  invoiceOf?: string;
+}
+
+/** Marks every reply of an outcome as the invoice for this checkout. */
+function asInvoice(outcome: HandleOutcome, publicId: string): HandleOutcome {
+  for (const r of outcome.replies) r.invoiceOf = publicId;
+  return outcome;
 }
 
 export type HandleStatus =
@@ -1556,23 +1571,27 @@ async function handleAddonAmount(
   if (!checkout) return reply(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
   if (checkout.claimed) return reply(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
 
-  return reply(
-    menu.addonCheckout(
-      placed.publicId,
-      kind,
-      quantity,
-      service.plan_name_at_sale,
-      placed.totalIrr,
-      checkout.cardDigits,
-      checkout.cardHolder,
+  return asInvoice(
+    reply(
+      menu.addonCheckout(
+        placed.publicId,
+        kind,
+        quantity,
+        service.plan_name_at_sale,
+        placed.totalIrr,
+        checkout.cardDigits,
+        checkout.cardHolder,
+        placed.expiresAt,
+      ),
+      menu.checkoutMenu(
+        placed.id,
+        placed.totalIrr,
+        checkout.cardDigits,
+        { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
+        SHOP.showsCopyButtons,
+      ),
     ),
-    menu.checkoutMenu(
-      placed.id,
-      placed.totalIrr,
-      checkout.cardDigits,
-      { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
-      SHOP.showsCopyButtons,
-    ),
+    checkout.publicId,
   );
 }
 
@@ -1953,22 +1972,26 @@ async function placeOrderScreen(
   // The invoice now occupies the message the question was asked on, so nothing
   // may edit it again. See `forgetScreen`.
   await forgetScreen(tx, user.id);
-  return screen(
-    menu.checkout(
-      placed.publicId,
-      plan,
-      placed.totalIrr,
-      checkout.cardDigits,
-      checkout.cardHolder,
-      held ? appliedOf(held, plan) : null,
+  return asInvoice(
+    screen(
+      menu.checkout(
+        placed.publicId,
+        plan,
+        placed.totalIrr,
+        checkout.cardDigits,
+        checkout.cardHolder,
+        held ? appliedOf(held, plan) : null,
+        placed.expiresAt,
+      ),
+      menu.checkoutMenu(
+        placed.id,
+        placed.totalIrr,
+        checkout.cardDigits,
+        { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
+        SHOP.showsCopyButtons,
+      ),
     ),
-    menu.checkoutMenu(
-      placed.id,
-      placed.totalIrr,
-      checkout.cardDigits,
-      { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
-      SHOP.showsCopyButtons,
-    ),
+    checkout.publicId,
   );
 }
 
@@ -2953,21 +2976,25 @@ async function handleCallback(
       }
       // Same as the purchase invoice: this message is no longer a question.
       await forgetScreen(tx, user.id);
-      return screen(
-        menu.renewCheckout(
-          placed.publicId,
-          service.plan_name_at_sale,
-          plan,
-          placed.totalIrr,
-          checkout.cardDigits,
-          checkout.cardHolder,
-          held ? appliedOf(held, plan) : null,
-          plan.providerId !== service.provider_id,
+      return asInvoice(
+        screen(
+          menu.renewCheckout(
+            placed.publicId,
+            service.plan_name_at_sale,
+            plan,
+            placed.totalIrr,
+            checkout.cardDigits,
+            checkout.cardHolder,
+            held ? appliedOf(held, plan) : null,
+            placed.expiresAt,
+            plan.providerId !== service.provider_id,
+          ),
+          menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
+            balanceIrr: await balanceFor(tx, user.id),
+            totalIrr: placed.totalIrr,
+          }),
         ),
-        menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
-          balanceIrr: await balanceFor(tx, user.id),
-          totalIrr: placed.totalIrr,
-        }),
+        checkout.publicId,
       );
     }
 
@@ -3015,17 +3042,26 @@ async function handleCallback(
           // The invoice again, with the same buttons the original carried —
           // including the wallet, which the guard in `wpay` refused a moment
           // ago and now lets through, because nothing is under review.
-          return screen(
-            menu.invoiceReopened(order.public_id, result.amountIrr, result.cardDigits, result.cardHolder),
-            menu.checkoutMenu(
-              order.id,
-              result.amountIrr,
-              result.cardDigits,
-              order.kind === 'WALLET_TOPUP'
-                ? undefined
-                : { balanceIrr: await balanceFor(tx, user.id), totalIrr: result.amountIrr },
-              SHOP.showsCopyButtons,
+          return asInvoice(
+            screen(
+              menu.invoiceReopened(
+                order.public_id,
+                result.amountIrr,
+                result.cardDigits,
+                result.cardHolder,
+                order.expires_at,
+              ),
+              menu.checkoutMenu(
+                order.id,
+                result.amountIrr,
+                result.cardDigits,
+                order.kind === 'WALLET_TOPUP'
+                  ? undefined
+                  : { balanceIrr: await balanceFor(tx, user.id), totalIrr: result.amountIrr },
+                SHOP.showsCopyButtons,
+              ),
             ),
+            result.publicId,
           );
         case 'evidence':
           return screen(menu.paidHasEvidence(result.publicId), menu.afterPaidMenu(order.id));
@@ -3345,8 +3381,17 @@ async function topup(
   const checkout = await checkoutFor(tx, userId, placed.id, placed.totalIrr, newPublicId());
   if (!checkout) return screen(menu.NO_CARD_AVAILABLE, menu.walletMenu());
   if (checkout.claimed) return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
-  return screen(
-    menu.topupCheckout(placed.publicId, placed.totalIrr, checkout.cardDigits, checkout.cardHolder),
-    menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits),
+  return asInvoice(
+    screen(
+      menu.topupCheckout(
+        placed.publicId,
+        placed.totalIrr,
+        checkout.cardDigits,
+        checkout.cardHolder,
+        placed.expiresAt,
+      ),
+      menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits),
+    ),
+    checkout.publicId,
   );
 }

@@ -273,13 +273,6 @@ export interface ShopSettings {
   /** How many days after `/start` somebody who never bought is nudged. */
   nudgeAfterDays: number;
   /**
-   * How long an unpaid invoice is held — the constant `ORDER_TTL_MS` until now.
-   *
-   * `cronbot/payment_expire.php` uses `time() - 86400`, so 24 is both the
-   * legacy's number and ours and nothing moves on the day this ships.
-   */
-  orderTtlHours: number;
-  /**
    * Whether a customer must accept the shop's rules before anything else —
    * `setting.roll_Status`, which is `rolleon` in production.
    *
@@ -374,7 +367,6 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   removeAfterDays: 30,
   removeVolumeAfterDays: 17,
   nudgeAfterDays: 3,
-  orderTtlHours: 24,
   requiresRules: false,
   customEmoji: false,
   // Null, and deliberately not a template. `planLabel.ts` says why: every
@@ -408,19 +400,6 @@ function trialQuota(value: number | null): number {
 
 function wholeCount(value: number | null, fallback: number): number {
   return value !== null && Number.isSafeInteger(value) && value > 0 && value <= 365
-    ? value
-    : fallback;
-}
-
-/**
- * The same shape as `wholeCount` with the ceiling an invoice deadline needs.
- *
- * 720 hours is thirty days, which is the registry's `order_ttl_hours` max and
- * far past anything sensible — it is a guard against a mistyped row holding a
- * customer's reservation for a year, not a feature.
- */
-function hourCount(value: number | null, fallback: number): number {
-  return value !== null && Number.isSafeInteger(value) && value > 0 && value <= 720
     ? value
     : fallback;
 }
@@ -797,9 +776,6 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
         DEFAULT_SHOP_SETTINGS.removeVolumeAfterDays,
       ),
       nudgeAfterDays: wholeCount(num('nudge_after_days'), DEFAULT_SHOP_SETTINGS.nudgeAfterDays),
-      // Hours, not days, so `wholeCount`'s 365 ceiling is the wrong one — a
-      // month-long hold is 720. Bounded here against the registry's own max.
-      orderTtlHours: hourCount(num('order_ttl_hours'), DEFAULT_SHOP_SETTINGS.orderTtlHours),
       // On only for the exact word, like `customEmoji` and unlike the three
       // legacy switches above. Those describe selling the shop has been doing
       // for years, so an unreadable value leaves it alone; this one puts a wall

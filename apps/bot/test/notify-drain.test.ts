@@ -49,6 +49,7 @@ describe('the outbox, drained', () => {
       sendMessage: async () => {
         sent += 1;
         if (sent === 5) controller.abort();
+        return { messageId: null };
       },
     });
 

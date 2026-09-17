@@ -3421,10 +3421,10 @@ app.post('/api/v1/match/reject', async (c) => {
   const rejectedClaimStatus =
     parsed.data.reason === 'FAKE_RECEIPT' ? ('FAKE_RECEIPT' as const) : ('REJECTED' as const);
   const claimBefore = await c.env.DB.prepare(
-    `SELECT status FROM payment_claims WHERE id = ?1`,
+    `SELECT status, external_order_id FROM payment_claims WHERE id = ?1`,
   )
     .bind(match.payment_claim_id)
-    .first<{ status: import('@shikoo/contracts').ClaimStatus }>();
+    .first<{ status: import('@shikoo/contracts').ClaimStatus; external_order_id: string }>();
   if (claimBefore) {
     try {
       assertTransitionClaim(claimBefore.status, rejectedClaimStatus);
@@ -3436,6 +3436,11 @@ app.post('/api/v1/match/reject', async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare(SQL.updateMatchStatus).bind(match.id, 'REJECTED', ident.email, now),
     c.env.DB.prepare(SQL.updateClaimStatus).bind(match.payment_claim_id, rejectedClaimStatus, now),
+    // And the invoice, same as suspects/reject and mark-fake: refused here, it
+    // stayed AWAITING_REVIEW and held its card and its order open.
+    ...(claimBefore
+      ? [c.env.DB.prepare(SQL.rejectClaimInvoice).bind(claimBefore.external_order_id, parsed.data.reason)]
+      : []),
   ]);
   await c.env.DB.prepare(SQL.insertAudit)
     .bind(

@@ -15,9 +15,9 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { DEFAULT_CARD_HOLD_MINUTES } from '@shikoo/domain';
 import { DEFAULT_CONTENT, invalidateBotContent } from '../src/botContent.js';
 import { expireUnpaidOrders } from '../src/expire.js';
-import { loadShopSettings } from '../src/settings.js';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import { run } from '../src/poll.js';
@@ -137,22 +137,18 @@ beforeAll(async () => {
 });
 
 describe('an invoice with a deadline', () => {
-  it('gets one, a day out, the moment the order is written', async () => {
+  it('gets one, as long as the card hold, the moment the order is written', async () => {
     // Measured against the wall clock the database keeps, not against our own
-    // constant echoed back: the column has to hold a real timestamp a day away,
-    // which is what the sweep and the index both read.
+    // constant echoed back: the column has to hold a real timestamp, which is
+    // what the sweep and the index both read. The length itself — and that it
+    // follows the setting — is `invoice-lifetime.test.ts`'s to prove.
     const { order } = await buy('sim-vip-1m-50');
     expect(order.expires_at).not.toBeNull();
 
-    // Against the shop's own row rather than a constant in this file. The
-    // length became a setting, and a test that keeps its own copy of the
-    // number would stay green on the day an admin changes it and the invoice
-    // stops matching — which is the whole failure this setting exists for.
-    const { orderTtlHours } = await loadShopSettings(db);
-    const ttlMs = orderTtlHours * 3600_000;
+    const holdMs = DEFAULT_CARD_HOLD_MINUTES * 60_000;
     const gap = new Date(order.expires_at!).getTime() - Date.now();
-    expect(gap).toBeGreaterThan(ttlMs - 60_000);
-    expect(gap).toBeLessThanOrEqual(ttlMs + 60_000);
+    expect(gap).toBeGreaterThan(holdMs - 60_000);
+    expect(gap).toBeLessThanOrEqual(holdMs + 60_000);
   });
 
   it('is left alone until the deadline passes', async () => {
@@ -321,6 +317,7 @@ describe('a sweep that runs on a bot nobody is talking to', () => {
       },
       sendMessage: async (chatId, text) => {
         sent.push({ chatId, text });
+        return { messageId: null };
       },
       deleteMessage: async () => undefined,
       sendPhoto: async () => undefined,

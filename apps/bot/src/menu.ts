@@ -1438,11 +1438,26 @@ export function giftCredited(amountIrr: number, balanceIrr: number): string {
 // exact-amount warning — is one screen wearing four hats.
 // ---------------------------------------------------------------------------
 
-/** The card, the warning, and the closing line. Shared by all four invoices. */
-function checkoutTail(cardDigits: string, cardHolder: string | null): string[] {
+/**
+ * The card, the warning, and the closing line. Shared by all four invoices.
+ *
+ * `validUntil` is `orders.expires_at`: the moment the card is handed to the
+ * next customer and this invoice dies with it. Said on the invoice because the
+ * customer who reads it walks off to a banking app and comes back — and what
+ * they come back to must not be a surprise. Optional only for the rows that
+ * predate the column; every invoice drawn today has one.
+ */
+function checkoutTail(
+  cardDigits: string,
+  cardHolder: string | null,
+  validUntil?: string | null,
+): string[] {
   const t = TEXTS_NOW;
   const lines = [t.raw('CHECKOUT_CARD_LABEL'), formatCard(cardDigits)];
   if (cardHolder) lines.push(t.render('CHECKOUT_CARD_HOLDER', { name: cardHolder }));
+  if (validUntil) {
+    lines.push('', t.render('CHECKOUT_VALID_UNTIL', { time: formatTehranTime(new Date(validUntil)) }));
+  }
   // Seven lines where there were fifteen. The four numbered notes and their
   // header are one line now — `CHECKOUT_NOTE` says which two facts survived the
   // compression and why the other two were repetitions of sentences already on
@@ -1468,6 +1483,7 @@ export function checkout(
   cardHolder: string | null,
   /** The held code, when it gives volume — an invoice that says what was bought. */
   applied?: AppliedCode | null,
+  validUntil?: string | null,
 ): string {
   const t = TEXTS_NOW;
   const lines = [
@@ -1482,7 +1498,7 @@ export function checkout(
   lines.push(
     t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
     '',
-    ...checkoutTail(cardDigits, cardHolder),
+    ...checkoutTail(cardDigits, cardHolder, validUntil),
   );
   return lines.join('\n');
 }
@@ -1687,6 +1703,7 @@ export function invoiceReopened(
   totalIrr: number,
   cardDigits: string,
   cardHolder: string | null,
+  validUntil?: string | null,
 ): string {
   const t = TEXTS_NOW;
   return [
@@ -1695,7 +1712,7 @@ export function invoiceReopened(
     t.render('CHECKOUT_ORDER_ID', { id: publicId }),
     t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
     '',
-    ...checkoutTail(cardDigits, cardHolder),
+    ...checkoutTail(cardDigits, cardHolder, validUntil),
   ].join('\n');
 }
 
@@ -2297,6 +2314,7 @@ export function addonCheckout(
   totalIrr: number,
   cardDigits: string,
   cardHolder: string | null,
+  validUntil?: string | null,
 ): string {
   const t = TEXTS_NOW;
   return [
@@ -2309,7 +2327,7 @@ export function addonCheckout(
     }),
     t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
     '',
-    ...checkoutTail(cardDigits, cardHolder),
+    ...checkoutTail(cardDigits, cardHolder, validUntil),
   ].join('\n');
 }
 
@@ -2605,6 +2623,7 @@ export function renewCheckout(
   cardDigits: string,
   cardHolder: string | null,
   applied?: AppliedCode | null,
+  validUntil?: string | null,
   /** The plan is another tier's row (issue #271): delivered from zero, and said here. */
   tierChange = false,
 ): string {
@@ -2641,7 +2660,7 @@ export function renewCheckout(
   lines.push(
     t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
     '',
-    ...checkoutTail(cardDigits, cardHolder),
+    ...checkoutTail(cardDigits, cardHolder, validUntil),
   );
   return lines.join('\n');
 }
@@ -2874,6 +2893,15 @@ function formatTehranDate(when: Date): string {
   }).format(when);
 }
 
+/** Wall-clock time in Tehran, «۱۲:۴۵» — the deadline printed on an invoice. */
+function formatTehranTime(when: Date): string {
+  return new Intl.DateTimeFormat('fa-IR', {
+    timeZone: 'Asia/Tehran',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(when);
+}
+
 // ---------------------------------------------------------------------------
 // wallet
 // ---------------------------------------------------------------------------
@@ -2997,6 +3025,7 @@ export function topupCheckout(
   amountIrr: number,
   cardDigits: string,
   cardHolder: string | null,
+  validUntil?: string | null,
 ): string {
   const t = TEXTS_NOW;
   return [
@@ -3005,7 +3034,7 @@ export function topupCheckout(
     t.render('CHECKOUT_TRACKING_ID', { id: publicId }),
     t.render('CHECKOUT_AMOUNT', { amount: formatToman(amountIrr) }),
     '',
-    ...checkoutTail(cardDigits, cardHolder),
+    ...checkoutTail(cardDigits, cardHolder, validUntil),
   ].join('\n');
 }
 

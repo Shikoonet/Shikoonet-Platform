@@ -83,6 +83,7 @@ describe('a broadcast that names a channel post', () => {
         },
         sendMessage: async (chatId) => {
           texted.push(chatId);
+          return { messageId: null };
         },
       }),
     );
@@ -119,6 +120,7 @@ describe('a broadcast that names a channel post', () => {
         },
         sendMessage: async (_chatId, text) => {
           texted.push(text);
+          return { messageId: null };
         },
       }),
     );

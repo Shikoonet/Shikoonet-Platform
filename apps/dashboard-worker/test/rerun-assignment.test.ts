@@ -5,7 +5,7 @@
  *   POST /api/v1/accounts/:accountId/rerun-assignment/:previewId/apply
  *   POST /api/v1/accounts/:accountId/rerun-assignment/:previewId/decline
  *
- * 14 scenarios:
+ * 15 scenarios:
  *   1. READ_ONLY → 403
  *   2. Preview happy path on production identifier (counts shape)
  *   3. Preview with MANUAL active row → SKIPPED_MANUAL counted, not listed
@@ -20,6 +20,7 @@
  *   12. Apply rejects actor mismatch (409)
  *   13. Apply rejects already-applied preview (409)
  *   14. Apply on ALREADY_CORRECT never touches assignment table
+ *   15. Preview finds a melli row: tdi ACCOUNT_HINT vs account_hint probe ACCOUNT_NUMBER
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -305,6 +306,35 @@ describe('POST /rerun-assignment-preview — buckets', () => {
     // Listed items: WILL_ASSIGN (tx1) + WILL_REPAIR_HISTORY (tx3). ALREADY_CORRECT + SKIPPED_MANUAL are not listed.
     expect(body.items.length).toBe(2);
     expect(body.items.map((i) => i.transactionId).sort()).toEqual([tx1, tx3].sort());
+  });
+
+  it('finds a melli deposit: the parser persists ACCOUNT_HINT, the account probes as ACCOUNT_NUMBER', async () => {
+    // Production, 2026-09-17: nine deposits into «ملی-آینده» (hint 06006) sat
+    // on the wrong account, and «اجرای دوبارهٔ تخصیص» on it listed nothing.
+    // `melli-transfer-v1` writes its detected identifier with type
+    // ACCOUNT_HINT; the account's `account_hint` column is probed as
+    // ACCOUNT_NUMBER, and the scan compared the two exactly. The resolver
+    // has always read them as one kind — the backfill must too.
+    const accountId = await seedAccount({
+      displayName: 'ملی-آینده',
+      bank: 'MELLI',
+      accountHint: '06006',
+    });
+    const r1 = await seedRawSms();
+    const tx1 = await seedTx({ smsId: r1.smsId, deviceId: r1.deviceId, financialAccountId: null });
+    await seedDetectedIdentifier(tx1, 'ACCOUNT_HINT', '06006');
+
+    const r = await app.fetch(
+      req('POST', `/api/v1/accounts/${accountId}/rerun-assignment-preview`),
+      ENV,
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      counts: { willAssign: number };
+      items: Array<{ transactionId: string; disposition: string }>;
+    };
+    expect(body.counts.willAssign).toBe(1);
+    expect(body.items.map((i) => i.transactionId)).toEqual([tx1]);
   });
 
   it('lists ACCOUNT_MERGE-preserved rows as SKIPPED_MANUAL (counted, not listed)', async () => {
@@ -770,5 +800,77 @@ describe('POST /rerun-assignment/:previewId/apply', () => {
     expect(second.status).toBe(409);
     const body = (await second.json()) as { error: string };
     expect(body.error).toBe('preview_wrong_status');
+  });
+});
+
+/**
+ * A short account number is still the account's number.
+ *
+ * Melli SMS carry a five-digit hint («06006»), too short for
+ * `detectedIdentifierFromRaw`, so `melli.ts` records it as type
+ * `ACCOUNT_HINT` rather than `ACCOUNT_NUMBER`. The preview probed only
+ * `ACCOUNT_NUMBER` for an account's hint — so on 2026-09-17 «اجرای دوبارهٔ
+ * تخصیص» on «ملی-آینده» offered nothing while two Melli deposits for
+ * exactly its number sat unassigned. The same button found all four
+ * Gardeshgari rows a minute earlier, because that parser's numbers are long.
+ */
+describe('POST /rerun-assignment-preview — a hint recorded as ACCOUNT_HINT', () => {
+  it('finds a transaction whose detected identifier is the account hint by the other name', async () => {
+    const accountId = await seedAccount({ displayName: 'ملی-آینده', bank: 'MELLI', accountHint: '06006' });
+    const { deviceId, smsId } = await seedRawSms();
+    const txId = await seedTx({ smsId, deviceId, financialAccountId: null, amountIrr: 2_500_000 });
+    await seedDetectedIdentifier(txId, 'ACCOUNT_HINT', '06006');
+
+    const r = await app.fetch(req('POST', `/api/v1/accounts/${accountId}/rerun-assignment-preview`), ENV);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      previewId: string;
+      counts: { willAssign: number };
+      items: Array<{ transactionId: string; disposition: string }>;
+    };
+    expect(body.counts.willAssign).toBe(1);
+    expect(body.items.map((i) => i.transactionId)).toEqual([txId]);
+
+    const apply = await app.fetch(
+      req('POST', `/api/v1/accounts/${accountId}/rerun-assignment/${body.previewId}/apply`),
+      ENV,
+    );
+    expect(apply.status).toBe(200);
+    const row = await baseEnv.DB.prepare(
+      `SELECT financial_account_id FROM transaction_candidates WHERE id = ?1`,
+    )
+      .bind(txId)
+      .first<{ financial_account_id: string | null }>();
+    expect(row?.financial_account_id).toBe(accountId);
+  });
+
+  it('does the same for a hint that lives only in the identifier table', async () => {
+    const accountId = await seedAccount({ displayName: 'extra', bank: 'MELLI', accountHint: null });
+    await baseEnv.DB.prepare(
+      `INSERT INTO financial_account_identifiers (id, financial_account_id, kind, value, label, created_at)
+       VALUES (?1, ?2, 'ACCOUNT_HINT', '17000', NULL, 1)`,
+    )
+      .bind(crypto.randomUUID(), accountId)
+      .run();
+    const { deviceId, smsId } = await seedRawSms();
+    const txId = await seedTx({ smsId, deviceId, financialAccountId: null });
+    await seedDetectedIdentifier(txId, 'ACCOUNT_HINT', '17000');
+
+    const r = await app.fetch(req('POST', `/api/v1/accounts/${accountId}/rerun-assignment-preview`), ENV);
+    const body = (await r.json()) as { counts: { willAssign: number } };
+    expect(body.counts.willAssign).toBe(1);
+  });
+
+  it('one transaction detected both ways is one row, not two', async () => {
+    const accountId = await seedAccount({ displayName: 'both', bank: 'PARSIAN', accountHint: ACCOUNT_NUMBER });
+    const { deviceId, smsId } = await seedRawSms();
+    const txId = await seedTx({ smsId, deviceId, financialAccountId: null });
+    await seedDetectedIdentifier(txId, 'ACCOUNT_NUMBER', ACCOUNT_NUMBER);
+    await seedDetectedIdentifier(txId, 'ACCOUNT_HINT', ACCOUNT_NUMBER);
+
+    const r = await app.fetch(req('POST', `/api/v1/accounts/${accountId}/rerun-assignment-preview`), ENV);
+    const body = (await r.json()) as { counts: { willAssign: number }; items: unknown[] };
+    expect(body.counts.willAssign).toBe(1);
+    expect(body.items).toHaveLength(1);
   });
 });

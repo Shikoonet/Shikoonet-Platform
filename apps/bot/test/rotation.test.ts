@@ -100,11 +100,14 @@ async function pool(count: number): Promise<string[]> {
   return cards;
 }
 
+/** Every fixture invoice and claim in this file is for this much. */
+const AMOUNT = 1_000_000;
+
 /** Assign `times` cards through the real rotation and count who got them. */
-async function draw(times: number, at: number = T): Promise<Map<string, number>> {
+async function draw(times: number, at: number = T, amount = AMOUNT): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   for (let i = 0; i < times; i++) {
-    const card = await db.withSession((tx) => rotateCard(tx, at + i));
+    const card = await db.withSession((tx) => rotateCard(tx, at + i, amount));
     if (!card) throw new Error(`rotation returned no card on draw ${i}`);
     counts.set(card.card_digits, (counts.get(card.card_digits) ?? 0) + 1);
   }
@@ -143,8 +146,8 @@ async function deposit(digits: string): Promise<void> {
 }
 
 /** Draw one card through the real rotation and return its number. */
-async function drawOne(at: number = T): Promise<string> {
-  const [card] = [...(await draw(1, at)).keys()];
+async function drawOne(at: number = T, amount = AMOUNT): Promise<string> {
+  const [card] = [...(await draw(1, at, amount)).keys()];
   if (!card) throw new Error('rotation returned no card');
   return card;
 }
@@ -442,6 +445,36 @@ describe("a card in a customer's hands is out of the line", () => {
 
     expect(await drawOne(T)).toBe(cards[2]!);
   });
+
+  /*
+   * The hold is about an AMOUNT, not about the card.
+   *
+   * What the auto-matcher cannot untangle is two customers told to pay the
+   * SAME amount into the same card inside one window: the exact-amount rule
+   * has nothing to choose by. A customer paying a different amount into that
+   * card is no such problem — their SMS cannot match the other claim, and
+   * the other's late SMS cannot match theirs.
+   *
+   * Production, 2026-09-17: six of seven live cards stood behind 24h holds
+   * from «پرداخت کردم» presses nobody had settled, and the shop sold four
+   * invoices in a row on the one free card. Held per amount, the same
+   * evening would have run the whole line.
+   */
+  it('hands out a held card to an order for a different amount', async () => {
+    const cards = await pool(2);
+    await hold(cards[0]!, T, true);
+
+    expect(await drawOne(T + 30 * MINUTE, 1_000_000)).toBe(cards[1]!);
+    expect(await drawOne(T + 30 * MINUTE, 2_490_000)).toBe(cards[0]!);
+  });
+
+  it('holds the same amount whether shown or claimed', async () => {
+    const cards = await pool(2);
+    await hold(cards[0]!, T);
+
+    expect(await drawOne(T, 1_000_000)).toBe(cards[1]!);
+    expect(await drawOne(T, 1_000_001)).toBe(cards[0]!);
+  });
 });
 
 /**
@@ -474,7 +507,7 @@ describe('a card is only handed out while its account is in service', () => {
 
     await accountState(0, 'ACTIVE');
 
-    const card = await db.withSession((tx) => rotateCard(tx, T));
+    const card = await db.withSession((tx) => rotateCard(tx, T, AMOUNT));
     // Null is the honest answer, and `checkoutFor` turns it into «کارت موجود
     // نیست». Handing the card out anyway is what this is fixing.
     expect(card).toBeNull();
@@ -485,7 +518,7 @@ describe('a card is only handed out while its account is in service', () => {
       await pool(3);
       await accountState(1, status);
 
-      expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
+      expect(await db.withSession((tx) => rotateCard(tx, T, AMOUNT))).toBeNull();
     });
   }
 
@@ -494,11 +527,11 @@ describe('a card is only handed out while its account is in service', () => {
     // a gate with no way back is a shop that cannot sell again.
     await pool(3);
     await accountState(0, 'ACTIVE');
-    expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
+    expect(await db.withSession((tx) => rotateCard(tx, T, AMOUNT))).toBeNull();
 
     await accountState(1, 'ACTIVE');
 
-    const card = await db.withSession((tx) => rotateCard(tx, T + 1));
+    const card = await db.withSession((tx) => rotateCard(tx, T + 1, AMOUNT));
     expect(card?.card_digits).toBeTruthy();
   });
 

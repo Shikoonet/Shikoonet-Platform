@@ -14,19 +14,22 @@
  * to an account that may not be ours any more, and no transaction we can match
  * will ever arrive.
  *
- * The window is the legacy bot's: `cronbot/payment_expire.php` sweeps
- * `Payment_report` for `payment_Status = 'Unpaid'` older than `time() - 86400`.
- * Twenty-four hours, taken from the system this one replaces rather than
- * invented here.
+ * The window was the legacy bot's twenty-four hours (`cronbot/payment_expire.php`,
+ * `time() - 86400`) until 2026-09-17. It is the CARD HOLD now —
+ * `pay/card_hold_minutes`, ten by default — because the card is handed to the
+ * next customer when the hold ends, and an invoice that stays valid after that
+ * names a card that is no longer its own. `order.ts` writes the deadline;
+ * migration 0070 says what the gap between the two clocks cost.
  *
  * The legacy sweep deletes the stale invoice message and — the line is there,
- * commented out — says nothing. We do the opposite: the message is left alone
- * and the customer is told. Deleting a message about their own money without a
- * word is how a customer concludes the bot lost their order.
- *
- * ponytail: a new message rather than editing the invoice in place. Editing
- * needs the message id of a reply, which nothing in the send path returns
- * today; wire that through when something else needs it too.
+ * commented out — says nothing. We turn the invoice itself into the notice:
+ * the message the customer is looking at becomes «مهلت تمام شد», its buttons
+ * go with it, and the card number stops standing in the chat. When the bot
+ * never learned which message the invoice is (`payments.invoice_message_id`
+ * is null — a send whose id Telegram did not give back), or Telegram refuses
+ * the edit, the customer gets a new message instead. Deleting a message about
+ * their own money without a word is how a customer concludes the bot lost
+ * their order; saying nothing at all is worse.
  */
 
 import type { D1Database } from '@shikoo/database';
@@ -34,16 +37,13 @@ import * as menu from './menu.js';
 import { enqueue } from './notify.js';
 
 /*
- * The deadline is NOT here any more.
+ * The deadline is NOT here.
  *
- * It used to be `ORDER_TTL_MS = 24h`, a constant this file exported and
- * `order.ts` imported. It is now `settings.order_ttl_hours`, read in `order.ts`
- * at the moment an invoice is written — which is where the deadline is decided.
- * This sweep reads `orders.expires_at` and always did; it never needed to know
- * the length, only that the column had passed.
- *
- * The default is still 24 hours, which is `cronbot/payment_expire.php`'s
- * `time() - 86400`, so nothing moved on the day it became configurable.
+ * It was `ORDER_TTL_MS = 24h` here, then `settings.order_ttl_hours`, and is now
+ * `pay/card_hold_minutes` — always read in `order.ts` at the moment an invoice
+ * is written, which is where the deadline is decided. This sweep reads
+ * `orders.expires_at` and always did; it never needed to know the length, only
+ * that the column had passed.
  */
 
 /** A ceiling per pass, like every other sweep here. */
@@ -58,6 +58,12 @@ interface ExpiredRow {
    * The branch that used to skip on null went with the type.
    */
   telegram_id: number;
+}
+
+/** The checkout that went with the order, and the message it was drawn on. */
+interface ExpiredPayment {
+  order_id: number;
+  invoice_message_id: number | null;
 }
 
 /**
@@ -142,13 +148,17 @@ export async function expireUnpaidOrders(
     // column in the RETURNING, and what it buys is that the statement means
     // what the sentence above it says — so the day a second payment row
     // becomes possible, this does not quietly kill a live checkout.
-    await tx
+    const { results: closed } = await tx
       .prepare(
         `UPDATE payments SET status = 'EXPIRED', updated_at = now()
-          WHERE order_id = ANY(?1) AND status = 'PENDING'`,
+          WHERE order_id = ANY(?1) AND status = 'PENDING'
+        RETURNING order_id, invoice_message_id`,
       )
       .bind((expired ?? []).map((r) => r.id))
-      .run();
+      .all<ExpiredPayment>();
+    const invoiceMessageOf = new Map(
+      (closed ?? []).map((p) => [p.order_id, p.invoice_message_id] as const),
+    );
 
     // The shelf row the invoice was holding goes back on the shelf (0063).
     // Same transaction as the expiry: an invoice cannot die while still
@@ -162,12 +172,15 @@ export async function expireUnpaidOrders(
       .run();
 
     // Same transaction as the expiry itself, so an order can never be marked
-    // EXPIRED without the customer being owed the news.
+    // EXPIRED without the customer being owed the news. Written INTO the
+    // invoice when its message is known — no keyboard, so «پرداخت کردم» and
+    // the copy buttons go with the card number.
     for (const row of expired ?? []) {
       await enqueue(tx, {
         dedupeKey: `expire:${row.public_id}`,
         chatId: row.telegram_id,
         text: menu.orderExpired(row.public_id),
+        editMessageId: invoiceMessageOf.get(row.id) ?? null,
       });
     }
 

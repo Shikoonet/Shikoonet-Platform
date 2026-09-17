@@ -1811,16 +1811,7 @@ export function registerMirzabotRoutes(
      */
     await c.env.DB.batch([
       c.env.DB.prepare(SQL.updateClaimStatus).bind(claimId, 'REJECTED', now),
-      // Matched through the same string the bot writes when it opens a claim
-      // ('shikoo:' || p.public_id). A claim that came from the PHP bot has a
-      // different external id and simply matches nothing, which is right — this
-      // platform does not own those orders.
-      c.env.DB.prepare(
-        `UPDATE payments
-            SET status = 'REJECTED', reject_reason = ?2, updated_at = now()
-          WHERE 'shikoo:' || public_id = ?1
-            AND status = 'AWAITING_REVIEW'`,
-      ).bind(claim.external_order_id, parsed.data.reason),
+      c.env.DB.prepare(SQL.rejectClaimInvoice).bind(claim.external_order_id, parsed.data.reason),
       // The rejection is the only claim decision that wrote no audit row.
       // `approve` and `mark-fake` both did, and this one refuses a customer's
       // money — of the three it is the one most likely to be asked about later.
@@ -1870,7 +1861,13 @@ export function registerMirzabotRoutes(
       return c.json({ ok: false, error: 'illegal_claim_transition' }, 409);
     }
     const now = Date.now();
-    await c.env.DB.prepare(SQL.updateClaimStatus).bind(claimId, 'FAKE_RECEIPT', now).run();
+    // Claim and invoice together, as reject does — a fake receipt is a refusal,
+    // and an invoice left open here parked card 7159 for a day on production
+    // (2026-09-17). One transaction, so the pair cannot come apart.
+    await c.env.DB.batch([
+      c.env.DB.prepare(SQL.updateClaimStatus).bind(claimId, 'FAKE_RECEIPT', now),
+      c.env.DB.prepare(SQL.rejectClaimInvoice).bind(claim.external_order_id, 'FAKE_RECEIPT'),
+    ]);
     await c.env.DB.prepare(SQL.insertAudit)
       .bind(
         crypto.randomUUID(),
