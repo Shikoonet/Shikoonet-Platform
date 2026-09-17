@@ -57,7 +57,11 @@ const LayoutBody = z
         z
           .object({
             action: z.string().min(1).max(32),
-            label: z.string().max(MAX_LABEL_LENGTH),
+            // Only a body-size bound. The real cap is `checkLayout`, which
+            // measures the *rendered* label: a `<tg-emoji>` tag is 52 raw
+            // characters that draw as one glyph, and capping the raw string at
+            // MAX_LABEL_LENGTH here refused every keyboard with one on it.
+            label: z.string().max(256),
             rowIndex: z.number().int().min(0).max(19),
             colIndex: z.number().int().min(0).max(7),
             visible: z.boolean(),

@@ -215,6 +215,18 @@ describe('the keyboard', () => {
     expect(((await res.json()) as { detail: string }).detail).toContain('nope');
   });
 
+  it('accepts a label whose custom-emoji tag pushes the raw string past the cap', async () => {
+    // 52 characters of markup that draw as one glyph. The cap is on what the
+    // customer sees, not on the wire — this save was refused as invalid_body
+    // until the schema stopped measuring the raw string.
+    const tag = '<tg-emoji emoji-id="5346269127059196142">🔃</tg-emoji>';
+    const label = `${tag} تمدید سرویس`;
+    expect(label.length).toBeGreaterThan(64);
+    const res = await saveLayout([{ ...valid[0], label }]);
+    expect(res.status).toBe(200);
+    expect((await layoutRows()).find((r) => r.action === 'buy')!.label).toBe(label);
+  });
+
   it('refuses two buttons in one cell', async () => {
     const res = await saveLayout([valid[0], { ...valid[1], rowIndex: 0, colIndex: 0 }]);
     expect(res.status).toBe(400);
