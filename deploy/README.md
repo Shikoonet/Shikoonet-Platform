@@ -1004,6 +1004,7 @@ password, so they are secrets there too.
 | `TELEGRAM_BOT_TOKEN`        | yes      | Never logged. Never point this at the real bot from a test host |
 | `TELEGRAM_API_BASE`         | no       | Defaults to `https://api.telegram.org`                          |
 | `TELEGRAM_POLL_TIMEOUT_SEC` | no       | Default 25                                                      |
+| `BROADCAST_SEND_GAP_MS`     | no       | Default 2000 — ms between two broadcast sends (1,800/h). Telegram banned 20/s and 4/s for ~50 min after ~2,000 messages on 2026-09-17; raise only with evidence |
 
 No `PORT`. The bot does not listen.
 

@@ -35,7 +35,7 @@ import {
   markBroadcastSent,
   strandedSendingCount,
   SEND_CONCURRENCY,
-  SEND_GAP_MS,
+  sendGapMs,
   type BroadcastMessage,
 } from './broadcast.js';
 import { sweepDailyReport } from './report.js';
@@ -597,6 +597,8 @@ export async function sweepBroadcasts(
    * was already waiting still stops.
    */
   let pauseUntil = 0;
+  // Once per sweep, so an operator's change lands on the next batch.
+  const gapMs = sendGapMs();
   // Rows a worker took and then never offered to Telegram because the signal
   // came first. Put back at the end, not left SENDING: see
   // `releaseBroadcastClaims` for what leaving them did to every promote.
@@ -616,7 +618,7 @@ export async function sweepBroadcasts(
       // times the rate Telegram allows; this makes the gap a property of the
       // BROADCAST, which is the thing being limited.
       const wait = nextSendAt - Date.now();
-      nextSendAt = Math.max(nextSendAt, Date.now()) + SEND_GAP_MS;
+      nextSendAt = Math.max(nextSendAt, Date.now()) + gapMs;
       if (wait > 0) await sleep(wait, signal);
 
       // A pause that appeared while this worker was waiting for its slot. A
