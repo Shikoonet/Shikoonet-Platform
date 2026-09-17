@@ -28,10 +28,10 @@ import { SEND_CONCURRENCY } from '../src/broadcast.js';
  * draft used 30ms here and measured a peak of exactly one — correct behaviour,
  * and a test that proved nothing about the change.
  *
- * 200ms is also the real number: a round trip to Telegram from Iran is 200ms
- * and up, which is what made the old serial loop four messages a second.
+ * 400ms: above the 250ms pace, and within what a round trip to Telegram from
+ * Iran actually costs on a bad day (200ms and up).
  */
-const ROUND_TRIP_MS = 200;
+const ROUND_TRIP_MS = 400;
 
 let seq = 0;
 
@@ -101,7 +101,7 @@ describe('a broadcast, sent', () => {
 
     expect(sent).toBe(12);
     expect(peak).toBeGreaterThan(1);
-    // Four in flight at 200ms against a 50ms pace, so «more than one»
+    // Two in flight at 400ms against a 250ms pace, so «more than one»
     // is a floor with room under it rather than a coin flip.
     // Nothing left behind: overlapping must not lose a recipient.
     const pending = await db
@@ -135,8 +135,9 @@ describe('a broadcast, sent', () => {
     await sweepBroadcasts(db, api);
 
     expect(peak).toBeLessThanOrEqual(SEND_CONCURRENCY);
-  });
+  }, 30_000);
 
+  // Real clock, 40 sends at a 250ms pace: ten seconds, over the default five.
   it('still sends each recipient exactly once', async () => {
     // The guarantee parallelism must not buy speed with. Read from the table
     // rather than from a counter: what the shop is told, and what the customer
@@ -161,7 +162,7 @@ describe('a broadcast, sent', () => {
       .bind(id)
       .all<{ status: string; n: number }>();
     expect(rows.results).toEqual([{ status: 'SENT', n: 40 }]);
-  });
+  }, 30_000);
 
   it('records a refusal against the recipient it belongs to, not the batch', async () => {
     // Concurrency makes it possible to attribute an error to whichever message
