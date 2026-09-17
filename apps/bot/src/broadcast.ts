@@ -80,16 +80,24 @@ export const SEND_CONCURRENCY = 12;
 /**
  * The floor on the gap between two sends STARTING, across the whole pool.
  *
- * 50ms is 20 messages a second. It was 40 (25/s) while the broadcast ran in
- * eight-second bursts; since it drains continuously beside the poll loop
- * (2026-09-16), the replies the handlers send during a broadcast share the
- * bot's ~30/s ceiling with it, and this leaves them ten a second — more than
- * this shop's busiest minute. Kept as a pace rather than a sleep-after-each-
- * send: with a pool the two are different things, and it is the RATE Telegram
- * limits. Exceeding it is not silent either way: a 429 pauses the whole pool
- * and returns the row to the queue (`markBroadcastRetryable`).
+ * 250ms is four messages a second. It was 50 (20/s) until 2026-09-17, and
+ * that number was the ceiling Telegram documents for a bot — not the rate it
+ * lets a BROADCAST run at. On the first real 16k broadcast Telegram answered
+ * every 200-row batch with three or four 429s of ~30s, which held the actual
+ * rate to ~6/s, and after ~2,000 messages escalated to one 429 with
+ * retry_after ≈ 3,000s: fifty minutes of nothing, twice, with the shop's bar
+ * frozen at 12%. Their own guidance for bulk sends is «spread over 8–12
+ * hours». Four a second sits under the ~6/s they tolerated before escalating,
+ * and 16k recipients is ~70 minutes rather than «14 minutes on paper, hours
+ * in practice». Mirzabot never met this limit because it sends 1,200 an hour.
+ *
+ * Kept as a pace rather than a sleep-after-each-send: with a pool the two are
+ * different things, and it is the RATE Telegram limits. The replies the
+ * handlers send during a broadcast share the bot's ceiling with it, and this
+ * leaves them plenty. Exceeding it is not silent either way: a 429 pauses the
+ * whole pool and returns the row to the queue (`markBroadcastRetryable`).
  */
-export const SEND_GAP_MS = 50;
+export const SEND_GAP_MS = 250;
 
 /**
  * What one queued message actually is.
@@ -246,6 +254,47 @@ export async function markBroadcastSent(
         WHERE broadcast_id = ?1 AND user_id = ?2 AND status = 'SENDING'`,
     )
     .bind(broadcastId, userId)
+    .run();
+}
+
+/**
+ * Puts back the rows a stopping sweep claimed and never offered to Telegram.
+ *
+ * SENDING means «nobody knows whether Telegram has this», and for a send that
+ * was in flight when the shutdown signal came that is exactly true — those
+ * rows are left alone, and the worker awaits the call anyway so in the normal
+ * case they end SENT before `stop()` returns. It is NOT true of the rest of
+ * the batch: a row the worker took and then saw the signal on, or never took
+ * at all, was never sent, because the worker returned before the call.
+ *
+ * Until 2026-09-17 those were stranded too. `claimBroadcastBatch` takes 200
+ * rows and the pool holds twelve, so every restart mid-broadcast — a
+ * `Promote Production` is one — left up to ~190 rows SENDING for ever: never
+ * retried by policy, never closed by `closeFinishedBroadcasts`, and shown to
+ * the shop as «مانده» on a number that stopped moving. Sam, 2026-09-17: «مدتی
+ * است روی همین عدد مانده».
+ *
+ * Only ever called with rows THIS sweep claimed, and guarded by `status =
+ * 'SENDING'` so a row another path already settled is not reopened.
+ */
+export async function releaseBroadcastClaims(
+  db: D1Database,
+  messages: BroadcastMessage[],
+): Promise<void> {
+  if (messages.length === 0) return;
+  await db
+    .prepare(
+      `UPDATE broadcast_recipients r
+          SET status = 'PENDING', claimed_at = NULL
+         FROM unnest(?1::uuid[], ?2::bigint[]) AS u(broadcast_id, user_id)
+        WHERE r.broadcast_id = u.broadcast_id
+          AND r.user_id = u.user_id
+          AND r.status = 'SENDING'`,
+    )
+    .bind(
+      messages.map((m) => m.broadcastId),
+      messages.map((m) => m.userId),
+    )
     .run();
 }
 
