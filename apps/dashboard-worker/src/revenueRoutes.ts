@@ -215,7 +215,7 @@ function fxColumns(b: MoneyIn) {
 
 
 /**
- * Where the money left from — Sam, 2026-09-17 (0072).
+ * Where the money left from — Sam, 2026-09-17 (0073).
  *
  * `financialAccountId` is the account that paid; `feeToman` what the bank
  * took on top, kept apart from the amount so «کارمزدهای بانکی» stays its own
@@ -438,7 +438,7 @@ function shape(r: AdjustmentRow) {
     /** Rial per unit, as stored. The screen divides by ten to show Toman. */
     fxRateIrr: r.fx_rate_irr === null ? null : Number(r.fx_rate_irr),
     recurrenceId: r.recurrence_id === null ? null : Number(r.recurrence_id),
-    /** Which account paid (0072) — null on rows from before the books knew. */
+    /** Which account paid (0073) — null on rows from before the books knew. */
     financialAccountId: r.financial_account_id,
     accountName: r.account_name,
     /** What the bank charged on top, IRR; the screen shows Toman. */
@@ -608,7 +608,7 @@ const KIND_FA: Record<Kind, string> = {
  * A linked withdrawal must exist, be a DEBIT, and sit on the account the row
  * names — or the row takes the account from the SMS when it named none. A
  * withdrawal already explaining a live row is refused: the partial unique
- * index (0072) is the last word, and the 23505 it raises is turned into a
+ * index (0073) is the last word, and the 23505 it raises is turned into a
  * 409 the screen can say something about. `null` clears both.
  */
 type AccountLink = { financial_account_id: string | null; transaction_candidate_id: string | null };

@@ -28,10 +28,10 @@ import { SEND_CONCURRENCY } from '../src/broadcast.js';
  * draft used 30ms here and measured a peak of exactly one — correct behaviour,
  * and a test that proved nothing about the change.
  *
- * 200ms is also the real number: a round trip to Telegram from Iran is 200ms
- * and up, which is what made the old serial loop four messages a second.
+ * 400ms: above the 250ms pace, and within what a round trip to Telegram from
+ * Iran actually costs on a bad day (200ms and up).
  */
-const ROUND_TRIP_MS = 200;
+const ROUND_TRIP_MS = 400;
 
 let seq = 0;
 
@@ -101,7 +101,7 @@ describe('a broadcast, sent', () => {
 
     expect(sent).toBe(12);
     expect(peak).toBeGreaterThan(1);
-    // Four in flight at 200ms against a 50ms pace, so «more than one»
+    // Two in flight at 400ms against a 250ms pace, so «more than one»
     // is a floor with room under it rather than a coin flip.
     // Nothing left behind: overlapping must not lose a recipient.
     const pending = await db
@@ -135,8 +135,9 @@ describe('a broadcast, sent', () => {
     await sweepBroadcasts(db, api);
 
     expect(peak).toBeLessThanOrEqual(SEND_CONCURRENCY);
-  });
+  }, 30_000);
 
+  // Real clock, 40 sends at a 250ms pace: ten seconds, over the default five.
   it('still sends each recipient exactly once', async () => {
     // The guarantee parallelism must not buy speed with. Read from the table
     // rather than from a counter: what the shop is told, and what the customer
@@ -161,7 +162,7 @@ describe('a broadcast, sent', () => {
       .bind(id)
       .all<{ status: string; n: number }>();
     expect(rows.results).toEqual([{ status: 'SENT', n: 40 }]);
-  });
+  }, 30_000);
 
   it('records a refusal against the recipient it belongs to, not the batch', async () => {
     // Concurrency makes it possible to attribute an error to whichever message
@@ -190,6 +191,58 @@ describe('a broadcast, sent', () => {
       { status: 'FAILED', n: 1 },
       { status: 'SENT', n: 9 },
     ]);
+  });
+});
+
+/**
+ * Stopping mid-batch — what a `Promote Production` does to a running broadcast.
+ *
+ * The sweep claims 200 rows and the pool holds twelve. Until 2026-09-17 an
+ * abort left everything claimed-but-not-sent as SENDING for ever: never
+ * retried by policy, never closed by `closeFinishedBroadcasts`, and shown to
+ * the shop as «مانده» on a number that stopped moving after every deploy.
+ * Only a send that was actually in flight is unknowable; the rest was never
+ * offered to Telegram and goes back to PENDING for the next process.
+ */
+describe('a broadcast, stopped', () => {
+  it('puts back what it claimed and never sent, and strands nothing', async () => {
+    const id = await queueBroadcast(30);
+    const controller = new AbortController();
+    let sent = 0;
+    const api = stubApi({
+      sendMessage: async () => {
+        sent += 1;
+        if (sent === 1) controller.abort();
+        await new Promise((r) => setTimeout(r, ROUND_TRIP_MS));
+        return { messageId: null };
+      },
+    });
+
+    await sweepBroadcasts(db, api, controller.signal, 30);
+
+    const rows = await db
+      .prepare(
+        `SELECT status, COUNT(*)::int AS n FROM broadcast_recipients
+          WHERE broadcast_id = ?1 GROUP BY status`,
+      )
+      .bind(id)
+      .all<{ status: string; n: number }>();
+    const by = Object.fromEntries((rows.results ?? []).map((r) => [r.status, r.n]));
+    // The sends already in flight are awaited and recorded, not abandoned.
+    expect(by['SENT']).toBe(sent);
+    expect(sent).toBeLessThan(30);
+    // Everything else is the next container's ordinary work, and it is
+    // unclaimed: a stale claimed_at would make it look abandoned.
+    expect(by['PENDING']).toBe(30 - sent);
+    expect(by['SENDING']).toBeUndefined();
+    const stale = await db
+      .prepare(
+        `SELECT COUNT(*)::int AS n FROM broadcast_recipients
+          WHERE broadcast_id = ?1 AND status = 'PENDING' AND claimed_at IS NOT NULL`,
+      )
+      .bind(id)
+      .first<{ n: number }>();
+    expect(stale?.n).toBe(0);
   });
 });
 

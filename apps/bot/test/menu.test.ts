@@ -28,6 +28,7 @@ const PLAN: CatalogPlan = {
   planId: 42,
   productId: 7,
   productName: '۱ماهه - ۵۰ گیگ',
+  productDescription: null,
   productKind: 'vpn',
   planName: '۱ماهه - ۵۰ گیگ',
   badge: null,
@@ -143,6 +144,20 @@ describe('the price list', () => {
 
   it('says nothing at all when there is nothing to sell', () => {
     expect(menu.tariffTable([])).toBe('');
+  });
+
+  it("draws the service's own description on the plan screen instead of the list", () => {
+    // Sam, 2026-09-17: the price list is the default, and a description typed
+    // on the service replaces it. Whitespace is not a description.
+    const rows = [
+      plan({ planId: 1, productId: 5, volumeGb: 10, productDescription: 'هر پلن یک ماه اعتبار دارد.' }),
+      plan({ planId: 2, productId: 5, volumeGb: 20, productDescription: 'هر پلن یک ماه اعتبار دارد.' }),
+    ];
+    expect(menu.choosePlan('تیتانیوم', rows)).toBe(
+      '📦 یکی از پلن‌های «تیتانیوم» را انتخاب کنید.\n\nهر پلن یک ماه اعتبار دارد.',
+    );
+    const blank = rows.map((r) => ({ ...r, productDescription: '  ' }));
+    expect(menu.choosePlan('تیتانیوم', blank)).toContain(' 10 گیگ  195,000 تومان');
   });
 });
 

@@ -57,7 +57,14 @@ async function recent(as = ADMIN) {
     status: res.status,
     body: (await res.json()) as {
       credit: { by: string; at: number; count: number; amountIrr: number | null } | null;
-      broadcast: { by: string; at: number; count: number; amountIrr: number | null } | null;
+      broadcast: {
+        id: string;
+        by: string;
+        at: number;
+        count: number;
+        amountIrr: number | null;
+        progress: { total: number; sent: number; failed: number; lastAt: number | null } | null;
+      } | null;
     },
   };
 }
@@ -174,6 +181,57 @@ describe('the last send, so nobody repeats it by hand', () => {
     // screen as "everyone was sent nothing".
     expect(body.broadcast?.amountIrr).toBeNull();
     expect(body.broadcast?.count).toBeGreaterThan(0);
+  });
+
+  it('counts a broadcast as the bot works through it, not as it was queued', async () => {
+    await makeCustomer();
+    await makeCustomer();
+    await makeCustomer();
+    const broadcastId = uuid();
+    await app.fetch(
+      new Request('https://example.com/api/v1/admin/bulk/broadcast', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://example.com' },
+        body: JSON.stringify({ body: 'سلام', broadcastId }),
+      }),
+      envAs(ADMIN),
+    );
+    // Queued is not sent. The snapshot is full and nothing has gone. «All» is
+    // whoever else the sim seeded too, so the total is read, not assumed.
+    let { body } = await recent();
+    expect(body.broadcast?.id).toBe(broadcastId);
+    const total = body.broadcast?.progress?.total ?? 0;
+    expect(total).toBeGreaterThanOrEqual(3);
+    expect(body.broadcast?.progress).toEqual({ total, sent: 0, failed: 0, lastAt: null });
+
+    // The sweep's three outcomes, one row each. SENDING is still «to come».
+    await baseEnv.DB.prepare(
+      `UPDATE broadcast_recipients SET status = 'SENT', sent_at = now()
+        WHERE broadcast_id = ?1 AND telegram_id = ?2`,
+    )
+      .bind(broadcastId, TG_BASE + seq)
+      .run();
+    await baseEnv.DB.prepare(
+      `UPDATE broadcast_recipients SET status = 'FAILED'
+        WHERE broadcast_id = ?1 AND telegram_id = ?2`,
+    )
+      .bind(broadcastId, TG_BASE + seq - 1)
+      .run();
+    await baseEnv.DB.prepare(
+      `UPDATE broadcast_recipients SET status = 'SENDING'
+        WHERE broadcast_id = ?1 AND telegram_id = ?2`,
+    )
+      .bind(broadcastId, TG_BASE + seq - 2)
+      .run();
+    ({ body } = await recent());
+    expect(body.broadcast?.progress).toEqual({
+      total,
+      sent: 1,
+      failed: 1,
+      // The SENT row's clock, as a number the browser can subtract from now.
+      lastAt: expect.any(Number),
+    });
+    expect(Math.abs(Date.now() - (body.broadcast?.progress?.lastAt ?? 0))).toBeLessThan(60_000);
   });
 
   it('is readable by an operator who cannot send', async () => {

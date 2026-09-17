@@ -98,7 +98,11 @@ import {
 import {
   customEmojiIn,
   emojiById,
+  emojiCategories,
+  emojiPlans,
+  emojiServices,
   rememberEmoji,
+  setBadgeEmoji,
   setButtonEmoji,
   storedEmoji,
 } from './emoji.js';
@@ -1075,6 +1079,64 @@ async function handleTypedAnswer(
 }
 
 /**
+ * Which catalogue row an `emoji` session is about, from the keys the three
+ * ask-screens write: `{ category }`, `{ service }`, or `{ product, plan }`.
+ * Null for a keyboard button — the older shape, handled below.
+ */
+function catalogTarget(data: Record<string, unknown>): {
+  table: 'product_categories' | 'products' | 'product_plans';
+  id: number;
+  productId?: number;
+  /** Where the cancel button goes, and the list to draw once the write is done. */
+  back: string;
+  redraw: (tx: D1DatabaseSession) => Promise<{ buttons: { id: number; label: string }[]; keyboard: InlineKeyboard }>;
+} | null {
+  const num = (k: string) => {
+    const n = Number(data[k]);
+    return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+  };
+  const category = num('category');
+  if (category) {
+    return {
+      table: 'product_categories',
+      id: category,
+      back: encode('emjc'),
+      redraw: async (tx) => {
+        const buttons = await emojiCategories(tx);
+        return { buttons, keyboard: menu.emojiCategoryList(buttons) };
+      },
+    };
+  }
+  const service = num('service');
+  if (service) {
+    return {
+      table: 'products',
+      id: service,
+      back: encode('emjp', service),
+      redraw: async (tx) => ({
+        buttons: await emojiServices(tx),
+        keyboard: menu.emojiPlanList(await emojiPlans(tx, service), service),
+      }),
+    };
+  }
+  const product = num('product');
+  const plan = num('plan');
+  if (product && plan) {
+    return {
+      table: 'product_plans',
+      id: plan,
+      productId: product,
+      back: encode('emjp', product),
+      redraw: async (tx) => {
+        const buttons = await emojiPlans(tx, product);
+        return { buttons, keyboard: menu.emojiPlanList(buttons, product) };
+      },
+    };
+  }
+  return null;
+}
+
+/**
  * A message an admin sent so the bot could read a premium emoji off it.
  *
  * This is the whole reason the flow asks for a MESSAGE rather than a link or a
@@ -1109,21 +1171,44 @@ async function handlePremiumEmoji(
     return reply(menu.EMOJI_NONE_FOUND, menu.promptMenu(encode('emj')));
   }
 
+  // A catalogue button rather than a keyboard button — a category, a service
+  // or a plan. Same one-emoji rule, same opt-in; the write goes to that row's
+  // badge instead of the layout, and the screen it came from is redrawn.
+  const catalog = catalogTarget(session.data);
+  if (catalog) {
+    if (found.length !== 1) return reply(menu.EMOJI_ONE_REQUIRED, menu.promptMenu(catalog.back));
+    const placed = await setBadgeEmoji(tx, catalog.table, catalog.id, found[0]!, catalog.productId);
+    await clearSession(tx, user.id);
+    const { buttons, keyboard } = await catalog.redraw(tx);
+    if (!placed.ok) {
+      const label = buttons.find((b) => b.id === catalog.id)?.label ?? '';
+      return reply(menu.catalogEmojiRefused(placed.reason, label), keyboard);
+    }
+    await enableCustomEmoji(tx);
+    await rememberEmoji(tx, found);
+    return reply(menu.emojiChanged(placed.label), keyboard);
+  }
+
   const slot = Number(session.data['slot']);
-  const target = Number.isSafeInteger(slot)
-    ? menu.mainMenuButtons().find((b) => b.slot === slot)
-    : undefined;
+  // A session from before keyboards other than the main menu could be chosen
+  // carries no `menu`; it meant the main menu, and still does.
+  const menuNo = Number(session.data['menu'] ?? 1);
+  const menuId = Number.isSafeInteger(menuNo) ? menu.emojiMenuAt(menuNo) : null;
+  const target =
+    menuId && Number.isSafeInteger(slot)
+      ? menu.menuButtons(menuId).find((b) => b.slot === slot)
+      : undefined;
 
   // Choosing a button is now the whole setup: its slot stays in this session,
   // and the ONE emoji in the answer is saved and assigned in the same update.
   // More than one is refused rather than silently choosing the first and
   // putting a different icon on the button than the admin expected.
-  if (target) {
+  if (menuId && target) {
     if (found.length !== 1) {
-      return reply(menu.EMOJI_ONE_REQUIRED, menu.promptMenu(encode('emj')));
+      return reply(menu.EMOJI_ONE_REQUIRED, menu.promptMenu(encode('emjs', menuNo)));
     }
 
-    const placed = await setButtonEmoji(tx, target.action, found[0]!);
+    const placed = await setButtonEmoji(tx, menuId, target.action, found[0]!);
     await clearSession(tx, user.id);
     if (!placed.ok) {
       // The reason, not one sentence for all of them. Telling an admin whose
@@ -1131,16 +1216,16 @@ async function handlePremiumEmoji(
       // instruction that can never work.
       return reply(
         menu.emojiRefused(placed.reason, target.label),
-        menu.emojiHomeMenu(menu.mainMenuButtons()),
+        menu.emojiHomeMenu(menu.menuButtons(menuId), menuNo),
       );
     }
     const label = placed.label;
     await enableCustomEmoji(tx);
     await rememberEmoji(tx, found);
     const buttons = menu
-      .mainMenuButtons()
+      .menuButtons(menuId)
       .map((b) => (b.slot === target.slot ? { ...b, label } : b));
-    return reply(menu.emojiChanged(target.label), menu.emojiHomeMenu(buttons));
+    return reply(menu.emojiChanged(target.label), menu.emojiHomeMenu(buttons, menuNo));
   }
 
   // Compatibility for an old button-less «افزودن» callback still visible in
@@ -1149,7 +1234,7 @@ async function handlePremiumEmoji(
   const added = await rememberEmoji(tx, found);
   await clearSession(tx, user.id);
   const have = await storedEmoji(tx);
-  return reply(menu.emojiAdded(added, have.length), menu.emojiHomeMenu(menu.mainMenuButtons()));
+  return reply(menu.emojiAdded(added, have.length), menu.emojiHomeMenu(menu.menuButtons('main'), 1));
 }
 
 /**
@@ -1243,6 +1328,8 @@ function navigationParent(raw: string | undefined): string | null {
       return action.id === undefined ? 'emj' : withId('emjb');
     case 'emjb':
       return 'emj';
+    case 'emjs':
+      return action.id2 === undefined ? 'emj' : withId('emjs');
     case 'top':
     case 'tp':
     case 'tpx':
@@ -3037,6 +3124,10 @@ async function handleCallback(
       }
       const result = await withdrawPaidClick(tx, user.id, order, query.from.id);
       switch (result.outcome) {
+        case 'expired':
+          // The claim is gone; the invoice is not reopened, because its card
+          // has been somebody else's to take since the deadline.
+          return screen(menu.ORDER_EXPIRED, menu.afterPaidMenu());
         case 'withdrawn':
         case 'open':
           // The invoice again, with the same buttons the original carried —
@@ -3095,70 +3186,151 @@ async function handleCallback(
     // which button you are unhappy with, send its replacement, and it is saved
     // and assigned in that same update.
     //
-    //   emj                  which button?
-    //   emjb:<slot>          ask for one emoji for that button
+    //   emj                  which keyboard?
+    //   emjs:<menu>          which button of it?
+    //   emjs:<menu>:<slot>   ask for one emoji for that button
+    //   emjb:<slot>          the ask step for the main menu, from before `emjs`
     //   emja[:<slot>]        old prompt buttons, kept usable in chat history
     //   emjb:<slot>:<id>     old emoji tiles, also kept usable
     case 'emj':
     case 'emja':
-    case 'emjb': {
+    case 'emjb':
+    case 'emjs': {
       if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
-      const buttons = menu.mainMenuButtons();
 
       if (action.action === 'emj') {
-        // This action is also the cancel button on the one-emoji prompt. Clear
-        // its selected slot before showing the list, or an emoji sent later
+        // This action is also the way back from the button list. Clear any
+        // selected slot before showing the keyboards, or an emoji sent later
         // from that screen would still land on the button the admin left.
         await clearSession(tx, user.id);
-        return screen(menu.emojiHome(), menu.emojiHomeMenu(buttons));
+        return screen(menu.emojiHome(), menu.emojiMenuList(menu.emojiMenus()));
       }
+
+      // The two legacy shapes name a main-menu slot; `emjs` names the keyboard
+      // first and the slot second.
+      const menuNo = action.action === 'emjs' ? action.id : 1;
+      const slot = action.action === 'emjs' ? action.id2 : action.id;
+      const menuId = menuNo === undefined ? null : menu.emojiMenuAt(menuNo);
+      if (menuNo === undefined || !menuId) {
+        return screen(menu.emojiHome(), menu.emojiMenuList(menu.emojiMenus()));
+      }
+      const buttons = menu.menuButtons(menuId);
 
       if (action.action === 'emja') {
         // The slot travels through the session, because the answer arrives as a
         // MESSAGE — a different update with no callback data on it.
-        await ask(tx, user.id, 'emoji', action.id === undefined ? {} : { slot: action.id }, editId);
-        const target =
-          action.id === undefined ? undefined : buttons.find((b) => b.slot === action.id);
+        await ask(tx, user.id, 'emoji', slot === undefined ? {} : { menu: menuNo, slot }, editId);
+        const target = slot === undefined ? undefined : buttons.find((b) => b.slot === slot);
         return screen(
           target ? menu.askPremiumEmoji(target.label) : menu.ASK_PREMIUM_EMOJI,
           menu.promptMenu(encode('emj')),
         );
       }
 
-      if (action.action === 'emjb' && action.id !== undefined) {
-        const target = buttons.find((b) => b.slot === action.id);
-        // The slot names a declared action this shop's layout does not carry —
-        // an admin removed that row. Said plainly rather than silently redrawn.
-        if (!target) return screen(menu.EMOJI_BUTTON_GONE, menu.emojiHomeMenu(buttons));
-
-        if (action.id2 === undefined) {
-          await ask(tx, user.id, 'emoji', { slot: target.slot }, editId);
-          return screen(menu.askPremiumEmoji(target.label), menu.promptMenu(encode('emj')));
-        }
-
-        const chosen = await emojiById(tx, action.id2);
-        // Gone between the screen being drawn and the tile being pressed —
-        // another admin hid its pack. Redrawn rather than errored: there is
-        // nothing for this admin to do about it.
-        if (!chosen) {
-          return screen(menu.EMOJI_BUTTON_GONE, menu.emojiHomeMenu(buttons));
-        }
-
-        const placed = await setButtonEmoji(tx, target.action, chosen);
-        if (placed.ok) await enableCustomEmoji(tx);
+      if (slot === undefined) {
+        // This action is also the cancel button on the one-emoji prompt. Same
+        // reason as `emj` above for clearing the session first.
         await clearSession(tx, user.id);
-        const after = buttons.map((b) =>
-          b.slot === target.slot && placed.ok ? { ...b, label: placed.label } : b,
-        );
-        // Same as the typed-emoji path: say which of the three it was.
+        return screen(menu.emojiButtonsHome(menuId), menu.emojiHomeMenu(buttons, menuNo));
+      }
+
+      const target = buttons.find((b) => b.slot === slot);
+      // The slot names a declared action this shop's layout does not carry —
+      // an admin removed that row. Said plainly rather than silently redrawn.
+      if (!target) return screen(menu.EMOJI_BUTTON_GONE, menu.emojiHomeMenu(buttons, menuNo));
+
+      if (action.action === 'emjs' || action.id2 === undefined) {
+        await ask(tx, user.id, 'emoji', { menu: menuNo, slot: target.slot }, editId);
+        return screen(menu.askPremiumEmoji(target.label), menu.promptMenu(encode('emjs', menuNo)));
+      }
+
+      const chosen = await emojiById(tx, action.id2);
+      // Gone between the screen being drawn and the tile being pressed —
+      // another admin hid its pack. Redrawn rather than errored: there is
+      // nothing for this admin to do about it.
+      if (!chosen) {
+        return screen(menu.EMOJI_BUTTON_GONE, menu.emojiHomeMenu(buttons, menuNo));
+      }
+
+      const placed = await setButtonEmoji(tx, menuId, target.action, chosen);
+      if (placed.ok) await enableCustomEmoji(tx);
+      await clearSession(tx, user.id);
+      const after = buttons.map((b) =>
+        b.slot === target.slot && placed.ok ? { ...b, label: placed.label } : b,
+      );
+      // Same as the typed-emoji path: say which of the three it was.
+      return screen(
+        placed.ok
+          ? menu.emojiChanged(target.label)
+          : menu.emojiRefused(placed.reason, target.label),
+        menu.emojiHomeMenu(after, menuNo),
+      );
+    }
+
+    // ── the same picker, for the catalogue ───────────────────────────────
+    //
+    //   emjp                       which service?
+    //   emjp:<product>             which plan of it?
+    //   emjp:<product>:<plan>      ask for one emoji for that plan
+    //
+    // Both ids are re-read from `product_plans` under `product_id` before the
+    // badge is written (`setPlanEmoji`), so a forged pair names nothing.
+    case 'emjp': {
+      if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+      if (action.id === undefined) {
+        // Also the cancel button on the one-emoji prompt: drop the chosen plan.
+        await clearSession(tx, user.id);
+        const services = await emojiServices(tx);
         return screen(
-          placed.ok
-            ? menu.emojiChanged(target.label)
-            : menu.emojiRefused(placed.reason, target.label),
-          menu.emojiHomeMenu(after),
+          services.length === 0 ? menu.EMOJI_NO_SERVICES : menu.emojiServicesHome(),
+          menu.emojiServiceList(services),
         );
       }
-      return screen(menu.emojiHome(), menu.emojiHomeMenu(buttons));
+      const service = (await emojiServices(tx)).find((s) => s.id === action.id);
+      if (!service) {
+        return screen(menu.EMOJI_NO_SERVICES, menu.emojiServiceList(await emojiServices(tx)));
+      }
+      const plans = await emojiPlans(tx, service.id);
+      if (action.id2 === undefined) {
+        await clearSession(tx, user.id);
+        return screen(
+          plans.length === 0 ? menu.EMOJI_NO_PLANS : menu.emojiPlansHome(service.label),
+          menu.emojiPlanList(plans, service.id),
+        );
+      }
+      const target = plans.find((p) => p.id === action.id2);
+      if (!target) return screen(menu.EMOJI_NO_PLANS, menu.emojiPlanList(plans, service.id));
+      await ask(tx, user.id, 'emoji', { product: service.id, plan: target.id }, editId);
+      return screen(menu.askPremiumEmoji(target.label), menu.promptMenu(encode('emjp', service.id)));
+    }
+
+    // emjq:<product>            ask for one emoji for the service's own button
+    case 'emjq': {
+      if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+      const service = (await emojiServices(tx)).find((s) => s.id === action.id);
+      if (!service) {
+        return screen(menu.EMOJI_NO_SERVICES, menu.emojiServiceList(await emojiServices(tx)));
+      }
+      await ask(tx, user.id, 'emoji', { service: service.id }, editId);
+      return screen(menu.askPremiumEmoji(service.label), menu.promptMenu(encode('emjp', service.id)));
+    }
+
+    // emjc                      which category?
+    // emjc:<category>           ask for one emoji for it
+    case 'emjc': {
+      if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+      const categories = await emojiCategories(tx);
+      const target = action.id === undefined ? undefined : categories.find((c) => c.id === action.id);
+      if (!target) {
+        // Also the cancel button on the one-emoji prompt: drop the chosen row.
+        await clearSession(tx, user.id);
+        return screen(
+          categories.length === 0 ? menu.EMOJI_NO_CATEGORIES : menu.emojiCategoriesHome(),
+          menu.emojiCategoryList(categories),
+        );
+      }
+      await ask(tx, user.id, 'emoji', { category: target.id }, editId);
+      return screen(menu.askPremiumEmoji(target.label), menu.promptMenu(encode('emjc')));
     }
 
     case 'wal': {

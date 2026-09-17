@@ -96,10 +96,19 @@ export async function expireUnpaidOrders(
   const rows = await db.withSession(async (tx) => {
     const { results: doomed } = await tx
       .prepare(
-        `SELECT id FROM orders
+        `SELECT id FROM orders o
           WHERE status = 'AWAITING_PAYMENT'
             AND expires_at IS NOT NULL
             AND expires_at <= to_timestamp(?1 / 1000.0)
+            -- A pre-filter, not the guard: the guard is the same condition in
+            -- the UPDATE below, under the lock. This only keeps claimed orders
+            -- — which stay AWAITING_PAYMENT past their deadline until somebody
+            -- reviews them — from filling the batch ahead of the ones that can
+            -- actually expire.
+            AND NOT EXISTS (
+              SELECT 1 FROM payments p
+               WHERE p.order_id = o.id
+                 AND p.status IN ('AWAITING_REVIEW', 'PROCESSING', 'PAID'))
           ORDER BY expires_at
           LIMIT ?2
           FOR UPDATE SKIP LOCKED`,
@@ -187,5 +196,64 @@ export async function expireUnpaidOrders(
     return expired ?? [];
   });
 
-  return rows.length;
+  const closed = await closeClaimedInvoices(db, now);
+  return rows.length + closed;
+}
+
+/**
+ * The claimed invoices whose deadline has passed: the message is closed, the
+ * order is not.
+ *
+ * Sam, 2026-09-17: «یک زمانی رو مشخص میکنیم؛ اگر پول اومد که هیچ، اگر نیومد
+ * کارت آزاد میشه و اون پیام برای کاربر پاک بشه». The card is already free —
+ * `cardHeldUntilSql` reads one length whatever the customer pressed — so what
+ * is left is the invoice standing in the chat with a card number that will be
+ * somebody else's within the minute. It becomes the notice below.
+ *
+ * The order stays AWAITING_PAYMENT and the claim stays in the review queue,
+ * on purpose: a «پرداخت کردم» is a customer saying money is on its way, and
+ * money that arrives late — a bank SMS hours behind, a receipt the operator
+ * approves by hand — must still find an order `settle.ts` can advance. Marking
+ * it EXPIRED would be the failure the function above is built to avoid.
+ *
+ * Once per invoice: the notice's own dedupe key is the marker, so a claim
+ * that sits unreviewed for a day is told on the first cycle past the deadline
+ * and never again. The payment's `invoice_message_id` is let go in the same
+ * statement — the message stops being an invoice here, and the outbox refuses
+ * to edit a message that still is one (`isLiveInvoice`). No status changes, so
+ * nothing here can race the expiry above or a press arriving now.
+ */
+async function closeClaimedInvoices(db: D1Database, now: number): Promise<number> {
+  return db.withSession(async (tx) => {
+    const { results } = await tx
+      .prepare(
+        `WITH due AS (
+           SELECT p.id, o.public_id, u.telegram_id, p.invoice_message_id
+             FROM orders o
+             JOIN payments p ON p.order_id = o.id AND p.status = 'AWAITING_REVIEW'
+             JOIN users u ON u.id = o.user_id
+            WHERE o.status = 'AWAITING_PAYMENT'
+              AND o.expires_at IS NOT NULL
+              AND o.expires_at <= to_timestamp(?1 / 1000.0)
+              AND NOT EXISTS (SELECT 1 FROM bot_notifications n
+                               WHERE n.dedupe_key = 'deadline:' || o.public_id)
+            ORDER BY o.expires_at
+            LIMIT ?2
+            FOR UPDATE OF p SKIP LOCKED)
+         UPDATE payments SET invoice_message_id = NULL
+           FROM due WHERE payments.id = due.id
+         RETURNING due.public_id, due.telegram_id, due.invoice_message_id`,
+      )
+      .bind(now, BATCH)
+      .all<{ public_id: string; telegram_id: number; invoice_message_id: number | null }>();
+    for (const row of results ?? []) {
+      await enqueue(tx, {
+        dedupeKey: `deadline:${row.public_id}`,
+        chatId: row.telegram_id,
+        text: menu.claimedInvoiceClosed(row.public_id),
+        editMessageId: row.invoice_message_id,
+      });
+    }
+    return (results ?? []).length;
+  });
 }

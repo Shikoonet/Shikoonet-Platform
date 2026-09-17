@@ -703,6 +703,47 @@ describe('the open review queue', () => {
     expect(body.counts['open']).toBe(5);
   });
 
+  it('a parked claim moves to «کنار گذاشته» and comes back when it is decided', async () => {
+    await seedClaim('p-stay', { suspectReason: 'NO_TRANSACTION' });
+    await seedClaim('p-park', { suspectReason: 'NO_TRANSACTION' });
+    await seedClaim('p-done', { status: 'VERIFIED' });
+
+    async function park(id: string, parked: boolean) {
+      return app.fetch(
+        new Request(`https://example.com/api/v1/suspects/${id}/park`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ parked }),
+        }),
+        envAs(),
+      );
+    }
+
+    expect((await park('p-park', true)).status).toBe(200);
+    // Only an undecided claim can be set aside.
+    expect((await park('p-done', true)).status).toBe(404);
+
+    let open = await get('tab=open');
+    let parked = await get('tab=parked');
+    expect(open.items.map((i) => i.id)).toEqual(['p-stay']);
+    expect(parked.items.map((i) => i.id)).toEqual(['p-park']);
+    expect(open.counts['open']).toBe(1);
+    expect(open.counts['parked']).toBe(1);
+
+    // The matcher settles it while parked; the tab empties by itself and the
+    // stale flag does not leak into either badge.
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = 'p-park'`).run();
+    parked = await get('tab=parked');
+    expect(parked.items).toEqual([]);
+    expect(parked.counts['parked']).toBe(0);
+    expect(parked.counts['open']).toBe(1);
+
+    expect((await park('p-stay', true)).status).toBe(200);
+    expect((await park('p-stay', false)).status).toBe(200);
+    open = await get('tab=open');
+    expect(open.items.map((i) => i.id)).toEqual(['p-stay']);
+  });
+
   it('is what an operator lands on', async () => {
     // The default used to be `income`, which reads `transaction_candidates` —
     // a table a claim is never in. Sam went looking for the order he had just

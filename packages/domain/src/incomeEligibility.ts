@@ -35,7 +35,7 @@ export const TX_ACTIVE_BOT_SUGGESTION = `
 
 /**
  * Operator took this tx off the books (reversible) — a credit that is not
- * income or, since 0072, a debit that is not the shop's spending: a transfer
+ * income or, since 0073, a debit that is not the shop's spending: a transfer
  * between our own accounts, a loan instalment, a relative's deposit sent
  * back, a bank fee. `income_declined_transactions` is the table's old name;
  * the row carries a `category` saying which of those it is.
@@ -73,7 +73,7 @@ export const BANK_INCOME_TX_WHERE = `
 
 /**
  * Money leaving an account: a DEBIT the phone relayed. Ingest writes these
- * with `OUTGOING_IGNORED` (0072), which keeps every matching and income
+ * with `OUTGOING_IGNORED` (0073), which keeps every matching and income
  * query — all of which ask for `ACTIONABLE` — from ever seeing them. Off the
  * books excluded, same as income.
  */

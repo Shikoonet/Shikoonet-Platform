@@ -129,7 +129,7 @@ describe('useBotAutoVerifiedFilter — URL state', () => {
       <div>
         <div data-testid="segment">{value.segment}</div>
         <div data-testid="date">{value.date}</div>
-        <button data-testid="set-new" onClick={() => setSegment('NEW_PURCHASE')}>
+        <button data-testid="set-segment-all" onClick={() => setSegment('ALL')}>
           N
         </button>
         <button data-testid="set-renewal" onClick={() => setSegment('RENEWAL')}>
@@ -152,10 +152,11 @@ describe('useBotAutoVerifiedFilter — URL state', () => {
     );
   }
 
-  it('defaults to NEW_PURCHASE + TODAY', () => {
+  it('defaults to «همه» + TODAY, and «همه» sends no purchaseType', () => {
     render(<Probe />);
-    expect(screen.getByTestId('segment').textContent).toBe('NEW_PURCHASE');
+    expect(screen.getByTestId('segment').textContent).toBe('ALL');
     expect(screen.getByTestId('date').textContent).toBe('TODAY');
+    expect(JSON.parse(screen.getByTestId('params').textContent!).purchaseType).toBeNull();
   });
 
   it('persists segment + date in URL query string', () => {
@@ -202,6 +203,21 @@ describe('useBotAutoVerifiedFilter — URL state', () => {
     expect(screen.getByTestId('date').textContent).toBe('YESTERDAY');
   });
 
+  it('the first-purchase segment round-trips through the URL as purchaseType=first', () => {
+    window.history.replaceState(null, '', '/?purchaseType=first');
+    render(<Probe />);
+    expect(screen.getByTestId('segment').textContent).toBe('FIRST_PURCHASE');
+  });
+
+  it('the repeat-purchase segment round-trips through the URL as purchaseType=repeat', () => {
+    window.history.replaceState(null, '', '/?purchaseType=repeat');
+    render(<Probe />);
+    expect(screen.getByTestId('segment').textContent).toBe('REPEAT_PURCHASE');
+    expect(JSON.parse(screen.getByTestId('params').textContent!).purchaseType).toBe(
+      'REPEAT_PURCHASE',
+    );
+  });
+
   it('the wallet segment round-trips through the URL as purchaseType=wallet', () => {
     window.history.replaceState(null, '', '/?purchaseType=wallet');
     render(<Probe />);
@@ -213,7 +229,7 @@ describe('BotAutoVerifiedFilter — render', () => {
   function Wrapper({ onSegmentChange, onDateChange }: any) {
     return (
       <BotAutoVerifiedFilter
-        value={{ segment: 'NEW_PURCHASE', date: 'TODAY' }}
+        value={{ segment: 'ALL', date: 'TODAY' }}
         onSegmentChange={onSegmentChange ?? (() => {})}
         onDateChange={onDateChange ?? (() => {})}
       />
@@ -221,12 +237,15 @@ describe('BotAutoVerifiedFilter — render', () => {
   }
   it('renders both segmented controls', () => {
     render(<Wrapper />);
-    expect(screen.getByText('خریدهای جدید')).toBeTruthy();
-    expect(screen.getByText('تمدیدها')).toBeTruthy();
+    expect(screen.getByText('خرید اولی‌ها')).toBeTruthy();
+    expect(screen.getByText('تمدید')).toBeTruthy();
+    expect(screen.getByText('خرید چندم')).toBeTruthy();
+    expect(screen.getByText('شارژ کیف پول')).toBeTruthy();
     expect(screen.getByText('امروز')).toBeTruthy();
     expect(screen.getByText('دیروز')).toBeTruthy();
     expect(screen.getByText('پریروز')).toBeTruthy();
-    expect(screen.getByText('همه')).toBeTruthy();
+    // «همه» is on both controls.
+    expect(screen.getAllByText('همه')).toHaveLength(2);
   });
 });
 

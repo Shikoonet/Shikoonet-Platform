@@ -52,6 +52,7 @@ import { parseChannelPostLink } from '@shikoo/contracts';
  */
 function LastSend({ send, verb }: { send: BulkSend | null; verb: string }) {
   if (send === null) return null;
+  const p = send.progress ?? null;
   return (
     <p className="muted">
       آخرین بار: {verb} {count(send.count)} مشتری
@@ -60,6 +61,13 @@ function LastSend({ send, verb }: { send: BulkSend | null; verb: string }) {
       {/* Zero is not nothing-happened; it is a retry the key caught. Saying so
           stops it reading as a failure worth repeating. */}
       {send.count === 0 ? ' (ارسال تکراری بود و چیزی دوباره نرفت)' : ''}
+      {/* Queued is not sent. The live bar is in the header; this is the tally
+          once it is over — the number that was never on any screen before. */}
+      {p !== null && p.total > 0
+        ? ` — ${count(p.sent)} رسید${p.failed > 0 ? `، ${count(p.failed)} نرسید` : ''}${
+            p.total - p.sent - p.failed > 0 ? `، ${count(p.total - p.sent - p.failed)} مانده` : ''
+          }`
+        : ''}
     </p>
   );
 }

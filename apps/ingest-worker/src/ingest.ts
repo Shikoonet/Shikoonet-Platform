@@ -268,7 +268,7 @@ export async function ingest(
   const isDirectionUncertain = !wasDuplicate && !isRedactable && result.direction === 'UNKNOWN';
   const skipSideEffects = isOutgoingTransaction || isDirectionUncertain;
 
-  // A withdrawal is recorded (0072) — balance, account, disposition
+  // A withdrawal is recorded (0073) — balance, account, disposition
   // OUTGOING_IGNORED — and then left alone: no matching, no suggestion, no
   // claim rematch. The phone still hears `outgoing_ignored`; its contract is
   // frozen and «do not retry» is still the right answer.

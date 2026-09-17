@@ -47,6 +47,7 @@ import {
   ContinuityButton,
   useContinuityMode,
 } from './hub/ContinuityBanner.js';
+import { BroadcastProgress } from './hub/BroadcastProgress.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { StatsPage } from './pages/StatsPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
@@ -411,6 +412,7 @@ function Shell({
             actually spends the day on. */}
         <div className="app-header__tools">
           <HeaderSlotOutlet slot="center" />
+          <BroadcastProgress />
           <ContinuityButton state={continuity.state} onChanged={continuity.refresh} />
           <HeaderSlotOutlet slot="dateNav" />
           {/* The only thing the hub's operator menu did that the sidebar does

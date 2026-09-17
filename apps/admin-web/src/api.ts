@@ -731,7 +731,7 @@ export interface RevenueAdjustmentRow {
   fxRateIrr: number | null;
   /** The template this was posted from, if it was posted rather than typed. */
   recurrenceId: number | null;
-  /** Which account paid (0072); null on rows from before the books knew. */
+  /** Which account paid (0073); null on rows from before the books knew. */
   financialAccountId: string | null;
   accountName: string | null;
   /** What the bank charged on top, IRR. */
@@ -1044,11 +1044,25 @@ export interface BulkPricePreview {
  * happened".
  */
 export interface BulkSend {
+  /** The batch id of a credit, the broadcast id of a broadcast. */
+  id: string;
   by: string;
   at: number;
   count: number;
   /** Rial per wallet. Null for a broadcast, which has no amount. */
   amountIrr: number | null;
+  /**
+   * How far the bot has got through the recipient snapshot. Only a broadcast
+   * has one — a credit is over the moment the route answers. What is neither
+   * `sent` nor `failed` is still to come.
+   */
+  progress?: {
+    total: number;
+    sent: number;
+    failed: number;
+    /** When the last row moved, epoch ms; null while nothing has. */
+    lastAt: number | null;
+  } | null;
 }
 
 /** What «تست ارتباط» answers. Never the panel's response body — see panelRoutes.ts. */
@@ -1192,6 +1206,8 @@ export interface PanelItem {
   extraTimeMinDays: number | null;
   /** A starter panel: only customers who own nothing can see it. */
   newcomersOnly: boolean;
+  /** Where the panel's web UI lives under `baseUrl`; null = `/dashboard/`. */
+  dashboardPath: string | null;
   renewEnabled: boolean;
   /*
    * The rest of the panel's settings, derived on the server the same way and
@@ -2606,6 +2622,8 @@ export const api = {
       extraVolumeMinGb?: number | null;
       extraTimeMinDays?: number | null;
       newcomersOnly?: boolean;
+      /** Null puts the account links back on `/dashboard/`. */
+      dashboardPath?: string | null;
       renewEnabled?: boolean;
       /**
        * Re-probe and let the answer set the status. Ignored when `status` is in

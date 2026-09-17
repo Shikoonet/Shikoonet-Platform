@@ -712,6 +712,13 @@ export type LayoutProblem =
 export const MAX_LABEL_LENGTH = 64;
 
 /**
+ * A catalogue badge as drawn — the same 24 migration 0060's CHECK measures
+ * on `product_categories`, `products` and `product_plans`. One number for the
+ * panel's route, the panel's field and the bot's own writer.
+ */
+export const MAX_BADGE_LENGTH = 24;
+
+/**
  * The most raw characters a label may carry on the wire: the cap above plus
  * one `<tg-emoji>` tag, which is ~52 characters that draw as one glyph.
  *

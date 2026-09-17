@@ -1,4 +1,4 @@
--- 0072_the_books_know_the_account.sql — Sam, 2026-09-17.
+-- 0073_the_books_know_the_account.sql — Sam, 2026-09-17.
 --
 -- «بعضی موقع‌ها ادمین از یکی از حساب‌ها خرج را انجام می‌دهد … باید بتواند
 -- مشخص کند از کدام حساب برداشت کرده و اگر هزینهٔ تراکنش هم داشت بنویسد.»
@@ -16,7 +16,7 @@
 --
 --   2. «خارج از دفتر»: `income_declined_transactions` grows a `category`.
 --      The table already records a credit the operator declared not to be
---      income (the 10.6M «جابه‌جایی» of 2026-09-17 sits there); from 0072
+--      income (the 10.6M «جابه‌جایی» of 2026-09-17 sits there); from 0073
 --      the same row covers a DEBIT too — a loan instalment, interest that
 --      comes and goes, a relative's deposit sent back — and says WHICH of
 --      those it is, so the monthly statement can group them. The old free
@@ -28,7 +28,7 @@
 --      row; later months open from the last SMS before the month.
 --
 -- What it does NOT do: it does not compute a balance. «موجودی فعلی» stays
--- the figure in the last bank SMS (`loadAccountBalances`), and 0072 changes
+-- the figure in the last bank SMS (`loadAccountBalances`), and 0073 changes
 -- nothing about that. An expense subtracted by us would be subtracted again
 -- when the next SMS brings the balance the bank already reduced. The
 -- statement explains the bank's movements; it never replaces them.

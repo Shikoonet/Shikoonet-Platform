@@ -28,6 +28,7 @@ import { expireUnpaidOrders } from './expire.js';
 import {
   BROADCAST_BATCH,
   claimBroadcastBatch,
+  releaseBroadcastClaims,
   closeFinishedBroadcasts,
   markBroadcastFailed,
   markBroadcastRetryable,
@@ -596,12 +597,16 @@ export async function sweepBroadcasts(
    * was already waiting still stops.
    */
   let pauseUntil = 0;
+  // Rows a worker took and then never offered to Telegram because the signal
+  // came first. Put back at the end, not left SENDING: see
+  // `releaseBroadcastClaims` for what leaving them did to every promote.
+  const unsent: BroadcastMessage[] = [];
 
   async function worker(): Promise<void> {
     for (;;) {
-      // Everything still claimed when this stops stays SENDING rather than
-      // being counted as delivered. That is the ordinary shutdown, not a crash,
-      // and until 2026-08-19 it silently inflated the number the shop was told.
+      // A send in flight when this stops is awaited and recorded; only what
+      // was never offered is put back. Until 2026-08-19 an abort here counted
+      // every claimed row as delivered, and until 2026-09-17 it stranded them.
       if (signal?.aborted) return;
       const message = batch[next++];
       if (message === undefined) return;
@@ -618,10 +623,13 @@ export async function sweepBroadcasts(
       // loop rather than one sleep: a second 429 may land from another worker
       // while this one is serving the first.
       while (pauseUntil > Date.now()) {
-        if (signal?.aborted) return;
+        if (signal?.aborted) break;
         await sleep(pauseUntil - Date.now(), signal);
       }
-      if (signal?.aborted) return;
+      if (signal?.aborted) {
+        unsent.push(message);
+        return;
+      }
 
       try {
         // Two Telegram methods, one loop. Everything that makes a broadcast a
@@ -695,6 +703,13 @@ export async function sweepBroadcasts(
   // than a message that failed to send — and swallowing it would hide it.
   await Promise.all(
     Array.from({ length: Math.min(SEND_CONCURRENCY, batch.length) }, () => worker()),
+  );
+  // The tail nobody took, plus what the workers handed back. Awaited, and
+  // `stop()` awaits this sweep, so the rows are PENDING again before the pool
+  // closes and the next container claims them as ordinary work.
+  unsent.push(...batch.slice(next));
+  await releaseBroadcastClaims(db, unsent).catch((err: unknown) =>
+    log.error('broadcast.release_failed', { messages: unsent.length }, err),
   );
   // Outside the `if` that used to hold it, on purpose. The close was only
   // attempted on a cycle that claimed at least one recipient, so a transient

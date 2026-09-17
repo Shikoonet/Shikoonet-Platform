@@ -24,7 +24,7 @@ export interface AnalyticsResponse {
   botAutoVerified: { count: number; amountIrr: number };
   manualVerified: { count: number; amountIrr: number };
   bankInflowIrr: number;
-  /** Withdrawals in range, per the bank — 0072. Optional: older servers. */
+  /** Withdrawals in range, per the bank — 0073. Optional: older servers. */
   bankOutflowIrr?: number;
   reseller: { count: number; amountIrr: number };
   unassignedIncome: { count: number; amountIrr: number };

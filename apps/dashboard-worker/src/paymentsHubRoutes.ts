@@ -41,6 +41,8 @@ import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 export type PaymentTab =
   | 'income'
   | 'open'
+  /** `open` rows an operator set aside to wait for the bank SMS (`parked_at`). */
+  | 'parked'
   | 'needs_review'
   | 'declined_income'
   | 'waiting'
@@ -63,7 +65,13 @@ type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
  * `open` joins them for exactly that reason, and it is the tab that made the
  * point: the claim Sam could not find was three days old.
  */
-const OPEN_QUEUE_TABS = new Set<PaymentTab>(['open', 'needs_review', 'waiting', 'suspected_fake']);
+const OPEN_QUEUE_TABS = new Set<PaymentTab>([
+  'open',
+  'parked',
+  'needs_review',
+  'waiting',
+  'suspected_fake',
+]);
 
 function rangeClause(
   column: string,
@@ -431,7 +439,7 @@ export async function loadFinancialSummary(
     )
     .bind(...bankBinds)
     .first<{ amount_irr: number }>();
-  // What left, per the bank — the same range, off-books excluded (0072).
+  // What left, per the bank — the same range, off-books excluded (0073).
   const bankOutflow = await db
     .prepare(
       `SELECT COALESCE(SUM(t.amount_irr), 0) AS amount_irr
@@ -586,7 +594,7 @@ export function registerPaymentsHubRoutes(
   const DeclineBody = z
     .object({
       reason: z.string().max(2000).optional(),
-      /** Which kind of «not ours» — 0072. Absent means the pre-0072 OTHER. */
+      /** Which kind of «not ours» — 0073. Absent means the pre-0073 OTHER. */
       category: z.enum(OFF_BOOKS_CATEGORIES).optional(),
     })
     .strict();

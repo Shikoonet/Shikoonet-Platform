@@ -28,7 +28,7 @@
 import { useEffect, useState } from 'react';
 import { stripCustomEmoji, MAX_CATALOG_ROWS, MAX_ROW_WIDTH, groupIntoRows } from '@shikoo/contracts';
 import { ButtonGrid, GRID_HELP, type GridChip } from './ButtonGrid.js';
-import { BadgeField, badgeValue } from './BadgeField.js';
+import { BadgeField, badgeValue, STYLES } from './BadgeField.js';
 import { api, ApiError, type ButtonStyle, type LayoutItem, type LayoutScope } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
@@ -45,15 +45,9 @@ export interface LayoutButton {
   buttonStyle?: ButtonStyle | null;
 }
 
-/** The three colours as this panel paints them — see `BotContentPages`. */
-const STYLE_TOKENS: Record<ButtonStyle, string> = {
-  primary: 'var(--accent)',
-  success: 'var(--success)',
-  danger: 'var(--danger)',
-};
-
 export interface BadgePatch {
-  badge: string | null;
+  /** Left out, the badge stays as it is — «رنگ همهٔ دکمه‌ها» sends only the colour. */
+  badge?: string | null;
   buttonStyle: ButtonStyle | null;
 }
 
@@ -76,7 +70,7 @@ function toChip(b: LayoutButton): GridChip {
     key: String(b.id),
     label: `${badge}${stripCustomEmoji(b.label)}`,
     hint: b.hint,
-    tint: b.buttonStyle ? STYLE_TOKENS[b.buttonStyle] : null,
+    tint: STYLES.find((s) => s.value === b.buttonStyle)?.token ?? null,
   };
 }
 
@@ -137,6 +131,30 @@ export function LayoutEditor({
     }
   }
 
+  // Every button of this screen, one colour. Sam, 2026-09-17: «همه‌شون یه رنگ
+  // باشن، یه دکمه بزنم». One write per button, through the same `editBadge`
+  // a single click uses — ponytail: a bulk route if a screen ever holds
+  // dozens; today the widest is seven.
+  async function paintAll(style: ButtonStyle | null) {
+    if (!editBadge) return;
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      for (const b of items) await editBadge(b.id, { buttonStyle: style });
+      setDone(
+        style === null
+          ? 'رنگ همهٔ دکمه‌ها برداشته شد.'
+          : `همهٔ دکمه‌ها ${STYLES.find((s) => s.value === style)?.label ?? style} شدند.`,
+      );
+      onSaved();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const arranged = items.some((b) => b.rowIndex !== null);
 
   if (items.length === 0) {
@@ -165,6 +183,36 @@ export function LayoutEditor({
           {GRID_HELP}
           {editBadge && ' روی یک دکمه کلیک کنید تا نشان و رنگش را همین‌جا عوض کنید.'}
         </p>
+
+        {editBadge && (
+          <div className="row-actions" style={{ justifyContent: 'flex-start', alignItems: 'center' }}>
+            <span className="muted">رنگ همهٔ دکمه‌ها:</span>
+            {STYLES.map((s) => (
+              <button
+                key={s.value}
+                type="button"
+                className="btn btn-sm"
+                aria-label={`همهٔ دکمه‌ها ${s.label}`}
+                style={{ borderColor: s.token, color: s.token }}
+                disabled={busy}
+                onClick={() => void paintAll(s.value)}
+                {...w}
+              >
+                {s.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="btn btn-sm"
+              aria-label="همهٔ دکمه‌ها بی‌رنگ"
+              disabled={busy}
+              onClick={() => void paintAll(null)}
+              {...w}
+            >
+              بی‌رنگ
+            </button>
+          </div>
+        )}
 
         {editBadge && pickedItem && (
           <BadgeEditor

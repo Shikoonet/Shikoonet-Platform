@@ -4,7 +4,7 @@
  * Until 2026-09-17 only CREDIT did («credit-only product rule»): a withdrawal
  * was stored raw and forgotten, so «موجودی فعلی» — read from the last SMS
  * that carried a balance — froze after every expense until the next deposit.
- * Since 0072 a DEBIT is written too, as `OUTGOING_IGNORED`: every matching
+ * Since 0073 a DEBIT is written too, as `OUTGOING_IGNORED`: every matching
  * and income query asks for `ACTIONABLE`, so the row can carry the bank's
  * balance and feed the monthly statement without ever paying a claim.
  * UNKNOWN stays out — a row whose direction nobody knows is a row nobody can

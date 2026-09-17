@@ -56,7 +56,7 @@ export const UPDATE_TRANSACTION_STATUS_SQL = `UPDATE transaction_candidates
  * Which parse results become a `transaction_candidates` row.
  *
  * CREDIT, as always — the money the matcher spends on claims. And since
- * 0072 (2026-09-17) DEBIT too: a withdrawal SMS carries the bank's balance,
+ * 0073 (2026-09-17) DEBIT too: a withdrawal SMS carries the bank's balance,
  * and «موجودی فعلی» is read from the last SMS with one, so dropping debits
  * froze every account's balance after each expense until the next deposit.
  * The debit row is also what the monthly statement explains an expense with.

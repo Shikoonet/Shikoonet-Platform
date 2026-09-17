@@ -25,17 +25,27 @@
 import { useEffect, useState } from 'react';
 import { tehranAdjacentDay, tehranTodayDateString } from './historyRangeNav.js';
 
-export type BotAutoVerifiedSegment = 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP';
+/** «همه» is the tab unfiltered; the other four split it without overlap. */
+export type BotAutoVerifiedSegment =
+  | 'ALL'
+  | 'FIRST_PURCHASE'
+  | 'RENEWAL'
+  | 'REPEAT_PURCHASE'
+  | 'WALLET_TOPUP';
 export type BotAutoVerifiedDateFilter = 'ALL' | 'TODAY' | 'YESTERDAY' | 'DAY_BEFORE_YESTERDAY';
 
 const SEGMENT_TO_QUERY: Record<BotAutoVerifiedSegment, string> = {
-  NEW_PURCHASE: 'new',
+  ALL: 'all',
+  FIRST_PURCHASE: 'first',
   RENEWAL: 'renewal',
+  REPEAT_PURCHASE: 'repeat',
   WALLET_TOPUP: 'wallet',
 };
 const QUERY_TO_SEGMENT: Record<string, BotAutoVerifiedSegment> = {
-  new: 'NEW_PURCHASE',
+  all: 'ALL',
+  first: 'FIRST_PURCHASE',
   renewal: 'RENEWAL',
+  repeat: 'REPEAT_PURCHASE',
   wallet: 'WALLET_TOPUP',
 };
 
@@ -60,7 +70,7 @@ function readSearch(search: string): {
   const segmentRaw = params.get('purchaseType');
   const dateRaw = params.get('dateFilter');
   const segment =
-    segmentRaw && segmentRaw in QUERY_TO_SEGMENT ? QUERY_TO_SEGMENT[segmentRaw]! : 'NEW_PURCHASE';
+    segmentRaw && segmentRaw in QUERY_TO_SEGMENT ? QUERY_TO_SEGMENT[segmentRaw]! : 'ALL';
   const date = dateRaw && dateRaw in QUERY_TO_DATE ? QUERY_TO_DATE[dateRaw]! : 'TODAY';
   return { segment, date };
 }
@@ -88,7 +98,7 @@ export function useBotAutoVerifiedFilter(): {
   setDate: (d: BotAutoVerifiedDateFilter) => void;
   /**
    * URL params to append to /api/v1/payments. The worker reads:
-   *   purchaseType=NEW_PURCHASE|RENEWAL|WALLET_TOPUP
+   *   purchaseType=FIRST_PURCHASE|RENEWAL|REPEAT_PURCHASE|WALLET_TOPUP  (absent on «همه»)
    *   range=today
    *   day=YYYY-MM-DD                     (Tehran calendar day)
    */
@@ -97,6 +107,7 @@ export function useBotAutoVerifiedFilter(): {
   const [value, setValue] = useState<BotAutoVerifiedFilterValue>(() =>
     readSearch(window.location.search),
   );
+  const purchaseType = value.segment === 'ALL' ? null : value.segment;
 
   useEffect(() => {
     const onPop = () => setValue(readSearch(window.location.search));
@@ -125,21 +136,21 @@ export function useBotAutoVerifiedFilter(): {
     day: string | null;
   } {
     if (value.date === 'ALL') {
-      return { purchaseType: value.segment, range: 'all', day: null };
+      return { purchaseType, range: 'all', day: null };
     }
     if (value.date === 'TODAY') {
-      return { purchaseType: value.segment, range: 'today', day: null };
+      return { purchaseType, range: 'today', day: null };
     }
     const today = tehranTodayDateString();
     if (value.date === 'YESTERDAY') {
       return {
-        purchaseType: value.segment,
+        purchaseType,
         range: 'day',
         day: tehranAdjacentDay(today, -1),
       };
     }
     return {
-      purchaseType: value.segment,
+      purchaseType,
       range: 'day',
       day: tehranAdjacentDay(today, -2),
     };
@@ -149,8 +160,12 @@ export function useBotAutoVerifiedFilter(): {
 }
 
 const SEGMENT_OPTIONS: Array<{ value: BotAutoVerifiedSegment; label: string }> = [
-  { value: 'NEW_PURCHASE', label: 'خریدهای جدید' },
-  { value: 'RENEWAL', label: 'تمدیدها' },
+  { value: 'ALL', label: 'همه' },
+  // The two halves of a new purchase: the customer's first paid service, or
+  // one more beside what they already own.
+  { value: 'FIRST_PURCHASE', label: 'خرید اولی‌ها' },
+  { value: 'RENEWAL', label: 'تمدید' },
+  { value: 'REPEAT_PURCHASE', label: 'خرید چندم' },
   { value: 'WALLET_TOPUP', label: 'شارژ کیف پول' },
 ];
 

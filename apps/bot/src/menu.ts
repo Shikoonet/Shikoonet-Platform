@@ -42,6 +42,7 @@ import {
   actionForLabel,
   MAX_LABEL_LENGTH,
   MENUS,
+  MENU_IDS,
   buildMainMenu,
   buildReplyMenu,
   buildMenu,
@@ -330,13 +331,13 @@ export function resetContent(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * The main menu's buttons as the shop has them, for the admin's picker.
+ * One keyboard's buttons as the shop has them, for the admin's picker.
  *
- * `layout('main')` and not `DEFAULT_LAYOUTS`: the point of the screen is to put
+ * `layout(menuId)` and not `DEFAULT_LAYOUTS`: the point of the screen is to put
  * an emoji on a button this shop actually draws, and a shop that renamed or
  * reordered its menu would otherwise be offered the shipped one.
  */
-export function mainMenuButtons(): { action: string; label: string; slot: number }[] {
+export function menuButtons(menuId: MenuId): { action: string; label: string; slot: number }[] {
   // `slot` indexes the DECLARED order in `MENUS`, which is a constant in the
   // source, and it is 1-based because `parseId` refuses a zero.
   //
@@ -345,8 +346,8 @@ export function mainMenuButtons(): { action: string; label: string; slot: number
   // being pressed would shift every later position by one, and the emoji would
   // land on a button they did not choose. Nothing would error. The same shape
   // as the `ROW_NUMBER` trap in the purchase counter.
-  const declared: string[] = MENUS['main'].buttons.map((b) => b.action);
-  const live = layout('main');
+  const declared: string[] = MENUS[menuId].buttons.map((b) => b.action);
+  const live = layout(menuId);
   return live
     .filter((b) => b.visible && declared.includes(b.action))
     .map((b) => ({
@@ -356,35 +357,140 @@ export function mainMenuButtons(): { action: string; label: string; slot: number
     }));
 }
 
-/** The declared action a slot names, or null if the number means nothing. */
-export function mainMenuActionAt(slot: number): string | null {
-  return MENUS['main'].buttons[slot - 1]?.action ?? null;
+/**
+ * Every keyboard an admin can put an emoji on, numbered the same way a button
+ * is: by its declared order in `MENUS`, 1-based. A keyboard with nothing
+ * visible on it is left out — there would be nothing to press.
+ */
+export function emojiMenus(): { id: MenuId; label: string; no: number }[] {
+  return MENU_IDS.map((id, i) => ({ id, label: MENUS[id].label, no: i + 1 })).filter(
+    (m) => menuButtons(m.id).length > 0,
+  );
+}
+
+/** The keyboard a menu number names, or null if the number means nothing. */
+export function emojiMenuAt(no: number): MenuId | null {
+  return MENU_IDS[no - 1] ?? null;
 }
 
 /**
- * The first screen: which button are we changing?
+ * The first screen: which keyboard are we changing?
+ *
+ * Sam, 2026-09-17: the picker used to offer the main menu only, and every
+ * other screen — buying, my services, renewal, the wallet — had to be edited
+ * from the panel by hand. Now every keyboard is here, one per group, and the
+ * buttons of the chosen one come next.
+ */
+export function emojiHome(): string {
+  return ['🎨 ایموجی پریمیوم', '', 'کدام منو را می‌خواهی عوض کنی؟'].join('\n');
+}
+
+/** The keyboards, two to a row so twenty of them fit on a phone. */
+export function emojiMenuList(menus: { label: string; no: number }[]): InlineKeyboard {
+  const rows: InlineKeyboard = [];
+  for (let i = 0; i < menus.length; i += 2) {
+    rows.push(
+      menus.slice(i, i + 2).map((m) => ({ text: m.label, callback_data: encode('emjs', m.no) })),
+    );
+  }
+  // The catalogue is not a keyboard in `MENUS` — its buttons are rows of
+  // `products` and `product_plans` — so it gets a door of its own here.
+  rows.push([
+    { text: '📂 دسته‌بندی‌ها', callback_data: encode('emjc') },
+    { text: '🛒 سرویس‌ها و پلن‌ها', callback_data: encode('emjp') },
+  ]);
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+/** The categories — the shop's first screen — one level, so the tap asks straight away. */
+export function emojiCategoriesHome(): string {
+  return ['🎨 ایموجی پریمیوم', '', 'کدام دسته‌بندی؟'].join('\n');
+}
+
+export function emojiCategoryList(categories: { id: number; label: string }[]): InlineKeyboard {
+  const rows: InlineKeyboard = categories.map((c) => [
+    { text: c.label, callback_data: encode('emjc', c.id) },
+  ]);
+  rows.push([{ text: '⬅️ منوهای دیگر', callback_data: encode('emj') }]);
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+export const EMOJI_NO_CATEGORIES = '❌ دسته‌بندی فعالی نیست.';
+
+/**
+ * The catalogue's two screens: which service, then which of its plans.
+ *
+ * Sam, 2026-09-17: «هر سرویسی که می‌خوام داخلش برم و هر پلنی که می‌خوام اونجا
+ * پریمیوم ایموجی بزنم». Labels are drawn with their markup intact, like
+ * `emojiHomeMenu`, so the list shows which plans already carry an icon.
+ */
+export function emojiServicesHome(): string {
+  return ['🎨 ایموجی پریمیوم', '', 'کدام سرویس؟'].join('\n');
+}
+
+export function emojiServiceList(services: { id: number; label: string }[]): InlineKeyboard {
+  const rows: InlineKeyboard = services.map((s) => [
+    { text: s.label, callback_data: encode('emjp', s.id) },
+  ]);
+  rows.push([{ text: '⬅️ منوهای دیگر', callback_data: encode('emj') }]);
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+export function emojiPlansHome(serviceLabel: string): string {
+  return [
+    '🎨 ایموجی پریمیوم',
+    '',
+    `«${stripCustomEmoji(serviceLabel).trim()}» — کدام پلن را می‌خواهی عوض کنی؟`,
+  ].join('\n');
+}
+
+export function emojiPlanList(
+  plans: { id: number; label: string }[],
+  productId: number,
+): InlineKeyboard {
+  // The service's own button first — the one the tier screen draws — then
+  // its plans. Sam, 2026-09-17: «واسه خودِ سرویس هم بتونم ایموجی بزنم».
+  const rows: InlineKeyboard = [
+    [{ text: '🔘 دکمهٔ خودِ سرویس', callback_data: encode('emjq', productId) }],
+    ...plans.map((p) => [{ text: p.label, callback_data: encode('emjp', productId, p.id) }]),
+  ];
+  rows.push([{ text: '⬅️ سرویس‌های دیگر', callback_data: encode('emjp') }]);
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+export const EMOJI_NO_SERVICES = '❌ سرویس فعالی نیست که دکمه‌ای داشته باشد.';
+export const EMOJI_NO_PLANS = '❌ این سرویس پلن فعالی ندارد.';
+
+/**
+ * The second screen: which button of that keyboard?
  *
  * Button first, emoji second — Sam, 2026-09-03: «برم تو منوی ایموجی، منو رو
  * انتخاب کنم، و وقتی ایموجی‌ای که می‌خوام رو می‌زنم همون جایگزین بشه». The first
  * build asked for the emoji first and then where to put it, which reads
  * backwards: you go in knowing which button you are unhappy with.
  */
-export function emojiHome(): string {
-  return [
-    '🎨 ایموجی پریمیوم',
-    '',
-    'کدام دکمه را می‌خواهی عوض کنی؟',
-  ].join('\n');
+export function emojiButtonsHome(menuId: MenuId): string {
+  return ['🎨 ایموجی پریمیوم', '', `«${MENUS[menuId].label}» — کدام دکمه را می‌خواهی عوض کنی؟`].join(
+    '\n',
+  );
 }
 
-/** The buttons of the main menu, drawn as they are drawn for a customer. */
-export function emojiHomeMenu(buttons: { label: string; slot: number }[]): InlineKeyboard {
+/** The buttons of one keyboard, drawn as they are drawn for a customer. */
+export function emojiHomeMenu(
+  buttons: { label: string; slot: number }[],
+  menuNo: number,
+): InlineKeyboard {
   const rows: InlineKeyboard = buttons.map((b) => [
     // The label with its markup INTACT, so `keyboardFor` turns a tag it already
     // carries into this button's icon. An admin looking at this list is looking
     // at what the customer sees — including which buttons already have one.
-    { text: b.label, callback_data: encode('emjb', b.slot) },
+    { text: b.label, callback_data: encode('emjs', menuNo, b.slot) },
   ]);
+  rows.push([{ text: '⬅️ منوهای دیگر', callback_data: encode('emj') }]);
   rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
   return rows;
 }
@@ -424,7 +530,7 @@ export function emojiChanged(label: string): string {
     `✅ ایموجی پریمیوم «${stripCustomEmoji(label).trim()}» تغییر کرد.`,
     '',
     'ایموجی قبلی، اگر وجود داشت، حذف شد و فقط ایموجی جدید روی دکمه ماند.',
-    'برای تغییر دکمهٔ دیگر، آن را از فهرست زیر انتخاب کن.',
+    'برای تغییر دکمهٔ دیگر، آن را از فهرست زیر انتخاب کن — یا با «منوهای دیگر» سراغ منوی دیگری برو.',
   ].join('\n');
 }
 
@@ -479,6 +585,17 @@ export const EMOJI_NOT_AN_EMOJI = [
 export function emojiRefused(reason: 'TOO_LONG' | 'GONE' | 'BAD_EMOJI', label: string): string {
   if (reason === 'TOO_LONG') return emojiTooLong(label);
   return reason === 'GONE' ? EMOJI_BUTTON_GONE : EMOJI_NOT_AN_EMOJI;
+}
+
+/** The same three, for a catalogue button — whose cap is its badge's and whose editor is the panel. */
+export function catalogEmojiRefused(reason: 'TOO_LONG' | 'GONE' | 'BAD_EMOJI', label: string): string {
+  if (reason === 'TOO_LONG') {
+    return [
+      `❌ روی «${stripCustomEmoji(label).trim()}» جا نشد.`,
+      'نشانِ این دکمه با ایموجی از ۲۴ نویسه بیشتر می‌شود؛ اول در پنل کوتاهش کن.',
+    ].join('\n');
+  }
+  return reason === 'GONE' ? '❌ این دکمه دیگر فعال نیست.' : EMOJI_NOT_AN_EMOJI;
 }
 
 export function mainMenu(viewer: MenuViewer): InlineKeyboard {
@@ -623,7 +740,13 @@ export function choosePlan(
   discountPercent = 0,
 ): string {
   const title = TEXTS_NOW.render('CHOOSE_PLAN', { product: productName });
-  const table = tariffTable(plans, discountPercent);
+  // The shop's own words win over the generated price list. Sam, 2026-09-17:
+  // «خودم بتونم توضیحات براش بنویسم، دیفالت قیمت». The description belongs to
+  // the product, and every row here is one product's (`plansInProduct`), so
+  // the first row carries it. Whitespace-only is «not written», not a blank
+  // screen.
+  const own = plans[0]?.productDescription?.trim() ?? '';
+  const table = own !== '' ? own : tariffTable(plans, discountPercent);
   return table === '' ? title : `${title}\n\n${table}`;
 }
 
@@ -1616,6 +1739,22 @@ export function orderExpired(publicId: string): string {
     t.render('PAID_TRACKING_ID', { id: publicId }),
     '',
     t.raw('ORDER_EXPIRED_CARD_STALE'),
+  ].join('\n');
+}
+
+/**
+ * The deadline passed on an invoice whose customer HAD pressed «پرداخت کردم».
+ * The card is back in the line; the claim is not — it waits for review, and
+ * this says both so a customer who paid does not conclude their money is gone.
+ */
+export function claimedInvoiceClosed(publicId: string): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('ORDER_DEADLINE_CLAIMED_TITLE'),
+    '',
+    t.render('PAID_TRACKING_ID', { id: publicId }),
+    '',
+    t.raw('ORDER_DEADLINE_CLAIMED_BODY'),
   ].join('\n');
 }
 

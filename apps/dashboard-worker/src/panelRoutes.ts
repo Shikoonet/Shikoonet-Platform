@@ -196,6 +196,13 @@ const PanelPatch = z
      */
     newcomersOnly: z.boolean().optional(),
     /**
+     * «مسیر داشبورد» — where the panel's web UI lives under `baseUrl`, for the
+     * account links on the customer screen. PasarGuard's `DASHBOARD_PATH` env
+     * moves it off `/dashboard/`; null means that default. Read by
+     * `panelUserUrl` in `salesRoutes.ts`, nowhere else.
+     */
+    dashboardPath: z.string().trim().max(200).nullable().optional(),
+    /**
      * «اینباند اکانت غیرفعال» — the groups an ended service is moved onto.
      *
      * Group ids, not the `protocol*tag` legacy stores: every live panel is
@@ -739,6 +746,12 @@ interface PanelRow {
   live_subscriptions: number;
 }
 
+/** A string or nothing — `config` is operator-edited jsonb, not a typed row. */
+function dashboardPathOf(config: Record<string, unknown>): string | null {
+  const v = config['dashboard_path'];
+  return typeof v === 'string' && v.trim() !== '' ? v : null;
+}
+
 function shape(r: PanelRow) {
   return {
     id: r.id,
@@ -779,6 +792,7 @@ function shape(r: PanelRow) {
     // `=== true`, not truthy: the catalogue compares the stored value to the
     // string 'true', so anything else is off there and must read as off here.
     newcomersOnly: (r.config ?? {})['newcomers_only'] === true,
+    dashboardPath: dashboardPathOf(r.config ?? {}),
     downgradeGroupIds: downgradeGroupsFor(r.config ?? {}) ?? [],
     // Whether a credential is configured, never which one. An unconfigured
     // panel cannot provision, and that is worth seeing on the list.
@@ -2292,6 +2306,9 @@ export function registerPanelRoutes(
     if (patch.extraVolumeMinGb !== undefined) configPatch['mainvolume'] = patch.extraVolumeMinGb;
     if (patch.extraTimeMinDays !== undefined) configPatch['maintime'] = patch.extraTimeMinDays;
     if (patch.newcomersOnly !== undefined) configPatch['newcomers_only'] = patch.newcomersOnly;
+    if (patch.dashboardPath !== undefined) {
+      configPatch['dashboard_path'] = patch.dashboardPath || null;
+    }
     if (patch.downgradeGroupIds !== undefined) {
       configPatch['downgrade_group_ids'] = patch.downgradeGroupIds ?? [];
     }

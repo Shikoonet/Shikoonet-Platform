@@ -28,10 +28,12 @@
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import {
   DEFAULT_LAYOUTS,
+  MAX_BADGE_LENGTH,
   MAX_LABEL_LENGTH,
   labelMarkupProblem,
   renderedLabelLength,
   splitCustomEmojiLabel,
+  type MenuId,
 } from '@shikoo/contracts';
 import { invalidateBotContent } from './botContent.js';
 
@@ -206,6 +208,29 @@ export async function emojiById(db: Db, id: number): Promise<StoredEmoji | null>
  * shortening the label will never make it work. `EMOJI_BUTTON_GONE` already
  * existed and was unreachable from this path.
  */
+/**
+ * `source` with its old icon — a leading `<tg-emoji>` tag, or leading ordinary
+ * emoji, flags and keycaps — replaced by this one. Shared by the keyboard
+ * writer and the catalogue writer so «replace, never stack» is one rule.
+ */
+function iconInFront(source: string, emoji: { customEmojiId: string; fallbackEmoji: string }): string {
+  let plain = splitCustomEmojiLabel(source).text.trim();
+  const graphemes = new Intl.Segmenter('fa', { granularity: 'grapheme' });
+  while (plain !== '') {
+    const first = graphemes.segment(plain)[Symbol.iterator]().next().value?.segment;
+    if (
+      first === undefined ||
+      (!PICTOGRAPHIC_GRAPHEME.test(first) &&
+        !FLAG_GRAPHEME.test(first) &&
+        !KEYCAP_GRAPHEME.test(first))
+    ) {
+      break;
+    }
+    plain = plain.slice(first.length).trimStart();
+  }
+  return `<tg-emoji emoji-id="${emoji.customEmojiId}">${emoji.fallbackEmoji}</tg-emoji> ${plain}`;
+}
+
 export type EmojiRefusal =
   /** The label with the emoji on it is over `MAX_LABEL_LENGTH`. Shortening helps. */
   | 'TOO_LONG'
@@ -218,6 +243,7 @@ export type EmojiPlacement = { ok: true; label: string } | { ok: false; reason: 
 
 export async function setButtonEmoji(
   db: Db,
+  menu: MenuId,
   action: string,
   emoji: { customEmojiId: string; fallbackEmoji: string },
 ): Promise<EmojiPlacement> {
@@ -233,23 +259,7 @@ export async function setButtonEmoji(
   //     characters, so a button already near the cap goes over it, and the only
   //     thing that noticed was the CHECK in 0053 — as an exception thrown out of
   //     an admin's button press, with a constraint name for a message.
-  const withEmoji = (source: string): string => {
-    let plain = splitCustomEmojiLabel(source).text.trim();
-    const graphemes = new Intl.Segmenter('fa', { granularity: 'grapheme' });
-    while (plain !== '') {
-      const first = graphemes.segment(plain)[Symbol.iterator]().next().value?.segment;
-      if (
-        first === undefined ||
-        (!PICTOGRAPHIC_GRAPHEME.test(first) &&
-          !FLAG_GRAPHEME.test(first) &&
-          !KEYCAP_GRAPHEME.test(first))
-      ) {
-        break;
-      }
-      plain = plain.slice(first.length).trimStart();
-    }
-    return `<tg-emoji emoji-id="${emoji.customEmojiId}">${emoji.fallbackEmoji}</tg-emoji> ${plain}`;
-  };
+  const withEmoji = (source: string): string => iconInFront(source, emoji);
   // Reject an invalid fallback before materialising a default layout. Length
   // is checked later against the raw stored label, which may still contain an
   // old tag even when the shop's display-time switch exposed only its glyph.
@@ -271,18 +281,20 @@ export async function setButtonEmoji(
   // with this one label changed. That is also what the panel's own save does,
   // which keeps the two writers producing the same kind of row.
   const anySaved = await db
-    .prepare(`SELECT 1 AS present FROM bot_keyboard_buttons WHERE menu = 'main' LIMIT 1`)
+    .prepare(`SELECT 1 AS present FROM bot_keyboard_buttons WHERE menu = ?1 LIMIT 1`)
+    .bind(menu)
     .first<{ present: number }>();
 
   if (!anySaved) {
-    for (const b of DEFAULT_LAYOUTS['main']) {
+    for (const b of DEFAULT_LAYOUTS[menu]) {
       await db
         .prepare(
           `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
-           VALUES ('main', ?1, ?2, ?3, ?4, ?5)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
            ON CONFLICT (menu, action) DO NOTHING`,
         )
         .bind(
+          menu,
           b.action,
           b.label,
           b.rowIndex,
@@ -308,8 +320,8 @@ export async function setButtonEmoji(
   // the old glyph as plain text, so each replacement would still visibly
   // accumulate despite there being only one tag.
   const stored = await db
-    .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = ?1`)
-    .bind(action)
+    .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = ?1 AND action = ?2`)
+    .bind(menu, action)
     .first<{ label: string }>();
   if (!stored) return { ok: false, reason: 'GONE' };
   const label = withEmoji(stored.label);
@@ -318,11 +330,11 @@ export async function setButtonEmoji(
 
   const updated = await db
     .prepare(
-      `UPDATE bot_keyboard_buttons SET label = ?2
-        WHERE menu = 'main' AND action = ?1
+      `UPDATE bot_keyboard_buttons SET label = ?3
+        WHERE menu = ?1 AND action = ?2
        RETURNING action`,
     )
-    .bind(action, label)
+    .bind(menu, action, label)
     .first<{ action: string }>();
   // Nothing came back, so nothing was written. Two ways to arrive: the button
   // is in `MENUS` but absent from this shop's saved layout — an admin removed
@@ -335,4 +347,102 @@ export async function setButtonEmoji(
   // the old icon return immediately after the success screen.
   invalidateBotContent();
   return { ok: true, label };
+}
+
+// ---------------------------------------------------------------------------
+// The same picker, for the catalogue
+//
+// Sam, 2026-09-17: «هر سرویسی که می‌خوام داخلش برم و هر پلنی که می‌خوام اونجا
+// پریمیوم ایموجی بزنم». The keyboards above are `bot_keyboard_buttons`; a
+// plan's button is drawn from `product_plans.badge`, which `badged()` puts in
+// front of the label — exactly where `keyboardFor` reads the icon from. So
+// the emoji goes into the badge, replacing whatever icon led it, and the cap
+// is the badge's own (`MAX_BADGE_LENGTH`, migration 0060), not a button's.
+// ---------------------------------------------------------------------------
+
+export interface CatalogButton {
+  id: number;
+  /** As the customer's button reads it — badge in front, markup intact. */
+  label: string;
+}
+
+/**
+ * The three catalogue tables a badge lives on, and how each says «still drawn».
+ *
+ * A category has `active`; the other two have `status`. One map rather than
+ * three functions, so the reader and the writer below cannot disagree about
+ * which rows are buttons.
+ */
+export type BadgeTable = 'product_categories' | 'products' | 'product_plans';
+const DRAWN: Record<BadgeTable, string> = {
+  product_categories: 'active',
+  products: "status = 'ACTIVE'",
+  product_plans: "status = 'ACTIVE'",
+};
+
+/** The buttons of one table, in the shop's own order. A hidden row has none to icon. */
+async function catalogButtons(db: Db, table: BadgeTable, where = '', ...args: unknown[]): Promise<CatalogButton[]> {
+  const { results } = await db
+    .prepare(`SELECT id, name, badge FROM ${table} WHERE ${DRAWN[table]} ${where} ORDER BY sort_order, id`)
+    .bind(...args)
+    .all<{ id: number; name: string; badge: string | null }>();
+  return (results ?? []).map((r) => ({ id: r.id, label: badgedLabel(r.badge, r.name) }));
+}
+
+export const emojiCategories = (db: Db) => catalogButtons(db, 'product_categories');
+export const emojiServices = (db: Db) => catalogButtons(db, 'products');
+export const emojiPlans = (db: Db, productId: number) =>
+  catalogButtons(db, 'product_plans', 'AND product_id = ?1', productId);
+
+/** The same shape `menu.ts`'s `badged()` draws — not exported from there. */
+function badgedLabel(badge: string | null, name: string): string {
+  const b = badge?.trim();
+  return b ? `${b} ${name}` : name;
+}
+
+/**
+ * Puts the emoji at the front of one catalogue button's badge — a category, a
+ * service or a plan — and answers with the label as that button now reads.
+ *
+ * The rest of the badge stays: «🔥 آف» becomes «<tag> آف», not «<tag>». A row
+ * with no badge gets the tag alone, which draws as the icon and nothing else —
+ * `renderedLabelLength` of it is 1, inside 0060's `BETWEEN 1 AND 24`.
+ *
+ * A plan's write is scoped to `productId` as well as its own id, so a forged
+ * `emjp:<a>:<b>` cannot icon a plan through a service it is not in — the same
+ * «an id out of callback_data never selects a row on its own» rule
+ * `callback.ts` states, applied to the tables an admin may write here.
+ */
+export async function setBadgeEmoji(
+  db: Db,
+  table: BadgeTable,
+  id: number,
+  emoji: { customEmojiId: string; fallbackEmoji: string },
+  productId?: number,
+): Promise<EmojiPlacement> {
+  if (labelMarkupProblem(iconInFront('', emoji))) return { ok: false, reason: 'BAD_EMOJI' };
+  // A plan carries its service as one more bound parameter; the other two
+  // tables bind only their own id.
+  const plan = table === 'product_plans';
+  const row = await db
+    .prepare(
+      `SELECT name, badge FROM ${table}
+        WHERE id = ?1 ${plan ? 'AND product_id = ?2' : ''} AND ${DRAWN[table]}`,
+    )
+    .bind(...(plan ? [id, productId ?? null] : [id]))
+    .first<{ name: string; badge: string | null }>();
+  if (!row) return { ok: false, reason: 'GONE' };
+  const badge = iconInFront(row.badge ?? '', emoji).trim();
+  if (labelMarkupProblem(badge)) return { ok: false, reason: 'BAD_EMOJI' };
+  if (renderedLabelLength(badge) > MAX_BADGE_LENGTH) return { ok: false, reason: 'TOO_LONG' };
+  const updated = await db
+    .prepare(
+      `UPDATE ${table} SET badge = ?2
+        WHERE id = ?1 ${plan ? 'AND product_id = ?3' : ''} AND ${DRAWN[table]}
+       RETURNING id`,
+    )
+    .bind(...(plan ? [id, badge, productId ?? null] : [id, badge]))
+    .first<{ id: number }>();
+  if (!updated) return { ok: false, reason: 'GONE' };
+  return { ok: true, label: badgedLabel(badge, row.name) };
 }

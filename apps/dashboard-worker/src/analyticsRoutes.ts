@@ -250,7 +250,7 @@ async function loadAccountBankInflow(
   return { amountIrr: row?.amount_irr ?? 0, count: row?.count ?? 0 };
 }
 
-/** Money that left the account in range — debits the phone relayed, off-books excluded (0072). */
+/** Money that left the account in range — debits the phone relayed, off-books excluded (0073). */
 async function loadAccountBankOutflow(
   db: D1Database,
   accountId: string | null,

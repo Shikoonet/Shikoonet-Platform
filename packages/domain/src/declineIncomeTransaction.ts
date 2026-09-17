@@ -8,7 +8,7 @@
 import type { D1Database } from '@shikoo/database';
 import { INCOME_TX_WHERE, OFF_BOOKS_ELIGIBLE_TX_WHERE, TX_INCOME_DECLINED } from './incomeEligibility.js';
 
-/** Why a movement is not the shop's — 0072. `OTHER` is the pre-0072 rows. */
+/** Why a movement is not the shop's — 0073. `OTHER` is the pre-0073 rows. */
 export const OFF_BOOKS_CATEGORIES = ['TRANSFER', 'PERSONAL', 'MISTAKE_RETURNED', 'BANK_FEE', 'BANK_INTEREST', 'OTHER'] as const;
 export type OffBooksCategory = (typeof OFF_BOOKS_CATEGORIES)[number];
 
@@ -41,7 +41,7 @@ export async function wouldReturnToIncome(db: D1Database, transactionId: string)
   return isIncomeEligible(db, transactionId);
 }
 
-/** A credit the income queue would show, or any live debit (0072). */
+/** A credit the income queue would show, or any live debit (0073). */
 export async function isOffBooksEligible(
   db: Pick<D1Database, 'prepare'>,
   transactionId: string,

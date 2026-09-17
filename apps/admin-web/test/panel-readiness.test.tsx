@@ -32,6 +32,7 @@ function panel(over: Partial<PanelItem>): PanelItem {
     extraVolumeMinGb: null,
     extraTimeMinDays: null,
     newcomersOnly: false,
+    dashboardPath: null,
     renewEnabled: true,
     usernameMode: 'TELEGRAM_ID',
     usernameText: null,

@@ -991,17 +991,27 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                         />
                       );
                     }
-                    if (kind === 'suspected_fake' || kind === 'NO_TRANSFER_FOUND') {
+                    // Every parked row gets the same row, whatever shape it
+                    // has grown into meanwhile — that is where «برگردان» lives.
+                    if (
+                      tab === 'parked' ||
+                      kind === 'suspected_fake' ||
+                      kind === 'NO_TRANSFER_FOUND'
+                    ) {
                       return (
                         <NoTransferRow
                           key={item.id}
                           item={item}
                           isNew={isClaimNew(item)}
+                          parked={tab === 'parked'}
                           onReview={() => openClaim(item)}
                           onRemove={() =>
                             post(`/api/v1/suspects/${item.id}/reject`, {
                               reason: 'NO_BANK_TRANSACTION',
                             })
+                          }
+                          onPark={() =>
+                            post(`/api/v1/suspects/${item.id}/park`, { parked: tab !== 'parked' })
                           }
                           onError={setError}
                         />
@@ -1188,6 +1198,7 @@ function emptyText(tab: PaymentTab): string {
   // pending claim that matched none of their predicates left every one of them
   // looking empty while the money sat undecided.
   if (tab === 'open') return 'هیچ پرداختی منتظر تصمیم نیست.';
+  if (tab === 'parked') return 'چیزی کنار گذاشته نشده است.';
   if (tab === 'needs_review') return 'چیزی نیاز به بررسی ندارد.';
   if (tab === 'income') return 'در این بازه واریزی تخصیص‌نیافته‌ای نیست.';
   if (tab === 'declined_income') return 'در این بازه واریزی ردشده‌ای نیست.';
@@ -1410,20 +1421,35 @@ function WaitingRow({ item, onDetails }: { item: PaymentItem; onDetails: () => v
 function NoTransferRow({
   item,
   isNew,
+  parked,
   onReview,
   onRemove,
+  onPark,
   onError,
 }: {
   item: PaymentItem;
   isNew?: boolean;
+  parked: boolean;
   onReview: () => void;
   onRemove: () => Promise<void>;
+  onPark: () => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [busy, setBusy] = useState(false);
   const identity = paymentIdentityLine(item);
   const masked = maskAccountHint(item.accountHint, item.cardMasked);
+
+  async function runPark() {
+    setBusy(true);
+    try {
+      await onPark();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'park_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function runRemove() {
     setBusy(true);
@@ -1477,6 +1503,14 @@ function NoTransferRow({
           <>
             <button type="button" className="primary hub-list-row__action" onClick={onReview}>
               بررسی
+            </button>
+            <button
+              type="button"
+              className="ghost hub-list-row__action"
+              disabled={busy}
+              onClick={() => void runPark()}
+            >
+              {parked ? 'برگردان' : 'کنار بگذار'}
             </button>
             <button
               type="button"

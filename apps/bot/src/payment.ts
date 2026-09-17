@@ -58,8 +58,8 @@ export interface CheckoutPayment {
  * away — measured before 0029 on a pool of 30, ten cards took everything.
  *
  * While an invoice holds a card, the card is out of the line FOR THAT AMOUNT:
- * ten minutes from being shown, or until the claim is settled once the
- * customer pressed «پرداخت کردم». That keeps two customers from being told to
+ * `pay/card_hold_minutes` from being shown, ten by default, and «پرداخت کردم»
+ * does not stretch it (Sam, 2026-09-17). That keeps two customers from being told to
  * pay the same amount into the same card inside one window, which is the one
  * thing the auto-matcher cannot untangle (`AMBIGUOUS_CLAIMS`); an order for a
  * different amount is handed the card as if it were free. The hold is the
@@ -326,11 +326,19 @@ export async function recordPaidClick(
   // Deliberately not filtered on status. Anything other than EXPIRED falls
   // through to the payment lookup below, which has always been what decides
   // 'already' from 'none'.
+  //
+  // A deadline already passed counts as expired too, even before the sweep
+  // has marked the row: the card on that invoice is free for the next
+  // customer from the deadline on, so a claim opened against it now would be
+  // a claim on somebody else's card.
   const order = await tx
-    .prepare(`SELECT status FROM orders WHERE id = ?1 FOR UPDATE`)
+    .prepare(`SELECT status, expires_at FROM orders WHERE id = ?1 FOR UPDATE`)
     .bind(orderId)
-    .first<{ status: string }>();
+    .first<{ status: string; expires_at: string | null }>();
   if (order?.status === 'EXPIRED') return { outcome: 'expired' };
+  if (order?.expires_at !== null && order?.expires_at !== undefined) {
+    if (Date.parse(order.expires_at) <= now) return { outcome: 'expired' };
+  }
 
   const payment = await tx
     .prepare(
@@ -412,7 +420,9 @@ export type WithdrawResult =
   /** Something is on the claim — a receipt, or a deposit the matcher has seen — so a person owns it now. */
   | { outcome: 'evidence'; publicId: string }
   /** Nothing of theirs to take back, and no invoice to put back. */
-  | { outcome: 'none' };
+  | { outcome: 'none' }
+  /** The claim is taken back, but the deadline has passed: no invoice is put back. */
+  | { outcome: 'expired' };
 
 /**
  * «پرداختی نکردم» — the customer takes back a «پرداخت کردم» they pressed by
@@ -507,6 +517,14 @@ export async function withdrawPaidClick(
     )
     .bind(payment.id, WITHDRAWN)
     .run();
+  // Past the deadline there is no invoice to put back: its card has been free
+  // for the next customer since then, and a fresh PENDING row here would hold
+  // that card again for an order the sweep is about to close. The claim is
+  // still gone — the customer said they did not pay — and the order expires
+  // like any unpaid one on the next cycle.
+  if (order.expires_at !== null && Date.parse(order.expires_at) <= now) {
+    return { outcome: 'expired' };
+  }
   // The invoice, back as it was. No rotation: the card printed on the message
   // the customer is looking at is the card this row must name.
   const reissued = await tx
