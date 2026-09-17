@@ -221,6 +221,15 @@ async function loadAccountAndProbes(
     const t = FAI_KIND_TO_PROBE_TYPE[r.kind];
     if (t) probes.push({ type: t, value: r.value, source: 'fai', faiId: r.id });
   }
+  // A parser records the same number under either name. The generic
+  // extractor writes ACCOUNT_NUMBER; melli.ts writes ACCOUNT_HINT because its
+  // five-digit hint («06006») is too short for the extractor. Until
+  // 2026-09-17 only ACCOUNT_NUMBER was probed, so «اجرای دوبارهٔ تخصیص» on a
+  // Melli account offered nothing while two deposits for exactly its number
+  // sat unassigned. Same value, both names; `findCandidateTxs` dedupes on tx.
+  for (const p of [...probes]) {
+    if (p.type === 'ACCOUNT_NUMBER') probes.push({ ...p, type: 'ACCOUNT_HINT' });
+  }
 
   return { kind: 'ok', snapshot, probes };
 }
