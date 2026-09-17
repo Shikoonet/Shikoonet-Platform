@@ -32,6 +32,7 @@ function makeClaimItem(over: Partial<PaymentItem> & { id: string }): PaymentItem
     expectedAmountIrr: 1_950_000,
     expectedAmountToman: 195_000,
     cardMasked: '**** **** **** 5678',
+    cardDisplay: '5054-1617-0627-5678',
     accountId: 'acc-1',
     accountDisplay: 'Melli Main',
     accountBank: 'Melli',
@@ -199,6 +200,12 @@ describe('useBotAutoVerifiedFilter — URL state', () => {
     render(<Probe />);
     expect(screen.getByTestId('segment').textContent).toBe('RENEWAL');
     expect(screen.getByTestId('date').textContent).toBe('YESTERDAY');
+  });
+
+  it('the wallet segment round-trips through the URL as purchaseType=wallet', () => {
+    window.history.replaceState(null, '', '/?purchaseType=wallet');
+    render(<Probe />);
+    expect(screen.getByTestId('segment').textContent).toBe('WALLET_TOPUP');
   });
 });
 

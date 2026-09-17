@@ -224,6 +224,28 @@ describe('purchase_type on the auto-verified tab', () => {
     });
   });
 
+  describe('Scenario 2b — WALLET_TOPUP (0071)', () => {
+    it('appears under شارژ کیف پول and in neither of the other two', async () => {
+      await seedClaim({
+        id: 'wt-1',
+        orderId: 'ord-wt-1',
+        matchStatus: 'AUTO_VERIFIED',
+        purchaseType: 'WALLET_TOPUP',
+        operationType: 'wallet',
+      });
+      const wallet = await callPayments(
+        'tab=bot_auto_verified&purchaseType=WALLET_TOPUP&range=today',
+      );
+      const newP = await callPayments(
+        'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
+      );
+      const ren = await callPayments('tab=bot_auto_verified&purchaseType=RENEWAL&range=today');
+      expect(hasClaim(wallet.body.items, 'wt-1')).toBe(true);
+      expect(hasClaim(newP.body.items, 'wt-1')).toBe(false);
+      expect(hasClaim(ren.body.items, 'wt-1')).toBe(false);
+    });
+  });
+
   describe('Scenario 2 — RENEWAL (getextenduser)', () => {
     it('appears in Renewals', async () => {
       await seedClaim({

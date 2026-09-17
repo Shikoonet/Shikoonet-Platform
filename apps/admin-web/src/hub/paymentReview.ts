@@ -165,6 +165,7 @@ export interface PaymentItem {
   expectedAmountIrr: number;
   expectedAmountToman: number;
   cardMasked: string | null;
+  cardDisplay: string | null;
   accountId: string | null;
   accountDisplay: string | null;
   accountBank: string | null;
@@ -234,7 +235,7 @@ export interface PaymentItem {
   reconciledAt?: number | null;
   isNew?: boolean;
   /** Business classification (NEW_PURCHASE / RENEWAL / UNKNOWN). */
-  purchaseType?: 'NEW_PURCHASE' | 'RENEWAL' | 'UNKNOWN';
+  purchaseType?: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP' | 'UNKNOWN';
   /** Raw Mirzabot step (e.g. getconfigafterpay); null on the platform's own claims. */
   operationType?: string | null;
 }

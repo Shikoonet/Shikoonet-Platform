@@ -29,6 +29,7 @@ function item(over: Partial<PaymentItem> & { id: string }): PaymentItem {
     expectedAmountIrr: 1_950_000,
     expectedAmountToman: 195_000,
     cardMasked: '**** **** **** 5678',
+    cardDisplay: '5054-1617-0627-5678',
     accountId: 'acc-1',
     accountDisplay: 'Melli Main',
     accountBank: 'Melli',

@@ -129,6 +129,7 @@ function PaymentIdentity({ item }: { item: PaymentItem }) {
 function PurchaseTypeBadge({ item }: { item: PaymentItem }) {
   if (item.purchaseType === 'NEW_PURCHASE') return <span className="badge badge-info">خرید جدید</span>;
   if (item.purchaseType === 'RENEWAL') return <span className="badge">تمدید</span>;
+  if (item.purchaseType === 'WALLET_TOPUP') return <span className="badge">شارژ کیف پول</span>;
   return null;
 }
 
@@ -2231,7 +2232,7 @@ function ReviewPanel({
           <dt>مبلغ مورد انتظار</dt>
           <dd className="tabular-nums">{formatToman(item.expectedAmountToman)}</dd>
           <dt>کارت نمایش‌داده‌شده</dt>
-          <dd>{item.cardMasked ?? '—'}</dd>
+          <dd className="ltr tabular-nums">{item.cardDisplay ?? item.cardMasked ?? '—'}</dd>
           <dt>وضعیت</dt>
           <dd>{stateLabel(item.reviewState)}</dd>
         </dl>
@@ -2413,6 +2414,15 @@ function ReviewPanel({
                           )}
                           <br />
                           <AccountRef account={c} />
+                          {/* The list crosses accounts now. Approving one of
+                              these moves the claim onto that account — say so
+                              where the choice is made, not in a toast after. */}
+                          {c.accountId != null && c.accountId !== item.accountId && (
+                            <>
+                              {' '}
+                              · <span className="payment-reason__flag">حساب دیگر — با تأیید، سفارش به این حساب می‌رود</span>
+                            </>
+                          )}
                           {c.timeDeltaSeconds != null && <> · Δ {c.timeDeltaSeconds} sec</>}
                           {c.alreadyConsumed && (
                             <>
