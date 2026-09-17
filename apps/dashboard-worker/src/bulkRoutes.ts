@@ -391,17 +391,38 @@ export function registerBulkRoutes(
         : ((await c.env.DB.prepare(
             `SELECT count(*)::int                                   AS total,
                     count(*) FILTER (WHERE status = 'SENT')::int   AS sent,
-                    count(*) FILTER (WHERE status = 'FAILED')::int AS failed
+                    count(*) FILTER (WHERE status = 'FAILED')::int AS failed,
+                    -- When the last row moved: what «finished ten minutes
+                    -- ago» is measured from. Queue time is the wrong clock
+                    -- for that — a 16k broadcast is still going ten minutes
+                    -- after it was queued.
+                    (extract(epoch FROM max(coalesce(sent_at, claimed_at))) * 1000)::bigint
+                      AS last_at
                FROM broadcast_recipients
               WHERE broadcast_id = ?1`,
           )
             .bind(last.id)
-            .first<{ total: number; sent: number; failed: number }>()) ?? null);
+            .first<{ total: number; sent: number; failed: number; last_at: number | null }>()) ??
+          null);
 
     return c.json({
       ok: true,
       credit,
-      broadcast: last === null ? null : { ...last, progress },
+      broadcast:
+        last === null
+          ? null
+          : {
+              ...last,
+              progress:
+                progress === null
+                  ? null
+                  : {
+                      total: progress.total,
+                      sent: progress.sent,
+                      failed: progress.failed,
+                      lastAt: progress.last_at === null ? null : Number(progress.last_at),
+                    },
+            },
     });
   });
 
