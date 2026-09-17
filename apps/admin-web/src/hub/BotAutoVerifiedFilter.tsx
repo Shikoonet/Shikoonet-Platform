@@ -25,16 +25,18 @@
 import { useEffect, useState } from 'react';
 import { tehranAdjacentDay, tehranTodayDateString } from './historyRangeNav.js';
 
-export type BotAutoVerifiedSegment = 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP';
+export type BotAutoVerifiedSegment = 'NEW_PURCHASE' | 'FIRST_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP';
 export type BotAutoVerifiedDateFilter = 'ALL' | 'TODAY' | 'YESTERDAY' | 'DAY_BEFORE_YESTERDAY';
 
 const SEGMENT_TO_QUERY: Record<BotAutoVerifiedSegment, string> = {
   NEW_PURCHASE: 'new',
+  FIRST_PURCHASE: 'first',
   RENEWAL: 'renewal',
   WALLET_TOPUP: 'wallet',
 };
 const QUERY_TO_SEGMENT: Record<string, BotAutoVerifiedSegment> = {
   new: 'NEW_PURCHASE',
+  first: 'FIRST_PURCHASE',
   renewal: 'RENEWAL',
   wallet: 'WALLET_TOPUP',
 };
@@ -88,7 +90,7 @@ export function useBotAutoVerifiedFilter(): {
   setDate: (d: BotAutoVerifiedDateFilter) => void;
   /**
    * URL params to append to /api/v1/payments. The worker reads:
-   *   purchaseType=NEW_PURCHASE|RENEWAL|WALLET_TOPUP
+   *   purchaseType=NEW_PURCHASE|FIRST_PURCHASE|RENEWAL|WALLET_TOPUP
    *   range=today
    *   day=YYYY-MM-DD                     (Tehran calendar day)
    */
@@ -150,6 +152,8 @@ export function useBotAutoVerifiedFilter(): {
 
 const SEGMENT_OPTIONS: Array<{ value: BotAutoVerifiedSegment; label: string }> = [
   { value: 'NEW_PURCHASE', label: 'خریدهای جدید' },
+  // A subset of the new purchases: the customer's first paid service.
+  { value: 'FIRST_PURCHASE', label: 'خرید اول' },
   { value: 'RENEWAL', label: 'تمدیدها' },
   { value: 'WALLET_TOPUP', label: 'شارژ کیف پول' },
 ];

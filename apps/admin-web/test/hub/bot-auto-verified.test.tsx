@@ -202,6 +202,12 @@ describe('useBotAutoVerifiedFilter — URL state', () => {
     expect(screen.getByTestId('date').textContent).toBe('YESTERDAY');
   });
 
+  it('the first-purchase segment round-trips through the URL as purchaseType=first', () => {
+    window.history.replaceState(null, '', '/?purchaseType=first');
+    render(<Probe />);
+    expect(screen.getByTestId('segment').textContent).toBe('FIRST_PURCHASE');
+  });
+
   it('the wallet segment round-trips through the URL as purchaseType=wallet', () => {
     window.history.replaceState(null, '', '/?purchaseType=wallet');
     render(<Probe />);

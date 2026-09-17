@@ -1268,11 +1268,19 @@ export function registerMirzabotRoutes(
     // wrong -- and the row count sits in the response, so the operator can see
     // that it was.
     const EXPORT_MAX = 5000;
-    // «خریدهای جدید | تمدیدها | شارژ کیف پول» — only the auto-verified tab draws it. Until
-    // 2026-09-17 this sat behind ENABLE_PURCHASE_TYPE, which production never
-    // set, so the toggle changed the URL and nothing else.
+    // «خریدهای جدید | خرید اول | تمدیدها | شارژ کیف پول» — only the auto-verified
+    // tab draws it. Until 2026-09-17 this sat behind ENABLE_PURCHASE_TYPE,
+    // which production never set, so the toggle changed the URL and nothing
+    // else. FIRST_PURCHASE is not a bucket on the row: it is the new purchases
+    // whose customer owned nothing paid when they placed the order.
     const purchaseTypeFilter = url.searchParams.get('purchaseType');
-    const allowedPurchaseTypes = new Set(['NEW_PURCHASE', 'RENEWAL', 'WALLET_TOPUP', 'UNKNOWN']);
+    const allowedPurchaseTypes = new Set([
+      'NEW_PURCHASE',
+      'FIRST_PURCHASE',
+      'RENEWAL',
+      'WALLET_TOPUP',
+      'UNKNOWN',
+    ]);
     const purchaseTypeForQuery =
       tab === 'bot_auto_verified' && purchaseTypeFilter && allowedPurchaseTypes.has(purchaseTypeFilter)
         ? purchaseTypeFilter
@@ -1341,7 +1349,23 @@ export function registerMirzabotRoutes(
       if (reason) where.push(`c.suspect_reason = ${p(reason)}`);
       if (from != null) where.push(`${EFFECTIVE_TS} >= ${p(from)}`);
       if (to != null) where.push(`${EFFECTIVE_TS} <= ${p(to)}`);
-      if (purchaseTypeForQuery) {
+      if (purchaseTypeForQuery === 'FIRST_PURCHASE') {
+        // «Owned nothing paid» is OWNS_PAID_SERVICE_SQL in @shikoo/domain,
+        // asked as of the order rather than now — by now the customer owns
+        // exactly the service this claim paid for. A subscription is written
+        // at provisioning, so the order's own service is never earlier than
+        // the order. Only the platform's claims have an order to read; an
+        // imported Mirzabot row is never a first purchase here.
+        where.push(`c.purchase_type = 'NEW_PURCHASE' AND EXISTS (
+          SELECT 1 FROM payments fp JOIN orders fo ON fo.id = fp.order_id
+           WHERE c.external_order_id = 'shikoo:' || fp.public_id
+             AND NOT EXISTS (
+               SELECT 1 FROM subscriptions s LEFT JOIN orders so ON so.id = s.order_id
+                WHERE s.user_id = fo.user_id
+                  AND s.status <> 'PENDING_PAYMENT'
+                  AND so.kind IS DISTINCT FROM 'TRIAL'
+                  AND s.purchased_at < fo.created_at))`);
+      } else if (purchaseTypeForQuery) {
         where.push(`c.purchase_type = ${p(purchaseTypeForQuery)}`);
       }
 

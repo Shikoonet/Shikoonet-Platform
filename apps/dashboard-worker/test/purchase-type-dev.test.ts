@@ -224,6 +224,89 @@ describe('purchase_type on the auto-verified tab', () => {
     });
   });
 
+  describe('Scenario 1b — FIRST_PURCHASE: a new purchase by somebody who owned nothing paid', () => {
+    /** A platform claim `id`, paying for an order of `userId` placed at `orderCreatedAt`. */
+    async function platformPurchase(id: string, userId: number, orderCreatedAt: string) {
+      const e = baseEnv as unknown as Env;
+      await seedClaim({
+        id,
+        orderId: `ord-${id}`,
+        matchStatus: 'AUTO_VERIFIED',
+        purchaseType: 'NEW_PURCHASE',
+      });
+      const order = await e.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, total_irr, status, created_at)
+         VALUES (?1, ?2, 'NEW_PURCHASE', 1950000, 1950000, 'COMPLETED', ?3::timestamptz)
+         RETURNING id`,
+      )
+        .bind(`ord-${id}`, userId, orderCreatedAt)
+        .first<{ id: number }>();
+      await e.DB.prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+         VALUES (?1, ?2, ?3, 1950000, 'CARD_TO_CARD', 'PAID', now())`,
+      )
+        .bind(`pay-${id}`, userId, order!.id)
+        .run();
+      await e.DB.prepare(`UPDATE payment_claims SET external_order_id = ?1 WHERE id = ?2`)
+        .bind(`shikoo:pay-${id}`, id)
+        .run();
+    }
+
+    async function service(userId: number, orderPublicId: string, purchasedAt: string) {
+      const e = baseEnv as unknown as Env;
+      await e.DB.prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, order_id, plan_name_at_sale, price_irr, status, purchased_at)
+         VALUES (?1, ?2, (SELECT id FROM orders WHERE public_id = ?1), 'تست', 0, 'ACTIVE',
+                 ?3::timestamptz)`,
+      )
+        .bind(orderPublicId, userId, purchasedAt)
+        .run();
+    }
+
+    it('lists the first paid service and not the second; خریدهای جدید still lists both', async () => {
+      const e = baseEnv as unknown as Env;
+      for (const t of ['payments', 'subscriptions', 'orders']) {
+        await e.DB.prepare(`DELETE FROM ${t}`).run();
+      }
+      const user = await e.DB.prepare(
+        `INSERT INTO users (telegram_id, username, status, registered_at)
+         VALUES (42, 'first-buyer', 'ACTIVE', now())
+         ON CONFLICT (telegram_id) DO UPDATE SET status = 'ACTIVE' RETURNING id`,
+      ).first<{ id: number }>();
+      const userId = Number(user!.id);
+      // The free trial before it is not a purchase (Sam, 2026-09-16).
+      const provider = await e.DB.prepare(
+        `INSERT INTO provisioning_providers (code, name, kind, status)
+         VALUES ('ptd-trial', 'PTD', 'manual', 'ACTIVE')
+         ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+      ).first<{ id: number }>();
+      await e.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, provider_id, unit_price_irr, total_irr,
+                             status, created_at)
+         VALUES ('ord-trial', ?1, 'TRIAL', ?2, 0, 0, 'COMPLETED', '2026-08-01T00:00:00Z')`,
+      )
+        .bind(userId, provider!.id)
+        .run();
+      await service(userId, 'ord-trial', '2026-08-01T00:00:00Z');
+      await platformPurchase('fp-1', userId, '2026-08-10T08:00:00Z');
+      // Provisioned before the second order was placed.
+      await service(userId, 'ord-fp-1', '2026-08-10T08:05:00Z');
+      await platformPurchase('fp-2', userId, '2026-08-10T09:00:00Z');
+
+      const first = await callPayments(
+        'tab=bot_auto_verified&purchaseType=FIRST_PURCHASE&range=today',
+      );
+      const newP = await callPayments(
+        'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
+      );
+      expect(hasClaim(first.body.items, 'fp-1')).toBe(true);
+      expect(hasClaim(first.body.items, 'fp-2')).toBe(false);
+      expect(hasClaim(newP.body.items, 'fp-1')).toBe(true);
+      expect(hasClaim(newP.body.items, 'fp-2')).toBe(true);
+    });
+  });
+
   describe('Scenario 2b — WALLET_TOPUP (0071)', () => {
     it('appears under شارژ کیف پول and in neither of the other two', async () => {
       await seedClaim({
