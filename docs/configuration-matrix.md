@@ -193,7 +193,7 @@ rows in `device_credentials`. Nothing to store here.
 | `PANEL_SECRET_KEY` | seals the provisioning panel credential **and the bot token** | **yes** | when provisioning, or whenever a bot is connected from the dashboard | runtime-only | PRESENT |
 | `TRUSTED_PROXY_IP_HEADER` | client IP header | no | behind a proxy | build+runtime | PRESENT |
 | `ALLOWED_ORIGINS` | CORS / Origin allow-list | no | optional | runtime | not set |
-| `ENABLE_PURCHASE_TYPE` `DEV_BLOCK_DEVICE_ADMIN` | feature flags | no | optional | runtime | not set |
+| `DEV_BLOCK_DEVICE_ADMIN` | feature flag | no | optional | runtime | not set |
 | `ALERT_CHAT_ID` | alerts | no | optional | build+runtime | PRESENT |
 | `ADMIN_DIST` | where the built SPA is | no | optional | build | baked into the image |
 | `TEST_ACCESS_USER` | **skips login entirely.** Refused twice when `ENV_NAME` is not `local`/`test` | **yes** | never in a deployment | runtime | correctly absent |

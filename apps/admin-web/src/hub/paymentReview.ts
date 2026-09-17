@@ -229,10 +229,9 @@ export interface PaymentItem {
   fulfilmentReason?: string | null;
   reconciledAt?: number | null;
   isNew?: boolean;
-  /** DEV-only: business classification (NEW_PURCHASE / RENEWAL / UNKNOWN).
-   *  Present only when the worker is built with ENABLE_PURCHASE_TYPE=true. */
+  /** Business classification (NEW_PURCHASE / RENEWAL / UNKNOWN). */
   purchaseType?: 'NEW_PURCHASE' | 'RENEWAL' | 'UNKNOWN';
-  /** DEV-only: raw Mirzabot step (e.g. getconfigafterpay). */
+  /** Raw Mirzabot step (e.g. getconfigafterpay); null on the platform's own claims. */
   operationType?: string | null;
 }
 

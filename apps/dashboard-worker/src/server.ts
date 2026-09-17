@@ -52,7 +52,6 @@ function positiveInt(name: string, fallback: number): number {
 }
 
 const PASSTHROUGH = [
-  'ENABLE_PURCHASE_TYPE',
   'DEV_BLOCK_DEVICE_ADMIN',
   'INGEST_URL',
   // Comma-separated. Names the SPA's own host when it is served from a second
