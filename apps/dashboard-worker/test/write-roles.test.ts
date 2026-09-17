@@ -163,6 +163,8 @@ describe('every write route, asked directly', () => {
       'POST /api/v1/match/reject',
       'POST /api/v1/suspects/:claimId/approve',
       'POST /api/v1/suspects/:claimId/reject',
+      // Setting a claim aside is queue housekeeping — the operator's job.
+      'POST /api/v1/suspects/:claimId/park',
       // Retrying a failed preparation. On this list rather than the admin
       // surface on purpose: the role that approves the payment is the one who
       // must be able to finish the job when the panel call fails, or the
@@ -458,6 +460,11 @@ describe('every write route, asked directly', () => {
     // free trial again (Sam: «برای همه … یا برای گروه خاصی»). It hands out
     // free panel accounts, so ADMIN-only like the credit beside it, audited,
     // and refused for a REVIEWER and a READ_ONLY by the three tests above.
-    expect(writeRoutes().length).toBe(161);
+    //
+    // 162, 2026-09-17: `POST /suspects/:claimId/park` — moves an undecided
+    // claim between «در انتظار بررسی» and «کنار گذاشته». A view flag on a
+    // PENDING row, no money and no status change, so a REVIEWER may (it is
+    // their queue); READ_ONLY refused by the first test above.
+    expect(writeRoutes().length).toBe(162);
   });
 });
