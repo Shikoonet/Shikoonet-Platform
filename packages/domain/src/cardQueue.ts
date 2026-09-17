@@ -13,7 +13,12 @@
  *     shown — ten unless the operator changed it on the settings screen (Sam,
  *     2026-09-15: «۵ دقیقه یا ۲ دقیقه یا هر چقدر که دوست داره»). After that
  *     the customer is treated as gone and the card is free again — its place
- *     in the line does not move, it never took money.
+ *     in the line does not move, it never took money. The INVOICE dies at the
+ *     same moment: `order.ts` writes `orders.expires_at` from this same
+ *     setting (0070), so a customer can never hold a live invoice naming a
+ *     card that is already in somebody else's hands. Until 2026-09-17 the
+ *     invoice outlived the hold by twenty-three hours, and a deposit made in
+ *     that window was the one thing the matcher could not untangle.
  *   - AWAITING_REVIEW (customer pressed «پرداخت کردم»): money is probably in
  *     flight, so the card stays out until somebody settles the claim. Bounded
  *     by the widest window anything here waits for a bank SMS, the 24h of
@@ -32,11 +37,16 @@ export const CLAIMED_CARD_HOLD_MS = FULFILLED_RECONCILE_MAX_TIME_DELTA_MS;
  * The operator's number, read inside the statement so the bot and the
  * dashboard cannot hold different copies of it. The settings screen saves
  * numbers as JSON strings and 0064 seeds a JSON number; `#>> '{}'` reads both
- * as text. Anything that is not digits — a cleared field, a stray minus —
- * falls back to the default rather than to «no hold».
+ * as text. Anything that is not a positive number — a cleared field, a stray
+ * minus, a zero — falls back to the default rather than to «no hold»: since
+ * this number is also the invoice's lifetime, zero would mean an invoice that
+ * is dead the moment it is printed.
+ *
+ * Exported for `order.ts`, which writes the invoice deadline from it. One
+ * fragment, two readers, so the hold and the deadline cannot drift apart.
  */
-const CARD_HOLD_MINUTES_SQL = `COALESCE(
-  (SELECT CASE WHEN s.value #>> '{}' ~ '^[0-9]{1,4}$' THEN (s.value #>> '{}')::int END
+export const CARD_HOLD_MINUTES_SQL = `COALESCE(
+  (SELECT CASE WHEN s.value #>> '{}' ~ '^[1-9][0-9]{0,3}$' THEN (s.value #>> '{}')::int END
      FROM settings s WHERE s.scope = 'pay' AND s.key = 'card_hold_minutes'),
   ${DEFAULT_CARD_HOLD_MINUTES})`;
 

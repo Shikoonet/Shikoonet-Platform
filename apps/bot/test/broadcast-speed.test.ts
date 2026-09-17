@@ -93,6 +93,7 @@ describe('a broadcast, sent', () => {
         peak = Math.max(peak, inFlight);
         await new Promise((r) => setTimeout(r, ROUND_TRIP_MS));
         inFlight -= 1;
+        return { messageId: null };
       },
     });
 
@@ -127,6 +128,7 @@ describe('a broadcast, sent', () => {
         peak = Math.max(peak, inFlight);
         await new Promise((r) => setTimeout(r, ROUND_TRIP_MS));
         inFlight -= 1;
+        return { messageId: null };
       },
     });
 
@@ -144,6 +146,7 @@ describe('a broadcast, sent', () => {
     const api = stubApi({
       sendMessage: async (chatId: number) => {
         seen.push(chatId);
+        return { messageId: null };
       },
     });
 
@@ -170,6 +173,7 @@ describe('a broadcast, sent', () => {
       sendMessage: async () => {
         // The third send, whichever recipient that turns out to be.
         if (++call === 3) throw new Error('bot was blocked by the user');
+        return { messageId: null };
       },
     });
 
@@ -213,6 +217,7 @@ describe('a broadcast, drained', () => {
       sendMessage: async () => {
         sent += 1;
         if (sent === 5) controller.abort();
+        return { messageId: null };
       },
     });
 
@@ -247,6 +252,7 @@ describe('a broadcast, drained', () => {
       sendMessage: async () => {
         sent += 1;
         controller.abort();
+        return { messageId: null };
       },
     });
     const draining = drainBroadcasts(db, api, controller.signal, { idleMs: 50 });

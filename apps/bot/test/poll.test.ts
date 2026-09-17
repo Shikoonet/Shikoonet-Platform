@@ -42,6 +42,7 @@ function fakeApi(updates: TelegramUpdate[], opts: { sendFails?: boolean } = {}) 
     sendMessage: async (chatId, text) => {
       if (opts.sendFails) throw new Error('telegram sendMessage failed');
       sent.push({ chatId, text });
+      return { messageId: null };
     },
   });
   return { api, sent };
@@ -78,6 +79,7 @@ describe('a reply Telegram is rate limiting', () => {
         // produce the same three.
         if (attempts === 1) throw new TelegramRejection('Too Many Requests', 429, 1);
         sent.push(text);
+        return { messageId: null };
       },
     });
 
@@ -200,6 +202,7 @@ describe('a reply Telegram is rate limiting', () => {
           throw new TelegramRejection('Too Many Requests', 429, 1);
         }
         sent.push(chatId);
+        return { messageId: null };
       },
     });
 
@@ -264,6 +267,7 @@ describe('pollOnce', () => {
       ],
       sendMessage: async () => {
         calls.push('screen');
+        return { messageId: null };
       },
       editMessageText: async (chatId, messageId) => {
         expect(chatId).toBe(telegramId);
@@ -697,6 +701,7 @@ describe('button presses', () => {
       },
       sendMessage: async (chatId) => {
         sent.push(chatId);
+        return { messageId: null };
       },
     });
 
@@ -736,6 +741,7 @@ describe('button presses', () => {
         // without the retry the customer gets nothing at all.
         if (attempts === 1) throw new TelegramRejection('Too Many Requests', 429, 1);
         sent.push(text);
+        return { messageId: null };
       },
     });
 
@@ -782,7 +788,7 @@ describe('run', () => {
         controller.abort();
         return [];
       },
-      sendMessage: async () => undefined,
+      sendMessage: async () => ({ messageId: null }),
     });
 
     await run(db, api, { signal: controller.signal, timeoutSec: 1 });
@@ -806,7 +812,7 @@ describe('run', () => {
           // Resolves for no other reason: only the abort can end this.
           signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
         }),
-      sendMessage: async () => undefined,
+      sendMessage: async () => ({ messageId: null }),
     });
 
     const started = Date.now();
@@ -842,7 +848,7 @@ describe('run', () => {
         // long-poll — which is exactly why the loop had nothing slowing it down.
         return [broken];
       },
-      sendMessage: async () => undefined,
+      sendMessage: async () => ({ messageId: null }),
     });
 
     const finished = run(db, api, { signal: controller.signal, backoffMs: 10_000 });
@@ -867,7 +873,7 @@ describe('run', () => {
         controller.abort();
         return [];
       },
-      sendMessage: async () => undefined,
+      sendMessage: async () => ({ messageId: null }),
     });
 
     await run(db, api, { signal: controller.signal, backoffMs: 1 });
@@ -912,7 +918,7 @@ describe('run', () => {
         if (cycles >= 3) controller.abort();
         return [];
       },
-      sendMessage: async () => undefined,
+      sendMessage: async () => ({ messageId: null }),
     });
 
     await run(db, api, { signal: controller.signal, backoffMs: 1 });
@@ -959,7 +965,7 @@ describe('run', () => {
           'telegram getUpdates rejected: Conflict: terminated by other getUpdates request',
         );
       },
-      sendMessage: async () => undefined,
+      sendMessage: async () => ({ messageId: null }),
     });
 
     await run(db, api, { signal: controller.signal, backoffMs: 1 });
@@ -979,7 +985,7 @@ describe('run', () => {
         calls++;
         return [];
       },
-      sendMessage: async () => undefined,
+      sendMessage: async () => ({ messageId: null }),
     });
 
     await run(db, api, { signal: controller.signal });
@@ -1059,6 +1065,7 @@ describe('a reply that carries a picture', () => {
       },
       sendMessage: async (chatId, text) => {
         sent.push({ chatId, text });
+        return { messageId: null };
       },
     });
 

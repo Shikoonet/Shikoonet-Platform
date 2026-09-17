@@ -56,7 +56,6 @@ async function resetRows(): Promise<void> {
     ['cron_remove_dry_run', 'true'],
     ['cron_nudge_never_bought', 'false'],
     ['nudge_after_days', '3'],
-    ['order_ttl_hours', '24'],
     ['removedayc', '30'],
     ['cronvolumere', '17'],
     ['daywarn', '2'],
@@ -204,13 +203,13 @@ describe('writing a number', () => {
     expect(await stored('daywarn')).toBe(2);
   });
 
-  it('lets the invoice deadline past 365, because it is hours', async () => {
-    // The one number on this screen that is not a count of days. A shared
-    // 365 ceiling would have made a thirty-day hold unsaveable while looking
-    // like an ordinary refusal.
+  it('no longer writes the invoice deadline, which is the card hold now', async () => {
+    // `order_ttl_hours` was the one number here that was not a count of days.
+    // Since 0070 the invoice lives as long as the card is held, and that
+    // number is `pay/card_hold_minutes` on the settings screen — not a `bot`
+    // key this route may reach.
     const res = await post(ADMIN, { key: 'order_ttl_hours', value: 720 });
-    expect(res.status).toBe(200);
-    expect(await stored('order_ttl_hours')).toBe(720);
+    expect(res.status).toBe(404);
   });
 });
 

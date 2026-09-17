@@ -144,6 +144,7 @@ describe('a broadcast that Telegram rate-limits', () => {
       stubApi({
         sendMessage: async () => {
           tried += 1;
+          return { messageId: null };
         },
       }),
     );
@@ -262,6 +263,7 @@ describe('a broadcast that Telegram rate-limits', () => {
       stubApi({
         sendMessage: async () => {
           tried += 1;
+          return { messageId: null };
         },
       }),
     );
@@ -294,6 +296,7 @@ describe('a broadcast that Telegram rate-limits', () => {
             first = false;
             throw tooFast(1);
           }
+          return { messageId: null };
         },
       }),
     );

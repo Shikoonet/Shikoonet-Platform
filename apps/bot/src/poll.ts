@@ -12,7 +12,8 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { handleUpdate, refreshShopContent, type HandleStatus } from './handle.js';
+import { handleUpdate, refreshShopContent, type HandleStatus, type Reply } from './handle.js';
+import { rememberInvoiceMessage } from './payment.js';
 import * as notify from './notify.js';
 import { settleVerifiedPayments } from './settle.js';
 import { provisionPaidOrders } from './provision.js';
@@ -240,9 +241,9 @@ export async function pollOnce(
    * screen it precedes is wrapped, and that is the message the customer is
    * waiting for.
    */
-  const onceMore = async (trace: string, send: () => Promise<void>): Promise<void> => {
+  const onceMore = async <T>(trace: string, send: () => Promise<T>): Promise<T> => {
     try {
-      await send();
+      return await send();
     } catch (err) {
       const waitMs = rateLimitedForMs(err);
       // Two ceilings, and they answer different questions. `MAX_SINGLE_WAIT_MS`
@@ -260,8 +261,25 @@ export async function pollOnce(
       // retry fires into a process that is shutting down: one doomed API call
       // and one misleading `reply.undelivered` per pending retry.
       if (signal?.aborted) throw err;
-      await send();
+      return await send();
     }
+  };
+  /**
+   * Which message an invoice landed on, written AFTER the send because only
+   * Telegram knows the id of a fresh message. The transaction that drew the
+   * invoice has committed by now, so this is a small write of its own, and it
+   * may fail without taking the reply with it: the expiry sweep then falls
+   * back to a new message, which is what it always did.
+   */
+  const rememberInvoice = async (
+    trace: string,
+    reply: Reply,
+    messageId: number | null,
+  ): Promise<void> => {
+    if (reply.invoiceOf === undefined || messageId === null) return;
+    await rememberInvoiceMessage(db, reply.invoiceOf, messageId).catch((err: unknown) => {
+      log.warn('reply.invoice_message_unrecorded', { trace }, err);
+    });
   };
   let failed = 0;
   let abandoned = 0;
@@ -394,7 +412,7 @@ export async function pollOnce(
         } else if (reply.document !== undefined) {
           await api.sendDocument(reply.chatId, reply.document, reply.text);
         } else if (reply.editMessageId === undefined) {
-          await onceMore(traceOf(update), () =>
+          const sent = await onceMore(traceOf(update), () =>
             api.sendMessage(
               reply.chatId,
               reply.text,
@@ -403,9 +421,11 @@ export async function pollOnce(
               reply.replyKeyboard,
             ),
           );
+          await rememberInvoice(traceOf(update), reply, sent.messageId);
         } else {
           try {
             await api.editMessageText(reply.chatId, reply.editMessageId, reply.text, reply.keyboard);
+            await rememberInvoice(traceOf(update), reply, reply.editMessageId);
           } catch (err) {
             // An edit that cannot land must not take the reply with it.
             //
@@ -422,9 +442,10 @@ export async function pollOnce(
             // tidiness problem; a screen that never arrives is the customer
             // pressing a button and watching nothing happen.
             log.warn('reply.edit_failed', { trace: traceOf(update), fallback: 'new message' }, err);
-            await onceMore(traceOf(update), () =>
+            const sent = await onceMore(traceOf(update), () =>
               api.sendMessage(reply.chatId, reply.text, reply.keyboard),
             );
+            await rememberInvoice(traceOf(update), reply, sent.messageId);
           }
         }
       } catch (err) {
