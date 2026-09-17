@@ -17,7 +17,7 @@
  */
 
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
-import { CARD_HOLD_MS, CLAIMED_CARD_HOLD_MS } from '@shikoo/domain';
+import { CARD_HOLD_MS } from '@shikoo/domain';
 import { afterEach, describe, expect, it } from 'vitest';
 import { rotateCard } from '../src/payment.js';
 import { db } from './helpers/env.js';
@@ -397,23 +397,23 @@ describe("a card in a customer's hands is out of the line", () => {
     }
   });
 
-  it('keeps a card out while its customer says they paid, until the claim is settled', async () => {
-    const cards = await pool(2);
-    const id = await hold(cards[0]!, T, true);
-
-    expect(await drawOne(T + 30 * MINUTE)).toBe(cards[1]!);
-
-    // An operator rejects it: nothing arrived. The card is free the same instant.
-    await db.prepare(`UPDATE payments SET status = 'REJECTED' WHERE id = ?1`).bind(id).run();
-    expect(await drawOne(T + 30 * MINUTE)).toBe(cards[0]!);
-  });
-
-  it('does not let a claim nobody ever settles park a card for good', async () => {
+  it('does not stretch the hold when the customer says they paid', async () => {
+    // Sam, 2026-09-17: «ما سقف نداریم اصلا؛ یک زمانی رو مشخص میکنیم». Until
+    // that day a «پرداخت کردم» kept the card out for a day or until review,
+    // and production stood with six of seven cards behind claims nobody had
+    // looked at. One length now, whatever was pressed: the same ten minutes.
     const cards = await pool(2);
     await hold(cards[0]!, T, true);
 
-    expect(await drawOne(T + CLAIMED_CARD_HOLD_MS - 1)).toBe(cards[1]!);
-    expect(await drawOne(T + CLAIMED_CARD_HOLD_MS)).toBe(cards[0]!);
+    expect(await drawOne(T + CARD_HOLD_MS - 1)).toBe(cards[1]!);
+    expect(await drawOne(T + CARD_HOLD_MS)).toBe(cards[0]!);
+
+    // And a review that ends it early still frees the card that instant.
+    const later = T + CARD_HOLD_MS;
+    const claimed = await hold(cards[0]!, later, true);
+    expect(await drawOne(later + MINUTE)).toBe(cards[1]!);
+    await db.prepare(`UPDATE payments SET status = 'REJECTED' WHERE id = ?1`).bind(claimed).run();
+    expect(await drawOne(later + MINUTE)).toBe(cards[0]!);
   });
 
   it('frees the card when the invoice is settled or expired', async () => {
@@ -464,8 +464,10 @@ describe("a card in a customer's hands is out of the line", () => {
     const cards = await pool(2);
     await hold(cards[0]!, T, true);
 
-    expect(await drawOne(T + 30 * MINUTE, 1_000_000)).toBe(cards[1]!);
-    expect(await drawOne(T + 30 * MINUTE, 2_490_000)).toBe(cards[0]!);
+    // Inside the hold, so the amount is what decides — a claimed hold no
+    // longer outlasts the ten minutes.
+    expect(await drawOne(T + MINUTE, 1_000_000)).toBe(cards[1]!);
+    expect(await drawOne(T + MINUTE, 2_490_000)).toBe(cards[0]!);
   });
 
   it('holds the same amount whether shown or claimed', async () => {

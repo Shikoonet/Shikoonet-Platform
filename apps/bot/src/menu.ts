@@ -1663,6 +1663,22 @@ export function orderExpired(publicId: string): string {
   ].join('\n');
 }
 
+/**
+ * The deadline passed on an invoice whose customer HAD pressed «پرداخت کردم».
+ * The card is back in the line; the claim is not — it waits for review, and
+ * this says both so a customer who paid does not conclude their money is gone.
+ */
+export function claimedInvoiceClosed(publicId: string): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('ORDER_DEADLINE_CLAIMED_TITLE'),
+    '',
+    t.render('PAID_TRACKING_ID', { id: publicId }),
+    '',
+    t.raw('ORDER_DEADLINE_CLAIMED_BODY'),
+  ].join('\n');
+}
+
 /** The receipt landed and is attached to the claim under review. */
 export function receiptReceived(publicId: string): string {
   const t = TEXTS_NOW;

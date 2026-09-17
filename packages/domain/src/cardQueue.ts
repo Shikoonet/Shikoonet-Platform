@@ -19,31 +19,30 @@
  * four invoices in a row on the one free card, while Mirzabot before it
  * never held a card beyond its ten-minute lease.
  *
- * Two lengths, because «I paid» changes what waiting means:
+ * ONE length, and «I paid» does not stretch it — Sam, 2026-09-17: «ما سقف
+ * نداریم اصلا؛ یک زمانی رو مشخص میکنیم، اگر پول اومد که هیچ، اگر نیومد کارت
+ * آزاد میشه و اون پیام برای کاربر پاک بشه». `pay/card_hold_minutes` from the
+ * moment the card was shown — ten unless the operator changed it (Sam,
+ * 2026-09-15: «۵ دقیقه یا ۲ دقیقه یا هر چقدر که دوست داره»). After that the
+ * card is back in the line whatever the customer pressed, and the invoice —
+ * `order.ts` writes `orders.expires_at` from this same setting (0070) — is
+ * closed where the customer sees it (`expire.ts`).
  *
- *   - PENDING (shown, nothing pressed): `pay/card_hold_minutes` from being
- *     shown — ten unless the operator changed it on the settings screen (Sam,
- *     2026-09-15: «۵ دقیقه یا ۲ دقیقه یا هر چقدر که دوست داره»). After that
- *     the customer is treated as gone and the card is free again — its place
- *     in the line does not move, it never took money. The INVOICE dies at the
- *     same moment: `order.ts` writes `orders.expires_at` from this same
- *     setting (0070), so a customer can never hold a live invoice naming a
- *     card that is already in somebody else's hands. Until 2026-09-17 the
- *     invoice outlived the hold by twenty-three hours, and a deposit made in
- *     that window was the one thing the matcher could not untangle.
- *   - AWAITING_REVIEW (customer pressed «پرداخت کردم»): money is probably in
- *     flight, so the card stays out until somebody settles the claim. Bounded
- *     by the widest window anything here waits for a bank SMS, the 24h of
- *     `FULFILLED_RECONCILE_MAX_TIME_DELTA_MS`, so a claim nobody ever looks at
- *     cannot park a card for good.
+ * Until 2026-09-17 a «پرداخت کردم» press kept the card out for 24 hours or
+ * until somebody settled the claim. In production that day six of seven live
+ * cards stood behind such holds from claims nobody had reviewed, the
+ * dashboard read «در دست مشتری تا» tomorrow on card after card, and the shop
+ * sold on the one free card. A claim that has not been settled by the
+ * deadline is still a claim — it stays in the review queue and money that
+ * arrives late is still matched or approved by hand — but it is not a reason
+ * to keep the card away from the next customer. The residual risk is the
+ * matcher's own to report: two claims for the same amount on the same card
+ * inside one window land in review as AMBIGUOUS, not in the wrong pocket.
  */
-
-import { FULFILLED_RECONCILE_MAX_TIME_DELTA_MS } from '@shikoo/contracts';
 
 export const DEFAULT_CARD_HOLD_MINUTES = 10;
 /** The hold at the default setting — what a fresh database gives. */
 export const CARD_HOLD_MS = DEFAULT_CARD_HOLD_MINUTES * 60_000;
-export const CLAIMED_CARD_HOLD_MS = FULFILLED_RECONCILE_MAX_TIME_DELTA_MS;
 
 /**
  * The operator's number, read inside the statement so the bot and the
@@ -74,12 +73,8 @@ export const CARD_HOLD_MINUTES_SQL = `COALESCE(
  */
 export function cardHeldUntilSql(amountParam?: string): string {
   return `(
-  SELECT MAX(CASE WHEN p.status = 'AWAITING_REVIEW'
-                  THEN (EXTRACT(EPOCH FROM COALESCE(p.updated_at, p.created_at)) * 1000)::bigint
-                       + ${CLAIMED_CARD_HOLD_MS}
-                  ELSE (EXTRACT(EPOCH FROM p.created_at) * 1000)::bigint
-                       + ${CARD_HOLD_MINUTES_SQL} * 60000
-             END)
+  SELECT MAX((EXTRACT(EPOCH FROM p.created_at) * 1000)::bigint
+             + ${CARD_HOLD_MINUTES_SQL} * 60000)
     FROM payments p
    WHERE p.assigned_card_number = pc.card_digits
      AND p.status IN ('PENDING', 'AWAITING_REVIEW')${amountParam ? `
