@@ -129,6 +129,7 @@ function PaymentIdentity({ item }: { item: PaymentItem }) {
 function PurchaseTypeBadge({ item }: { item: PaymentItem }) {
   if (item.purchaseType === 'NEW_PURCHASE') return <span className="badge badge-info">خرید جدید</span>;
   if (item.purchaseType === 'RENEWAL') return <span className="badge">تمدید</span>;
+  if (item.purchaseType === 'WALLET_TOPUP') return <span className="badge">شارژ کیف پول</span>;
   return null;
 }
 

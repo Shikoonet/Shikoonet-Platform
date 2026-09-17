@@ -25,16 +25,18 @@
 import { useEffect, useState } from 'react';
 import { tehranAdjacentDay, tehranTodayDateString } from './historyRangeNav.js';
 
-export type BotAutoVerifiedSegment = 'NEW_PURCHASE' | 'RENEWAL';
+export type BotAutoVerifiedSegment = 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP';
 export type BotAutoVerifiedDateFilter = 'ALL' | 'TODAY' | 'YESTERDAY' | 'DAY_BEFORE_YESTERDAY';
 
 const SEGMENT_TO_QUERY: Record<BotAutoVerifiedSegment, string> = {
   NEW_PURCHASE: 'new',
   RENEWAL: 'renewal',
+  WALLET_TOPUP: 'wallet',
 };
 const QUERY_TO_SEGMENT: Record<string, BotAutoVerifiedSegment> = {
   new: 'NEW_PURCHASE',
   renewal: 'RENEWAL',
+  wallet: 'WALLET_TOPUP',
 };
 
 const DATE_TO_QUERY: Record<BotAutoVerifiedDateFilter, string> = {
@@ -86,7 +88,7 @@ export function useBotAutoVerifiedFilter(): {
   setDate: (d: BotAutoVerifiedDateFilter) => void;
   /**
    * URL params to append to /api/v1/payments. The worker reads:
-   *   purchaseType=NEW_PURCHASE|RENEWAL
+   *   purchaseType=NEW_PURCHASE|RENEWAL|WALLET_TOPUP
    *   range=today
    *   day=YYYY-MM-DD                     (Tehran calendar day)
    */
@@ -149,6 +151,7 @@ export function useBotAutoVerifiedFilter(): {
 const SEGMENT_OPTIONS: Array<{ value: BotAutoVerifiedSegment; label: string }> = [
   { value: 'NEW_PURCHASE', label: 'خریدهای جدید' },
   { value: 'RENEWAL', label: 'تمدیدها' },
+  { value: 'WALLET_TOPUP', label: 'شارژ کیف پول' },
 ];
 
 const DATE_OPTIONS: Array<{ value: BotAutoVerifiedDateFilter; label: string }> = [

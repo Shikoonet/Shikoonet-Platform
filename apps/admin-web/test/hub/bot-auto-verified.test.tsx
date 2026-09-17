@@ -201,6 +201,12 @@ describe('useBotAutoVerifiedFilter — URL state', () => {
     expect(screen.getByTestId('segment').textContent).toBe('RENEWAL');
     expect(screen.getByTestId('date').textContent).toBe('YESTERDAY');
   });
+
+  it('the wallet segment round-trips through the URL as purchaseType=wallet', () => {
+    window.history.replaceState(null, '', '/?purchaseType=wallet');
+    render(<Probe />);
+    expect(screen.getByTestId('segment').textContent).toBe('WALLET_TOPUP');
+  });
 });
 
 describe('BotAutoVerifiedFilter — render', () => {

@@ -1268,11 +1268,11 @@ export function registerMirzabotRoutes(
     // wrong -- and the row count sits in the response, so the operator can see
     // that it was.
     const EXPORT_MAX = 5000;
-    // «خریدهای جدید | تمدیدها» — only the auto-verified tab draws it. Until
+    // «خریدهای جدید | تمدیدها | شارژ کیف پول» — only the auto-verified tab draws it. Until
     // 2026-09-17 this sat behind ENABLE_PURCHASE_TYPE, which production never
     // set, so the toggle changed the URL and nothing else.
     const purchaseTypeFilter = url.searchParams.get('purchaseType');
-    const allowedPurchaseTypes = new Set(['NEW_PURCHASE', 'RENEWAL', 'UNKNOWN']);
+    const allowedPurchaseTypes = new Set(['NEW_PURCHASE', 'RENEWAL', 'WALLET_TOPUP', 'UNKNOWN']);
     const purchaseTypeForQuery =
       tab === 'bot_auto_verified' && purchaseTypeFilter && allowedPurchaseTypes.has(purchaseTypeFilter)
         ? purchaseTypeFilter
