@@ -2242,14 +2242,16 @@ function NewServiceCard({
       <div className="filters">
         <div className="grow">
           <label className="form-label" htmlFor="ns-desc">
-            توضیح
+            توضیح زیر عنوان صفحهٔ پلن‌ها
           </label>
-          <input
+          <textarea
             id="ns-desc"
             className="form-control"
+            rows={3}
             maxLength={2000}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            placeholder="خالی = ربات خودش جدول قیمت پلن‌ها را می‌نویسد"
           />
         </div>
         <Flags
@@ -2504,14 +2506,16 @@ function ServiceDrawer({
       <div className="filters">
         <div className="grow">
           <label className="form-label" htmlFor="sv-desc">
-            توضیح
+            توضیح زیر عنوان صفحهٔ پلن‌ها
           </label>
-          <input
+          <textarea
             id="sv-desc"
             className="form-control"
+            rows={3}
             maxLength={2000}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            placeholder="خالی = ربات خودش جدول قیمت پلن‌ها را می‌نویسد"
           />
         </div>
         <Flags
@@ -2889,8 +2893,11 @@ function ArrangeService({ service, onSaved }: { service: ServiceRow; onSaved: ()
             ? toman(cf.priceIrr)
             : `${toman(cf.priceIrr)} · ${STATUS_FA[cf.status] ?? cf.status}`,
         rowIndex: cf.rowIndex,
+        badge: cf.badge,
+        buttonStyle: cf.buttonStyle,
       }))}
       onSaved={onSaved}
+      editBadge={(id, patch) => api.updatePlan(id, patch).then(() => undefined)}
     />
   );
 }

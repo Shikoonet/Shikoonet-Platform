@@ -37,7 +37,7 @@ const PRESETS = ['🆕 نیو', '🔥 آف', '⭐ ویژه', '⚡ سریع'];
  * what shade a given client draws, and a swatch that claimed to be exact would
  * be a promise the bot cannot keep. What it does promise is WHICH of the three.
  */
-const STYLES: { value: ButtonStyle; label: string; token: string }[] = [
+export const STYLES: { value: ButtonStyle; label: string; token: string }[] = [
   { value: 'primary', label: 'آبی', token: 'var(--accent)' },
   { value: 'success', label: 'سبز', token: 'var(--success)' },
   { value: 'danger', label: 'قرمز', token: 'var(--danger)' },

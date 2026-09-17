@@ -661,7 +661,13 @@ export function choosePlan(
   discountPercent = 0,
 ): string {
   const title = TEXTS_NOW.render('CHOOSE_PLAN', { product: productName });
-  const table = tariffTable(plans, discountPercent);
+  // The shop's own words win over the generated price list. Sam, 2026-09-17:
+  // «خودم بتونم توضیحات براش بنویسم، دیفالت قیمت». The description belongs to
+  // the product, and every row here is one product's (`plansInProduct`), so
+  // the first row carries it. Whitespace-only is «not written», not a blank
+  // screen.
+  const own = plans[0]?.productDescription?.trim() ?? '';
+  const table = own !== '' ? own : tariffTable(plans, discountPercent);
   return table === '' ? title : `${title}\n\n${table}`;
 }
 

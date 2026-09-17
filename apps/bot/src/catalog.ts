@@ -434,6 +434,12 @@ export interface CatalogPlan {
   /** The product the plan belongs to. A discount code can be scoped to one. */
   productId: number;
   productName: string;
+  /**
+   * The shop's own words under the plan screen's title, or null for the
+   * price list `tariffTable` draws. `products.description` — the column was
+   * there from 0002 and read by nothing until 2026-09-17.
+   */
+  productDescription: string | null;
   planName: string;
   /** Drawn before the label on the plan's button. Same field as a category's. */
   badge: string | null;
@@ -498,6 +504,7 @@ interface PlanRow {
   plan_id: number;
   product_id: number;
   product_name: string;
+  product_description: string | null;
   product_kind: string;
   plan_name: string;
   badge: string | null;
@@ -520,6 +527,7 @@ const PLAN_COLUMNS = `
   pl.id           AS plan_id,
   p.id            AS product_id,
   p.name          AS product_name,
+  p.description   AS product_description,
   p.kind          AS product_kind,
   pl.name         AS plan_name,
   pl.badge        AS badge,
@@ -567,6 +575,7 @@ function toPlan(row: PlanRow): CatalogPlan {
     planId: row.plan_id,
     productId: row.product_id,
     productName: row.product_name,
+    productDescription: row.product_description,
     productKind: row.product_kind,
     planName: row.plan_name,
     badge: row.badge,

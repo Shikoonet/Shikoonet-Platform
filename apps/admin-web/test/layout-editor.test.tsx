@@ -236,4 +236,17 @@ describe('a button’s badge and colour, edited where it is arranged', () => {
     fireEvent.click(screen.getByRole('button', { name: 'ذخیرهٔ دکمه' }));
     await waitFor(() => expect(editBadge).toHaveBeenCalledWith(22, { badge: '🥇', buttonStyle: 'success' }));
   });
+
+  it('«رنگ همهٔ دکمه‌ها» writes one colour to every button and touches no badge', async () => {
+    // Sam, 2026-09-17: seven configs coloured one drawer at a time is seven
+    // round trips for one decision. Only the colour is sent, so a badge an
+    // admin typed stays exactly as typed.
+    editBadge.mockClear();
+    drawEditable();
+    fireEvent.click(screen.getByRole('button', { name: 'همهٔ دکمه‌ها سبز' }));
+    await waitFor(() => expect(editBadge).toHaveBeenCalledTimes(2));
+    expect(editBadge).toHaveBeenCalledWith(11, { buttonStyle: 'success' });
+    expect(editBadge).toHaveBeenCalledWith(22, { buttonStyle: 'success' });
+    expect(await screen.findByText('همهٔ دکمه‌ها سبز شدند.')).toBeTruthy();
+  });
 });
