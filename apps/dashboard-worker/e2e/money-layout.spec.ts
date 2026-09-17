@@ -208,9 +208,9 @@ test('the «مرجع» column of the bot-verified table stays one line', async (
 
   const before = await withDb((d) =>
     d
-      .prepare(`SELECT status FROM payment_claims WHERE id = ?1`)
+      .prepare(`SELECT status, purchase_type FROM payment_claims WHERE id = ?1`)
       .bind(claim.id)
-      .first<{ status: string }>(),
+      .first<{ status: string; purchase_type: string | null }>(),
   );
 
   // Only the status. The date filter is pinned to «همه» in the URL above
@@ -220,8 +220,17 @@ test('the «مرجع» column of the bot-verified table stays one line', async (
   // ربات نیست». The count ignores the date filter and the rows obey it, so the
   // two answer different questions — the same badge-versus-list divergence
   // being fixed on the review queue, sitting quietly in a second tab.
+  //
+  // And the purchase type, since 2026-09-17: the tab opens on «خریدهای جدید»
+  // and that segment now filters, so a seeded claim — which pays for no order
+  // and is classified as nothing — is off-screen until it is given one.
   await withDb((d) =>
-    d.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = ?1`).bind(claim.id).run(),
+    d
+      .prepare(
+        `UPDATE payment_claims SET status = 'VERIFIED', purchase_type = 'NEW_PURCHASE' WHERE id = ?1`,
+      )
+      .bind(claim.id)
+      .run(),
   );
   try {
     await page.goto('/admin/payments?tab=bot_auto_verified&dateFilter=all');
@@ -243,8 +252,8 @@ test('the «مرجع» column of the bot-verified table stays one line', async (
     // Put the money back exactly as it was, whatever happened above.
     await withDb((d) =>
       d
-        .prepare(`UPDATE payment_claims SET status = ?2 WHERE id = ?1`)
-        .bind(claim.id, before!.status)
+        .prepare(`UPDATE payment_claims SET status = ?2, purchase_type = ?3 WHERE id = ?1`)
+        .bind(claim.id, before!.status, before!.purchase_type)
         .run(),
     );
   }
