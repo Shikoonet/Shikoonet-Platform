@@ -113,8 +113,15 @@ The ±5m window, the uniqueness rules and the exact amount are deliberately
 the admin is doing (amount: Sam, 2026-09-17 — a 120-toman credit for a
 119-toman order is the operator's call, and the order is fulfilled at its own
 price regardless). The review panel's candidate list is correspondingly wider
-than the matcher's: same account, exact amount at any time OR any unspent
-credit within ±30 min of the click (`loadCandidates` in `mirzabotRoutes.ts`).
+than the matcher's (`loadCandidates` in `mirzabotRoutes.ts`): the matcher's own
+ids, plus on the claim's account the exact amount at any time OR any unspent
+credit within ±30 min of the click, plus on **every other** account any unspent
+credit in that same half hour (Sam, 2026-09-17 — the customer who paid the
+previous card). `verifyMirzabotClaim` still refuses `ACCOUNT_MISMATCH`; the
+Suspects approve route moves the claim onto the transaction's account first,
+with the same `payment_claim.account_changed` audit row the manual
+«تغییر بانک/حساب» writes. Keep the guard in `verify` — it is what stops the auto
+matcher from ever crossing accounts.
 
 ## Do not let the generic matcher near Mirzabot claims
 

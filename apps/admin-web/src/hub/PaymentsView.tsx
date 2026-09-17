@@ -2413,6 +2413,15 @@ function ReviewPanel({
                           )}
                           <br />
                           <AccountRef account={c} />
+                          {/* The list crosses accounts now. Approving one of
+                              these moves the claim onto that account — say so
+                              where the choice is made, not in a toast after. */}
+                          {c.accountId != null && c.accountId !== item.accountId && (
+                            <>
+                              {' '}
+                              · <span className="payment-reason__flag">حساب دیگر — با تأیید، سفارش به این حساب می‌رود</span>
+                            </>
+                          )}
                           {c.timeDeltaSeconds != null && <> · Δ {c.timeDeltaSeconds} sec</>}
                           {c.alreadyConsumed && (
                             <>

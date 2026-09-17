@@ -152,7 +152,12 @@ type PaymentsBody = {
     cardDisplay: string | null;
     suspectReason: string | null;
     device: { id: string; name: string } | null;
-    candidates: Array<{ id: string; timeDeltaSeconds: number | null; alreadyConsumed: boolean }>;
+    candidates: Array<{
+      id: string;
+      accountId: string | null;
+      timeDeltaSeconds: number | null;
+      alreadyConsumed: boolean;
+    }>;
     matchedTransaction: { id: string; timeDeltaSeconds: number | null } | null;
     isNew?: boolean;
     fulfilmentMode?: 'MANUAL' | 'CONTINUITY' | null;
@@ -386,6 +391,39 @@ describe('GET /api/v1/payments', () => {
     const body = await get('tab=needs_review');
     expect(body.items[0]!.cardMasked).toBe('**** **** **** 5678');
     expect(body.items[0]!.cardDisplay).toBe('5054-1617-0627-5678');
+  });
+
+  it('serves credits on other accounts too, own account first, so no manual account switch is needed', async () => {
+    // Sam, 2026-09-17: the customer may have paid the previous card, or the
+    // one the bot rotated to. Bring them; the pick moves the claim.
+    const base = Date.now();
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO financial_accounts
+         (id, bank_name, display_name, owner_label, account_type, active, status, account_hint,
+          parser_configuration, created_at, updated_at)
+       VALUES ('acc-rotated','Melli','Rotated',NULL,'CARD',1,'ACTIVE','7007','{}',?1,?1)`,
+    )
+      .bind(now)
+      .run();
+    await seedTx('t-own', base + 21_000);
+    await seedTx('t-other', base + 10_000);
+    await baseEnv.DB.prepare(
+      `UPDATE transaction_candidates SET financial_account_id = 'acc-rotated', amount_irr = ?1
+        WHERE id = 't-other'`,
+    )
+      .bind(AMOUNT + 10_000)
+      .run();
+    await seedClaim('c-x', {
+      suspectReason: 'OUTSIDE_AUTO_MATCH_WINDOW',
+      paidClickedAt: base,
+      suspectMeta: { candidateTransactionIds: ['t-own'] },
+    });
+
+    const body = await get('tab=needs_review');
+    const cands = body.items[0]!.candidates;
+    expect(cands.map((c) => c.id)).toEqual(['t-own', 't-other']);
+    expect(cands[1]!.accountId).toBe('acc-rotated');
   });
 
   it('exposes the exact candidate set the matcher considered', async () => {

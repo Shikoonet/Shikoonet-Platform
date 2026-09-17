@@ -168,12 +168,22 @@ describe('manual approval of Mirzabot suspects', () => {
     expect(claim?.status).toBe('VERIFIED');
   });
 
-  it('refuses an account mismatch', async () => {
+  it('moves the claim onto the transaction\'s account instead of refusing the mismatch', async () => {
+    // Until 2026-09-17 this was `409 account_mismatch`, and the operator had
+    // to «تغییر بانک/حساب» by hand and come back. The pick is the decision.
     await seedClaim('c-acct');
     await seedTx('t-acct', { account: 'acc-other' });
     const r = await approve('c-acct', 't-acct');
-    expect(r.status).toBe(409);
-    expect(((await r.json()) as { error: string }).error).toBe('account_mismatch');
+    expect(r.status).toBe(200);
+    const claim = await baseEnv.DB.prepare(
+      `SELECT status, target_financial_account_id FROM payment_claims WHERE id = 'c-acct'`,
+    ).first<{ status: string; target_financial_account_id: string }>();
+    expect(claim).toEqual({ status: 'VERIFIED', target_financial_account_id: 'acc-other' });
+    const audit = await baseEnv.DB.prepare(
+      `SELECT after_json FROM audit_logs
+        WHERE action = 'payment_claim.account_changed' AND entity_id = 'c-acct'`,
+    ).first<{ after_json: string }>();
+    expect(JSON.parse(audit!.after_json).newAccountId).toBe('acc-other');
   });
 
   it('refuses to re-verify an already verified claim', async () => {

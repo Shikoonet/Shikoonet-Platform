@@ -1,7 +1,7 @@
 import type { EnvName } from '@shikoo/contracts';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { SQL, type D1Database, type D1Result } from '@shikoo/database';
+import { SQL, type D1Database } from '@shikoo/database';
 import {
   assertTransitionClaim,
   maskCardDigits,
@@ -577,39 +577,42 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
     consumed: number;
   };
 
-  let result: D1Result<Row>;
-  if (candidateIds.length > 0) {
-    const placeholders = candidateIds.map((_, i) => `?${i + 1}`).join(',');
-    result = await db
-      .prepare(`${select} WHERE t.id IN (${placeholders})`)
-      .bind(...candidateIds)
-      .all<Row>();
-  } else if (row.target_financial_account_id) {
-    // Exact amount at any time, OR anything unspent on this account within
-    // half an hour of the click. The second arm is the one an operator
-    // actually needs: a customer who typed 120 for a 119-toman order produced
-    // a credit the exact-amount arm can never show, and the only way to attach
-    // it was to leave this screen and search by hand (Sam, 2026-09-17). The
-    // half hour is the same default the search page opens with.
-    const anchor = row.paid_clicked_at ?? row.receipt_submitted_at ?? row.created_at;
-    result = await db
-      .prepare(
-        `${select}
-         WHERE t.financial_account_id = ?1
-           AND t.direction = 'CREDIT'
-           AND t.processing_disposition = 'ACTIONABLE'
-           AND (t.amount_irr = ?2
-                OR (t.bank_timestamp BETWEEN ?3::bigint - 1800000 AND ?3::bigint + 1800000
-                    AND NOT EXISTS (SELECT 1 FROM reconciliation_matches m
-                                     WHERE m.transaction_candidate_id = t.id
-                                       AND m.status IN ('AUTO_VERIFIED','CONFIRMED'))))
-         ORDER BY t.bank_timestamp DESC LIMIT 20`,
-      )
-      .bind(row.target_financial_account_id, row.expected_amount_irr, anchor)
-      .all<Row>();
-  } else {
-    return [];
-  }
+  // One list, three sources, and the matcher's own ids no longer hide the
+  // rest. Until 2026-09-17 a matcher candidate set (usually one credit, just
+  // outside the 5-minute window) was the whole list, and everything else on
+  // the account — or on any other account — needed «تغییر بانک/حساب» and a
+  // reload to even appear. Sam: the panel should bring them itself.
+  //
+  //   1. whatever the matcher considered, verbatim;
+  //   2. the claim's own account: the exact amount at any time, OR anything
+  //      unspent within half an hour of the click — the customer who typed 120
+  //      for a 119-toman order;
+  //   3. every other account: anything unspent within the same half hour —
+  //      the customer who paid the previous card, or the one the bot rotated
+  //      to a moment later. Approving one of these moves the claim onto that
+  //      account (the approve route below), which is what the manual switch
+  //      did by hand.
+  //
+  // The half hour is the same default the search page opens with.
+  const anchor = row.paid_clicked_at ?? row.receipt_submitted_at ?? row.created_at;
+  const n = candidateIds.length;
+  const idList = n > 0 ? candidateIds.map((_, i) => `?${i + 1}`).join(',') : 'NULL';
+  const result = await db
+    .prepare(
+      `${select}
+       WHERE t.id IN (${idList})
+          OR (t.direction = 'CREDIT'
+              AND t.processing_disposition = 'ACTIONABLE'
+              AND ((t.financial_account_id = ?${n + 1} AND t.amount_irr = ?${n + 2})
+                   OR (t.bank_timestamp BETWEEN ?${n + 3}::bigint - 1800000 AND ?${n + 3}::bigint + 1800000
+                       AND NOT EXISTS (SELECT 1 FROM reconciliation_matches m
+                                        WHERE m.transaction_candidate_id = t.id
+                                          AND m.status IN ('AUTO_VERIFIED','CONFIRMED')))))
+       ORDER BY (t.financial_account_id = ?${n + 1}) DESC NULLS LAST, t.bank_timestamp DESC
+       LIMIT 30`,
+    )
+    .bind(...candidateIds, row.target_financial_account_id, row.expected_amount_irr, anchor)
+    .all<Row>();
 
   return (result.results ?? [])
     .map((t) => ({
@@ -623,7 +626,12 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
       accountHint: t.account_hint,
       alreadyConsumed: t.consumed === 1,
     }))
-    .sort((a, b) => (a.bankTimestamp ?? 0) - (b.bankTimestamp ?? 0));
+    .sort(
+      (a, b) =>
+        Number(b.accountId === row.target_financial_account_id) -
+          Number(a.accountId === row.target_financial_account_id) ||
+        (a.bankTimestamp ?? 0) - (b.bankTimestamp ?? 0),
+    );
 }
 
 /** Tab badges + the "today" header, counted over the whole population. */
@@ -1746,7 +1754,8 @@ export function registerMirzabotRoutes(
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const claimId = c.req.param('claimId');
     const claim = await c.env.DB.prepare(
-      `SELECT id, status, suspect_reason, suspect_metadata_json FROM payment_claims
+      `SELECT id, status, suspect_reason, suspect_metadata_json, target_financial_account_id
+       FROM payment_claims
        WHERE id = ?1 AND source_system = ?2`,
     )
       .bind(claimId, MIRZABOT_SOURCE)
@@ -1763,6 +1772,43 @@ export function registerMirzabotRoutes(
       assertTransitionClaim(claim.status, 'VERIFIED');
     } catch {
       return c.json({ ok: false, error: 'illegal_claim_transition' }, 409);
+    }
+
+    // The candidate list serves credits from every account (`loadCandidates`),
+    // and the admin picking one on another account is the admin saying «the
+    // customer paid that card». Move the claim there first — the same write
+    // and audit row «تغییر بانک/حساب» makes — so `verifyMirzabotClaim` keeps
+    // its same-account guard and the auto matcher never learns this path.
+    const tx = await c.env.DB.prepare(
+      `SELECT financial_account_id FROM transaction_candidates WHERE id = ?1`,
+    )
+      .bind(parsed.data.transactionId)
+      .first<{ financial_account_id: string | null }>();
+    if (tx?.financial_account_id && tx.financial_account_id !== claim.target_financial_account_id) {
+      const movedAt = Date.now();
+      await c.env.DB.prepare(
+        `UPDATE payment_claims SET target_financial_account_id = ?2, updated_at = ?3 WHERE id = ?1`,
+      )
+        .bind(claimId, tx.financial_account_id, movedAt)
+        .run();
+      await c.env.DB.prepare(SQL.insertAudit)
+        .bind(
+          crypto.randomUUID(),
+          ident.email,
+          ident.role,
+          'payment_claim.account_changed',
+          'CLAIM',
+          claimId,
+          JSON.stringify({ previousAccountId: claim.target_financial_account_id }),
+          JSON.stringify({
+            newAccountId: tx.financial_account_id,
+            reason: `approved with transaction ${parsed.data.transactionId} on this account`,
+          }),
+          null,
+          c.req.header('cf-ray') ?? null,
+          movedAt,
+        )
+        .run();
     }
 
     // Manual approval writes through the same guarded path as the automatic
