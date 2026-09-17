@@ -98,8 +98,11 @@ import {
 import {
   customEmojiIn,
   emojiById,
+  emojiPlans,
+  emojiServices,
   rememberEmoji,
   setButtonEmoji,
+  setPlanEmoji,
   storedEmoji,
 } from './emoji.js';
 import { actionsFor, tierFor } from './serviceActions.js';
@@ -1107,6 +1110,26 @@ async function handlePremiumEmoji(
     // The question stays open: an admin who sent an ordinary emoji can try
     // again without walking back through the menu.
     return reply(menu.EMOJI_NONE_FOUND, menu.promptMenu(encode('emj')));
+  }
+
+  // A plan rather than a keyboard button. Same one-emoji rule, same opt-in,
+  // and the write goes to `product_plans.badge` instead of the layout.
+  const planId = Number(session.data['plan']);
+  const productId = Number(session.data['product']);
+  if (Number.isSafeInteger(planId) && Number.isSafeInteger(productId) && planId > 0) {
+    if (found.length !== 1) {
+      return reply(menu.EMOJI_ONE_REQUIRED, menu.promptMenu(encode('emjp', productId)));
+    }
+    const placed = await setPlanEmoji(tx, productId, planId, found[0]!);
+    await clearSession(tx, user.id);
+    const plans = await emojiPlans(tx, productId);
+    if (!placed.ok) {
+      const label = plans.find((p) => p.id === planId)?.label ?? '';
+      return reply(menu.planEmojiRefused(placed.reason, label), menu.emojiPlanList(plans, productId));
+    }
+    await enableCustomEmoji(tx);
+    await rememberEmoji(tx, found);
+    return reply(menu.emojiChanged(placed.label), menu.emojiPlanList(plans, productId));
   }
 
   const slot = Number(session.data['slot']);
@@ -3181,6 +3204,43 @@ async function handleCallback(
           : menu.emojiRefused(placed.reason, target.label),
         menu.emojiHomeMenu(after, menuNo),
       );
+    }
+
+    // ── the same picker, for the catalogue ───────────────────────────────
+    //
+    //   emjp                       which service?
+    //   emjp:<product>             which plan of it?
+    //   emjp:<product>:<plan>      ask for one emoji for that plan
+    //
+    // Both ids are re-read from `product_plans` under `product_id` before the
+    // badge is written (`setPlanEmoji`), so a forged pair names nothing.
+    case 'emjp': {
+      if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+      if (action.id === undefined) {
+        // Also the cancel button on the one-emoji prompt: drop the chosen plan.
+        await clearSession(tx, user.id);
+        const services = await emojiServices(tx);
+        return screen(
+          services.length === 0 ? menu.EMOJI_NO_SERVICES : menu.emojiServicesHome(),
+          menu.emojiServiceList(services),
+        );
+      }
+      const service = (await emojiServices(tx)).find((s) => s.id === action.id);
+      if (!service) {
+        return screen(menu.EMOJI_NO_SERVICES, menu.emojiServiceList(await emojiServices(tx)));
+      }
+      const plans = await emojiPlans(tx, service.id);
+      if (action.id2 === undefined) {
+        await clearSession(tx, user.id);
+        return screen(
+          plans.length === 0 ? menu.EMOJI_NO_PLANS : menu.emojiPlansHome(service.label),
+          menu.emojiPlanList(plans, service.id),
+        );
+      }
+      const target = plans.find((p) => p.id === action.id2);
+      if (!target) return screen(menu.EMOJI_NO_PLANS, menu.emojiPlanList(plans, service.id));
+      await ask(tx, user.id, 'emoji', { product: service.id, plan: target.id }, editId);
+      return screen(menu.askPremiumEmoji(target.label), menu.promptMenu(encode('emjp', service.id)));
     }
 
     case 'wal': {

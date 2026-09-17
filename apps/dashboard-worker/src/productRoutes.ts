@@ -40,6 +40,7 @@ import {
   checkCatalogLayout,
   isWholeToman,
   labelMarkupProblem,
+  MAX_BADGE_LENGTH,
   renderedLabelLength,
   type CatalogLayoutProblem,
 } from '@shikoo/contracts';
@@ -120,7 +121,6 @@ const ListQuery = z.object({
  * The raw cap stays as a bound on input, generously above one tag plus a full
  * label, so a pasted wall of markup is refused before any of the above runs.
  */
-const BADGE_RENDERED_MAX = 24;
 
 const BADGE = z
   .string()
@@ -135,8 +135,8 @@ const BADGE = z
   .refine((v) => !labelMarkupProblem(v), {
     message: 'a premium emoji must be one well-formed tag at the front of the badge',
   })
-  .refine((v) => renderedLabelLength(v) >= 1 && renderedLabelLength(v) <= BADGE_RENDERED_MAX, {
-    message: `badge draws longer than ${BADGE_RENDERED_MAX} characters`,
+  .refine((v) => renderedLabelLength(v) >= 1 && renderedLabelLength(v) <= MAX_BADGE_LENGTH, {
+    message: `badge draws longer than ${MAX_BADGE_LENGTH} characters`,
   })
   .nullable();
 

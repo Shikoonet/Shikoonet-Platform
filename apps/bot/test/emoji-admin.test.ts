@@ -22,10 +22,10 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { db, resetBot } from './helpers/env.js';
-import { makeCustomer } from './helpers/shop.js';
+import { makeCustomer, planIdIn, productId } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import { invalidateBotContent } from '../src/botContent.js';
-import { customEmojiIn, setButtonEmoji } from '../src/emoji.js';
+import { customEmojiIn, setButtonEmoji, setPlanEmoji } from '../src/emoji.js';
 import * as menu from '../src/menu.js';
 import { DEFAULT_LAYOUTS } from '@shikoo/contracts';
 
@@ -813,5 +813,98 @@ describe('putting it on a button', () => {
     const tags = [...(saved?.label ?? '').matchAll(/<tg-emoji/g)];
     expect(tags).toHaveLength(1);
     expect(saved?.label).toContain('5237699328843200968');
+  });
+});
+
+describe('the catalogue: a service, then one of its plans', () => {
+  // Sam, 2026-09-17: «هر سرویسی که می‌خوام داخلش برم و هر پلنی که می‌خوام اونجا
+  // پریمیوم ایموجی بزنم». The plan's button is drawn from `product_plans.badge`,
+  // so that is where the emoji goes.
+  const PRODUCT = 'sim-vip-platinum';
+  const PLAN = '۵۰ گیگ - یک‌ماهه';
+
+  afterEach(async () => {
+    // Shared fixture rows: put the badge back so the shop suites draw what
+    // they expect.
+    await db
+      .prepare(`UPDATE product_plans SET badge = NULL WHERE product_id = ?1`)
+      .bind(await productId(PRODUCT))
+      .run();
+  });
+
+  it('walks service → plan → emoji, and writes the plan’s badge', async () => {
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+    const pid = await productId(PRODUCT);
+    const plid = await planIdIn(PRODUCT, PLAN);
+
+    const home = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
+    expect((home.replies[0]?.keyboard ?? []).flat().some((b) => b.callback_data === 'emjp')).toBe(true);
+
+    const services = await handleUpdate(db, press(ids().updateId, telegramId, 'emjp'));
+    expect(services.replies[0]?.text ?? '').toContain('کدام سرویس');
+    const svc = (services.replies[0]?.keyboard ?? []).flat();
+    expect(svc.find((b) => b.text === 'پلاتینیوم')?.callback_data).toBe(`emjp:${pid}`);
+    // A HIDDEN service has no button on the customer's screen to put an icon on.
+    expect(svc.some((b) => b.text.includes('پنهان'))).toBe(false);
+
+    const plans = await handleUpdate(db, press(ids().updateId, telegramId, `emjp:${pid}`));
+    expect(plans.replies[0]?.text ?? '').toContain('پلاتینیوم');
+    expect(plans.replies[0]?.text ?? '').toContain('کدام پلن');
+    const pl = (plans.replies[0]?.keyboard ?? []).flat();
+    expect(pl.find((b) => b.text === PLAN)?.callback_data).toBe(`emjp:${pid}:${plid}`);
+
+    const ask = await handleUpdate(db, press(ids().updateId, telegramId, `emjp:${pid}:${plid}`));
+    expect(ask.replies[0]?.text ?? '').toContain(PLAN);
+    expect((ask.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data)).toEqual([`emjp:${pid}`]);
+
+    const done = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    expect(done.replies[0]?.text ?? '').toContain('تغییر کرد');
+    const saved = await db
+      .prepare(`SELECT badge FROM product_plans WHERE id = ?1`)
+      .bind(plid)
+      .first<{ badge: string }>();
+    expect(saved?.badge).toBe(`<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji>`);
+    // The list redrawn after the write shows the icon on that plan and no other.
+    const after = (done.replies[0]?.keyboard ?? []).flat();
+    expect(after.filter((b) => b.text.includes(FIRE_ID)).map((b) => b.callback_data)).toEqual([
+      `emjp:${pid}:${plid}`,
+    ]);
+
+    // The customer's own price list draws it too — the badge IS the button.
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const shop = await handleUpdate(db, press(ids().updateId, customer, `prd:${pid}`));
+    const drawn = (shop.replies[0]?.keyboard ?? []).flat().find((b) => b.callback_data === `plan:${plid}`);
+    expect(drawn?.text.startsWith(`<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji> ${PLAN}`)).toBe(true);
+  });
+
+  it('replaces the old icon rather than stacking, and keeps the rest of the badge', async () => {
+    const pid = await productId(PRODUCT);
+    const plid = await planIdIn(PRODUCT, PLAN);
+    await db.prepare(`UPDATE product_plans SET badge = '🆕 آف' WHERE id = ?1`).bind(plid).run();
+    const first = await setPlanEmoji(db, pid, plid, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' });
+    expect(first).toEqual({ ok: true, label: `<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji> آف ${PLAN}` });
+    const second = await setPlanEmoji(db, pid, plid, { customEmojiId: '5411394265924257943', fallbackEmoji: '👋' });
+    expect(second.ok && second.label).toBe(`<tg-emoji emoji-id="5411394265924257943">👋</tg-emoji> آف ${PLAN}`);
+  });
+
+  it('refuses a badge that would draw past 24, and a plan not in that service', async () => {
+    const pid = await productId(PRODUCT);
+    const plid = await planIdIn(PRODUCT, PLAN);
+    await db.prepare(`UPDATE product_plans SET badge = ?2 WHERE id = ?1`).bind(plid, 'x'.repeat(24)).run();
+    // Twenty-four plus the glyph and its space is twenty-six as drawn — over the
+    // cap 0060 enforces, said in words rather than as a constraint name.
+    expect(await setPlanEmoji(db, pid, plid, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' })).toEqual({
+      ok: false,
+      reason: 'TOO_LONG',
+    });
+    // The pair is checked together: this plan is not in `sim-gold-10`.
+    const other = await productId('sim-gold-10');
+    expect(await setPlanEmoji(db, other, plid, { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' })).toEqual({
+      ok: false,
+      reason: 'GONE',
+    });
   });
 });

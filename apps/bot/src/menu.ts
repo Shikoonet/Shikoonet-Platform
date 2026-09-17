@@ -393,9 +393,55 @@ export function emojiMenuList(menus: { label: string; no: number }[]): InlineKey
       menus.slice(i, i + 2).map((m) => ({ text: m.label, callback_data: encode('emjs', m.no) })),
     );
   }
+  // The catalogue is not a keyboard in `MENUS` — its buttons are rows of
+  // `products` and `product_plans` — so it gets a door of its own here.
+  rows.push([{ text: '🛒 سرویس‌ها و پلن‌ها', callback_data: encode('emjp') }]);
   rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
   return rows;
 }
+
+/**
+ * The catalogue's two screens: which service, then which of its plans.
+ *
+ * Sam, 2026-09-17: «هر سرویسی که می‌خوام داخلش برم و هر پلنی که می‌خوام اونجا
+ * پریمیوم ایموجی بزنم». Labels are drawn with their markup intact, like
+ * `emojiHomeMenu`, so the list shows which plans already carry an icon.
+ */
+export function emojiServicesHome(): string {
+  return ['🎨 ایموجی پریمیوم', '', 'کدام سرویس؟'].join('\n');
+}
+
+export function emojiServiceList(services: { id: number; label: string }[]): InlineKeyboard {
+  const rows: InlineKeyboard = services.map((s) => [
+    { text: s.label, callback_data: encode('emjp', s.id) },
+  ]);
+  rows.push([{ text: '⬅️ منوهای دیگر', callback_data: encode('emj') }]);
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+export function emojiPlansHome(serviceLabel: string): string {
+  return [
+    '🎨 ایموجی پریمیوم',
+    '',
+    `«${stripCustomEmoji(serviceLabel).trim()}» — کدام پلن را می‌خواهی عوض کنی؟`,
+  ].join('\n');
+}
+
+export function emojiPlanList(
+  plans: { id: number; label: string }[],
+  productId: number,
+): InlineKeyboard {
+  const rows: InlineKeyboard = plans.map((p) => [
+    { text: p.label, callback_data: encode('emjp', productId, p.id) },
+  ]);
+  rows.push([{ text: '⬅️ سرویس‌های دیگر', callback_data: encode('emjp') }]);
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+export const EMOJI_NO_SERVICES = '❌ سرویس فعالی نیست که دکمه‌ای داشته باشد.';
+export const EMOJI_NO_PLANS = '❌ این سرویس پلن فعالی ندارد.';
 
 /**
  * The second screen: which button of that keyboard?
@@ -517,6 +563,17 @@ export const EMOJI_NOT_AN_EMOJI = [
 export function emojiRefused(reason: 'TOO_LONG' | 'GONE' | 'BAD_EMOJI', label: string): string {
   if (reason === 'TOO_LONG') return emojiTooLong(label);
   return reason === 'GONE' ? EMOJI_BUTTON_GONE : EMOJI_NOT_AN_EMOJI;
+}
+
+/** The same three, for a plan — whose cap is its badge's and whose editor is «محصولات». */
+export function planEmojiRefused(reason: 'TOO_LONG' | 'GONE' | 'BAD_EMOJI', label: string): string {
+  if (reason === 'TOO_LONG') {
+    return [
+      `❌ روی «${stripCustomEmoji(label).trim()}» جا نشد.`,
+      'نشانِ این پلن با ایموجی از ۲۴ نویسه بیشتر می‌شود؛ اول در پنل › محصولات کوتاهش کن.',
+    ].join('\n');
+  }
+  return reason === 'GONE' ? '❌ این پلن دیگر فعال نیست.' : EMOJI_NOT_AN_EMOJI;
 }
 
 export function mainMenu(viewer: MenuViewer): InlineKeyboard {
