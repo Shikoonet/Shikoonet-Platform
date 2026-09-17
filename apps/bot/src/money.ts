@@ -29,19 +29,6 @@ export function formatToman(priceIrr: number): string {
 }
 
 /**
- * `1950000` -> `'195000'`.
- *
- * The same number `formatToman` renders, with the grouping and the unit taken
- * off — this one goes on the clipboard and then into a banking app, where a
- * comma is a syntax error and «تومان» is worse. Beside its sibling on purpose:
- * the two must never name different amounts, and a test compares the invoice
- * the customer reads against the button they press.
- */
-export function tomanDigits(priceIrr: number): string {
-  return String(Math.round(priceIrr / IRR_PER_TOMAN));
-}
-
-/**
  * ۱۹۵ -> 195. Persian and Arabic-Indic digits both appear in these names.
  *
  * Exported because two customer-typed paths — the top-up amount and the add-on

@@ -663,9 +663,16 @@ describe('the copy buttons on an invoice', () => {
     expect(text).toContain('6037-9975-1234-5678');
     expect(card).toBe('6037997512345678');
 
+    // The invoice quotes Toman because that is how the customer thinks; the
+    // clipboard carries Rial because that is what the banking app's amount
+    // field expects. A customer who pasted «195000» into that field would send
+    // a tenth of the price and land in the manual queue. Measured against the
+    // quoted figure times ten, not against the IRR constant, so the two stay
+    // one number in two units.
     const quoted = /💳 مبلغ دقیق: ([\d,]+) تومان/.exec(text)?.[1];
     expect(quoted).toBe('195,000');
-    expect(amount).toBe(quoted!.replace(/,/g, ''));
+    expect(amount).toBe(String(Number(quoted!.replace(/,/g, '')) * 10));
+    expect(amount).toBe('1950000');
   });
 
   it('sits above the buttons an admin can rearrange', () => {
@@ -685,7 +692,7 @@ describe('the copy buttons on an invoice', () => {
     // written in the message above, which is where it was read from before
     // these buttons existed.
     const rows = menu.checkoutMenu(4242, TOTAL, '9'.repeat(257));
-    expect(copied(rows)).toEqual(['195000']);
+    expect(copied(rows)).toEqual(['1950000']);
     expect(callbacks(rows).map((b) => b.callback_data)).toContain('paid:4242');
   });
 });

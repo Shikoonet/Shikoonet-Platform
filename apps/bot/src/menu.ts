@@ -64,7 +64,6 @@ import {
   formatToman,
   nameMentionsPrice,
   priceForUser,
-  tomanDigits,
   withoutQuotedPrice,
   type Price,
 } from './money.js';
@@ -1544,6 +1543,12 @@ export function checkoutMenu(
  * in the manual queue or money sent to somebody else entirely. `copy_text`
  * puts both on the clipboard, so neither is ever retyped.
  *
+ * The amount is copied in RIAL, not the Toman the invoice quotes. The
+ * banking app's amount field is in Rial, and a customer who pasted the Toman
+ * figure would send a tenth of the price — an exact-match verification that
+ * can never succeed, and a refund to arrange. Integer IRR is what the platform
+ * holds everywhere, so this is the number as stored, no conversion at all.
+ *
  * A value Telegram would refuse drops its own button rather than the invoice.
  * The cap is 256 characters and a card number is sixteen, so this can only fire
  * on a card row somebody has filled with something that is not a card — and
@@ -1559,7 +1564,7 @@ function copyRow(cardDigits: string, totalIrr: number): InlineButton[] {
     }
   };
   add(t.raw('CHECKOUT_COPY_CARD'), cardDigits);
-  add(t.raw('CHECKOUT_COPY_AMOUNT'), tomanDigits(totalIrr));
+  add(t.raw('CHECKOUT_COPY_AMOUNT'), String(Math.round(totalIrr)));
   return row;
 }
 
