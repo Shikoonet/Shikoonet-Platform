@@ -80,7 +80,7 @@ Form-data mode escapes through `URLEncoder` for the same reason.
 - Retries on non-2xx: up to 3 attempts (`runAttemptCount`), then marked `FAILED` in the app's local log.
 - Timeouts: `connectTimeout=15s`, `readTimeout=10s`.
 - No built-in auth header. Users inject one via a placeholder field if at all (e.g. add `Authorization` to `formDataParameters` or a custom JSON field).
-- **Security:** `SmsWorker` installs a permissive `X509TrustManager` that accepts all certificates — treat the transport as unauthenticated and require an app-level auth token.
+- **Security:** upstream HEAD (2025-10-19) uses plain `HttpURLConnection` with the **system** trust store — no custom `TrustManager`, no Network Security Config, `targetSdk 35` (user-installed CAs are ignored). An earlier version of this line claimed a trust-all manager; it was wrong. Consequence: the server's CA must be in the phone's own root store — the relay phone is Android 7.0, so the ingest hosts use Google Trust Services, not Let's Encrypt (CLAUDE.md › «قواعدی که نباید بشکنند»). Still require an app-level auth token: the `apiKey` travels in the JSON body.
 
 ## Receiver must
 
