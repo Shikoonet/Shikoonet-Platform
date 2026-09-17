@@ -7,6 +7,18 @@
  * fragment below reads it, and both the bot's picker and the dashboard's card
  * list use the same one so they cannot disagree about who is busy.
  *
+ * Out of the line FOR THAT AMOUNT. What the auto-matcher cannot untangle is
+ * two customers told to pay the same amount into the same card inside one
+ * window — the exact-amount rule then has nothing to choose by. A customer
+ * paying a different amount into the same card is no such problem: their
+ * SMS cannot match the other claim and the other's late SMS cannot match
+ * theirs. So the picker asks «is this card holding an invoice for MY
+ * amount», and the dashboard, which has no order in hand, asks «is it
+ * holding any». Production 2026-09-17 is why: six of seven live cards stood
+ * behind 24h holds from unsettled «پرداخت کردم» presses, and the shop sold
+ * four invoices in a row on the one free card, while Mirzabot before it
+ * never held a card beyond its ten-minute lease.
+ *
  * Two lengths, because «I paid» changes what waiting means:
  *
  *   - PENDING (shown, nothing pressed): `pay/card_hold_minutes` from being
@@ -44,8 +56,14 @@ const CARD_HOLD_MINUTES_SQL = `COALESCE(
  * Scalar subquery, correlated on an outer `pc` (a `payment_cards` row): the
  * epoch-ms until which the card is held, or NULL when no invoice holds it.
  * Compare against the caller's own `now` — nothing in here reads the clock.
+ *
+ * `amountParam` names the bound parameter carrying the order's amount
+ * (`?2`); only invoices for that amount count. Without it every open invoice
+ * counts — the dashboard's «در دست مشتری تا …», which is about the card, not
+ * about an order.
  */
-export const CARD_HELD_UNTIL_SQL = `(
+export function cardHeldUntilSql(amountParam?: string): string {
+  return `(
   SELECT MAX(CASE WHEN p.status = 'AWAITING_REVIEW'
                   THEN (EXTRACT(EPOCH FROM COALESCE(p.updated_at, p.created_at)) * 1000)::bigint
                        + ${CLAIMED_CARD_HOLD_MS}
@@ -54,4 +72,8 @@ export const CARD_HELD_UNTIL_SQL = `(
              END)
     FROM payments p
    WHERE p.assigned_card_number = pc.card_digits
-     AND p.status IN ('PENDING', 'AWAITING_REVIEW'))`;
+     AND p.status IN ('PENDING', 'AWAITING_REVIEW')${amountParam ? `
+     AND p.amount_irr = ${amountParam}` : ''})`;
+}
+
+export const CARD_HELD_UNTIL_SQL = cardHeldUntilSql();
