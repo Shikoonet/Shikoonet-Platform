@@ -694,12 +694,6 @@ export const TEXTS = {
     screen: 'paid',
     hint: 'وقتی اولین عکس رسید می‌رسد',
   },
-  RECEIPT_REPLACED: {
-    default: '📸 رسید تازه ثبت شد و جایگزین قبلی شد. زمان بررسی تغییری نمی‌کند.',
-    placeholders: [],
-    screen: 'paid',
-    hint: 'وقتی مشتری عکس دوم را می‌فرستد',
-  },
   RECEIPT_SETTLED: {
     default: 'این پرداخت قبلاً بررسی و تعیین‌تکلیف شده است.',
     placeholders: [],

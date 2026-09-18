@@ -332,7 +332,7 @@ export async function handleUpdate(
        *
        * And a customer who presses again produces a NEW `update_id`, so their
        * second press never reaches this branch. `paid` answers `paidAlready`,
-       * a re-sent receipt answers `replaced`, the QR redraws. The recovery is
+       * a re-sent receipt is answered nothing, the QR redraws. The recovery is
        * structural rather than lucky.
        *
        * ## The rule this makes checkable
@@ -834,8 +834,6 @@ async function handleReceipt(
   switch (result.outcome) {
     case 'received':
       return say(menu.receiptReceived(result.publicId));
-    case 'replaced':
-      return say(menu.RECEIPT_REPLACED);
     case 'settled':
       return say(menu.RECEIPT_SETTLED);
   }

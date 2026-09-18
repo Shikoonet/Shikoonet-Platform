@@ -595,10 +595,8 @@ export async function withdrawPaidClick(
 }
 
 export type ReceiptResult =
-  /** Attached, and it is the first one for this claim. */
+  /** Attached — the one receipt this claim will ever take. */
   | { outcome: 'received'; publicId: string }
-  /** Attached, replacing an earlier one — only after a reminder. The waiting window did not move. */
-  | { outcome: 'replaced'; publicId: string }
   /** Nothing of theirs asked for a receipt. Nothing is written and nothing is said. */
   | { outcome: 'none' }
   /** There is a claim, but it has already been decided. */
@@ -623,12 +621,13 @@ export type ReceiptResult =
  * after that evidence exists — pressing «پرداخت کردم» only opens the claim and
  * must never release an account on the strength of a button press alone.
  *
- * `receipt_submitted_at` is stamped ONCE. It is the anchor for the ten minutes
- * the matcher will keep waiting for a bank SMS before it gives up, and a
- * customer who could move it by sending another photo could hold their claim
- * out of the manual queue for as long as they liked. The newest picture is kept
- * — that is the evidence the admin should be looking at — and the clock is not
- * restarted by it.
+ * One receipt per claim — Sam, 2026-09-18: «فقط یه رسید می‌خوام؛ اگه
+ * فرستاد، دریافت شد، دیگه نیاز نیست». The first picture is the evidence and
+ * the last word; a second one is a picture nobody asked for and is answered
+ * nothing. That also keeps `receipt_submitted_at` honest without a COALESCE:
+ * it is the anchor for the ten minutes the matcher waits for a bank SMS, and
+ * a customer who could move it by sending another photo could hold their
+ * claim out of the manual queue for as long as they liked.
  */
 export async function recordReceipt(
   tx: D1DatabaseSession,
@@ -653,13 +652,18 @@ export async function recordReceipt(
   // settled, the row is history, and quietly stamping it would make the audit
   // trail disagree with what happened. FULFILLED_UNRECONCILED is deliberately
   // different: the product moved but the evidence question is still open.
+  //
+  // `receipt_url_or_r2_key IS NULL` is guarded here as well as in the read
+  // above, for the same reason as the status: two pictures arriving together
+  // must not both land, and the loser must not be told it was received.
   const updated = await tx
     .prepare(
       `UPDATE payment_claims
           SET receipt_url_or_r2_key = ?2,
-              receipt_submitted_at  = COALESCE(receipt_submitted_at, ?3),
+              receipt_submitted_at  = ?3,
               updated_at            = ?3
         WHERE id = ?1
+          AND receipt_url_or_r2_key IS NULL
           AND status IN ('PENDING', 'MATCH_SUGGESTED', 'FULFILLED_UNRECONCILED')
       RETURNING receipt_submitted_at`,
     )
@@ -674,9 +678,8 @@ export async function recordReceipt(
    * transaction as the receipt means a failed fulfilment cannot acknowledge a
    * picture that did not actually unlock the order.
    *
-   * A replacement receipt for an already fulfilled claim reaches this branch
-   * too. `fulfilMirzabotClaimWithoutPayment` deliberately treats that as an
-   * idempotent success, preserving the first actor, reason and timestamp.
+   * `fulfilMirzabotClaimWithoutPayment` treats a claim already fulfilled as
+   * an idempotent success, preserving the first actor, reason and timestamp.
    */
   const mode = await readContinuityMode(tx, now);
   if (mode.mode === 'CONTINUITY') {
@@ -693,9 +696,7 @@ export async function recordReceipt(
     }
   }
 
-  return updated.receipt_submitted_at === now
-    ? { outcome: 'received', publicId: claim.public_id }
-    : { outcome: 'replaced', publicId: claim.public_id };
+  return { outcome: 'received', publicId: claim.public_id };
 }
 
 type ClaimRow = { id: string; public_id: string };
@@ -710,24 +711,16 @@ async function claimUnderReview(tx: D1DatabaseSession, userId: number): Promise<
         WHERE p.user_id = ?1
           AND (p.status = 'AWAITING_REVIEW'
                OR (p.status = 'PAID' AND c.status = 'FULFILLED_UNRECONCILED'))
-          -- Only a claim the bot ASKED for a picture for (#308): the one
-          -- «پرداخت کردم» opened and nothing has landed on yet, or the one
-          -- the five-minute reminder went out for. A second picture for a
-          -- claim that already has one and was never reminded is not taken —
-          -- the ask was answered — and a picture nobody asked for is not
-          -- attached to anything.
-          AND (c.receipt_url_or_r2_key IS NULL
-               OR EXISTS (SELECT 1 FROM bot_notifications n
-                           WHERE n.dedupe_key = 'receipt-nudge:' || c.id))
-        -- A claim with no receipt yet wins, and only then the newest.
-        --
-        -- On updated_at alone (no backticks here: this is inside a JS template
-        -- literal) a customer with two open claims could only ever feed the newer
-        -- one: the first photo landed there, and the second REPLACED it rather
-        -- than reaching the older claim, which then had no way to receive
-        -- evidence at all. Under CONTINUITY that also released the wrong order
-        -- and acknowledged a receipt the other one was waiting for.
-        ORDER BY (c.receipt_url_or_r2_key IS NOT NULL), p.updated_at DESC, p.id DESC
+          -- Only a claim still waiting for its ONE picture (#308, and Sam
+          -- 2026-09-18: no replacements). «پرداخت کردم» asked, or the
+          -- five-minute reminder asked again; once a receipt is on the claim
+          -- the ask is answered, and a further picture is attached to nothing.
+          -- A customer with two open claims feeds the older one first; before
+          -- this ordering the second photo REPLACED the first claim's rather
+          -- than reaching the other, which under CONTINUITY released the
+          -- wrong order (no backticks here: JS template literal).
+          AND c.receipt_url_or_r2_key IS NULL
+        ORDER BY p.updated_at DESC, p.id DESC
         LIMIT 1`,
     )
     .bind(userId)

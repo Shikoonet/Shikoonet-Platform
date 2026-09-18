@@ -241,29 +241,10 @@ describe('a customer sending their receipt', () => {
     expect(sale.paid.replies[0]?.text).not.toContain('اگر رسید');
   });
 
-  it('takes no second picture unless the bot asked again (#308)', async () => {
-    // The ask on the «پرداخت کردم» screen was answered by the first photo. A
-    // second one, with no reminder in between, is a picture nobody asked for.
-    const sale = await buyAndClaim('sim-vip-1m-20');
-    await handleUpdate(db, sendsPhoto(sale.updateId + 2, sale.telegramId, ['first-receipt-0001']));
-
-    const out = await handleUpdate(
-      db,
-      sendsPhoto(sale.updateId + 3, sale.telegramId, ['second-receipt-002']),
-    );
-
-    expect(out.status).toBe('ignored');
-    expect((await claimRow(sale.claimId))?.receipt_url_or_r2_key).toBe('first-receipt-0001');
-  });
-
-  it('keeps the newest picture without moving the waiting clock, once reminded', async () => {
-    // `receipt_submitted_at` is the anchor for the ten minutes the matcher will
-    // keep waiting for a bank SMS before it gives up and asks a person. A
-    // customer who could restart that clock by sending another photo could hold
-    // their own claim out of the manual queue for as long as they liked.
-    //
-    // Reached only through the reminder now (#308): once the bot has asked a
-    // second time, a newer picture is taken, and the clock still does not move.
+  it('takes one picture and no more — Sam, 2026-09-18', async () => {
+    // «فقط یه رسید می‌خوام». The first photo is the evidence; a second one —
+    // even after the five-minute reminder has gone out — is answered nothing,
+    // the first stays, and the waiting clock it anchors does not move.
     const sale = await buyAndClaim('sim-vip-1m-20');
     await handleUpdate(db, sendsPhoto(sale.updateId + 2, sale.telegramId, ['first-receipt-0001']));
     const first = await claimRow(sale.claimId);
@@ -280,18 +261,10 @@ describe('a customer sending their receipt', () => {
       sendsPhoto(sale.updateId + 3, sale.telegramId, ['second-receipt-002']),
     );
 
-    expect(out.replies[0]?.text).toBe(menu.RECEIPT_REPLACED);
-    // Regression: the receipt acknowledgement is the real carrier for the
-    // one-button navbar, and the app screen follows it. The screenshot that
-    // found this bug had the old full reply keyboard above the receipt and no
-    // main screen at the bottom of the chat.
-    expect(out.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
-    expect(out.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
-    expect(out.replies.at(-1)?.keyboard).toEqual(
-      menu.mainMenu({ is_reseller: false, is_admin: false }),
-    );
+    expect(out.status).toBe('ignored');
+    expect(out.replies).toEqual([]);
     const second = await claimRow(sale.claimId);
-    expect(second?.receipt_url_or_r2_key).toBe('second-receipt-002');
+    expect(second?.receipt_url_or_r2_key).toBe('first-receipt-0001');
     expect(second?.receipt_submitted_at).toBe(first?.receipt_submitted_at);
   });
 
