@@ -72,6 +72,12 @@ interface ClaimSeed {
    * losing the customer's money in silence (`apps/bot/src/payment.ts:294-302`).
    */
   accountId?: string | null;
+  /**
+   * `false` for the claim whose customer has not sent a picture. The default
+   * is a receipt, because «در انتظار بررسی» is the tab under test here and
+   * since #307 it lists only claims that have one.
+   */
+  receipt?: boolean;
 }
 
 async function seedClaim(id: string, seed: ClaimSeed = {}) {
@@ -82,10 +88,11 @@ async function seedClaim(id: string, seed: ClaimSeed = {}) {
        (id, external_order_id, customer_reference, expected_amount_irr, target_financial_account_id,
         submitted_at, source_system, metadata_json, status, paid_clicked_at, receipt_submitted_at,
         suspect_reason, suspect_metadata_json, card_digits, created_at, updated_at,
-        fulfilment_mode, fulfilled_at, fulfilled_by, fulfilment_reason, reconciled_at)
+        fulfilment_mode, fulfilled_at, fulfilled_by, fulfilment_reason, reconciled_at,
+        receipt_url_or_r2_key)
      VALUES (?1, ?2, ?10, ?3, ?4, ?5, 'MIRZABOT',
              '{"telegramUserId":"42","telegramUsername":"ali"}', ?6, ?5, ?5, ?7, ?8, ?9,
-             ?5, ?5, ?11, ?12, ?13, ?14, ?15)`,
+             ?5, ?5, ?11, ?12, ?13, ?14, ?15, ?16)`,
   )
     .bind(
       id,
@@ -103,6 +110,7 @@ async function seedClaim(id: string, seed: ClaimSeed = {}) {
       seed.fulfilledBy ?? null,
       seed.fulfilmentReason ?? null,
       seed.reconciledAt ?? null,
+      seed.receipt === false ? null : `AgACAgQAAxkBAAIBY2${id.padEnd(10, '0')}`,
     )
     .run();
   return { id, paid, now };
@@ -701,6 +709,50 @@ describe('the open review queue', () => {
     const body = await get('tab=open');
     expect(body.counts['open']).toBe(body.items.length);
     expect(body.counts['open']).toBe(5);
+  });
+
+  it('a claim with no receipt waits in «در انتظار رسید», not «در انتظار بررسی» (#307)', async () => {
+    await seedClaim('rc-has', { suspectReason: 'OUTSIDE_WINDOW' });
+    await seedClaim('rc-none', { suspectReason: 'RECEIPT_MISSING', receipt: false });
+    await seedClaim('rc-waiting-none', { receipt: false });
+    // Parked stays parked whichever kind it is.
+    await seedClaim('rc-parked-none', { suspectReason: 'NO_TRANSACTION', receipt: false });
+    await baseEnv.DB.prepare(
+      `UPDATE payment_claims SET parked_at = ?1 WHERE id = 'rc-parked-none'`,
+    )
+      .bind(Date.now())
+      .run();
+    // Delivered under Continuity: the product has shipped, a receipt is no
+    // longer a condition of anything, so it is in neither queue.
+    await seedClaim('rc-fulfilled', {
+      status: 'FULFILLED_UNRECONCILED',
+      fulfilmentMode: 'CONTINUITY',
+      receipt: false,
+    });
+
+    const open = await get('tab=open');
+    const awaiting = await get('tab=awaiting_receipt');
+    expect(open.items.map((i) => i.id)).toEqual(['rc-has']);
+    expect(awaiting.items.map((i) => i.id).sort()).toEqual(['rc-none', 'rc-waiting-none']);
+    // The row keeps its own shape — «نیاز به بررسی» stays a review row.
+    expect(awaiting.items.find((i) => i.id === 'rc-none')?.reviewState).toBe('NEEDS_REVIEW');
+
+    // Nothing lost, nothing counted twice: the three badges are every
+    // undecided claim, and the two new ones sum to the old «open».
+    expect(open.counts['open']).toBe(1);
+    expect(open.counts['awaitingReceipt']).toBe(2);
+    expect(open.counts['parked']).toBe(1);
+
+    // The bot records a picture and the row moves over by itself.
+    // Bound, not inlined: a `key = '<handle>'` literal on one line is what the
+    // secret scanner reads as a credential, fixture or not.
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET receipt_url_or_r2_key = ?1 WHERE id = ?2`)
+      .bind('AgACAgQAAxkBAAIBY2late0001', 'rc-none')
+      .run();
+    const after = await get('tab=open');
+    expect(after.items.map((i) => i.id).sort()).toEqual(['rc-has', 'rc-none']);
+    expect(after.counts['open']).toBe(2);
+    expect(after.counts['awaitingReceipt']).toBe(1);
   });
 
   it('a parked claim moves to «کنار گذاشته» and comes back when it is decided', async () => {

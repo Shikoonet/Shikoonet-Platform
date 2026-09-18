@@ -41,6 +41,8 @@ import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 export type PaymentTab =
   | 'income'
   | 'open'
+  /** Undecided like `open`, but the customer has not sent a receipt yet (#307). */
+  | 'awaiting_receipt'
   /** `open` rows an operator set aside to wait for the bank SMS (`parked_at`). */
   | 'parked'
   | 'needs_review'
@@ -67,6 +69,7 @@ type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
  */
 const OPEN_QUEUE_TABS = new Set<PaymentTab>([
   'open',
+  'awaiting_receipt',
   'parked',
   'needs_review',
   'waiting',
