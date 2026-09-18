@@ -185,6 +185,89 @@ export async function loadDeclinedIncomeCount(db: D1Database) {
   return row?.n ?? 0;
 }
 
+/** How late a deposit may arrive and still be read as «that invoice». */
+export const EXPIRED_INVOICE_HINT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export interface ExpiredInvoiceHint {
+  publicId: string;
+  /** Epoch ms the invoice was issued. */
+  invoiceAt: number;
+  customer: { id: number; telegramId: string; username: string | null } | null;
+  /** Other expired invoices that fit the same deposit — 0 when this one is alone. */
+  others: number;
+}
+
+/**
+ * «Probably invoice X» on a deposit nobody claimed (#275).
+ *
+ * Since #274 an invoice expires with the card hold (ten minutes by default)
+ * and «پرداخت کردم» after that opens no claim. A customer who pays late
+ * anyway lands here, in «واریزی‌ها», and the operator had to guess which
+ * invoice the money was for. This names the guess: an EXPIRED card-to-card
+ * invoice for the same amount, on a card mapped to the account the SMS
+ * came in on, issued in the 24 hours before the bank stamped the deposit.
+ *
+ * A hint and nothing more. It is not a match, it verifies nothing, and the
+ * rule «auto-verify only for an isolated 1↔1 pair in the five-minute
+ * window» is untouched — an expired invoice has no claim to match. The
+ * newest fitting invoice is named; `others` says how many more fit, so a
+ * regular's third attempt is not presented as certain.
+ *
+ * One query for the page, `ANY(?1)` over its ids, like `expire.ts`.
+ */
+export async function loadExpiredInvoiceHints(
+  db: D1Database,
+  txIds: string[],
+): Promise<Map<string, ExpiredInvoiceHint>> {
+  const out = new Map<string, ExpiredInvoiceHint>();
+  if (txIds.length === 0) return out;
+  const rows = await db
+    .prepare(
+      `SELECT DISTINCT ON (t.id)
+              t.id AS tx_id,
+              p.public_id,
+              (EXTRACT(EPOCH FROM p.created_at) * 1000)::bigint AS invoice_at,
+              u.id AS user_id, u.telegram_id, u.username,
+              COUNT(*) OVER (PARTITION BY t.id) AS fitting
+         FROM transaction_candidates t
+         JOIN payments p
+           ON p.status = 'EXPIRED'
+          AND p.method = 'CARD_TO_CARD'
+          AND p.amount_irr = t.amount_irr
+          AND p.created_at >  to_timestamp((t.bank_timestamp - ?2) / 1000.0)
+          AND p.created_at <= to_timestamp(t.bank_timestamp / 1000.0)
+         JOIN payment_cards pc
+           ON pc.card_digits = p.assigned_card_number
+          AND pc.financial_account_id = t.financial_account_id
+         LEFT JOIN users u ON u.id = p.user_id
+        WHERE t.id = ANY(?1)
+          AND t.bank_timestamp IS NOT NULL
+        ORDER BY t.id, p.created_at DESC`,
+    )
+    .bind(txIds, EXPIRED_INVOICE_HINT_WINDOW_MS)
+    .all<{
+      tx_id: string;
+      public_id: string;
+      invoice_at: number;
+      user_id: number | null;
+      telegram_id: number | string | null;
+      username: string | null;
+      fitting: number;
+    }>();
+  for (const r of rows.results ?? []) {
+    out.set(r.tx_id, {
+      publicId: r.public_id,
+      invoiceAt: r.invoice_at,
+      customer:
+        r.user_id != null && r.telegram_id != null
+          ? { id: r.user_id, telegramId: String(r.telegram_id), username: r.username }
+          : null,
+      others: Math.max(0, Number(r.fitting) - 1),
+    });
+  }
+  return out;
+}
+
 export async function loadIncomeItems(
   db: D1Database,
   range: HistoryRange,
@@ -230,6 +313,10 @@ export async function loadIncomeItems(
       account_hint: string | null;
     }>();
 
+  const hints = await loadExpiredInvoiceHints(
+    db,
+    (rows.results ?? []).map((r) => r.id),
+  );
   const mapped = (rows.results ?? []).map((r) => ({
     id: r.id,
     amountIrr: r.amount_irr,
@@ -241,6 +328,7 @@ export async function loadIncomeItems(
     accountHint: r.account_hint,
     reference: extractReference(r.parser_evidence_json),
     statusLabel: 'Unassigned income',
+    expiredInvoice: hints.get(r.id) ?? null,
   }));
 
   if (!actorEmail) return mapped;
