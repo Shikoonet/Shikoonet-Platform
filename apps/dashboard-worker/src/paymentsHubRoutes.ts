@@ -121,6 +121,34 @@ function incomeSearchClause(q: string | null, p: (v: unknown) => string): string
   )} OR (t.amount_irr / 10)::text = ${p(q)} OR t.amount_irr::text = ${p(q)})`;
 }
 
+/**
+ * The claims half (#333): order, Telegram id, username, the card and account
+ * the customer was told to pay into, the amount whole in toman or rial, and
+ * the tracking number through ANY match — settled or only suggested, because
+ * a claim whose transfer the matcher found but could not settle is exactly
+ * the one an operator is on the phone about. `cu` and `fa` must be joined by
+ * the caller. One function for the list and the tab counts, so the number on
+ * a tab under a search is the number of rows that tab will draw.
+ *
+ * ponytail: leading-wildcard ILIKE is a scan over payment_claims; add
+ * pg_trgm on customer_reference/external_order_id if the table ever makes
+ * this slow.
+ */
+export function claimSearchClause(q: string | null, p: (v: unknown) => string): string {
+  if (!q) return '';
+  const like = p(searchLikeBind(q));
+  return ` AND (${searchLikeSql(
+    ['c.external_order_id', 'c.customer_reference', 'cu.username', 'c.card_digits', 'fa.account_hint', 'fa.display_name'],
+    like,
+  )}
+    OR (c.expected_amount_irr / 10)::text = ${p(q)}
+    OR c.expected_amount_irr::text = ${p(q)}
+    OR EXISTS (
+      SELECT 1 FROM reconciliation_matches rm
+        JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
+       WHERE rm.payment_claim_id = c.id AND rt.transaction_reference ILIKE ${like} ESCAPE '\\'))`;
+}
+
 function rangeClause(
   column: string,
   range: HistoryRange,
@@ -618,9 +646,20 @@ export async function loadFinancialSummary(
   };
 }
 
-export async function loadIncomeCount(db: D1Database) {
+export async function loadIncomeCount(db: D1Database, q: string | null = null) {
+  const binds: unknown[] = [];
+  const p = (v: unknown) => {
+    binds.push(v);
+    return `?${binds.length}`;
+  };
+  const search = incomeSearchClause(q, p);
   const row = await db
-    .prepare(`SELECT COUNT(*) AS n FROM transaction_candidates t WHERE ${INCOME_TX_WHERE}`)
+    .prepare(
+      `SELECT COUNT(*) AS n FROM transaction_candidates t
+       LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
+       WHERE ${INCOME_TX_WHERE}${search}`,
+    )
+    .bind(...binds)
     .first<{ n: number }>();
   return row?.n ?? 0;
 }

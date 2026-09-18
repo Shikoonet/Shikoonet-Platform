@@ -139,6 +139,18 @@ const PAYMENTS_TABS = [
   },
 ] as const;
 
+/**
+ * The tabs the search box is drawn on, in the order the screen draws them,
+ * each with the count that tab's chip shows. Under a search the server's
+ * counts are per-tab match counts, so this is how «which tab is it on» is
+ * answered: the first tab whose count is not zero.
+ */
+export const SEARCHABLE_TABS: ReadonlyArray<{ tab: PaymentTab; countKey: string }> = [
+  ...REVIEW_TABS.map((t) => ({ tab: t.value, countKey: t.countKey })),
+  { tab: 'manually_verified', countKey: 'manuallyVerified' },
+  { tab: 'all', countKey: 'all' },
+];
+
 type ReviewTab = (typeof REVIEW_TABS)[number]['value'];
 type PaymentsGroupTab = (typeof PAYMENTS_TABS)[number]['value'];
 type Level1Group = 'review' | 'reseller' | 'payments';
