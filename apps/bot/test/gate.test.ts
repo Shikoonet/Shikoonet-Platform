@@ -708,8 +708,8 @@ describe('a receipt is not stopped by the gate', () => {
 
   it('still refuses to let a receipt buy anything', async () => {
     // The bypass is scoped to the receipt itself. Somebody outside the channel
-    // who sends a photo gets told nothing is waiting — no order, no card, no
-    // way in. Without this the gate would be one photo wide.
+    // who sends a photo gets nothing — no order, no card, no way in, and since
+    // #308 not even a reply. Without this the gate would be one photo wide.
     await addChannel();
     const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);
@@ -720,7 +720,8 @@ describe('a receipt is not stopped by the gate', () => {
       globalThis.fetch,
       membership('left'),
     );
-    expect(out.replies[0]!.text).toBe(menu.RECEIPT_NOTHING_WAITING);
+    expect(out.status).toBe('ignored');
+    expect(out.replies).toEqual([]);
 
     // And the moment they try to actually start something, the gate is there.
     const browse = await handleUpdate(

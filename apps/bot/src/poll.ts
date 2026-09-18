@@ -23,6 +23,7 @@ import { downgradeExpired } from './downgrade.js';
 import { warnExpiringServices } from './warn.js';
 import { removeFinishedServices } from './remove.js';
 import { nudgeNeverBought } from './nudge.js';
+import { remindMissingReceipt } from './receiptReminder.js';
 import type { CronJobKey } from '@shikoo/contracts';
 import { expireUnpaidOrders } from './expire.js';
 import {
@@ -1036,6 +1037,10 @@ export async function run(
       // advancing it, and an order settled or delivered earlier in this same
       // cycle must have moved out of AWAITING_PAYMENT before this looks.
       await sweep('expiring unpaid orders', () => expireUnpaidOrders(db), 'expire_orders');
+      // Five minutes after «پرداخت کردم» with no picture: ask once more
+      // (#308). Somebody who paid is waiting on this, so it sits ahead of
+      // the removals and the nudge.
+      await sweep('reminding customers who sent no receipt', () => remindMissingReceipt(db));
       // The two that delete an account from a panel.
       //
       // After the sync, because both read `panel_status` and `panel_online_at`

@@ -26,6 +26,7 @@ import { activateContinuityMode, deactivateContinuityMode } from '@shikoo/domain
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 import { settleVerifiedPayments } from '../src/settle.js';
+import { receiptReminderKey } from '../src/receiptReminder.js';
 
 let nextId = 1;
 function ids(): { updateId: number; telegramId: number } {
@@ -240,14 +241,39 @@ describe('a customer sending their receipt', () => {
     expect(sale.paid.replies[0]?.text).not.toContain('اگر رسید');
   });
 
-  it('keeps the newest picture without moving the waiting clock', async () => {
+  it('takes no second picture unless the bot asked again (#308)', async () => {
+    // The ask on the «پرداخت کردم» screen was answered by the first photo. A
+    // second one, with no reminder in between, is a picture nobody asked for.
+    const sale = await buyAndClaim('sim-vip-1m-20');
+    await handleUpdate(db, sendsPhoto(sale.updateId + 2, sale.telegramId, ['first-receipt-0001']));
+
+    const out = await handleUpdate(
+      db,
+      sendsPhoto(sale.updateId + 3, sale.telegramId, ['second-receipt-002']),
+    );
+
+    expect(out.status).toBe('ignored');
+    expect((await claimRow(sale.claimId))?.receipt_url_or_r2_key).toBe('first-receipt-0001');
+  });
+
+  it('keeps the newest picture without moving the waiting clock, once reminded', async () => {
     // `receipt_submitted_at` is the anchor for the ten minutes the matcher will
     // keep waiting for a bank SMS before it gives up and asks a person. A
     // customer who could restart that clock by sending another photo could hold
     // their own claim out of the manual queue for as long as they liked.
+    //
+    // Reached only through the reminder now (#308): once the bot has asked a
+    // second time, a newer picture is taken, and the clock still does not move.
     const sale = await buyAndClaim('sim-vip-1m-20');
     await handleUpdate(db, sendsPhoto(sale.updateId + 2, sale.telegramId, ['first-receipt-0001']));
     const first = await claimRow(sale.claimId);
+    await db
+      .prepare(
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body)
+         VALUES (?1, ?2, 'reminder')`,
+      )
+      .bind(receiptReminderKey(sale.claimId), sale.telegramId)
+      .run();
 
     const out = await handleUpdate(
       db,
@@ -363,7 +389,8 @@ describe('a customer sending their receipt', () => {
 
     const out = await handleUpdate(db, sendsPhoto(updateId + 2, telegramId, ['which-one-file-001']));
 
-    expect(out.replies[0]?.text).toBe(menu.RECEIPT_NOTHING_WAITING);
+    expect(out.status).toBe('ignored');
+    expect(out.replies).toEqual([]);
     expect(await claimOf(first.public_id)).toBeNull();
     expect(await claimOf(second.public_id)).toBeNull();
   });
@@ -379,19 +406,36 @@ describe('a customer sending their receipt', () => {
 
     const out = await handleUpdate(db, sendsPhoto(updateId + 1, telegramId, ['too-late-file-001']));
 
-    expect(out.replies[0]?.text).toBe(menu.RECEIPT_NOTHING_WAITING);
+    expect(out.status).toBe('ignored');
+    expect(out.replies).toEqual([]);
     expect(await claimOf(order.public_id)).toBeNull();
   });
 
-  it('says what to do when nothing of theirs is waiting', async () => {
+  it('is answered nothing, and writes nothing, when nothing asked for it (#308)', async () => {
+    // Sam, 2026-09-18: a picture the bot did not ask for is not a receipt.
+    // It used to be answered «الان پرداختی در انتظار بررسی ندارید»; now the
+    // customer hears nothing, no row is touched, and whatever they were in
+    // the middle of typing is left where it was.
     const { updateId, telegramId } = ids();
-    await makeCustomer(telegramId);
+    const userId = await makeCustomer(telegramId);
+    await db
+      .prepare(
+        `INSERT INTO bot_sessions (user_id, step, data, updated_at)
+         VALUES (?1, 'typing-something', '{"k":1}'::jsonb, now())
+         ON CONFLICT (user_id) DO UPDATE SET step = 'typing-something', data = '{"k":1}'::jsonb`,
+      )
+      .bind(userId)
+      .run();
 
     const out = await handleUpdate(db, sendsPhoto(updateId, telegramId, ['unexpected-photo-1']));
 
-    expect(out.status).toBe('processed');
-    expect(out.replies[0]?.text).toBe(menu.RECEIPT_NOTHING_WAITING);
-    expect(out.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
+    expect(out.status).toBe('ignored');
+    expect(out.replies).toEqual([]);
+    const session = await db
+      .prepare(`SELECT step FROM bot_sessions WHERE user_id = ?1`)
+      .bind(userId)
+      .first<{ step: string | null }>();
+    expect(session?.step).toBe('typing-something');
   });
 
   it('does not take a file id that is not one', async () => {
@@ -404,7 +448,7 @@ describe('a customer sending their receipt', () => {
       sendsPhoto(sale.updateId + 2, sale.telegramId, ['../../etc/passwd']),
     );
 
-    expect(out.replies[0]?.text).toBe(menu.RECEIPT_NOTHING_WAITING);
+    expect(out.status).toBe('ignored');
     expect((await claimRow(sale.claimId))?.receipt_url_or_r2_key).toBeNull();
   });
 

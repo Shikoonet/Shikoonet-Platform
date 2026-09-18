@@ -706,12 +706,15 @@ export const TEXTS = {
     screen: 'paid',
     hint: 'وقتی رسید برای پرداختی می‌رسد که تایید یا رد شده',
   },
-  RECEIPT_NOTHING_WAITING: {
-    default:
-      'الان پرداختی در انتظار بررسی ندارید. اگر واریز کرده‌اید، اول روی فاکتور دکمهٔ «پرداخت کردم» را بزنید.',
+  // Five minutes after «پرداخت کردم» with no picture on the claim (#308).
+  // A photo that arrives when nothing asked for it is answered with nothing —
+  // Sam, 2026-09-18 — so this line and `PAID_SEND_RECEIPT` are the only two
+  // doors a receipt can come through.
+  RECEIPT_REMINDER: {
+    default: '📸 لطفاً رسید پرداختتان را دوباره بفرستید — هنوز رسیدی از شما دریافت نکرده‌ایم.',
     placeholders: [],
     screen: 'paid',
-    hint: 'وقتی عکسی می‌رسد و هیچ پرداختی در صف بررسی نیست',
+    hint: 'یک بار، ۵ دقیقه بعد از «پرداخت کردم» اگر هنوز رسیدی روی پرداخت نیست',
   },
   RECEIPT_WRONG_FILE: {
     default: 'این فایل رسید نیست. لطفاً تصویر رسید را بفرستید — عکس، یا فایل عکس، یا PDF بانک.',
