@@ -290,6 +290,99 @@ describe('a customer sending their receipt', () => {
     expect(row?.receipt_submitted_at).toBeNull();
   });
 
+  /** Buys something and stops at the invoice: a card on screen, no claim yet. */
+  async function buyOnly(telegramId: number, updateId: number, productCode: string) {
+    const plan = await planId(productCode);
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    return db
+      .prepare(
+        `SELECT o.id, p.public_id
+           FROM orders o JOIN payments p ON p.order_id = o.id
+          WHERE o.user_id = (SELECT id FROM users WHERE telegram_id = ?1)
+          ORDER BY o.id DESC LIMIT 1`,
+      )
+      .bind(String(telegramId))
+      .first<{ id: number; public_id: string }>();
+  }
+
+  async function claimOf(publicId: string) {
+    return db
+      .prepare(
+        `SELECT id, status, paid_clicked_at, receipt_submitted_at, receipt_url_or_r2_key
+           FROM payment_claims WHERE external_order_id = ?1`,
+      )
+      .bind(`shikoo:${publicId}`)
+      .first<{
+        id: string;
+        status: string;
+        paid_clicked_at: number;
+        receipt_submitted_at: number | null;
+        receipt_url_or_r2_key: string | null;
+      }>();
+  }
+
+  it('sent BEFORE «پرداخت کردم», on the one live invoice, opens the claim itself (#309)', async () => {
+    // Bank 11:54:17, button 11:55:41 — the customer screenshots and sends,
+    // THEN taps. The photo used to be refused and the claim opened seconds
+    // later went to review as «رسید نفرستاد». A picture is a stronger claim
+    // than a button, so it is the button.
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const order = (await buyOnly(telegramId, updateId, 'sim-vip-1m-50'))!;
+    expect(await claimOf(order.public_id)).toBeNull();
+
+    const before = Date.now();
+    const out = await handleUpdate(db, sendsPhoto(updateId + 1, telegramId, ['early-photo-file-001']));
+
+    expect(out.replies[0]?.text).toBe(menu.receiptReceived(order.public_id));
+    const claim = await claimOf(order.public_id);
+    expect(claim?.status).toBe('PENDING');
+    expect(claim?.receipt_url_or_r2_key).toBe('early-photo-file-001');
+    expect(claim?.paid_clicked_at).toBeGreaterThanOrEqual(before);
+    // One moment for both: the photo IS the press.
+    expect(claim?.receipt_submitted_at).toBe(claim?.paid_clicked_at);
+    const payment = await db
+      .prepare(`SELECT status FROM payments WHERE public_id = ?1`)
+      .bind(order.public_id)
+      .first<{ status: string }>();
+    expect(payment?.status).toBe('AWAITING_REVIEW');
+
+    // The button afterwards finds the claim already open, and does not open a
+    // second one.
+    const pressed = await handleUpdate(db, press(updateId + 2, telegramId, `paid:${order.id}`));
+    expect(pressed.replies[0]?.text).toContain(menu.paidAlready(order.public_id).slice(0, 20));
+    expect((await claimOf(order.public_id))?.receipt_url_or_r2_key).toBe('early-photo-file-001');
+  });
+
+  it('guesses nothing when two invoices are live', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const first = (await buyOnly(telegramId, updateId, 'sim-vip-1m-50'))!;
+    const second = (await buyOnly(telegramId, updateId + 1, 'sim-vip-1m-20'))!;
+    expect(first.public_id).not.toBe(second.public_id);
+
+    const out = await handleUpdate(db, sendsPhoto(updateId + 2, telegramId, ['which-one-file-001']));
+
+    expect(out.replies[0]?.text).toBe(menu.RECEIPT_NOTHING_WAITING);
+    expect(await claimOf(first.public_id)).toBeNull();
+    expect(await claimOf(second.public_id)).toBeNull();
+  });
+
+  it('opens nothing on an invoice whose deadline has passed', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const order = (await buyOnly(telegramId, updateId, 'sim-vip-1m-50'))!;
+    await db
+      .prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?1`)
+      .bind(order.id)
+      .run();
+
+    const out = await handleUpdate(db, sendsPhoto(updateId + 1, telegramId, ['too-late-file-001']));
+
+    expect(out.replies[0]?.text).toBe(menu.RECEIPT_NOTHING_WAITING);
+    expect(await claimOf(order.public_id)).toBeNull();
+  });
+
   it('says what to do when nothing of theirs is waiting', async () => {
     const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);
