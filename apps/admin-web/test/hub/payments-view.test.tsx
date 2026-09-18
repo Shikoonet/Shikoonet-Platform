@@ -133,6 +133,12 @@ function mockApi(byTab: Record<string, PaymentsResponse['items']>) {
     if (url.startsWith('/api/v1/resellers')) {
       return new Response(JSON.stringify({ ok: true, items: [] }), { status: 200 });
     }
+    if (url.startsWith('/api/v1/review-messages')) {
+      return new Response(
+        JSON.stringify({ ok: true, items: [{ key: 'call_us', text: 'لطفاً تماس بگیرید.' }] }),
+        { status: 200 },
+      );
+    }
     // `open`, matching the real default in `parsePaymentTabFromLocation` and in
     // the worker. It used to be `income`, and that was the bug: a claim is never
     // in `transaction_candidates`, so the landing screen could not show the

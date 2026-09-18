@@ -2266,9 +2266,13 @@ function CustomerMessageSection({
   async function load() {
     const r = await fetch('/api/v1/review-messages');
     if (!r.ok) return;
-    const j = (await r.json()) as { items: ReviewMessage[] };
-    setTemplates(j.items);
-    setKey((k) => (j.items.some((t) => t.key === k) ? k : (j.items[0]?.key ?? '')));
+    const j = (await r.json().catch(() => ({}))) as { items?: ReviewMessage[] };
+    // The shape, not just presence: the list is what the server says it is.
+    const items = Array.isArray(j.items)
+      ? j.items.filter((t) => typeof t?.key === 'string' && typeof t?.text === 'string')
+      : [];
+    setTemplates(items);
+    setKey((k) => (items.some((t) => t.key === k) ? k : (items[0]?.key ?? '')));
   }
   useEffect(() => {
     void load();
