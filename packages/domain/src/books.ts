@@ -86,13 +86,20 @@ export interface AccountStatement {
   offBooksDebits: OffBooksLine[];
   /** The ledger's side of the same month, for comparison with the bank's. */
   ledger: { expenseCount: number; expenseIrr: number; feeIrr: number; unlinkedCount: number; unlinkedIrr: number };
+  /** Movements the operator wrote down because the bank never texted them (0079). */
+  manual: { count: number; creditIrr: number; debitIrr: number };
   /** Every valid credit minus every valid debit, off-books included. */
   bankDeltaIrr: number;
   /**
-   * closing − (opening + every movement up to the closing SMS); null when
-   * either balance is unknown. Movements after the last balance-bearing SMS
-   * are in the boxes above but not in this check — the bank gave no figure
-   * to hold them against.
+   * closing − (opening + every SMS movement up to the closing SMS − expenses
+   * on this account that no SMS carries ± movements written by hand); null
+   * when either balance is unknown. Movements after the last balance-bearing
+   * SMS are in the boxes above but not in this check — the bank gave no
+   * figure to hold them against.
+   *
+   * Until 2026-09-18 only the SMS delta was in here, which read fine on the
+   * walk and wrong on production: most banks never text a withdrawal, so a
+   * hand-written expense could not close the gap it explained.
    */
   gapIrr: number | null;
   /** The whole month lies before the fresh start: nothing in it counts. */
@@ -158,6 +165,7 @@ export async function accountStatement(
       unexplainedWithdrawals: none,
       offBooksDebits: [],
       ledger: { expenseCount: 0, expenseIrr: 0, feeIrr: 0, unlinkedCount: 0, unlinkedIrr: 0 },
+      manual: { count: 0, creditIrr: 0, debitIrr: 0 },
       bankDeltaIrr: 0,
       gapIrr: null,
       beforeStart: true,
@@ -194,13 +202,23 @@ export async function accountStatement(
     .bind(...bind)
     .first<{ n: number; irr: string | number }>();
 
+  // Tagged SMS and hand-written movements side by side: to the statement a
+  // loan instalment is a loan instalment whether or not the bank texted it.
   const offBooks = await db
     .prepare(
-      `SELECT t.direction, idt.category, count(*)::int AS n, COALESCE(SUM(t.amount_irr),0) AS irr
-         FROM transaction_candidates t
-         JOIN income_declined_transactions idt ON idt.transaction_candidate_id = t.id AND idt.restored_at IS NULL
-        WHERE t.financial_account_id = ?1 AND t.status NOT IN ('REJECTED','IGNORED') ${range}
-        GROUP BY t.direction, idt.category ORDER BY idt.category`,
+      `SELECT direction, category, SUM(n)::int AS n, SUM(irr) AS irr FROM (
+         SELECT t.direction, idt.category, count(*)::int AS n, COALESCE(SUM(t.amount_irr),0) AS irr
+           FROM transaction_candidates t
+           JOIN income_declined_transactions idt ON idt.transaction_candidate_id = t.id AND idt.restored_at IS NULL
+          WHERE t.financial_account_id = ?1 AND t.status NOT IN ('REJECTED','IGNORED') ${range}
+          GROUP BY t.direction, idt.category
+         UNION ALL
+         SELECT m.direction, m.category, count(*)::int, COALESCE(SUM(m.amount_irr),0)
+           FROM manual_bank_movements m
+          WHERE m.financial_account_id = ?1 AND m.voided_at IS NULL
+            AND m.moved_at >= ?2 AND m.moved_at < ?3
+          GROUP BY m.direction, m.category
+       ) u GROUP BY direction, category ORDER BY category`,
     )
     .bind(...bind)
     .all<{ direction: string; category: OffBooksCategory; n: number; irr: string | number }>();
@@ -233,17 +251,42 @@ export async function accountStatement(
     .bind(...bind, closing ? closing.asOf : month.end)
     .first<{ irr: string | number }>();
 
+  const closeDay = tehranDateStringFromMs(closing ? closing.asOf : month.end);
   const ledger = await db
     .prepare(
       `SELECT count(*)::int AS n, COALESCE(SUM(-ra.amount_irr),0) AS expense_irr, COALESCE(SUM(ra.fee_irr),0) AS fee_irr,
               count(*) FILTER (WHERE ra.transaction_candidate_id IS NULL)::int AS unlinked_n,
-              COALESCE(SUM(-ra.amount_irr + ra.fee_irr) FILTER (WHERE ra.transaction_candidate_id IS NULL),0) AS unlinked_irr
+              COALESCE(SUM(-ra.amount_irr + ra.fee_irr) FILTER (WHERE ra.transaction_candidate_id IS NULL),0) AS unlinked_irr,
+              COALESCE(SUM(-ra.amount_irr + ra.fee_irr)
+                FILTER (WHERE ra.transaction_candidate_id IS NULL AND ra.spent_on <= ?4::date),0) AS unlinked_to_close_irr
          FROM revenue_adjustments ra
         WHERE ra.financial_account_id = ?1 AND ra.kind = 'EXPENSE' AND ra.voided_at IS NULL
           AND ra.spent_on >= ?2::date AND ra.spent_on < ?3::date`,
     )
-    .bind(accountId, tehranDateStringFromMs(from), tehranDateStringFromMs(month.end))
-    .first<{ n: number; expense_irr: string | number; fee_irr: string | number; unlinked_n: number; unlinked_irr: string | number }>();
+    .bind(accountId, tehranDateStringFromMs(from), tehranDateStringFromMs(month.end), closeDay)
+    .first<{
+      n: number;
+      expense_irr: string | number;
+      fee_irr: string | number;
+      unlinked_n: number;
+      unlinked_irr: string | number;
+      unlinked_to_close_irr: string | number;
+    }>();
+
+  // What the operator wrote down by hand — the whole month for the boxes,
+  // and up to the closing SMS for the check, the same bound as the SMS delta.
+  const manual = await db
+    .prepare(
+      `SELECT count(*)::int AS n,
+              COALESCE(SUM(amount_irr) FILTER (WHERE direction = 'CREDIT'),0) AS credit_irr,
+              COALESCE(SUM(amount_irr) FILTER (WHERE direction = 'DEBIT'),0) AS debit_irr,
+              COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount_irr ELSE -amount_irr END)
+                FILTER (WHERE moved_at <= ?4),0) AS to_close_irr
+         FROM manual_bank_movements
+        WHERE financial_account_id = ?1 AND voided_at IS NULL AND moved_at >= ?2 AND moved_at < ?3`,
+    )
+    .bind(...bind, closing ? closing.asOf : month.end)
+    .first<{ n: number; credit_irr: string | number; debit_irr: string | number; to_close_irr: string | number }>();
 
   const lines = (direction: string): OffBooksLine[] =>
     (offBooks.results ?? [])
@@ -251,11 +294,13 @@ export async function accountStatement(
       .map((r) => ({ category: r.category, count: r.n, amountIrr: num(r.irr) }));
 
   const bankDeltaIrr = num(delta?.irr);
+  // Everything the books know moved, whether or not the bank texted it.
+  const explainedDeltaIrr = bankDeltaIrr - num(ledger?.unlinked_to_close_irr) + num(manual?.to_close_irr);
   const gapIrr =
     opening && closing && closing.asOf > opening.asOf
-      ? closing.balanceIrr - (opening.balanceIrr + bankDeltaIrr)
+      ? closing.balanceIrr - (opening.balanceIrr + explainedDeltaIrr)
       : opening && closing
-        ? 0 - bankDeltaIrr || 0 // `|| 0` turns the -0 of an unmoved month into 0
+        ? 0 - explainedDeltaIrr || 0 // `|| 0` turns the -0 of an unmoved month into 0
         : null;
 
   return {
@@ -274,6 +319,7 @@ export async function accountStatement(
       unlinkedCount: ledger?.unlinked_n ?? 0,
       unlinkedIrr: num(ledger?.unlinked_irr),
     },
+    manual: { count: manual?.n ?? 0, creditIrr: num(manual?.credit_irr), debitIrr: num(manual?.debit_irr) },
     bankDeltaIrr,
     gapIrr,
     beforeStart: false,
@@ -293,6 +339,8 @@ export async function monthStatements(
                         AND t.bank_timestamp >= ?1 AND t.bank_timestamp < ?2)
            OR EXISTS (SELECT 1 FROM revenue_adjustments ra WHERE ra.financial_account_id = fa.id AND ra.voided_at IS NULL
                         AND ra.spent_on >= ?3::date AND ra.spent_on < ?4::date)
+           OR EXISTS (SELECT 1 FROM manual_bank_movements m WHERE m.financial_account_id = fa.id AND m.voided_at IS NULL
+                        AND m.moved_at >= ?1 AND m.moved_at < ?2)
         ORDER BY fa.active DESC, fa.display_name`,
     )
     .bind(month.start, month.end, tehranDateStringFromMs(month.start), tehranDateStringFromMs(month.end))
@@ -321,6 +369,75 @@ export async function booksOpening(db: D1Database): Promise<{ openedAt: number; 
     .first<{ opened_at: string | number | null; wallet: string | number; n: number }>();
   if (!row || row.n === 0 || row.opened_at == null) return null;
   return { openedAt: num(row.opened_at), walletIrr: num(row.wallet), accounts: row.n };
+}
+
+/**
+ * The wallet this instant — the last bank balance of every account in
+ * service, summed. What the fresh start would write if pressed now; shown on
+ * the card, and independent of which month the page is looking at.
+ */
+export async function walletNow(db: D1Database, now: number): Promise<{ walletIrr: number; accounts: number; missing: number }> {
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(SUM(bal.balance_irr),0) AS wallet, count(*)::int AS n,
+              count(*) FILTER (WHERE bal.balance_irr IS NULL)::int AS missing
+         FROM financial_accounts fa
+         LEFT JOIN LATERAL (
+           SELECT t.balance_irr FROM transaction_candidates t
+            WHERE t.financial_account_id = fa.id AND t.balance_irr IS NOT NULL
+              AND t.status NOT IN ('REJECTED','IGNORED') AND t.bank_timestamp <= ?1
+            ORDER BY t.bank_timestamp DESC, t.created_at DESC LIMIT 1) bal ON TRUE
+        WHERE fa.active = 1 AND fa.status = 'ACTIVE'`,
+    )
+    .bind(now)
+    .first<{ wallet: string | number; n: number; missing: number }>();
+  return { walletIrr: num(row?.wallet), accounts: row?.n ?? 0, missing: row?.missing ?? 0 };
+}
+
+export interface ManualMovementInput {
+  accountId: string;
+  direction: 'CREDIT' | 'DEBIT';
+  amountIrr: number;
+  movedAt: number;
+  category: OffBooksCategory;
+  note?: string | null;
+  actorEmail: string;
+  now: number;
+}
+
+/**
+ * A movement the bank did not text (0079). Off-books by construction — shop
+ * money that left without an SMS belongs in «هزینه‌ها», where the ledger
+ * already counts an expense on an account with no SMS behind it.
+ */
+export async function addManualMovement(
+  db: D1Database,
+  input: ManualMovementInput,
+): Promise<{ ok: true; id: string } | { ok: false; error: 'ACCOUNT_NOT_FOUND' }> {
+  const acc = await db.prepare(`SELECT id FROM financial_accounts WHERE id = ?1`).bind(input.accountId).first<{ id: string }>();
+  if (!acc) return { ok: false, error: 'ACCOUNT_NOT_FOUND' };
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO manual_bank_movements
+         (id, financial_account_id, direction, amount_irr, moved_at, category, note, created_by, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+    )
+    .bind(id, input.accountId, input.direction, input.amountIrr, input.movedAt, input.category, input.note ?? null, input.actorEmail, input.now)
+    .run();
+  return { ok: true, id };
+}
+
+/** Voids a hand-written movement; a second void is a no-op that says so. */
+export async function voidManualMovement(
+  db: D1Database,
+  args: { id: string; actorEmail: string; now: number },
+): Promise<{ ok: true } | { ok: false; error: 'NOT_FOUND' }> {
+  const r = await db
+    .prepare(`UPDATE manual_bank_movements SET voided_at = ?2, voided_by = ?3 WHERE id = ?1 AND voided_at IS NULL`)
+    .bind(args.id, args.now, args.actorEmail)
+    .run();
+  return r.meta.changes > 0 ? { ok: true } : { ok: false, error: 'NOT_FOUND' };
 }
 
 /**

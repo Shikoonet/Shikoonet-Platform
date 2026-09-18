@@ -404,6 +404,32 @@ body {
   gap: 16px;
   margin-block-end: 20px;
 }
+/* Five tiles on one row at 1280: smaller type and icon, and the text column
+   allowed to shrink (a flex child's min-width is its longest word otherwise,
+   which is what pushed «اختلاف با بانک» onto a row of its own and clipped
+   «۴٬۱۴۹٬۰۰۰ تومان · اول ماه» inside the card). */
+.stats-grid--five {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.stats-grid--five .stat-card {
+  padding: 16px 14px;
+  gap: 10px;
+}
+.stats-grid--five .stat-card > div {
+  min-width: 0;
+}
+.stats-grid--five .stat-card__value {
+  font-size: 21px;
+}
+.stats-grid--five .stat-card__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+.stats-grid--five .stat-card__icon svg {
+  width: 20px;
+  height: 20px;
+}
 .stat-card {
   position: relative;
   overflow: hidden;
@@ -504,6 +530,23 @@ body {
 
 .table-wrap {
   overflow-x: auto;
+}
+/* Nine money columns on a 1280 screen: a size down and a narrower gutter,
+   so «اختلاف با بانک» is on screen instead of behind a scrollbar. */
+.app-table.app-table--tight {
+  font-size: 12px;
+}
+.app-table.app-table--tight td,
+.app-table.app-table--tight th {
+  padding-inline: 6px;
+}
+.app-table.app-table--tight .cell-name .muted {
+  /* A block with its own width is what lets the ellipsis bite; a bare
+     max-width on the cell does not shrink an auto-layout column. */
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .app-table {
   width: 100%;

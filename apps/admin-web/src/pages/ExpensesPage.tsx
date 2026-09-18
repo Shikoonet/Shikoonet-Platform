@@ -206,7 +206,16 @@ export function ExpensesPage() {
   const [jFrom, setJFrom] = useState<JalaliDate>(() => toJalali(Date.now() - 30 * 86_400_000));
   const [jTo, setJTo] = useState<JalaliDate>(() => toJalali(Date.now()));
 
-  const [editing, setEditing] = useState<RevenueAdjustmentRow | 'new' | null>(null);
+  // «دفتر بانک» sends the operator here to explain a withdrawal the bank
+  // showed and never texted: ?account=&amount=<toman>&date=YYYY-MM-DD opens
+  // the form on that account, that day, that amount.
+  const prefill = useMemo(() => {
+    const q = new URLSearchParams(window.location.search);
+    const account = q.get('account');
+    if (!account) return null;
+    return { account, amount: q.get('amount') ?? '', date: q.get('date') ?? '' };
+  }, []);
+  const [editing, setEditing] = useState<RevenueAdjustmentRow | 'new' | null>(prefill ? 'new' : null);
   const [posting, setPosting] = useState<ExpenseRecurrence | null>(null);
   const [managing, setManaging] = useState<'categories' | 'recurrences' | null>(null);
   const [voidingRow, setVoidingRow] = useState<RevenueAdjustmentRow | null>(null);
@@ -345,6 +354,7 @@ export function ExpensesPage() {
         {editing && (
           <EntryForm
             row={editing === 'new' ? null : editing}
+            prefill={editing === 'new' ? prefill : null}
             categories={activeCategories}
             onClose={() => setEditing(null)}
             onSaved={async (msg) => {
@@ -1391,6 +1401,7 @@ function EntryForm({
   row,
   recurrence = null,
   categories,
+  prefill = null,
   onClose,
   onSaved,
   onError,
@@ -1398,6 +1409,8 @@ function EntryForm({
   row: RevenueAdjustmentRow | null;
   /** Posting one instalment of this template, rather than typing a free row. */
   recurrence?: ExpenseRecurrence | null;
+  /** Arriving from «دفتر بانک» with the hole already measured. */
+  prefill?: { account: string; amount: string; date: string } | null;
   categories: ExpenseCategory[];
   onClose: () => void;
   onSaved: (msg: string) => void | Promise<void>;
@@ -1419,7 +1432,7 @@ function EntryForm({
     ? String(Math.abs(row.amountIrr) / 10)
     : recurrence
       ? String(recurrence.amountIrr / 10)
-      : '';
+      : (prefill?.amount ?? '');
   const initialForeign = row?.originalAmount == null ? '' : String(row.originalAmount);
   const initialRate = row?.fxRateIrr == null ? '' : String(row.fxRateIrr / 10);
 
@@ -1444,7 +1457,7 @@ function EntryForm({
    * None of it is required: an old row, or a bill paid from somewhere the
    * phone does not watch, is still a row.
    */
-  const [accountId, setAccountId] = useState<string>(row?.financialAccountId ?? '');
+  const [accountId, setAccountId] = useState<string>(row?.financialAccountId ?? prefill?.account ?? '');
   const [fee, setFee] = useState(row && row.feeIrr > 0 ? String(row.feeIrr / 10) : '');
   const [withdrawalId, setWithdrawalId] = useState<string>(row?.transactionCandidateId ?? '');
   const [accounts, setAccounts] = useState<AccountListItem[]>([]);
@@ -1457,7 +1470,9 @@ function EntryForm({
         ? Date.parse(`${row.spentOn}T12:00:00Z`)
         : recurrence
           ? Date.parse(`${recurrence.nextDueOn}T12:00:00Z`)
-          : Date.now(),
+          : prefill?.date
+            ? Date.parse(`${prefill.date}T12:00:00Z`)
+            : Date.now(),
     ),
   );
   const [busy, setBusy] = useState(false);

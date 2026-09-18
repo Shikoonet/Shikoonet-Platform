@@ -89,6 +89,7 @@ async function purge(): Promise<void> {
   await db.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM income_declined_transactions WHERE transaction_candidate_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM account_opening_balances WHERE financial_account_id LIKE ?1`).bind(`${P}%`).run();
+  await db.prepare(`DELETE FROM manual_bank_movements WHERE financial_account_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM transaction_candidates WHERE id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM raw_sms_events WHERE id LIKE ?1`).bind(`${P}%`).run();
 }
@@ -272,6 +273,29 @@ describe('off the books', () => {
     expect(((await link.json()) as { error: string }).error).toBe('withdrawal_off_books');
   });
 
+  it('can be re-labelled in place, and the change is audited', async () => {
+    const id = await tx({ direction: 'CREDIT', amountIrr: 300_000, balanceIrr: 300_000, at: T(1) });
+    await json('POST', `/api/v1/transactions/${id}/decline-income`, { reason: 'x' });
+    const off = (await (await get(`/api/v1/admin/books/off-books?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      items: Array<{ id: string; category: string }>;
+    };
+    const tag = off.items.find((i) => i.category === 'OTHER')!;
+    const r = await json('PATCH', `/api/v1/admin/books/off-books/${tag.id}`, { category: 'TRANSFER' });
+    expect(r.status).toBe(200);
+    const after = (await (await get(`/api/v1/admin/books/off-books?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      items: Array<{ id: string; category: string }>;
+    };
+    expect(after.items.find((i) => i.id === tag.id)?.category).toBe('TRANSFER');
+    expect((await json('PATCH', `/api/v1/admin/books/off-books/${tag.id}`, { category: 'NOPE' })).status).toBe(400);
+    expect((await json('PATCH', `/api/v1/admin/books/off-books/${P}missing`, { category: 'TRANSFER' })).status).toBe(404);
+    const audit = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM audit_logs WHERE action = 'books.off_books_relabelled' AND entity_id = ?1`,
+    )
+      .bind(tag.id)
+      .first<{ n: number }>();
+    expect(audit?.n).toBe(1);
+  });
+
   it('refuses a category it does not know', async () => {
     const w = await tx({ direction: 'DEBIT', amountIrr: 1, balanceIrr: null, at: T(6) });
     const r = await json('POST', `/api/v1/transactions/${w}/decline-income`, { category: 'GIFT' });
@@ -369,6 +393,105 @@ describe('the monthly statement', () => {
       accounts: Array<{ gapIrr: number }>;
     }).accounts[0]!;
     expect(s.gapIrr).toBe(300_000);
+  });
+
+  /**
+   * Production, 2026-09-18: most banks never text a withdrawal. The bank's
+   * balance still drops, and the only honest thing the statement can do is
+   * show the hole — and then let the operator close it, two ways.
+   */
+  it('a hole the bank showed closes when the operator writes the movement down', async () => {
+    await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 1_000_000, at: month.start - DAY });
+    // 1M → a 200k deposit → the bank says 700k: 500k left without an SMS.
+    await tx({ direction: 'CREDIT', amountIrr: 200_000, balanceIrr: 700_000, at: T(2) });
+    const before = ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{ gapIrr: number }>;
+    }).accounts[0]!;
+    expect(before.gapIrr).toBe(-500_000);
+
+    const r = await json('POST', '/api/v1/admin/books/manual', {
+      accountId: ACCT,
+      direction: 'DEBIT',
+      amountToman: 50_000,
+      movedAt: T(2) - 1000,
+      category: 'PERSONAL',
+      note: `${P}قسط`,
+    });
+    expect(r.status).toBe(200);
+    const { id } = (await r.json()) as { id: string };
+
+    const after = ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{ gapIrr: number; offBooksDebits: Array<{ category: string; amountIrr: number }>; manual: { debitIrr: number } }>;
+    }).accounts[0]!;
+    expect(after.gapIrr).toBe(0);
+    expect(after.offBooksDebits).toEqual([{ category: 'PERSONAL', count: 1, amountIrr: 500_000 }]);
+    expect(after.manual.debitIrr).toBe(500_000);
+
+    // It is a row in the account's list and in the off-books list, marked as the operator's word.
+    const moves = (await (await get(`/api/v1/admin/books/movements?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      items: Array<{ id: string; kind: string; amountIrr: number; balanceIrr: number | null }>;
+    };
+    expect(moves.items.find((m) => m.id === id)).toMatchObject({ kind: 'manual', amountIrr: 500_000, balanceIrr: null });
+    const off = (await (await get(`/api/v1/admin/books/off-books?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      items: Array<{ id: string; kind: string; category: string }>;
+    };
+    expect(off.items.find((m) => m.id === id)).toMatchObject({ kind: 'manual', category: 'PERSONAL' });
+
+    // Voided: the hole is back, the row is gone, a second void says so.
+    expect((await app.request(`/api/v1/admin/books/manual/${id}`, { method: 'DELETE' }, envAs(ADMIN))).status).toBe(200);
+    expect((await app.request(`/api/v1/admin/books/manual/${id}`, { method: 'DELETE' }, envAs(ADMIN))).status).toBe(404);
+    const again = ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{ gapIrr: number }>;
+    }).accounts[0]!;
+    expect(again.gapIrr).toBe(-500_000);
+  });
+
+  it('a hole the bank showed closes when an expense on that account explains it, SMS or not', async () => {
+    await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 1_000_000, at: month.start - DAY });
+    await tx({ direction: 'CREDIT', amountIrr: 200_000, balanceIrr: 700_000, at: T(2) });
+    // 50,000 Toman = 500,000 IRR, dated the day of the hole, no SMS to link.
+    const r = await json('POST', '/api/v1/admin/revenue-adjustments', {
+      kind: 'EXPENSE',
+      amountToman: 50_000,
+      note: `${P}سرور`,
+      spentOn: new Date(T(2)).toISOString().slice(0, 10),
+      financialAccountId: ACCT,
+    });
+    expect(r.status).toBe(200);
+    const s = ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{ gapIrr: number; ledger: { unlinkedCount: number; unlinkedIrr: number } }>;
+    }).accounts[0]!;
+    expect(s.ledger).toMatchObject({ unlinkedCount: 1, unlinkedIrr: 500_000 });
+    expect(s.gapIrr).toBe(0);
+    // …and the list carries it, so the hole finder on the page closes the same hole.
+    const moves = (await (await get(`/api/v1/admin/books/movements?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      items: Array<{ kind: string; amountIrr: number; direction: string; expense: { id: number } | null }>;
+    };
+    expect(moves.items.find((m) => m.kind === 'expense')).toMatchObject({ direction: 'DEBIT', amountIrr: 500_000 });
+  });
+
+  it('refuses a hand-written movement in the future, on no account, or from anyone but an ADMIN', async () => {
+    const body = { accountId: ACCT, direction: 'DEBIT', amountToman: 1, movedAt: T(1), category: 'PERSONAL' };
+    expect((await json('POST', '/api/v1/admin/books/manual', { ...body, movedAt: NOW + DAY })).status).toBe(400);
+    expect((await json('POST', '/api/v1/admin/books/manual', { ...body, accountId: `${P}nope` })).status).toBe(404);
+    // The owner's word, like the fresh start: under `/admin/`, ADMIN only.
+    expect((await json('POST', '/api/v1/admin/books/manual', body, READER)).status).toBe(403);
+    expect((await json('POST', '/api/v1/admin/books/manual', body, REVIEWER)).status).toBe(403);
+    expect((await json('POST', '/api/v1/admin/books/manual', body, ADMIN)).status).toBe(200);
+  });
+
+  it('counts the month’s expenses that name no account, so the tile can say they are elsewhere', async () => {
+    await json('POST', '/api/v1/admin/revenue-adjustments', {
+      kind: 'EXPENSE',
+      amountToman: 12_000,
+      note: `${P}بی‌حساب`,
+      spentOn: new Date(T(3)).toISOString().slice(0, 10),
+    });
+    const t = ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}`)).json()) as {
+      totals: { expensesNoAccountCount: number; expensesNoAccountIrr: number };
+    }).totals;
+    expect(t.expensesNoAccountCount).toBeGreaterThanOrEqual(1);
+    expect(t.expensesNoAccountIrr).toBeGreaterThanOrEqual(120_000);
   });
 
   it('measures the gap up to the last balance the bank gave, not past it', async () => {

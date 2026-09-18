@@ -501,6 +501,12 @@ describe('every write route, asked directly', () => {
     //
     // 168, same day: `POST /admin/reseller-requests/messages` — the list of
     // those texts, ADMIN-only for the same reason 166 is.
-    expect(writeRoutes().length).toBe(168);
+    // 169–171, 2026-09-18: «دفتر بانک» learns that most banks never text a
+    // withdrawal. `POST /admin/books/manual` writes a movement the bank showed
+    // and never sent, `DELETE /admin/books/manual/:id` voids it, and
+    // `PATCH /admin/books/off-books/:id` re-labels a tag in place. All three
+    // are ADMIN-only like the fresh start — the owner's word in the monthly
+    // statement — and audited; `books.test.ts` pins each.
+    expect(writeRoutes().length).toBe(171);
   });
 });
