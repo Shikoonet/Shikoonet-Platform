@@ -2721,19 +2721,21 @@ interface AccountPurge {
   pinnedTransactions: number;
 }
 
+/** True for a transaction row `t` the books have counted. */
+const TX_IS_PINNED_SQL = `(
+  EXISTS (SELECT 1 FROM reconciliation_matches m
+           WHERE m.transaction_candidate_id = t.id
+             AND m.status IN ${CONSUMING_MATCH_STATUSES})
+  OR EXISTS (SELECT 1 FROM reseller_transactions r WHERE r.transaction_candidate_id = t.id)
+  OR EXISTS (SELECT 1 FROM revenue_adjustments a WHERE a.transaction_candidate_id = t.id)
+  OR EXISTS (SELECT 1 FROM account_opening_balances b WHERE b.transaction_candidate_id = t.id))`;
+
 async function countAccountPurge(db: DB, accountId: string): Promise<AccountPurge> {
   const row = await db
     .prepare(
       `SELECT COUNT(*)::int AS transactions,
               COALESCE(SUM(amount_irr), 0)::bigint AS amount_irr,
-              COUNT(*) FILTER (WHERE
-                EXISTS (SELECT 1 FROM reconciliation_matches m
-                         WHERE m.transaction_candidate_id = t.id
-                           AND m.status IN ${CONSUMING_MATCH_STATUSES})
-                OR EXISTS (SELECT 1 FROM reseller_transactions r WHERE r.transaction_candidate_id = t.id)
-                OR EXISTS (SELECT 1 FROM revenue_adjustments a WHERE a.transaction_candidate_id = t.id)
-                OR EXISTS (SELECT 1 FROM account_opening_balances b WHERE b.transaction_candidate_id = t.id)
-              )::int AS pinned
+              COUNT(*) FILTER (WHERE ${TX_IS_PINNED_SQL})::int AS pinned
          FROM transaction_candidates t
         WHERE t.financial_account_id = ?1`,
     )
@@ -2930,10 +2932,20 @@ app.delete('/api/v1/accounts/:id', async (c) => {
 });
 
 /**
- * The account and every transaction attributed to it, in one batch with the
- * audit row, after the pin check inside the same request. The counts in the
- * audit row are the ones this request checked, not the preview's — the
- * batch is one transaction, and a purge without its audit row cannot happen.
+ * The account and every transaction attributed to it, in one guarded statement.
+ *
+ * The counts above were read a moment ago; this is the guard-in-the-statement
+ * rule (CLAUDE.md): a claim aimed at the account or a pin on one of its rows
+ * that lands between that read and this write must stop the purge, not be
+ * SET NULL / CASCADEd away by it. So the same conditions are re-evaluated
+ * INSIDE the statement that deletes, and the audit row is written from the
+ * rows the DELETE actually returned — a credit assigned in the gap is counted
+ * or the whole thing refuses; it is never silently gone.
+ *
+ * The lock first: `FOR UPDATE` on the account and its rows makes a concurrent
+ * claim insert (KEY SHARE on the account) or match insert (KEY SHARE on the
+ * row) wait for this transaction, and find the account gone when it wakes,
+ * instead of slipping under the DELETE and losing its target.
  */
 async function purgeAccount(
   c: Context<AppBindings>,
@@ -2949,33 +2961,69 @@ async function purgeAccount(
   if (purge.pinnedTransactions > 0) {
     return c.json({ ok: false, error: 'transactions_in_use', references: refs, purge }, 409);
   }
-  const purged = { transactions: purge.transactions, amountIrr: purge.amountIrr };
-  await c.env.DB.batch([
+  const [, , result] = await c.env.DB.batch<{ n: number; amount_irr: number; deleted: number }>([
+    c.env.DB.prepare(`SELECT id FROM financial_accounts WHERE id = ?1 FOR UPDATE`).bind(account.id),
     c.env.DB
-      .prepare(`DELETE FROM transaction_candidates WHERE financial_account_id = ?1`)
+      .prepare(`SELECT id FROM transaction_candidates WHERE financial_account_id = ?1 FOR UPDATE`)
       .bind(account.id),
-    c.env.DB.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(account.id),
-    c.env.DB.prepare(SQL.insertAudit).bind(
-      crypto.randomUUID(),
-      ident.email,
-      ident.role,
-      'account.purged',
-      'ACCOUNT',
-      account.id,
-      JSON.stringify({
-        displayName: account.display_name,
-        bank: account.bank_name,
-        deletedIdentifierCount: refs.identifiers,
-        purgedTransactionCount: purged.transactions,
-        purgedAmountIrr: purged.amountIrr,
-      }),
-      null,
-      args.reason,
-      c.req.header('cf-ray') ?? null,
-      Date.now(),
-    ),
+    c.env.DB
+      .prepare(
+        `WITH ok AS (
+           SELECT 1
+            WHERE EXISTS (SELECT 1 FROM financial_accounts WHERE id = ?1 AND active = 0)
+              AND NOT EXISTS (SELECT 1 FROM payment_claims WHERE target_financial_account_id = ?1)
+              AND NOT EXISTS (SELECT 1 FROM transaction_candidates t
+                               WHERE t.financial_account_id = ?1 AND ${TX_IS_PINNED_SQL})),
+         gone AS (
+           DELETE FROM transaction_candidates
+            WHERE financial_account_id = ?1 AND EXISTS (SELECT 1 FROM ok)
+            RETURNING amount_irr),
+         acct AS (
+           DELETE FROM financial_accounts
+            WHERE id = ?1 AND EXISTS (SELECT 1 FROM ok)
+            RETURNING display_name, bank_name),
+         audit AS (
+           INSERT INTO audit_logs
+             (id, actor_email, actor_role, action, entity_type, entity_id,
+              before_json, after_json, reason, request_id, created_at)
+           SELECT ?2, ?3, ?4, 'account.purged', 'ACCOUNT', ?1,
+                  jsonb_build_object(
+                    'displayName', acct.display_name,
+                    'bank', acct.bank_name,
+                    'deletedIdentifierCount', ?5::int,
+                    'purgedTransactionCount', (SELECT COUNT(*) FROM gone),
+                    'purgedAmountIrr', (SELECT COALESCE(SUM(amount_irr), 0) FROM gone))::text,
+                  NULL, ?6, ?7, ?8
+             FROM acct
+           RETURNING 1)
+         SELECT (SELECT COUNT(*)::int FROM gone) AS n,
+                (SELECT COALESCE(SUM(amount_irr), 0)::bigint FROM gone) AS amount_irr,
+                (SELECT COUNT(*)::int FROM acct) AS deleted`,
+      )
+      .bind(
+        account.id,
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        refs.identifiers,
+        args.reason,
+        c.req.header('cf-ray') ?? null,
+        Date.now(),
+      ),
   ]);
-  return c.json({ ok: true, deleted: account.id, references: refs, purged });
+  const row = result?.results?.[0];
+  if (!row || row.deleted === 0) {
+    // Something moved between the counts and the write; say which.
+    const again = await countAccountPurge(c.env.DB, account.id);
+    const error = again.pinnedTransactions > 0 ? 'transactions_in_use' : 'account_in_use';
+    return c.json({ ok: false, error, references: refs, purge: again }, 409);
+  }
+  return c.json({
+    ok: true,
+    deleted: account.id,
+    references: refs,
+    purged: { transactions: row.n, amountIrr: row.amount_irr },
+  });
 }
 
 const AnalyzeBody = z.object({ body: z.string().min(1).max(8000) }).strict();
