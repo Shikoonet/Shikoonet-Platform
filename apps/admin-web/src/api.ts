@@ -3041,6 +3041,11 @@ export const api = {
     return req<{ ok: boolean }>(`/bot-keyboard/${menu}/reset`, { method: 'POST' });
   },
 
+  /** The `attention` block of `overview()` alone — what the sidebar badges poll (#334). */
+  attention() {
+    return req<{ ok: boolean; attention: Attention }>('/attention');
+  },
+
   overview() {
     return req<{
       attention: Attention;

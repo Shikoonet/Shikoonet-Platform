@@ -26,7 +26,8 @@ import {
   type HubPageId,
   type PageId,
 } from './nav.js';
-import { api, type PanelRole } from './api.js';
+import { api, type Attention, type PanelRole } from './api.js';
+import { count } from './format.js';
 import { brand, mark } from './brand.js';
 import { ADMIN_ONLY_HINT, READ_ONLY_HINT, RoleProvider } from './role.js';
 import { useRoute } from './route.js';
@@ -42,6 +43,7 @@ import { VersionBadge } from './VersionBadge.js';
 import { createCache, type Cache } from './hub/query.js';
 import { HeaderSlotsProvider, HeaderSlotOutlet } from './hub/shikoonetShell.js';
 import { NotificationBell } from './hub/NotificationBell.js';
+import { QK } from './hub/queries.js';
 import {
   ContinuityBanner,
   ContinuityButton,
@@ -343,6 +345,25 @@ function Shell({
   banner: string | null;
   onRefreshSession: () => void;
 }) {
+  // The two queues a person can be blocked on, as a number beside their
+  // sidebar entry (#334). The dashboard already drew these on its «نیاز به
+  // توجه» strip, which is the one screen an operator is NOT on while a request
+  // waits. Through the hub cache so the header's refresh button and the
+  // polling cadence are the ones every other live number already has; and
+  // re-asked on every section change, because approving a request on
+  // «لیست درخواست‌ها» and then leaving should not show the old number for
+  // another thirty seconds. Silent on error — a badge is a hint, not a page.
+  const attention = cache.useQuery<{ attention: Attention }>(QK.attention, {
+    fetcher: () => api.attention(),
+  }).data?.attention;
+  useEffect(() => cache.invalidate(QK.attention), [cache, page]);
+  const waiting = (id: PageId): number =>
+    id === 'payments'
+      ? (attention?.unreviewedPayments ?? 0)
+      : id === 'requests'
+        ? (attention?.pendingRequests ?? 0)
+        : 0;
+
   // One poll for the whole panel. The button is the normal state and the strip
   // is the continuity one — never both — but a per-screen instance would mean a
   // request every thirty seconds per screen to answer one question.
@@ -518,6 +539,11 @@ function Shell({
                     <Icon name={item.icon} />
                   </span>
                   <span>{item.label}</span>
+                  {waiting(item.id) > 0 && (
+                    <span className="sidebar-link__badge" title="در انتظار بررسی">
+                      {count(waiting(item.id))}
+                    </span>
+                  )}
                 </button>
               ))}
           </details>

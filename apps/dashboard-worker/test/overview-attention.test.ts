@@ -175,6 +175,25 @@ describe('what still needs a person', () => {
     expect(a.unreviewedPayments).toBe((t.open ?? 0) + (t.continuityPending ?? 0) + (t.income ?? 0));
   });
 
+  it('is the same block on `/attention`, the route the sidebar polls (#334)', async () => {
+    // The sidebar badge and the dashboard strip must never disagree — the
+    // lean route exists so the badge does not pay for the whole dashboard,
+    // not so it can have a number of its own.
+    const userId = await makeUser();
+    await baseEnv.DB.prepare(
+      `INSERT INTO reseller_requests (user_id, description, status, created_at)
+       VALUES (?1, 'می‌خواهم نماینده شوم', 'PENDING', now())`,
+    )
+      .bind(userId)
+      .run();
+    const res = await app.request('/api/v1/admin/attention', {}, envAs(ADMIN));
+    expect(res.status).toBe(200);
+    const lean = (await res.json()) as { ok: boolean; attention: Attention };
+    expect(lean.ok).toBe(true);
+    expect(lean.attention).toEqual((await overview()).attention);
+    expect(lean.attention.pendingRequests).toBeGreaterThanOrEqual(1);
+  });
+
   it('answers every count even when there is nothing to report', async () => {
     // Zero is an answer. A missing key would make the screen draw «—» for a
     // shop with nothing waiting, which reads as «unknown» rather than «clear».
