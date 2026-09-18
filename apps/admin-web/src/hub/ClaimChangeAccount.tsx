@@ -35,7 +35,14 @@ export function ClaimChangeAccount({
   });
 
   const filtered = useMemo(
-    () => (accounts?.items ?? []).filter((a) => a.active === 1),
+    () =>
+      (accounts?.items ?? [])
+        .filter((a) => a.active === 1)
+        .sort(
+          (a, b) =>
+            a.bank_name.localeCompare(b.bank_name, 'fa') ||
+            a.display_name.localeCompare(b.display_name, 'fa'),
+        ),
     [accounts?.items],
   );
 
