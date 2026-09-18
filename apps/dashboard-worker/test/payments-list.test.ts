@@ -714,6 +714,39 @@ describe('the open review queue', () => {
     expect(body.counts['open']).toBe(5);
   });
 
+  it('one search box finds a claim by order, Telegram id, username or tracking number (#321)', async () => {
+    const base = Date.now();
+    await seedClaim('q-one', { status: 'VERIFIED', customerReference: '5550001' });
+    await seedClaim('q-two', { status: 'VERIFIED', customerReference: '5550002' });
+    await seedTx('t-q-one', base);
+    await baseEnv.DB.prepare(
+      `UPDATE transaction_candidates SET transaction_reference = 'TRK77' WHERE id = 't-q-one'`,
+    ).run();
+    await seedMatch('q-one', 't-q-one', 'AUTO_VERIFIED');
+    const user = await baseEnv.DB.prepare(
+      `INSERT INTO users (telegram_id, username, registered_at) VALUES (5550001, 'qsearcher', now())
+       ON CONFLICT (telegram_id) DO UPDATE SET username = excluded.username RETURNING id`,
+    ).first<{ id: number }>();
+    try {
+      // The order id, as the row prints it — the fixture's external id is
+      // `mirzabot:test:q-one`.
+      expect((await get('tab=bot_auto_verified&range=all&q=q-one')).items.map((i) => i.id)).toEqual(['q-one']);
+      // The customer's Telegram id, in Persian digits as typed off a phone.
+      // (`q-two` has no match, so «همه» is the tab it is on — the filter is
+      // the same code on every claim tab.)
+      expect((await get(`tab=all&range=all&q=${encodeURIComponent('۵۵۵۰۰۰۲')}`)).items.map((i) => i.id)).toEqual(['q-two']);
+      // The username, with or without the @.
+      expect((await get('tab=bot_auto_verified&range=all&q=%40QSearcher')).items.map((i) => i.id)).toEqual(['q-one']);
+      // The bank's tracking number.
+      expect((await get('tab=bot_auto_verified&range=all&q=TRK77')).items.map((i) => i.id)).toEqual(['q-one']);
+      // Nothing matching finds nothing; rubbish is not a filter.
+      expect((await get('tab=bot_auto_verified&range=all&q=nope')).items).toEqual([]);
+      expect((await get(`tab=all&range=all&q=${encodeURIComponent("' OR 1=1")}`)).items.length).toBe(2);
+    } finally {
+      await baseEnv.DB.prepare(`DELETE FROM users WHERE id = ?1`).bind(user!.id).run();
+    }
+  });
+
   it('finds a claim by the bank tracking number, settled or only suggested (#306)', async () => {
     const base = Date.now();
     await seedClaim('ref-settled', { status: 'VERIFIED' });

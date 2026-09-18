@@ -22,7 +22,7 @@
  * which the worker already supports (see packages/domain/src/historyRange.ts).
  */
 
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { tehranAdjacentDay, tehranTodayDateString } from './historyRangeNav.js';
 
 /** «همه» is the tab unfiltered; the other four split it without overlap. */
@@ -180,10 +180,13 @@ export function BotAutoVerifiedFilter({
   value,
   onSegmentChange,
   onDateChange,
+  trailing,
 }: {
   value: BotAutoVerifiedFilterValue;
   onSegmentChange: (s: BotAutoVerifiedSegment) => void;
   onDateChange: (d: BotAutoVerifiedDateFilter) => void;
+  /** The rest of the row — search, «خواندن همه» — so the tab's controls are ONE line (#321). */
+  trailing?: ReactNode;
 }) {
   return (
     <div className="bot-filter">
@@ -229,6 +232,7 @@ export function BotAutoVerifiedFilter({
           );
         })}
       </div>
+      {trailing}
     </div>
   );
 }

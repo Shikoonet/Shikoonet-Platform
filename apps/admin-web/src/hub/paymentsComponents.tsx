@@ -11,7 +11,7 @@ import type { AnalyticsResponse } from './analytics.js';
 import { formatPercentChange } from './analytics.js';
 import type { Cache } from './query.js';
 import type { HistoryRangeState } from './paymentReview.js';
-import { IconBotVerified, IconReview } from './paymentsIcons.js';
+import { count } from '../format.js';
 
 /* ── Status badges ── */
 
@@ -50,30 +50,6 @@ export const EmptyState = CompactEmptyState;
 
 /* ── Metric cards ── */
 
-export function MetricCard({
-  label,
-  value,
-  meta,
-  accent,
-  icon,
-}: {
-  label: string;
-  value: ReactNode;
-  meta?: ReactNode;
-  accent?: boolean;
-  icon?: ReactNode;
-}) {
-  return (
-    <article className={`metric-card${accent ? ' metric-card--accent' : ''}`}>
-      {icon && <span className="metric-card__icon">{icon}</span>}
-      <div className="metric-card__body">
-        <span className="metric-card__label">{label}</span>
-        <span className="metric-card__value tabular-nums">{value}</span>
-        {meta != null && <span className="metric-card__meta muted">{meta}</span>}
-      </div>
-    </article>
-  );
-}
 
 function formatDurationSeconds(total: number): string {
   if (total < 60) return `${total}s`;
@@ -112,22 +88,34 @@ export function BotVerifiedMetrics({
       ? formatTomanFromIrr(analytics.botAutoVerified.amountIrr)
       : 'verified today';
 
+  // One line, not four cards (#321). The cards were ~100px of the page an
+  // operator scrolled past to reach the first row, and the rail beside the
+  // table already draws the count and the rate in full. Same strip the
+  // income and reseller tabs use for their totals.
   return (
-    <div className="bot-metrics" aria-label="خلاصهٔ تایید خودکار ربات">
-      <MetricCard
-        label="کل تاییدشده‌های امروز"
-        value={botCount}
-        meta={countMeta}
-        accent
-        icon={<IconBotVerified />}
-      />
-      <MetricCard label="نرخ تایید" value={rate} meta="automation rate" icon={<IconReview />} />
-      <MetricCard label="میانگین زمان تایید" value={avgTime} meta="claim to bank tx" />
-      <MetricCard
-        label="مشتریان یکتا"
-        value={uniqueCustomers > 0 ? uniqueCustomers : '—'}
-        meta="in current range"
-      />
+    <div className="hub-context-metrics" aria-label="خلاصهٔ تایید خودکار ربات">
+      <span>
+        <strong>{count(botCount)}</strong> تایید ربات
+        {analytics?.botAutoVerified?.amountIrr != null && <> · {countMeta}</>}
+      </span>
+      <span className="hub-context-metrics__sep" aria-hidden>
+        ·
+      </span>
+      <span>
+        نرخ تایید <strong className="tabular-nums">{rate}</strong>
+      </span>
+      <span className="hub-context-metrics__sep" aria-hidden>
+        ·
+      </span>
+      <span>
+        میانگین تا واریز <strong className="tabular-nums">{avgTime}</strong>
+      </span>
+      <span className="hub-context-metrics__sep" aria-hidden>
+        ·
+      </span>
+      <span>
+        <strong>{uniqueCustomers > 0 ? count(uniqueCustomers) : '—'}</strong> مشتری یکتا
+      </span>
     </div>
   );
 }

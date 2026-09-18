@@ -208,6 +208,7 @@ function buildQuery(
   rangeState: HistoryRangeState,
   filters: Filters,
   botAutoFilterParams?: { purchaseType: string | null; range: string; day: string | null },
+  search = '',
 ): string {
   const qs = new URLSearchParams({ tab });
   if (tab === 'bot_auto_verified' && botAutoFilterParams) {
@@ -217,6 +218,7 @@ function buildQuery(
     if (botAutoFilterParams.purchaseType) {
       qs.set('purchaseType', botAutoFilterParams.purchaseType);
     }
+    if (search.trim()) qs.set('q', search.trim());
   } else {
     appendHistoryRangeQuery(qs, rangeState);
   }
@@ -258,6 +260,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const [filters, setFilters] = useState<Filters>(() => parseFiltersFromLocation());
   // DEV-only: filters specific to the Bot Auto Verified tab.
   const botAutoFilter = useBotAutoVerifiedFilter();
+  /** The one search box on «تایید خودکار ربات» (#321): applied on Enter. */
+  const [botSearchDraft, setBotSearchDraft] = useState('');
+  const [botSearch, setBotSearch] = useState('');
   const [reviewingId, setReviewingId] = useState<string | null>(() => parseReviewIdFromLocation());
   const [incomeAction, setIncomeAction] = useState<IncomeItem | null>(null);
   const [assignIncome, setAssignIncome] = useState<IncomeItem | null>(null);
@@ -295,6 +300,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
     rangeState,
     filters,
     tab === 'bot_auto_verified' ? botAutoFilter.toQueryParams() : undefined,
+    tab === 'bot_auto_verified' ? botSearch : '',
   );
   /*
    * Page 1 whenever anything else about the question changes.
@@ -493,6 +499,45 @@ export function PaymentsView({ cache }: { cache: Cache }) {
       setMarkingReadAll(false);
     }
   }
+
+  /*
+   * The rest of the bot tab's control row (#321): one search box for
+   * whatever the operator has in hand — order id, Telegram id, @username,
+   * bank tracking number — and «خواندن همه» when there is something unread.
+   * On the SAME line as the two segmented filters, not in a bar of its own
+   * above the table: the operator reaches the rows in one row of controls.
+   */
+  const botTrailing = (
+    <>
+      <form
+        className="bot-filter__search"
+        role="search"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setBotSearch(botSearchDraft);
+        }}
+      >
+        <input
+          type="search"
+          dir="ltr"
+          aria-label="جست‌وجو: سفارش، شناسهٔ تلگرام، نام کاربری یا شمارهٔ پیگیری"
+          placeholder="سفارش، آی‌دی، @user، پیگیری…"
+          value={botSearchDraft}
+          onChange={(e) => {
+            setBotSearchDraft(e.target.value);
+            if (e.target.value === '') setBotSearch('');
+          }}
+        />
+      </form>
+      {(counts?.botAutoVerifiedUnread ?? 0) > 0 && (
+        <PaymentTabReadAll
+          unread={counts?.botAutoVerifiedUnread ?? 0}
+          busy={markingReadAll}
+          onClick={() => void readAllTab('bot_auto_verified')}
+        />
+      )}
+    </>
+  );
 
   async function post(path: string, body: object) {
     setError(null);
@@ -734,15 +779,6 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   unread={counts?.suspectedFakeUnread ?? 0}
                   busy={markingReadAll}
                   onClick={() => void readAllTab('suspected_fake')}
-                />
-              </div>
-            )}
-            {tab === 'bot_auto_verified' && (counts?.botAutoVerifiedUnread ?? 0) > 0 && (
-              <div className="payment-table-header payment-table-header--end">
-                <PaymentTabReadAll
-                  unread={counts?.botAutoVerifiedUnread ?? 0}
-                  busy={markingReadAll}
-                  onClick={() => void readAllTab('bot_auto_verified')}
                 />
               </div>
             )}
@@ -1107,6 +1143,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                     value={botAutoFilter.value}
                     onSegmentChange={botAutoFilter.setSegment}
                     onDateChange={botAutoFilter.setDate}
+                    trailing={botTrailing}
                   />
                   <BotVerifiedMetrics analytics={analytics} items={claimItems} />
                   <BotVerifiedTable>
@@ -1139,6 +1176,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   value={botAutoFilter.value}
                   onSegmentChange={botAutoFilter.setSegment}
                   onDateChange={botAutoFilter.setDate}
+                  trailing={botTrailing}
                 />
                 <CompactEmptyState>{emptyText(tab)}</CompactEmptyState>
               </div>
@@ -3020,8 +3058,15 @@ function UnreviewedStrip({
     { n: counts.income ?? 0, label: 'واریزی بدون سفارش', tab: 'income' },
   ];
   const total = parts.reduce((sum, p) => sum + p.n, 0);
+  // One line either way (#321). With nothing to review the sentence is a
+  // quiet caption, not a bordered box the operator scrolls past; with work
+  // waiting, the sum and its chips sit side by side.
   return (
-    <div className="attention attention--strip" role="status" aria-label="پرداخت‌های بررسی‌نشده">
+    <div
+      className={`attention attention--strip${total === 0 ? ' attention--clear' : ''}`}
+      role="status"
+      aria-label="پرداخت‌های بررسی‌نشده"
+    >
       {total === 0 ? (
         <p className="muted">همهٔ پرداخت‌ها بررسی شده‌اند.</p>
       ) : (
