@@ -921,6 +921,12 @@ export const TEXTS = {
     screen: 'serviceDetail',
     hint: 'به‌جای خط بالا، وقتی سرویس انقضا ندارد',
   },
+  SERVICE_DETAIL_HELD_DAYS: {
+    default: '📅 اعتبار: {days} روز از اولین اتصال',
+    placeholders: ['days'],
+    screen: 'serviceDetail',
+    hint: 'به‌جای خط اعتبار، برای سرویسی که هنوز فعال نشده — زمانش از اولین اتصال شروع می‌شود',
+  },
   SERVICE_DETAIL_DAYS_LEFT: {
     default: '⏳ {days} روز باقی مانده',
     placeholders: ['days'],

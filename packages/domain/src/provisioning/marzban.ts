@@ -26,13 +26,15 @@
  *     13  ...                      active   1        offconecton   onsublink
  *     14  ...                      disable  1        offconecton   onsublink
  *
- * Every panel is version 1 — that is, PasarGuard — and every one is
- * `offconecton`. So this file implements one path — `group_ids` +
- * `proxy_settings` + an absolute ISO expiry — rather than porting branches
- * nothing selects. The two `on_hold`
- * variants are not dead code we deleted; they are code we never wrote, and the
- * table above is why. If a panel ever arrives with different settings, that is
- * the moment to add the branch, with a row to point at.
+ * Every panel is version 1 — that is, PasarGuard — and every one was
+ * `offconecton`, so this file first implemented one path — `group_ids` +
+ * `proxy_settings` + an absolute ISO expiry — and left the `on_hold` variants
+ * unwritten. On 2026-09-18 Sam decided otherwise for the new bot (#325): a
+ * SOLD account starts `on_hold` and its days count from the customer's first
+ * connection, which is the `conecton` branch of `Marzban.php:262`. That is
+ * one decision for the shop, not a per-panel switch, so `provision` reads it
+ * from the request (`onHold`) and no panel row carries it. Trials keep the
+ * absolute date, as `on_hold_test = 0` always did.
  *
  * Credentials never come from the database. `provisioning_providers.secret_ref`
  * names them; the caller resolves them from the environment.
@@ -103,6 +105,8 @@ interface MarzbanUser {
   subscription_url?: unknown;
   expire?: unknown;
   status?: unknown;
+  /** Seconds the account will run once it is first used — set while `on_hold`. */
+  on_hold_expire_duration?: unknown;
   /** ISO-ish timestamp of the last connection, or null/absent. */
   online_at?: unknown;
   used_traffic?: unknown;
@@ -596,6 +600,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
           remoteRef: { panel: provider.code, username: request.username },
           subscriptionUrl: absoluteSubUrl(existing.user.subscription_url, base),
           alreadyExisted: true,
+          held: asString(existing.user.status) === 'on_hold',
         };
       }
 
@@ -603,12 +608,20 @@ export const marzbanAdapter: ProvisioningAdapter = {
         username: request.username,
         // A plan with no volume is unmetered, which Marzban spells as 0.
         data_limit: request.volumeGb === null ? 0 : Math.round(request.volumeGb * GB),
-        // Absolute expiry: every production panel is `offconecton`, so an
-        // account starts running the moment it exists.
-        expire: request.expiresAt === null ? 0 : request.expiresAt.toISOString(),
         note: request.note,
         data_limit_reset_strategy: pick(request, 'data_limit_reset_strategy') ?? 'no_reset',
       };
+      if (request.onHold && request.durationDays !== null) {
+        // The days are held until the first connection; the panel stamps the
+        // real `expire` then. `Marzban.php:268-270`, in seconds like the PHP.
+        body['expire'] = 0;
+        body['status'] = 'on_hold';
+        body['on_hold_expire_duration'] = request.durationDays * 86_400;
+      } else {
+        // Absolute expiry — a trial, or a plan with no days at all: the
+        // account starts running the moment it exists.
+        body['expire'] = request.expiresAt === null ? 0 : request.expiresAt.toISOString();
+      }
       const proxySettings = pick(request, 'proxy_settings') ?? pick(request, 'proxies');
       if (proxySettings !== undefined) body['proxy_settings'] = proxySettings;
       const groups = groupIdsFor(request);
@@ -638,6 +651,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
             remoteRef: { panel: provider.code, username: request.username },
             subscriptionUrl: absoluteSubUrl(raced.user.subscription_url, base),
             alreadyExisted: true,
+            held: asString(raced.user.status) === 'on_hold',
           };
         }
         return {
@@ -664,6 +678,9 @@ export const marzbanAdapter: ProvisioningAdapter = {
         remoteRef: { panel: provider.code, username: request.username },
         subscriptionUrl: absoluteSubUrl(created.subscription_url, base),
         alreadyExisted: false,
+        // The panel's word first — the response is the created user, status
+        // included — and what was asked only when it says nothing.
+        held: (asString(created.status) ?? body['status']) === 'on_hold',
       };
     } catch (error) {
       // A timeout, a DNS failure, a panel that is down. All worth another pass;
@@ -775,6 +792,24 @@ export const marzbanAdapter: ProvisioningAdapter = {
       // evidence with a preference.
       const expire = expiresAtMs === null ? 0 : Math.floor(expiresAtMs / 1000);
 
+      /*
+       * An account nobody has connected to yet has no `expire` to extend —
+       * its days sit in `on_hold_expire_duration`, and the panel refuses a
+       * date on an `on_hold` user. So the days are added THERE, in seconds,
+       * and the account stays held: ADD stacks on what is waiting, the two
+       * RESET modes replace it. The real date is still the panel's to stamp
+       * at the first connection, so `expiresAt` is reported unknown (#325).
+       */
+      const held = asString(found.user.status) === 'on_hold';
+      const heldSeconds = held
+        ? request.mode === 'ADD'
+          ? (asByteCount(found.user.on_hold_expire_duration) ?? 0) +
+            (addedMs === null ? 0 : addedMs / 1000)
+          : addedMs === null
+            ? 0
+            : addedMs / 1000
+        : null;
+
       // What has already happened to this account by the time something fails.
       //
       // A renewal is two calls and only the pair means anything. The order
@@ -833,7 +868,9 @@ export const marzbanAdapter: ProvisioningAdapter = {
            */
           body: JSON.stringify({
             data_limit: dataLimit,
-            expire,
+            ...(heldSeconds !== null && heldSeconds > 0
+              ? { expire: 0, status: 'on_hold', on_hold_expire_duration: Math.round(heldSeconds) }
+              : { expire }),
             note: request.note,
             ...(Array.isArray(request.groupIds) && request.groupIds.length > 0
               ? { group_ids: request.groupIds }
@@ -863,7 +900,12 @@ export const marzbanAdapter: ProvisioningAdapter = {
         // What was asked for, not what came back: a panel that echoes the
         // request is agreeing, and a panel that echoes something else has
         // already been accepted by the `res.ok` above.
-        expiresAt: expiresAtMs === null ? null : new Date(expiresAtMs),
+        expiresAt:
+          heldSeconds !== null && heldSeconds > 0
+            ? null
+            : expiresAtMs === null
+              ? null
+              : new Date(expiresAtMs),
         volumeGb: dataLimit === 0 ? null : dataLimit / GB,
       };
     } catch (error) {
