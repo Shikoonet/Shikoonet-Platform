@@ -359,8 +359,10 @@ describe('when delivery cannot finish', () => {
     // was not even told, because the message is built from what `fail` returns.
     //
     // The failure here is Postgres's own, not a mock: the wallet balance is a
-    // bigint, and a refund large enough to overflow it makes the trigger throw
-    // inside the refund — exactly where a crash would have landed.
+    // bigint, and a refund that overflows it makes the trigger throw inside
+    // the refund — exactly where a crash would have landed. The order paid
+    // five Rial from the wallet (the PURCHASE row `refundOrder` reads), and a
+    // deposit since then has parked the balance four short of the ceiling.
     const order = await paidOrder();
     await db
       .prepare(
@@ -371,8 +373,22 @@ describe('when delivery cannot finish', () => {
       .run();
     await db
       .prepare(
+        `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, idempotency_key)
+         VALUES (?1, -5, 'PURCHASE', ?2, ?3)`,
+      )
+      .bind(order.userId, order.orderId, `order:${order.orderId}:purchase`)
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO wallet_entries (user_id, amount_irr, kind, idempotency_key)
+         VALUES (?1, 9223372036854775807, 'TOPUP', ?2)`,
+      )
+      .bind(order.userId, `m1:${order.orderId}:ceiling`)
+      .run();
+    await db
+      .prepare(
         `INSERT INTO payments (public_id, order_id, user_id, amount_irr, method, status, created_at)
-         VALUES (?1, ?2, ?3, 9223372036854775807, 'WALLET', 'PAID', now())`,
+         VALUES (?1, ?2, ?3, 5, 'WALLET', 'PAID', now())`,
       )
       .bind(`m1${order.publicId}`, order.orderId, order.userId)
       .run();
@@ -741,7 +757,16 @@ describe('an order that ended without telling anyone', () => {
     // switches this same provider to 'spotify' and never switches it back, so
     // a bare paidOrder() here would silently take the manual path.
     const order = await paidOrder({ kind: 'pasarguard' });
-    // Paid from the wallet, which is what makes a refund possible at all.
+    // Paid from the wallet, which is what makes a refund possible at all —
+    // the PURCHASE row is what `refundOrder` reads, the payment row is what
+    // the reports read.
+    await db
+      .prepare(
+        `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, idempotency_key)
+         VALUES (?1, -1950000, 'PURCHASE', ?2, ?3)`,
+      )
+      .bind(order.userId, order.orderId, `order:${order.orderId}:purchase`)
+      .run();
     await db
       .prepare(
         `INSERT INTO payments (public_id, user_id, order_id, method, amount_irr, status, created_at)

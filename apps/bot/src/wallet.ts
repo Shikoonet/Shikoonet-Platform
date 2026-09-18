@@ -279,38 +279,112 @@ export async function spendOnOrder(
 }
 
 /**
- * Puts a wallet payment back when the order it paid for cannot be delivered.
+ * Takes what the balance can put toward an order, at the moment the invoice
+ * is drawn.
  *
- * Only for orders paid from the balance. A card-to-card payment is real money
- * in a real bank account and is a person's decision to return; a wallet payment
- * is credit we hold, and holding it for a service that failed is simply keeping
+ * Issue #317. The legacy bot always asked for «price minus balance»
+ * (`index.php:1885`) and its customers still transfer exactly that — against
+ * an invoice that named the full price, so the receipt never matched and the
+ * ten thousand Toman sat in the wallet for an admin to remove by hand. The
+ * card amount is now the difference, and the difference is what the customer
+ * sees, copies and sends.
+ *
+ * Taken NOW, not when the transfer settles, because verification matches the
+ * bank's amount EXACTLY against `payments.amount_irr`: if the balance could
+ * still move between the invoice and the receipt, the number on the invoice
+ * would stop being the number the shop expects. The row is a PURCHASE like
+ * `spendOnOrder` writes, under its own key so the two never collapse onto
+ * each other — and `refundOrder` puts it back when the invoice expires or the
+ * service fails, the same way it returns a wallet payment.
+ *
+ * Nothing is taken when the balance covers the whole order: that customer
+ * has «پرداخت از کیف پول» and decides for themselves. Returns the amount
+ * taken, zero included.
+ */
+export async function reserveForOrder(
+  tx: D1DatabaseSession,
+  userId: number,
+  orderId: number,
+  totalIrr: number,
+): Promise<number> {
+  const locked = await tx
+    .prepare(`SELECT balance_irr FROM wallets WHERE user_id = ?1 FOR UPDATE`)
+    .bind(userId)
+    .first<{ balance_irr: number }>();
+  const balance = locked?.balance_irr ?? 0;
+  if (balance <= 0 || balance >= totalIrr) return 0;
+  const taken = await tx
+    .prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, note, idempotency_key)
+       VALUES (?1, ?2, 'PURCHASE', ?3, 'part of the invoice', ?4)
+       ON CONFLICT (idempotency_key) DO NOTHING`,
+    )
+    .bind(userId, -balance, orderId, `order:${orderId}:reserve`)
+    .run();
+  return taken.meta.changes > 0 ? balance : 0;
+}
+
+/**
+ * What the wallet has already put toward this order, as a positive number.
+ *
+ * The rest is what the card invoice asks for, and what «پرداخت از کیف پول»
+ * still has to take — charging the full total there would take the reserved
+ * part twice.
+ */
+export async function walletPaidOnOrder(db: Db, orderId: number): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT coalesce(-sum(amount_irr), 0)::bigint AS paid
+         FROM wallet_entries WHERE order_id = ?1 AND kind = 'PURCHASE'`,
+    )
+    .bind(orderId)
+    .first<{ paid: number }>();
+  return row?.paid ?? 0;
+}
+
+/**
+ * Puts back whatever the wallet put toward an order that came to nothing —
+ * a service that could not be delivered, or an invoice that expired with part
+ * of its price taken from the balance (`reserveForOrder`).
+ *
+ * The wallet's share only. A card-to-card payment is real money in a real
+ * bank account and is a person's decision to return; a wallet payment is
+ * credit we hold, and holding it for a service that failed is simply keeping
  * the customer's money. The legacy bot refunds here too (`function.php:863`).
  *
+ * Read from the PURCHASE rows themselves, not from a WALLET payment row: a
+ * partly-reserved order settles through its CARD row and has no WALLET one,
+ * and the ledger is the only place that knows what the balance paid.
+ *
  * Returns the amount put back, or null when there is nothing to put back —
- * which covers both "this was not paid from the wallet" and "already refunded".
+ * which covers both "the wallet paid nothing" and "already refunded".
  *
  * Found by walking the screen: paying from the wallet for a panel with no
  * address left the customer 100,000 Toman lighter, the order FAILED, and a
  * message saying their payment was safe.
  */
-export async function refundOrder(db: Db, orderId: number): Promise<number | null> {
+export async function refundOrder(
+  db: Db,
+  orderId: number,
+  note = 'order could not be delivered',
+): Promise<number | null> {
   const paid = await db
     .prepare(
-      `SELECT user_id, amount_irr FROM payments
-        WHERE order_id = ?1 AND method = 'WALLET' AND status = 'PAID'
-        ORDER BY id LIMIT 1`,
+      `SELECT user_id, coalesce(-sum(amount_irr), 0)::bigint AS amount_irr
+         FROM wallet_entries WHERE order_id = ?1 AND kind = 'PURCHASE'
+        GROUP BY user_id`,
     )
     .bind(orderId)
-    .first<{ user_id: number | null; amount_irr: number }>();
-  if (!paid || paid.user_id === null || paid.amount_irr <= 0) return null;
+    .first<{ user_id: number; amount_irr: number }>();
+  if (!paid || paid.amount_irr <= 0) return null;
 
   const done = await db
     .prepare(
       `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, actor, note, idempotency_key)
-       VALUES (?1, ?2, 'REFUND', ?3, 'SYSTEM', 'order could not be delivered', ?4)
+       VALUES (?1, ?2, 'REFUND', ?3, 'SYSTEM', ?4, ?5)
        ON CONFLICT (idempotency_key) DO NOTHING`,
     )
-    .bind(paid.user_id, paid.amount_irr, orderId, `order:${orderId}:refund`)
+    .bind(paid.user_id, paid.amount_irr, orderId, note, `order:${orderId}:refund`)
     .run();
   return done.meta.changes > 0 ? paid.amount_irr : null;
 }

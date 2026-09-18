@@ -33,13 +33,17 @@ import {
 } from '@shikoo/domain';
 import { newPublicId } from './order.js';
 import type { OwnedOrder } from './owned.js';
+import { reserveForOrder } from './wallet.js';
 
 /** Written on `payments.reject_reason` and into the audit row, from the same enum the operator's rejections use. */
 const WITHDRAWN: RejectionReason = 'CUSTOMER_WITHDREW';
 
 export interface CheckoutPayment {
   publicId: string;
+  /** What the card is asked for: the order's total less `walletIrr`. */
   amountIrr: number;
+  /** What the balance already put toward the order (`reserveForOrder`). */
+  walletIrr: number;
   cardDigits: string;
   cardHolder: string | null;
   /** Already told us they paid; the button is spent. */
@@ -180,6 +184,11 @@ export async function checkoutFor(
   totalIrr: number,
   publicId: string,
   now: number = Date.now(),
+  /**
+   * False for a deposit: a top-up cannot be paid out of the balance it is
+   * meant to fill, so nothing is reserved and the card is asked for all of it.
+   */
+  fromWallet = true,
 ): Promise<CheckoutPayment | null> {
   if (!Number.isSafeInteger(totalIrr) || totalIrr <= 0) return null;
 
@@ -204,6 +213,7 @@ export async function checkoutFor(
     return {
       publicId: existing.public_id,
       amountIrr: existing.amount_irr,
+      walletIrr: Math.max(0, totalIrr - existing.amount_irr),
       cardDigits: existing.assigned_card_number,
       cardHolder: existing.assigned_card_name,
       claimed: existing.status === 'AWAITING_REVIEW',
@@ -212,6 +222,13 @@ export async function checkoutFor(
 
   const card = await rotateCard(tx, now);
   if (!card) return null;
+
+  // The balance's share comes off the card amount here, in the transaction
+  // that writes the row — issue #317. Under the wallet's row lock, so of two
+  // checkouts racing for one order the second sees the balance the first
+  // already took and reserves nothing; its insert then loses below and it
+  // reads the winner's amount.
+  const walletIrr = fromWallet ? await reserveForOrder(tx, userId, orderId, totalIrr) : 0;
 
   // `ON CONFLICT DO NOTHING` against `idx_payments_one_open_per_order` (0022).
   //
@@ -236,7 +253,7 @@ export async function checkoutFor(
        DO NOTHING
        RETURNING public_id, amount_irr`,
     )
-    .bind(publicId, userId, orderId, totalIrr, card.card_digits, card.holder_name)
+    .bind(publicId, userId, orderId, totalIrr - walletIrr, card.card_digits, card.holder_name)
     .first<{ public_id: string; amount_irr: number }>();
 
   if (!row) {
@@ -263,6 +280,7 @@ export async function checkoutFor(
     return {
       publicId: won.public_id,
       amountIrr: won.amount_irr,
+      walletIrr: Math.max(0, totalIrr - won.amount_irr),
       cardDigits: won.assigned_card_number,
       cardHolder: won.assigned_card_name,
       claimed: won.status === 'AWAITING_REVIEW',
@@ -273,6 +291,7 @@ export async function checkoutFor(
   return {
     publicId: row.public_id,
     amountIrr: row.amount_irr,
+    walletIrr,
     cardDigits: card.card_digits,
     cardHolder: card.holder_name,
     claimed: false,
@@ -517,6 +536,7 @@ export async function withdrawPaidClick(
   const checkout: CheckoutPayment = {
     publicId: payment.public_id,
     amountIrr: payment.amount_irr,
+    walletIrr: Math.max(0, order.total_irr - payment.amount_irr),
     cardDigits: payment.assigned_card_number,
     cardHolder: payment.assigned_card_name,
     claimed: false,

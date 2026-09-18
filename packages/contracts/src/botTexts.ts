@@ -484,6 +484,12 @@ export const TEXTS = {
     screen: 'checkout',
     hint: 'کد حجمی روی فاکتور — مبلغ عوض نمی‌شود، حجم بیشتر تحویل می‌شود',
   },
+  CHECKOUT_WALLET_PART: {
+    default: '👛 {amount} از موجودی کیف پول شما کسر شد.',
+    placeholders: ['amount'],
+    screen: 'checkout',
+    hint: 'وقتی بخشی از مبلغ از کیف پول برداشته شده — مبلغ کارت، باقی‌مانده است',
+  },
   CHECKOUT_AMOUNT: {
     default: '💳 مبلغ دقیق: {amount}',
     placeholders: ['amount'],

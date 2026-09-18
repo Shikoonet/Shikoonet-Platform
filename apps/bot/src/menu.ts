@@ -1560,6 +1560,26 @@ export function giftCredited(amountIrr: number, balanceIrr: number): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * What the card is asked for — and, first, what the balance already paid.
+ *
+ * Issue #317: the legacy bot's invoice was always «price minus balance», and
+ * that is what its customers transfer. The card amount here IS that
+ * difference now (`reserveForOrder`), so the line the customer copies is the
+ * line the shop expects to the Rial. The wallet line is drawn only when there
+ * is something to say; a customer with an empty wallet sees the invoice they
+ * always saw.
+ */
+function amountLines(cardIrr: number, walletIrr: number): string[] {
+  const t = TEXTS_NOW;
+  const lines: string[] = [];
+  if (walletIrr > 0) {
+    lines.push(t.render('CHECKOUT_WALLET_PART', { amount: formatToman(walletIrr) }));
+  }
+  lines.push(t.render('CHECKOUT_AMOUNT', { amount: formatToman(cardIrr) }));
+  return lines;
+}
+
+/**
  * The card, the warning, and the closing line. Shared by all four invoices.
  *
  * `validUntil` is `orders.expires_at`: the moment the card is handed to the
@@ -1605,6 +1625,8 @@ export function checkout(
   /** The held code, when it gives volume — an invoice that says what was bought. */
   applied?: AppliedCode | null,
   validUntil?: string | null,
+  /** What the balance already paid; `totalIrr` is the card's share (#317). */
+  walletIrr = 0,
 ): string {
   const t = TEXTS_NOW;
   const lines = [
@@ -1617,7 +1639,7 @@ export function checkout(
     lines.push(t.render('CHECKOUT_CODE_BONUS', { code: applied.code, bonus: applied.bonus }));
   }
   lines.push(
-    t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
+    ...amountLines(totalIrr, walletIrr),
     '',
     ...checkoutTail(cardDigits, cardHolder, validUntil),
   );
@@ -1729,15 +1751,15 @@ export function paidRecorded(publicId: string): string {
  * sitting in their chat, and «منقضی شد» alone would not stop anybody scrolling
  * up and paying it.
  */
-export function orderExpired(publicId: string): string {
+export function orderExpired(publicId: string, refundedIrr: number | null = null): string {
   const t = TEXTS_NOW;
-  return [
-    t.raw('ORDER_EXPIRED_TITLE'),
-    '',
-    t.render('PAID_TRACKING_ID', { id: publicId }),
-    '',
-    t.raw('ORDER_EXPIRED_CARD_STALE'),
-  ].join('\n');
+  const lines = [t.raw('ORDER_EXPIRED_TITLE'), '', t.render('PAID_TRACKING_ID', { id: publicId })];
+  // The wallet's share of the invoice, back where it was (#317).
+  if (refundedIrr !== null) {
+    lines.push(t.render('SERVICE_FAILED_REFUND_LINE', { amount: formatToman(refundedIrr) }));
+  }
+  lines.push('', t.raw('ORDER_EXPIRED_CARD_STALE'));
+  return lines.join('\n');
 }
 
 /**
@@ -1841,13 +1863,14 @@ export function invoiceReopened(
   cardDigits: string,
   cardHolder: string | null,
   validUntil?: string | null,
+  walletIrr = 0,
 ): string {
   const t = TEXTS_NOW;
   return [
     t.raw('PAID_WITHDRAWN_TITLE'),
     '',
     t.render('CHECKOUT_ORDER_ID', { id: publicId }),
-    t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
+    ...amountLines(totalIrr, walletIrr),
     '',
     ...checkoutTail(cardDigits, cardHolder, validUntil),
   ].join('\n');
@@ -2452,6 +2475,7 @@ export function addonCheckout(
   cardDigits: string,
   cardHolder: string | null,
   validUntil?: string | null,
+  walletIrr = 0,
 ): string {
   const t = TEXTS_NOW;
   return [
@@ -2462,7 +2486,7 @@ export function addonCheckout(
       what: addonQuantity(kind, quantity),
       service: serviceName,
     }),
-    t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
+    ...amountLines(totalIrr, walletIrr),
     '',
     ...checkoutTail(cardDigits, cardHolder, validUntil),
   ].join('\n');
@@ -2763,6 +2787,7 @@ export function renewCheckout(
   validUntil?: string | null,
   /** The plan is another tier's row (issue #271): delivered from zero, and said here. */
   tierChange = false,
+  walletIrr = 0,
 ): string {
   const t = TEXTS_NOW;
   const lines = [
@@ -2795,7 +2820,7 @@ export function renewCheckout(
     lines.push(t.render('CHECKOUT_CODE_BONUS', { code: applied.code, bonus: applied.bonus }));
   }
   lines.push(
-    t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
+    ...amountLines(totalIrr, walletIrr),
     '',
     ...checkoutTail(cardDigits, cardHolder, validUntil),
   );
