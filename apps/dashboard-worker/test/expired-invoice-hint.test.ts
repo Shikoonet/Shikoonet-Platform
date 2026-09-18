@@ -76,6 +76,9 @@ beforeEach(async () => {
   await baseEnv.DB.prepare(
     `DELETE FROM payments WHERE public_id LIKE 'hint-%'`,
   ).run();
+  await baseEnv.DB.prepare(
+    `DELETE FROM orders WHERE public_id LIKE 'order-hint-%'`,
+  ).run();
   await baseEnv.DB.prepare(`DELETE FROM reconciliation_matches`).run();
   await baseEnv.DB.prepare(`DELETE FROM payment_claims`).run();
   await baseEnv.DB.prepare(`DELETE FROM transaction_candidates`).run();
@@ -115,15 +118,26 @@ async function seedInvoice(
     amount?: number;
     issuedAt?: number;
     user?: number | null;
+    /** The order the invoice was for, in this status; none when omitted. */
+    order?: string;
   } = {},
 ) {
+  const order = opts.order
+    ? await baseEnv.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', ?3, ?3, ?4) RETURNING id`,
+      )
+        .bind(`order-${publicId}`, userId, opts.amount ?? AMOUNT, opts.order)
+        .first<{ id: number }>()
+    : null;
   await baseEnv.DB.prepare(
-    `INSERT INTO payments (public_id, user_id, amount_irr, method, status, assigned_card_number, created_at)
-     VALUES (?1, ?2, ?3, 'CARD_TO_CARD', ?4, ?5, to_timestamp(?6 / 1000.0))`,
+    `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, assigned_card_number, created_at)
+     VALUES (?1, ?2, ?3, ?4, 'CARD_TO_CARD', ?5, ?6, to_timestamp(?7 / 1000.0))`,
   )
     .bind(
       publicId,
       opts.user === undefined ? userId : opts.user,
+      order?.id ?? null,
       opts.amount ?? AMOUNT,
       opts.status ?? "EXPIRED",
       opts.card ?? CARD,
@@ -207,6 +221,24 @@ describe("the expired invoice a late deposit probably belongs to", () => {
     const [row] = await income();
     expect(row?.expiredInvoice?.publicId).toBe("hint-newer");
     expect(row?.expiredInvoice?.others).toBe(2);
+  });
+
+  it("a card checkout closed because the order was paid from the wallet is not an invoice anyone is late on", async () => {
+    await seedDeposit("t-wallet");
+    // The wallet button leaves the order PAID and its card row EXPIRED — the
+    // same word the sweep uses for an invoice nobody paid, on money that was
+    // never owed to that card. The row must not be offered as the owner of a
+    // stranger's deposit.
+    await seedInvoice("hint-wallet", { order: "PAID" });
+    expect((await income())[0]?.expiredInvoice).toBeNull();
+
+    // The same row on an order that really ran out is still named, and the
+    // paid one does not count among the «others».
+    await seedInvoice("hint-ranout", { order: "EXPIRED", issuedAt: DEPOSIT_AT - 3 * HOUR });
+    expect((await income())[0]?.expiredInvoice).toMatchObject({
+      publicId: "hint-ranout",
+      others: 0,
+    });
   });
 
   it("an invoice whose customer is gone is still named, without a customer", async () => {

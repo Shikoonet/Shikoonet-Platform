@@ -210,6 +210,15 @@ export interface ExpiredInvoiceHint {
  * invoice for the same amount, on a card mapped to the account the SMS
  * came in on, issued in the 24 hours before the bank stamped the deposit.
  *
+ * Only an invoice whose ORDER expired. A card checkout also closes as
+ * `EXPIRED` when the customer pays the order from their balance instead
+ * (`handle.ts`, the wallet button) — the order is PAID and nobody is late
+ * with anything, yet the row looked exactly like an unpaid invoice and was
+ * named against a stranger's deposit of the same amount on the same account
+ * (#339: an operator's own wallet purchase, offered as the owner of a
+ * deposit three hours later). The order's status is what says the money is
+ * still owed; the payment's alone does not.
+ *
  * A hint and nothing more. It is not a match, it verifies nothing, and the
  * rule «auto-verify only for an isolated 1↔1 pair in the five-minute
  * window» is untouched — an expired invoice has no claim to match. The
@@ -245,6 +254,8 @@ export async function loadExpiredInvoiceHints(
          LEFT JOIN users u ON u.id = p.user_id
         WHERE t.id = ANY(?1)
           AND t.bank_timestamp IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM orders o
+                           WHERE o.id = p.order_id AND o.status <> 'EXPIRED')
         ORDER BY t.id, p.created_at DESC`,
     )
     .bind(txIds, EXPIRED_INVOICE_HINT_WINDOW_MS)
