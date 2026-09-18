@@ -536,7 +536,14 @@ function Shell({
                   // The count is drawn by CSS from this attribute rather than as
                   // a child span, so the link's text stays its label: thirty-one
                   // e2e assertions read `.sidebar-link.active` with `toHaveText`,
-                  // and «پرداخت‌ها۲۰۱» is not a section name.
+                  // and «پرداخت‌ها۲۰۱» is not a section name. Chromium still
+                  // folds `::after` into the accessible name, which is what the
+                  // same walk clicks by (`getByRole` with `exact`), so the name
+                  // is pinned to the label and the count goes in the tooltip.
+                  aria-label={item.label}
+                  title={
+                    waiting(item.id) > 0 ? `${count(waiting(item.id))} در انتظار بررسی` : undefined
+                  }
                   data-waiting={waiting(item.id) > 0 ? count(waiting(item.id)) : undefined}
                   onClick={() => go(item.id)}
                 >

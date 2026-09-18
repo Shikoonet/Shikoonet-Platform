@@ -279,6 +279,9 @@ describe('the sidebar counts what is waiting', () => {
       expect(badge(/لیست درخواست‌ها/)).toBe('۳');
       expect(badge(/^پرداخت‌ها/)).toBe('۱۲');
       expect(screen.getByRole('button', { name: /^پرداخت‌ها/ }).textContent).toBe('پرداخت‌ها');
+      // And the accessible name is the label alone — the e2e walk clicks
+      // `getByRole('button', { name, exact: true })`.
+      expect(screen.getByRole('button', { name: 'پرداخت‌ها' })).toBeTruthy();
       // Four stale devices is on the dashboard strip, and deliberately NOT here:
       // the badge is for the two queues a customer is waiting behind.
       expect(badge(/دستگاه‌ها/)).toBeNull();
