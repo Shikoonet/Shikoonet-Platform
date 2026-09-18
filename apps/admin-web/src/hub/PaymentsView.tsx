@@ -143,6 +143,8 @@ interface Filters {
   cardDigits: string;
   /** A Telegram id — «این آی‌دی چند بار و به کدام کارت‌ها واریز داشته». */
   telegramId: string;
+  /** The bank's tracking number — «پرداخت کردم، پیگیری فلان» (#306). */
+  reference: string;
   /** '' | 'personal' | 'reseller' — «تفکیک عادی و نماینده». */
   customerType: string;
 }
@@ -167,6 +169,7 @@ const FILTER_KEYS = [
   'to',
   'cardDigits',
   'telegramId',
+  'reference',
   'customerType',
 ] as const;
 
@@ -196,6 +199,7 @@ const EMPTY_FILTERS: Filters = {
   to: '',
   cardDigits: '',
   telegramId: '',
+  reference: '',
   customerType: '',
 };
 
@@ -228,6 +232,7 @@ function buildQuery(
     if (filters.to) qs.set('toDay', filters.to);
     if (filters.cardDigits) qs.set('cardDigits', filters.cardDigits);
     if (filters.telegramId) qs.set('telegramId', filters.telegramId);
+    if (filters.reference) qs.set('reference', filters.reference.trim());
     if (filters.customerType) qs.set('customerType', filters.customerType);
   }
   return qs.toString();
@@ -788,7 +793,13 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   tab !== 'bot_auto_verified' &&
                   tab !== 'manually_verified' &&
                   claimItems.length === 0)) && (
-                <CompactEmptyState>{emptyText(tab)}</CompactEmptyState>
+                <CompactEmptyState>
+                  {tab === 'all' && filters.reference && data?.referenceTransactions
+                    ? // The other honest answer (#306): the number arrived, the
+                      // matcher tied it to no claim, so the money is on «واریزی‌ها».
+                      `واریزی با این شمارهٔ پیگیری رسیده (${count(data.referenceTransactions)})، ولی به هیچ سفارشی نچسبیده — در «واریزی‌ها» بگرد.`
+                    : emptyText(tab)}
+                </CompactEmptyState>
               )}
 
             {tab === 'income' && incomeItems.length > 0 && (
@@ -2171,6 +2182,16 @@ function AllFilters({
           placeholder="مثلاً ۱۲۳۴۵۶۷۸۹"
           value={filters.telegramId}
           onChange={(e) => set({ telegramId: e.target.value })}
+        />
+      </label>
+      <label>
+        شمارهٔ پیگیری
+        <input
+          type="text"
+          inputMode="numeric"
+          placeholder="از پیامک بانک"
+          value={filters.reference}
+          onChange={(e) => set({ reference: e.target.value })}
         />
       </label>
       <label>

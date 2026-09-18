@@ -530,6 +530,23 @@ function telegramIdParam(raw: string | null): string | null {
 }
 
 /**
+ * A bank tracking number from the query string, or null (#306).
+ *
+ * The shape `extractRef` in the SMS parser produces — `[A-Za-z0-9-]` — and
+ * nothing longer than a bank ever prints. Persian and Arabic digits are
+ * folded to ASCII because that is how an operator types what a customer read
+ * out over the phone; the stored value is always ASCII.
+ */
+function referenceParam(raw: string | null): string | null {
+  if (!raw) return null;
+  let v = raw.trim();
+  for (let i = 0; i < 10; i++) {
+    v = v.replaceAll('۰۱۲۳۴۵۶۷۸۹'[i]!, String(i)).replaceAll('٠١٢٣٤٥٦٧٨٩'[i]!, String(i));
+  }
+  return /^[A-Za-z0-9-]{1,64}$/.test(v) ? v : null;
+}
+
+/**
  * `page` and `pageSize`, clamped. `pageSize` was a hard 200 until 2026-09-03.
  *
  * 200 is both the default AND the ceiling, and the ceiling is the interesting
@@ -1271,6 +1288,7 @@ export function registerMirzabotRoutes(
     const to = toDay ? tehranDayBoundsFromDate(toDay).end - 1 : numParam(url.searchParams.get('to'));
     const cardDigits = cardDigitsParam(url.searchParams.get('cardDigits'));
     const telegramId = telegramIdParam(url.searchParams.get('telegramId'));
+    const reference = referenceParam(url.searchParams.get('reference'));
     const { page, pageSize } = pageParams(url);
 
     /*
@@ -1381,6 +1399,16 @@ export function registerMirzabotRoutes(
       // به این کارت ریخته شد» is a question about the card.
       if (cardDigits) where.push(`c.card_digits = ${p(cardDigits)}`);
       if (telegramId) where.push(`c.customer_reference = ${p(telegramId)}`);
+      // The bank's tracking number, through ANY match on the claim — settled
+      // or only suggested. The `t` join above carries the settled one alone,
+      // and a claim whose transfer the matcher found but could not settle is
+      // exactly the one an operator is on the phone about.
+      if (reference) {
+        where.push(`EXISTS (
+          SELECT 1 FROM reconciliation_matches rm
+            JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
+           WHERE rm.payment_claim_id = c.id AND rt.transaction_reference = ${p(reference)})`);
+      }
       // Three-state, and «unknown» is its own answer rather than «personal»:
       // a claim whose reference matches no user is a real payment we cannot
       // attribute, and filing it under «شخصی» would be inventing a fact.
@@ -1772,6 +1800,26 @@ export function registerMirzabotRoutes(
       }),
     );
 
+    /*
+     * «واریزی رسیده، ولی سفارشی ندارد» — the other honest answer to a
+     * reference search (#306). The list above can only show CLAIMS; an SMS
+     * the matcher tied to nothing is in `transaction_candidates` alone, and
+     * an empty list would read as «that number never arrived». So when a
+     * reference is asked for, the transactions carrying it are counted too,
+     * and the screen can tell the two apart. Counted only then: it is a
+     * second query and the ordinary list has no use for it.
+     */
+    const referenceTransactions = reference
+      ? ((
+          await c.env.DB.prepare(
+            `SELECT count(*)::int AS n FROM transaction_candidates
+              WHERE transaction_reference = ?1`,
+          )
+            .bind(reference)
+            .first<{ n: number }>()
+        )?.n ?? 0)
+      : null;
+
     return c.json({
       ok: true,
       tab,
@@ -1783,6 +1831,7 @@ export function registerMirzabotRoutes(
       page,
       pageSize,
       total,
+      referenceTransactions,
       counts: counts.total,
       summary: financialSummary,
     });
