@@ -466,7 +466,8 @@ export function AccountsView({ cache }: AccountsViewProps) {
                   (a.payment_cards?.length ?? 0) > 0 ||
                   a.card_last_four ||
                   a.account_last_four ||
-                  a.iban) && (
+                  a.iban ||
+                  extraIdentifiers(a).length > 0) && (
                   <div className="card-row">
                     <span className="label">شناسه‌ها</span>
                     <span className="ids">
@@ -949,7 +950,8 @@ function AccountCard({
         (a.payment_cards?.length ?? 0) > 0 ||
         a.card_last_four ||
         a.account_last_four ||
-        a.iban) && (
+        a.iban ||
+        extraIdentifiers(a).length > 0) && (
         <div className="card-row">
           <span className="label">شناسه‌ها</span>
           <span className="ids">
