@@ -283,6 +283,14 @@ describe('the fresh start', () => {
     const all = await monthStatements(db, month);
     expect(all.map((a) => a.accountId)).toEqual(expect.arrayContaining([ACCT, ACCT2]));
   });
+
+  it('leaves a declined account out of the month, even though the bank texted about it', async () => {
+    // An auto-created account a withdrawal surfaced, that the operator said is not ours.
+    await tx({ account: ACCT2, direction: 'DEBIT', amountIrr: 62_653_000, balanceIrr: 0, at: T(5) });
+    expect((await monthStatements(db, month)).map((a) => a.accountId)).toContain(ACCT2);
+    await db.prepare(`UPDATE financial_accounts SET status = 'DECLINED', active = 0 WHERE id = ?1`).bind(ACCT2).run();
+    expect((await monthStatements(db, month)).map((a) => a.accountId)).not.toContain(ACCT2);
+  });
 });
 
 describe('off the books', () => {
