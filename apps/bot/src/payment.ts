@@ -597,9 +597,9 @@ export async function withdrawPaidClick(
 export type ReceiptResult =
   /** Attached, and it is the first one for this claim. */
   | { outcome: 'received'; publicId: string }
-  /** Attached, replacing an earlier one. The waiting window did not move. */
+  /** Attached, replacing an earlier one — only after a reminder. The waiting window did not move. */
   | { outcome: 'replaced'; publicId: string }
-  /** Nothing of theirs is waiting for a receipt. */
+  /** Nothing of theirs asked for a receipt. Nothing is written and nothing is said. */
   | { outcome: 'none' }
   /** There is a claim, but it has already been decided. */
   | { outcome: 'settled'; publicId: string };
@@ -710,6 +710,15 @@ async function claimUnderReview(tx: D1DatabaseSession, userId: number): Promise<
         WHERE p.user_id = ?1
           AND (p.status = 'AWAITING_REVIEW'
                OR (p.status = 'PAID' AND c.status = 'FULFILLED_UNRECONCILED'))
+          -- Only a claim the bot ASKED for a picture for (#308): the one
+          -- «پرداخت کردم» opened and nothing has landed on yet, or the one
+          -- the five-minute reminder went out for. A second picture for a
+          -- claim that already has one and was never reminded is not taken —
+          -- the ask was answered — and a picture nobody asked for is not
+          -- attached to anything.
+          AND (c.receipt_url_or_r2_key IS NULL
+               OR EXISTS (SELECT 1 FROM bot_notifications n
+                           WHERE n.dedupe_key = 'receipt-nudge:' || c.id))
         -- A claim with no receipt yet wins, and only then the newest.
         --
         -- On updated_at alone (no backticks here: this is inside a JS template

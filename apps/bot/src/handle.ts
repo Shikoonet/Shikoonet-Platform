@@ -789,10 +789,13 @@ async function handleReceipt(
   // customer cannot start a payment to attach one to.
   const result = await recordReceipt(tx, user.id, from.id, fileId, Date.now(), isDocument);
 
-  // The silence is kept for the case it was written for. A blocked customer
-  // with nothing waiting gets no answer at all, so the block still costs a
-  // flooder every reply it used to -- they can send pictures into the void.
-  if (user.status === 'BLOCKED' && result.outcome === 'none') return IGNORED;
+  // Silence, for everybody now and not only the blocked (#308, Sam
+  // 2026-09-18). A picture nothing asked for used to be answered «الان
+  // پرداختی در انتظار بررسی ندارید»; now it is not written anywhere and
+  // not answered, and the session it may have landed in is left as it was.
+  // The flood guard's economics are unchanged: a flooder's pictures still
+  // cost the shop nothing.
+  if (result.outcome === 'none') return IGNORED;
   const say = (text: string): HandleOutcome => ({
     status: 'processed',
     replies:
@@ -835,8 +838,6 @@ async function handleReceipt(
       return say(menu.RECEIPT_REPLACED);
     case 'settled':
       return say(menu.RECEIPT_SETTLED);
-    case 'none':
-      return say(menu.RECEIPT_NOTHING_WAITING);
   }
 }
 
