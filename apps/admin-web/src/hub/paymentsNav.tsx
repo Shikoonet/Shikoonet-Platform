@@ -61,6 +61,19 @@ const REVIEW_TABS = [
     Icon: IconReview,
   },
   /**
+   * «در انتظار بررسی» before the picture arrives (#307). Same undecided
+   * claims, no receipt yet — nothing for an operator to decide, so it is
+   * kept out of that queue and its badge. The row moves over by itself when
+   * the bot records a receipt.
+   */
+  {
+    value: 'awaiting_receipt' as const,
+    label: 'در انتظار رسید',
+    shortLabel: 'رسید',
+    countKey: 'awaitingReceipt' as const,
+    Icon: IconWaiting,
+  },
+  /**
    * «در انتظار بررسی» minus what the operator set aside. A claim whose
    * customer never sent a receipt and whose SMS has not come has nothing to
    * decide yet; parking it keeps the work queue honest. It is still PENDING,
@@ -141,6 +154,7 @@ export function parsePaymentTabFromLocation(search = window.location.search): Pa
   const allowed: PaymentTab[] = [
     'income',
     'open',
+    'awaiting_receipt',
     'parked',
     'needs_review',
     'declined_income',

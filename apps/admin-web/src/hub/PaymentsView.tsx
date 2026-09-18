@@ -970,7 +970,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                      * attention a payment needs is a property of the payment,
                      * never an address you have to navigate to first.
                      */
-                    const kind = tab === 'open' ? item.reviewState : tab;
+                    const kind =
+                      tab === 'open' || tab === 'awaiting_receipt' ? item.reviewState : tab;
 
                     if (kind === 'needs_review' || kind === 'NEEDS_REVIEW') {
                       return (
@@ -1200,6 +1201,7 @@ function emptyText(tab: PaymentTab): string {
   // pending claim that matched none of their predicates left every one of them
   // looking empty while the money sat undecided.
   if (tab === 'open') return 'هیچ پرداختی منتظر تصمیم نیست.';
+  if (tab === 'awaiting_receipt') return 'هیچ پرداختی منتظر رسید نیست.';
   if (tab === 'parked') return 'چیزی کنار گذاشته نشده است.';
   if (tab === 'needs_review') return 'چیزی نیاز به بررسی ندارد.';
   if (tab === 'income') return 'در این بازه واریزی تخصیص‌نیافته‌ای نیست.';

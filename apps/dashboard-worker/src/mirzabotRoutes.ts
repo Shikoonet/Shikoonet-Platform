@@ -178,6 +178,18 @@ import type { PaymentTab } from './paymentsHubRoutes.js';
 
 const EFFECTIVE_TS = `COALESCE(c.paid_clicked_at, c.receipt_submitted_at, c.created_at)`;
 const PENDING_CLAIM = `c.status IN ('PENDING','MATCH_SUGGESTED')`;
+/**
+ * «در انتظار رسید»: undecided, not set aside, and nothing to look at yet.
+ *
+ * Sam, 2026-09-18 (#307): «در انتظار بررسی» was two different things — a claim
+ * with a picture an operator must decide about, and a claim the customer has
+ * not sent a picture for, which nobody can do anything with. The second kind
+ * gets its own tab, and `open` keeps only the first. Parked rows stay parked
+ * whichever kind they are. `FULFILLED_UNRECONCILED` is outside `PENDING_CLAIM`
+ * and so never lands here: the product has shipped and a receipt is no longer
+ * a condition of anything.
+ */
+const AWAITING_RECEIPT = `${PENDING_CLAIM} AND c.parked_at IS NULL AND c.receipt_url_or_r2_key IS NULL`;
 const NO_TRANSFER_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
 
 /** The one match row that settled a claim, if any (auto beats manual). */
@@ -645,7 +657,8 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
          SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' THEN 1 ELSE 0 END) AS continuity_n,
          SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' AND c.reconciled_at IS NULL
                   THEN 1 ELSE 0 END) AS continuity_pending_n,
-         SUM(CASE WHEN c.parked_at IS NOT NULL AND ${PENDING_CLAIM} THEN 1 ELSE 0 END) AS parked_n
+         SUM(CASE WHEN c.parked_at IS NOT NULL AND ${PENDING_CLAIM} THEN 1 ELSE 0 END) AS parked_n,
+         SUM(CASE WHEN ${AWAITING_RECEIPT} THEN 1 ELSE 0 END) AS awaiting_receipt_n
        FROM payment_claims c
        LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_ID})
        WHERE c.source_system = ?1
@@ -667,6 +680,7 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
       continuity_n: number;
       continuity_pending_n: number;
       parked_n: number;
+      awaiting_receipt_n: number;
     }>();
 
   const total: Record<ReviewState, number> = {
@@ -685,12 +699,14 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
   let continuity = 0;
   let continuityPending = 0;
   let parked = 0;
+  let awaitingReceipt = 0;
   for (const r of rows.results ?? []) {
     // `all` counts rows, so a state nobody can list still shows up there.
     all += r.n;
     continuity += r.continuity_n ?? 0;
     continuityPending += r.continuity_pending_n ?? 0;
     parked += r.parked_n ?? 0;
+    awaitingReceipt += r.awaiting_receipt_n ?? 0;
     if (r.review_state == null) continue;
     total[r.review_state] += r.n;
     today[r.review_state] += r.n_today ?? 0;
@@ -728,9 +744,15 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
        *
        * These three are exactly `PENDING`/`MATCH_SUGGESTED` — every other state
        * in this record is a decision somebody already made.
+       *
+       * Minus the rows with no receipt (#307): those are the same population
+       * one step earlier, and have their own tab and their own number so the
+       * badge over «در انتظار بررسی» counts only what an operator can decide.
+       * `open + awaitingReceipt + parked` is still every undecided claim.
        */
-      open: total.NEEDS_REVIEW + total.WAITING + total.NO_TRANSFER_FOUND - parked,
+      open: total.NEEDS_REVIEW + total.WAITING + total.NO_TRANSFER_FOUND - parked - awaitingReceipt,
       parked,
+      awaitingReceipt,
       autoVerified: total.AUTO_VERIFIED,
       botAutoVerified: total.AUTO_VERIFIED,
       manuallyVerified: total.MANUALLY_VERIFIED,
@@ -1083,6 +1105,7 @@ export function registerMirzabotRoutes(
       const allowed: PaymentTab[] = [
         'income',
         'open',
+        'awaiting_receipt',
         'parked',
         'needs_review',
         'declined_income',
@@ -1316,7 +1339,14 @@ export function registerMirzabotRoutes(
       // and between them left a gap; this one describes the only thing that
       // actually matters to an operator — nobody has decided about it yet — so
       // there is no shape left for a row to fall between.
-      if (tab === 'open') where.push(`${PENDING_CLAIM} AND c.parked_at IS NULL`);
+      //
+      // …and with a receipt on it (#307). The same population before the
+      // picture arrives is «در انتظار رسید», one tab over; the row moves on
+      // its own the moment the bot records one.
+      if (tab === 'open') {
+        where.push(`${PENDING_CLAIM} AND c.parked_at IS NULL AND c.receipt_url_or_r2_key IS NOT NULL`);
+      }
+      if (tab === 'awaiting_receipt') where.push(AWAITING_RECEIPT);
       // Same population, the half the operator set aside. Still PENDING, so
       // the matcher settles it and it leaves here by itself.
       if (tab === 'parked') where.push(`${PENDING_CLAIM} AND c.parked_at IS NOT NULL`);

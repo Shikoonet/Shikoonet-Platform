@@ -68,6 +68,8 @@ export type PaymentTab =
    * and a pending claim that fell into it was on no screen in the panel.
    */
   | 'open'
+  /** Undecided like `open`, but the customer has not sent a receipt yet (#307). */
+  | 'awaiting_receipt'
   /** `open` rows the operator set aside to wait for the bank SMS. */
   | 'parked'
   | 'needs_review'

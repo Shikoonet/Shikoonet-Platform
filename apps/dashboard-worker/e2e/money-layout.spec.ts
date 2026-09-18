@@ -337,7 +337,10 @@ test('a receipt the shape customers actually send is legible', async ({ page }) 
    * Clicking the first row also exercises the path an operator uses, instead
    * of a URL nobody types.
    */
-  await page.goto('/admin/payments?tab=open&dateFilter=all');
+  // «در انتظار رسید», because that is where the seed's claims live: none of
+  // them carries a receipt, and since #307 «در انتظار بررسی» lists only the
+  // ones that do. The row is given one below and is then read from `open`.
+  await page.goto('/admin/payments?tab=awaiting_receipt&dateFilter=all');
   const firstRow = page.locator('.hub-list-row__button').first();
   await expect(firstRow).toBeVisible();
   await firstRow.click();
