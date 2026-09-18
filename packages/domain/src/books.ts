@@ -326,7 +326,13 @@ export async function accountStatement(
   };
 }
 
-/** Every account that has a row anywhere in the month, live ones first. */
+/**
+ * Every account that has a row anywhere in the month, live ones first —
+ * except a DECLINED one. Declining an auto-created account is the operator
+ * saying «this is not ours» (a Gardeshgari number a withdrawal SMS surfaced
+ * on 2026-09-18, for one), and what is not ours has no line in our books,
+ * whatever the bank texted about it.
+ */
 export async function monthStatements(
   db: D1Database,
   month: Pick<JalaliMonth, 'start' | 'end'>,
@@ -334,13 +340,14 @@ export async function monthStatements(
   const ids = await db
     .prepare(
       `SELECT fa.id FROM financial_accounts fa
-        WHERE (fa.active = 1 AND fa.status = 'ACTIVE')
+        WHERE fa.status <> 'DECLINED'
+          AND ((fa.active = 1 AND fa.status = 'ACTIVE')
            OR EXISTS (SELECT 1 FROM transaction_candidates t WHERE t.financial_account_id = fa.id
                         AND t.bank_timestamp >= ?1 AND t.bank_timestamp < ?2)
            OR EXISTS (SELECT 1 FROM revenue_adjustments ra WHERE ra.financial_account_id = fa.id AND ra.voided_at IS NULL
                         AND ra.spent_on >= ?3::date AND ra.spent_on < ?4::date)
            OR EXISTS (SELECT 1 FROM manual_bank_movements m WHERE m.financial_account_id = fa.id AND m.voided_at IS NULL
-                        AND m.moved_at >= ?1 AND m.moved_at < ?2)
+                        AND m.moved_at >= ?1 AND m.moved_at < ?2))
         ORDER BY fa.active DESC, fa.display_name`,
     )
     .bind(month.start, month.end, tehranDateStringFromMs(month.start), tehranDateStringFromMs(month.end))

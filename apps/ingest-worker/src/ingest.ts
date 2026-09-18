@@ -256,7 +256,34 @@ export async function ingest(
       .bind(device.id, fingerprint)
       .first<{ id: string; duplicate_of: string | null }>()) ?? null;
   const finalEventId = winner?.id ?? eventId;
-  const wasDuplicate = winner?.id !== eventId;
+  let wasDuplicate = winner?.id !== eventId;
+
+  // The bank's own clock, when the parser read one off the text, is when the
+  // money moved; the phone's timestamp is only when the text arrived. On
+  // 2026-09-18 Melli delivered a 20:35 deposit at 21:13, and «دفتر بانک»,
+  // ordering by arrival, took that older balance as the newest one and opened
+  // the books 150,000 toman short. The parsers already fall back to the phone
+  // when the two disagree by more than two days; the same fence here covers
+  // the parsers that do not.
+  const bankTimestamp = bankClockOf(result, smsTimestamp);
+
+  // A bank sometimes sends one text twice, minutes apart (Melli, the same
+  // night: 20:46 and 21:12, byte-identical down to «0627-20:45»). The
+  // fingerprint is per delivery — it carries the phone's timestamp — so the
+  // second copy is a new raw event and is kept as one; but it must not become
+  // a second transaction. An identical balance means the money moved once,
+  // and a second CREDIT row of the same amount could verify a second claim.
+  // `duplicate_of` has existed since 0004 for exactly this and was never set.
+  if (!wasDuplicate && !isRedactable && result.balanceIrr !== null) {
+    const first = await findRedelivery(db, device.id, raw.sender, bodyToStore, eventId, smsTimestamp);
+    if (first) {
+      await db
+        .prepare(`UPDATE raw_sms_events SET duplicate_of = ?1 WHERE id = ?2`)
+        .bind(first.id, eventId)
+        .run();
+      wasDuplicate = true;
+    }
+  }
 
   // Only run the parser side-effects on the winning insert.
   //
@@ -273,10 +300,10 @@ export async function ingest(
   // claim rematch. The phone still hears `outgoing_ignored`; its contract is
   // frozen and «do not retry» is still the right answer.
   if (isOutgoingTransaction) {
-    await persistTransaction(db, finalEventId, smsTimestamp, result, normalizedBody);
+    await persistTransaction(db, finalEventId, bankTimestamp, result, normalizedBody);
   }
   if (!wasDuplicate && !isRedactable && !skipSideEffects) {
-    const txRow = await persistTransaction(db, finalEventId, smsTimestamp, result, normalizedBody);
+    const txRow = await persistTransaction(db, finalEventId, bankTimestamp, result, normalizedBody);
     if (txRow) {
       // Mirzabot claims are decided by their own matcher (paid_clicked_at ±5m,
       // strict 1↔1); suggestMatchesForTransaction skips them by source_system.
@@ -352,6 +379,50 @@ export async function ingest(
         ? { reason: 'DIRECTION_UNCERTAIN_IGNORED' as const }
         : {}),
   };
+}
+
+const BANK_CLOCK_MAX_DRIFT_MS = 2 * 86_400_000;
+
+/** The bank's own time from the text when the parser found one and it is sane; else the phone's. */
+function bankClockOf(r: ParseResult, smsTimestamp: number): number {
+  const fromText = r.evidence['bankTimestamp'];
+  if (typeof fromText !== 'number' || !Number.isFinite(fromText)) return smsTimestamp;
+  return Math.abs(fromText - smsTimestamp) > BANK_CLOCK_MAX_DRIFT_MS ? smsTimestamp : fromText;
+}
+
+const REDELIVERY_WINDOW_MS = 6 * 3_600_000;
+
+/**
+ * An earlier delivery of the very same text, to the same phone from the same
+ * sender, that already became a transaction. Same body — which, since the
+ * caller checked the parser read a balance out of it, includes that balance —
+ * inside six hours: a bank does not land two movements on one identical
+ * balance. Same phone, because a re-send reaches the SIM it was sent to; the
+ * fingerprint is scoped the same way.
+ */
+async function findRedelivery(
+  db: D1Database,
+  deviceId: string,
+  sender: string,
+  normalizedBody: string | null,
+  eventId: string,
+  smsTimestamp: number,
+): Promise<{ id: string } | null> {
+  if (normalizedBody === null) return null;
+  return (
+    (await db
+      .prepare(
+        `SELECT r.id
+           FROM raw_sms_events r
+           JOIN transaction_candidates t ON t.raw_sms_event_id = r.id
+          WHERE r.device_id = ?1 AND r.sender = ?2 AND r.normalized_body = ?3 AND r.id <> ?4
+            AND r.sms_timestamp BETWEEN ?5 AND ?6
+          ORDER BY r.sms_timestamp DESC
+          LIMIT 1`,
+      )
+      .bind(deviceId, sender, normalizedBody, eventId, smsTimestamp - REDELIVERY_WINDOW_MS, smsTimestamp)
+      .first<{ id: string }>()) ?? null
+  );
 }
 
 function resultMatched(r: ParseResult): 'OK' | 'WARN' | 'ERROR' {

@@ -11,7 +11,15 @@
  * bugs (banking SMS in this project land in 1395..1410).
  *
  * Output: epoch milliseconds in UTC.
+ *
+ * The hour and minute a bank prints are Tehran wall-clock. Until 2026-09-18
+ * this function fed them to `Date.UTC` unchanged, so every parser's
+ * `bankTimestamp` sat 3½ hours ahead of the truth — unnoticed, because ingest
+ * stamped rows with the phone's delivery time and never read it. Iran has had
+ * no daylight saving since 1401 (2022), so the offset is a constant.
  */
+
+export const TEHRAN_UTC_OFFSET_MS = (3 * 60 + 30) * 60_000;
 
 function div(a: number, b: number): number {
   return Math.trunc(a / b);
@@ -109,7 +117,7 @@ export function gregorianToJalali(epochMs: number): { jy: number; jm: number; jd
 }
 
 /**
- * Convert a Jalali date+time into epoch milliseconds (UTC).
+ * Convert a Jalali date and Tehran wall-clock time into epoch milliseconds.
  *
  * Throws on out-of-domain dates (year < 1300 or > 1500) or invalid
  * month/day/hour/minute/second so caller bugs surface loudly.
@@ -137,7 +145,7 @@ export function jalaliToGregorianEpochMs(
   const nowruzJdn = gregorianToJdn(gy, 3, 21);
   const jdn = nowruzJdn + jalaliMonthCumulativeDays(jy, jm) + (jd - 1);
   const g = jdnToGregorian(jdn);
-  return Date.UTC(g.gy, g.gm - 1, g.gd, hour, minute, second, 0);
+  return Date.UTC(g.gy, g.gm - 1, g.gd, hour, minute, second, 0) - TEHRAN_UTC_OFFSET_MS;
 }
 
 function jalaliMonthCumulativeDays(jy: number, jm: number): number {
