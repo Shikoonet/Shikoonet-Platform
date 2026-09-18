@@ -2364,6 +2364,15 @@
   font-size: 0.8rem;
 }
 
+.payments-search {
+  margin: 0.75rem 0;
+}
+
+.payments-search input {
+  width: 100%;
+  max-width: 34rem;
+}
+
 
 .notification-bell__counts--scoped {
   grid-template-columns: 1fr 1fr;

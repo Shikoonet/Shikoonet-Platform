@@ -5,10 +5,10 @@
  * looks suspicious, what the engine handled, and the full history.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { Cache, QueryStatus } from './query.js';
 import { QK } from './queries.js';
-import { formatTomanFromIrr, formatTimeSeconds } from './format.js';
+import { formatTomanFromIrr, formatTime, formatTimeSeconds } from './format.js';
 import { count } from '../format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { ClaimChangeAccount } from './ClaimChangeAccount.js';
@@ -147,6 +147,8 @@ interface Filters {
   reference: string;
   /** '' | 'personal' | 'reseller' — «تفکیک عادی و نماینده». */
   customerType: string;
+  /** Free text, on every tab — order, Telegram id, @username, tracking number, card, amount (#333). */
+  q: string;
 }
 
 /**
@@ -171,6 +173,7 @@ const FILTER_KEYS = [
   'telegramId',
   'reference',
   'customerType',
+  'q',
 ] as const;
 
 export function parseFiltersFromLocation(search = window.location.search): Filters {
@@ -201,6 +204,7 @@ const EMPTY_FILTERS: Filters = {
   telegramId: '',
   reference: '',
   customerType: '',
+  q: '',
 };
 
 function buildQuery(
@@ -237,7 +241,39 @@ function buildQuery(
     if (filters.reference) qs.set('reference', filters.reference.trim());
     if (filters.customerType) qs.set('customerType', filters.customerType);
   }
+  // Outside the `all` branch on purpose: the search is for finding a payment
+  // without knowing which queue it is in.
+  if (filters.q.trim()) qs.set('q', filters.q.trim());
   return qs.toString();
+}
+
+/**
+ * The one box above every list (#333). Local state and a short wait, so a
+ * seven-digit id is one request and not seven; the URL and the query see
+ * the settled value.
+ */
+function PaymentSearchBox({ value, onChange }: { value: string; onChange: (q: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  useEffect(() => {
+    if (draft === value) return;
+    const t = setTimeout(() => onChange(draft), 300);
+    return () => clearTimeout(t);
+  }, [draft, value, onChange]);
+  return (
+    <div className="payments-search">
+      <input
+        type="search"
+        aria-label="جست‌وجو در پرداخت‌ها"
+        placeholder="جست‌وجو: شمارهٔ سفارش، آی‌دی، @username، شمارهٔ پیگیری، کارت، مبلغ"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onChange(draft);
+        }}
+      />
+    </div>
+  );
 }
 
 function isPaymentItem(
@@ -258,6 +294,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const [continuityPendingPage, setContinuityPendingPage] = useState(1);
   const [continuityHistoryPage, setContinuityHistoryPage] = useState(1);
   const [filters, setFilters] = useState<Filters>(() => parseFiltersFromLocation());
+  const setSearch = useCallback((q: string) => setFilters((f) => ({ ...f, q })), []);
   // DEV-only: filters specific to the Bot Auto Verified tab.
   const botAutoFilter = useBotAutoVerifiedFilter();
   /** The one search box on «تایید خودکار ربات» (#321): applied on Enter. */
@@ -751,6 +788,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
           </nav>
 
           <div className="payments-shell__content">
+            {tab !== 'declined_income' && tab !== 'reseller' && (
+              <PaymentSearchBox value={filters.q} onChange={setSearch} />
+            )}
             {tab === 'income' && <IncomeTotalsBar totals={data?.incomeTotals} />}
             {tab === 'declined_income' && <DeclinedTotalsBar totals={data?.declinedTotals} />}
             {tab === 'reseller' && <ResellerStatsBar stats={data?.resellerStats} />}
@@ -833,7 +873,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                     ? // The other honest answer (#306): the number arrived, the
                       // matcher tied it to no claim, so the money is on «واریزی‌ها».
                       `واریزی با این شمارهٔ پیگیری رسیده (${count(data.referenceTransactions)})، ولی به هیچ سفارشی نچسبیده — در «واریزی‌ها» بگرد.`
-                    : emptyText(tab)}
+                    : emptyText(tab, filters.q)}
                 </CompactEmptyState>
               )}
 
@@ -1250,7 +1290,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   );
 }
 
-function emptyText(tab: PaymentTab): string {
+function emptyText(tab: PaymentTab, q = ''): string {
+  if (q.trim()) return `چیزی با «${q.trim()}» در این فهرست نیست.`;
   // The only empty state on this screen that is unambiguously good news, and it
   // is worth saying so plainly. Under the old three tabs an operator had to
   // check all three to learn this, and even then the answer could be wrong: a
@@ -1427,9 +1468,10 @@ function RowBody({
  */
 function PaymentRowIdentity({ item }: { item: PaymentItem }) {
   if (!item.telegramUsername && !item.telegramUserId) return null;
+  const history = item.customerSubscriptions;
   return (
     <strong>
-      {item.telegramUsername && <>@{item.telegramUsername}</>}
+      {item.telegramUsername && <bdi>@{item.telegramUsername}</bdi>}
       {item.telegramUsername && item.telegramUserId && ' · '}
       {item.telegramUserId && (
         <span onClick={(e) => e.stopPropagation()}>
@@ -1438,7 +1480,24 @@ function PaymentRowIdentity({ item }: { item: PaymentItem }) {
           />
         </span>
       )}
+      {/* The same two numbers the review page draws, on the row (#333):
+          a first buyer and a regular are told apart before opening anything. */}
+      {history != null && (
+        <span className="muted payment-identity__history">
+          {' '}
+          · {count(history)} خرید، {count(item.customerLiveSubscriptions ?? 0)} فعال
+        </span>
+      )}
     </strong>
+  );
+}
+
+/** «سفارش X · ۱۴۰۵/۰۶/۲۷ ۱۹:۰۷» — when the customer pressed «پرداخت کردم» (#333). */
+function PaymentRowOrder({ item }: { item: PaymentItem }) {
+  return (
+    <>
+      سفارش {item.orderId} · {formatTime(item.paidClickedAt ?? item.createdAt)}
+    </>
   );
 }
 
@@ -1503,7 +1562,7 @@ function NeedsReviewRow({
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
+          <PaymentRowOrder item={item} /> · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="review">نیاز به بررسی</StatusBadge>
@@ -1577,7 +1636,7 @@ function WaitingRow({ item, onDetails }: { item: PaymentItem; onDetails: () => v
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
+          <PaymentRowOrder item={item} /> · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="waiting">{waitNote}</StatusBadge>
@@ -1645,7 +1704,7 @@ function NoTransferRow({
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
+          <PaymentRowOrder item={item} /> · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="no-transfer">{reasonText(item.suspectReason)}</StatusBadge>
@@ -1936,7 +1995,7 @@ function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
+          <PaymentRowOrder item={item} /> · <PaymentRowAccount item={item} /> · {paymentDeviceLine(item)}
           <ReceiptMark item={item} />
         </div>
       </RowBody>
@@ -2044,7 +2103,7 @@ function ContinuityRow({
           </span>
         </div>
         <div className="hub-list-row__line2 muted">
-          سفارش {item.orderId} · <PaymentRowAccount item={item} />
+          <PaymentRowOrder item={item} /> · <PaymentRowAccount item={item} />
           {item.fulfilledAt != null && <> · تحویل {formatExactDateTime(item.fulfilledAt)}</>}
         </div>
         <div className="hub-list-row__line3 payment-reason">

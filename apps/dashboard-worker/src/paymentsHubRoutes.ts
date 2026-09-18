@@ -79,6 +79,48 @@ const OPEN_QUEUE_TABS = new Set<PaymentTab>([
   'suspected_fake',
 ]);
 
+/**
+ * Free text from the search box (#333), or null.
+ *
+ * Whatever an operator has in front of them when a customer calls — an order
+ * id, a Telegram id, «@username», the tracking number, a card, an amount.
+ * One box rather than one field per kind, because the operator does not
+ * always know which kind they are holding. Digits are folded to ASCII for the
+ * same reason `referenceParam` folds them; the LIKE metacharacters are
+ * escaped so «100%» asks about the text «100%» and not about everything.
+ */
+export function searchParam(raw: string | null): string | null {
+  if (!raw) return null;
+  let v = raw.trim().replace(/^@/, '');
+  for (let i = 0; i < 10; i++) {
+    v = v.replaceAll('۰۱۲۳۴۵۶۷۸۹'[i]!, String(i)).replaceAll('٠١٢٣٤٥٦٧٨٩'[i]!, String(i));
+  }
+  return v.length >= 1 && v.length <= 64 ? v : null;
+}
+
+/** `ILIKE '%…%'` against several columns, the input escaped for LIKE. */
+export function searchLikeSql(columns: string[], bind: string): string {
+  return `(${columns.map((col) => `${col} ILIKE ${bind} ESCAPE '\\'`).join(' OR ')})`;
+}
+
+export function searchLikeBind(q: string): string {
+  return `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+}
+
+/**
+ * The «واریزی‌ها» half of the search: the tracking number, the account it
+ * landed on, and the amount whole — as the operator reads it (toman) or as
+ * the SMS printed it (rial). `fa` must be joined by the caller.
+ */
+function incomeSearchClause(q: string | null, p: (v: unknown) => string): string {
+  if (!q) return '';
+  const like = p(searchLikeBind(q));
+  return ` AND (${searchLikeSql(
+    ['t.transaction_reference', 'fa.account_hint', 'fa.display_name'],
+    like,
+  )} OR (t.amount_irr / 10)::text = ${p(q)} OR t.amount_irr::text = ${p(q)})`;
+}
+
 function rangeClause(
   column: string,
   range: HistoryRange,
@@ -279,6 +321,7 @@ export async function loadIncomeItems(
   limit = 200,
   actorEmail?: string,
   offset = 0,
+  q: string | null = null,
 ) {
   const binds: unknown[] = [];
   const p = (v: unknown) => {
@@ -286,6 +329,7 @@ export async function loadIncomeItems(
     return `?${binds.length}`;
   };
   const rangeFilter = rangeClause('t.bank_timestamp', range, now, p, day);
+  const search = incomeSearchClause(q, p);
 
   const rows = await db
     .prepare(
@@ -294,7 +338,7 @@ export async function loadIncomeItems(
               fa.display_name AS account_display, fa.bank_name AS account_bank, fa.account_hint
        FROM transaction_candidates t
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
-       WHERE ${INCOME_TX_WHERE}${rangeFilter.sql}
+       WHERE ${INCOME_TX_WHERE}${rangeFilter.sql}${search}
        -- The id breaks the tie, and it is what makes OFFSET safe. Two rows
        -- with the same timestamp have no defined order between them, so a
        -- plain timestamp sort can hand page 2 a row page 1 already showed and
@@ -350,6 +394,7 @@ export async function loadIncomeTotals(
   range: HistoryRange,
   now: number,
   day?: string | null,
+  q: string | null = null,
 ) {
   const binds: unknown[] = [];
   const p = (v: unknown) => {
@@ -357,12 +402,14 @@ export async function loadIncomeTotals(
     return `?${binds.length}`;
   };
   const rangeFilter = rangeClause('t.bank_timestamp', range, now, p, day);
+  const search = incomeSearchClause(q, p);
 
   const row = await db
     .prepare(
       `SELECT COUNT(*) AS count, COALESCE(SUM(t.amount_irr), 0) AS amount_irr
        FROM transaction_candidates t
-       WHERE ${INCOME_TX_WHERE}${rangeFilter.sql}`,
+       LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
+       WHERE ${INCOME_TX_WHERE}${rangeFilter.sql}${search}`,
     )
     .bind(...binds)
     .first<{ count: number; amount_irr: number }>();
