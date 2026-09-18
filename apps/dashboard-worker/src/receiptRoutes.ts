@@ -46,7 +46,8 @@ type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
 const TELEGRAM_API = 'https://api.telegram.org';
 
 /**
- * What we are willing to hand back, keyed by the extension Telegram reports.
+ * What we are willing to hand back for a `doc:` handle, keyed by the extension
+ * Telegram reports.
  *
  * An allow-list rather than Telegram's `Content-Type`, and rather than the
  * file's own claim about itself. Whatever arrives is put in front of an
@@ -62,7 +63,23 @@ const CONTENT_TYPES: Record<string, string> = {
   pdf: 'application/pdf',
 };
 
-function contentTypeFor(filePath: string): string | null {
+/**
+ * The type is ours to state, and for a photo it is not in the path at all.
+ *
+ * Telegram re-encodes every `photo` as JPEG and `getFile` reports it with NO
+ * extension — `photos/file_82`, recorded on production 2026-09-18 (#303).
+ * Reading the extension off that path made the allow-list refuse every
+ * receipt the shop ever received: 191 claims with a picture, 0 ever shown,
+ * and a test that fed itself `photos/f_1.jpg` stayed green the whole time.
+ *
+ * So the kind of handle decides. A photo handle is `image/jpeg` because that
+ * is what Telegram stores, not because of anything the path says; only a
+ * document — where Telegram keeps the customer's own file and extension —
+ * goes through the allow-list. Nothing about the XSS argument moves: the type
+ * is still chosen here, never sniffed, never Telegram's word for it.
+ */
+function contentTypeFor(filePath: string, isDocument: boolean): string | null {
+  if (!isDocument) return 'image/jpeg';
   const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
   return CONTENT_TYPES[ext] ?? null;
 }
@@ -98,7 +115,7 @@ export function registerReceiptRoutes(
     // missing claim so the screen can say which.
     if (!row.handle) return c.json({ ok: false, error: 'no_receipt' }, 404);
 
-    const { fileId } = receiptRef(row.handle);
+    const { fileId, isDocument } = receiptRef(row.handle);
     // Re-validated here, BEFORE any network call, and this is the check that
     // matters most. The row was written by a handler reading an untrusted
     // update; this one is about to interpolate it into a request to a third
@@ -232,9 +249,13 @@ export function registerReceiptRoutes(
       return c.json({ ok: false, error: 'receipt_unreachable' }, 502);
     }
 
-    const type = contentTypeFor(filePath);
+    const type = contentTypeFor(filePath, isDocument);
     if (type === null) {
-      log.warn('receipt.type_refused', { claimId, consequence: 'receipt not shown' });
+      // The extension is logged and the path is not: the path is a download
+      // URL fragment, the extension is the one fact that explains a refusal —
+      // and it took half a day of #303 to learn it was «none» without it.
+      const ext = filePath.includes('.') ? filePath.split('.').pop() : '';
+      log.warn('receipt.type_refused', { claimId, ext, consequence: 'receipt not shown' });
       return c.json({ ok: false, error: 'unsupported_type' }, 415);
     }
 
