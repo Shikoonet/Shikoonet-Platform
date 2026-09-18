@@ -22,6 +22,7 @@ import {
   syncPaymentTabToLocation,
   syncReviewToLocation,
   level1GroupFromTab,
+  SEARCHABLE_TABS,
 } from './paymentsNav.js';
 import { HeaderSlot } from './shikoonetShell.js';
 import { useWriteProps, useCanWriteAdmin } from '../role.js';
@@ -397,6 +398,24 @@ export function PaymentsView({ cache }: { cache: Cache }) {
         }
       : undefined,
   );
+
+  /*
+   * A search that finds nothing HERE and something on another tab goes there
+   * (Sam, 2026-09-18): the box is for finding a payment without knowing
+   * which queue it is in, and an empty list under «۳ روی تایید خودکار» is
+   * the operator doing the jump by hand. The counts arrive with the list,
+   * narrowed by the same text, so «which tab» is one read. Only under a
+   * search, and only from an empty tab — a tab the operator chose and that
+   * has rows is left alone.
+   */
+  const searchCounts = filters.q.trim() && data?.tab === tab ? data.counts : undefined;
+  useEffect(() => {
+    if (!searchCounts) return;
+    const here = SEARCHABLE_TABS.find((t) => t.tab === tab);
+    if (!here || (searchCounts[here.countKey] ?? 0) > 0) return;
+    const there = SEARCHABLE_TABS.find((t) => (searchCounts[t.countKey] ?? 0) > 0);
+    if (there) selectTab(there.tab);
+  }, [searchCounts, tab]);
 
   const claimItems = (data?.items ?? []).filter(isPaymentItem);
   const continuityHistoryItems = (continuityHistoryData?.items ?? []).filter(isPaymentItem);

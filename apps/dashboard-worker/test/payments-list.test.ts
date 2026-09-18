@@ -1307,6 +1307,30 @@ describe('searching the payments list', () => {
     expect((await get('tab=awaiting_receipt&q=nope')).total).toBe(0);
   });
 
+  /**
+   * «توی هر تبی بود … اون تب‌ها رو نشون بده» — Sam, 2026-09-18. The counts
+   * that ride with every answer are narrowed by the same text as the list,
+   * so the tab chips say where the match is and the screen can jump there.
+   * Asserted against the rows each tab lists for the same search, which is
+   * the only thing a count on a tab may promise.
+   */
+  it('narrows the tab counts by the search, so the tabs say where the match is', async () => {
+    await seedTx('q-inc', Date.now());
+    const hit = await get('tab=open&q=q-sara');
+    expect(hit.items).toEqual([]);
+    expect(hit.counts.open).toBe(0);
+    expect(hit.counts.awaitingReceipt).toBe(1);
+    expect(hit.counts.all).toBe(1);
+    expect(hit.counts.income).toBe(0);
+    expect((await get('tab=awaiting_receipt&q=q-sara')).items.map((i) => i.id)).toEqual(['q-sara']);
+    // The same text on the bank side: a credit, and no claim.
+    const inc = await get(`tab=open&q=${AMOUNT / 10}`);
+    expect(inc.counts.income).toBe(1);
+    expect(inc.counts.awaitingReceipt).toBe(2);
+    // No search, no narrowing — the badges are the whole population.
+    expect((await get('tab=open')).counts.awaitingReceipt).toBe(2);
+  });
+
   it('searches «واریزی‌ها» by tracking number, account, and amount', async () => {
     await seedTx('q-inc', Date.now());
     await baseEnv.DB.prepare(

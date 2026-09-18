@@ -56,8 +56,7 @@ import {
   loadResellerCount,
   OPEN_QUEUE_TABS,
   searchParam,
-  searchLikeBind,
-  searchLikeSql,
+  claimSearchClause,
 } from './paymentsHubRoutes.js';
 import {
   claimEventKey,
@@ -688,7 +687,23 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
 }
 
 /** Tab badges + the "today" header, counted over the whole population. */
-export async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, actorEmail?: string) {
+export async function loadCounts(
+  db: D1Database,
+  dayStart: number,
+  dayEnd: number,
+  actorEmail?: string,
+  /**
+   * The search box (#333). With it, every count is the number of rows that
+   * tab would list for the same text — so the tabs themselves say which
+   * queue the payment is in, and the screen can jump there.
+   */
+  q: string | null = null,
+) {
+  const binds: unknown[] = [MIRZABOT_SOURCE, dayStart, dayEnd];
+  const p = (v: unknown) => {
+    binds.push(v);
+    return `?${binds.length}`;
+  };
   const rows = await db
     .prepare(
       `SELECT
@@ -703,18 +718,29 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
          SUM(CASE WHEN ${MESSAGED} THEN 1 ELSE 0 END) AS messaged_n
        FROM payment_claims c
        LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_ID})
-       WHERE c.source_system = ?1
+       ${
+         // The two joins the search clause reads, exactly as the list joins
+         // them («claimsFrom» below) so the two answers are over the same
+         // rows — and only under a search, because the users join is a hash
+         // join the sidebar's poll has no use for.
+         q
+           ? `LEFT JOIN financial_accounts fa ON fa.id = c.target_financial_account_id
+       LEFT JOIN users cu ON cu.telegram_id::text = c.customer_reference`
+           : ''
+       }
+       WHERE c.source_system = ?1${claimSearchClause(q, p)}
        GROUP BY review_state`,
     )
-    // Three binds, not four. The fourth was the clock, for a `WHEN` arm that
-    // applied the ten-minute cutoff and was followed immediately by an
-    // identical arm without it — so the first could only ever match rows the
-    // second would have caught anyway. Dead, and not harmlessly: that arm was
-    // the badge's half of a disagreement with `stateSql`, which DID drop the
-    // stale rows. Removing it also has to remove the bind, because
-    // `packages/db` refuses a statement with a parameter nothing uses rather
-    // than guessing — SQLite ignored those, Postgres cannot.
-    .bind(MIRZABOT_SOURCE, dayStart, dayEnd)
+    // Three binds without a search, not four. The fourth was the clock, for a
+    // `WHEN` arm that applied the ten-minute cutoff and was followed
+    // immediately by an identical arm without it — so the first could only
+    // ever match rows the second would have caught anyway. Dead, and not
+    // harmlessly: that arm was the badge's half of a disagreement with
+    // `stateSql`, which DID drop the stale rows. Removing it also has to
+    // remove the bind, because `packages/db` refuses a statement with a
+    // parameter nothing uses rather than guessing — SQLite ignored those,
+    // Postgres cannot.
+    .bind(...binds)
     .all<{
       review_state: ReviewState | null;
       n: number;
@@ -811,7 +837,7 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
       manuallyVerified: total.MANUALLY_VERIFIED,
       continuity,
       continuityPending,
-      income: await loadIncomeCount(db),
+      income: await loadIncomeCount(db, q),
       declinedIncome: await loadDeclinedIncomeCount(db),
       reseller: await loadResellerCount(db),
       all,
@@ -1185,7 +1211,8 @@ export function registerMirzabotRoutes(
 
     const financialSummary = await loadFinancialSummary(c.env.DB, range, now, day);
     const { start, end } = tehranDayFromUtc(now);
-    const counts = await loadCounts(c.env.DB, start, end, ident.email);
+    const q = searchParam(url.searchParams.get('q'));
+    const counts = await loadCounts(c.env.DB, start, end, ident.email, q);
     const domainDb = c.env.DB as unknown as DomainD1Database;
 
     /**
@@ -1203,7 +1230,6 @@ export function registerMirzabotRoutes(
     const tabOffset = (tabPage - 1) * tabPageSize;
 
     if (tab === 'income') {
-      const q = searchParam(url.searchParams.get('q'));
       const items = await loadIncomeItems(
         c.env.DB,
         range,
@@ -1328,7 +1354,6 @@ export function registerMirzabotRoutes(
     const cardDigits = cardDigitsParam(url.searchParams.get('cardDigits'));
     const telegramId = telegramIdParam(url.searchParams.get('telegramId'));
     const reference = referenceParam(url.searchParams.get('reference'));
-    const q = searchParam(url.searchParams.get('q'));
     const { page, pageSize } = pageParams(url);
 
     /*
@@ -1456,30 +1481,10 @@ export function registerMirzabotRoutes(
       /*
        * Free text, on EVERY claim tab — unlike the fields above, which are
        * only drawn on «همه». The whole point (#333) is finding one payment
-       * without knowing which queue it sits in.
-       *
-       * The tracking number is asked for through any match, settled or only
-       * suggested, exactly as `reference` is above. The amount is matched as
-       * the customer sees it (toman) and as the row stores it (rial), whole
-       * — a substring of an amount is noise.
-       *
-       * ponytail: leading-wildcard ILIKE is a scan over payment_claims; add
-       * pg_trgm on customer_reference/external_order_id if the table ever
-       * makes this slow.
+       * without knowing which queue it sits in. The same clause narrows the
+       * tab counts above, so the tabs say where the match is.
        */
-      if (q) {
-        const like = p(searchLikeBind(q));
-        where.push(`(${searchLikeSql(
-          ['c.external_order_id', 'c.customer_reference', 'cu.username', 'c.card_digits', 'fa.account_hint', 'fa.display_name'],
-          like,
-        )}
-          OR (c.expected_amount_irr / 10)::text = ${p(q)}
-          OR c.expected_amount_irr::text = ${p(q)}
-          OR EXISTS (
-            SELECT 1 FROM reconciliation_matches rm
-              JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
-             WHERE rm.payment_claim_id = c.id AND rt.transaction_reference ILIKE ${like} ESCAPE '\\'))`);
-      }
+      if (q) where.push(`TRUE${claimSearchClause(q, p)}`);
       // Three-state, and «unknown» is its own answer rather than «personal»:
       // a claim whose reference matches no user is a real payment we cannot
       // attribute, and filing it under «شخصی» would be inventing a fact.

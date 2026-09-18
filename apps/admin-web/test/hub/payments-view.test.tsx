@@ -970,6 +970,83 @@ describe('PaymentsView device display', () => {
   });
 });
 
+describe('the search box finds a payment on another tab', () => {
+  /**
+   * «هر چیزی سرچ کردم، توی هر تبی بود باید اتوماتیک اون تب رو نشون بده» —
+   * Sam, 2026-09-18. The server narrows the counts by the search; the
+   * screen reads them and, when the tab it is on has nothing, goes to the
+   * first that has something.
+   */
+  it('jumps from an empty queue to the tab that holds the match, and stays there', async () => {
+    const asked: string[] = [];
+    globalThis.fetch = vi.fn().mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url.startsWith('/api/v1/analytics')) {
+        return new Response(JSON.stringify({ ok: true, range: 'all' }), { status: 200 });
+      }
+      const parsed = new URL(url, 'http://local');
+      const tab = parsed.searchParams.get('tab') ?? 'open';
+      const q = parsed.searchParams.get('q');
+      asked.push(`${tab}:${q ?? ''}`);
+      const searched = q === 'FOUND';
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          tab,
+          range: 'all',
+          items:
+            searched && tab === 'bot_auto_verified'
+              ? [
+                  item({
+                    id: 'f1',
+                    orderId: 'FOUND',
+                    reviewState: 'AUTO_VERIFIED',
+                    claimStatus: 'VERIFIED',
+                    matchStatus: 'AUTO_VERIFIED',
+                    suspectReason: null,
+                  }),
+                ]
+              : [],
+          // Under the search every count is a match count: one, on the bot tab.
+          counts: searched
+            ? {
+                ...COUNTS,
+                open: 0,
+                income: 0,
+                awaitingReceipt: 0,
+                parked: 0,
+                messaged: 0,
+                continuity: 0,
+                botAutoVerified: 1,
+                manuallyVerified: 0,
+                all: 1,
+              }
+            : COUNTS,
+          summary: SUMMARY,
+        }),
+        { status: 200 },
+      );
+    });
+
+    render(<PaymentsView cache={createCache()} />);
+    const box = await screen.findByRole('searchbox', { name: 'جست‌وجو در پرداخت‌ها' });
+    fireEvent.change(box, { target: { value: 'FOUND' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    expect((await screen.findAllByText('FOUND')).length).toBeGreaterThan(0);
+    expect(new URLSearchParams(window.location.search).get('tab')).toBe('bot_auto_verified');
+    expect(
+      hubNav().getByRole('tab', { name: /تایید خودکار ربات/ }).getAttribute('aria-selected'),
+    ).toBe('true');
+    // Once, to the tab with the match — not a second hop from there.
+    await waitFor(() => expect(asked.filter((a) => a.endsWith(':FOUND')).length).toBe(2));
+    expect(asked.filter((a) => a.endsWith(':FOUND'))).toEqual([
+      'open:FOUND',
+      'bot_auto_verified:FOUND',
+    ]);
+  });
+});
+
 describe('PaymentsView live refresh', () => {
   it('drops rows that leave the active queue on poll', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
