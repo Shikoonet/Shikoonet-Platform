@@ -72,6 +72,8 @@ export type PaymentTab =
   | 'awaiting_receipt'
   /** `open` rows the operator set aside to wait for the bank SMS. */
   | 'parked'
+  /** Undecided rows whose customer an operator has written to (#320). */
+  | 'messaged'
   | 'needs_review'
   | 'declined_income'
   | 'waiting'
@@ -242,6 +244,14 @@ export interface PaymentItem {
   purchaseType?: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP' | 'UNKNOWN';
   /** Raw Mirzabot step (e.g. getconfigafterpay); null on the platform's own claims. */
   operationType?: string | null;
+  /** When an operator last sent the customer a ready-made message, and which (#320). */
+  messagedAt?: number | null;
+  messagedTemplate?: string | null;
+}
+
+export interface ReviewMessage {
+  key: string;
+  text: string;
 }
 
 export interface IncomeItem {

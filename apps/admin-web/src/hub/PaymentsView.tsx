@@ -73,6 +73,7 @@ import {
   type PaymentsResponse,
   type ResellerItem,
   type AccountRefLike,
+  type ReviewMessage,
   reconcileNote,
 } from './paymentReview.js';
 import { FulfilWithoutPaymentModal } from './FulfilWithoutPaymentModal.js';
@@ -980,7 +981,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                      * never an address you have to navigate to first.
                      */
                     const kind =
-                      tab === 'open' || tab === 'awaiting_receipt' ? item.reviewState : tab;
+                      tab === 'open' || tab === 'awaiting_receipt' || tab === 'messaged'
+                        ? item.reviewState
+                        : tab;
 
                     if (kind === 'needs_review' || kind === 'NEEDS_REVIEW') {
                       return (
@@ -1218,6 +1221,7 @@ function emptyText(tab: PaymentTab): string {
   if (tab === 'open') return 'هیچ پرداختی منتظر تصمیم نیست.';
   if (tab === 'awaiting_receipt') return 'هیچ پرداختی منتظر رسید نیست.';
   if (tab === 'parked') return 'چیزی کنار گذاشته نشده است.';
+  if (tab === 'messaged') return 'به مشتری هیچ پرداختی پیام داده نشده است.';
   if (tab === 'needs_review') return 'چیزی نیاز به بررسی ندارد.';
   if (tab === 'income') return 'در این بازه واریزی تخصیص‌نیافته‌ای نیست.';
   if (tab === 'declined_income') return 'در این بازه واریزی ردشده‌ای نیست.';
@@ -2235,6 +2239,226 @@ const REJECT_REASONS = [
   { value: 'OTHER', label: 'سایر' },
 ] as const;
 
+/**
+ * «پیام به مشتری» (#320). One of a few ready-made texts goes to the customer
+ * through the bot; the claim then moves to «پیام داده‌شده». The list is the
+ * shop's, in settings, and an ADMIN edits it from here — Sam adds texts as
+ * they come up, so nothing is hard-coded. Sending is the operator's act and
+ * stays on the review page: like blocking, it is not a decision about the
+ * payment, so the screen stays open.
+ */
+function CustomerMessageSection({
+  item,
+  onSent,
+  onError,
+}: {
+  item: PaymentItem;
+  onSent: () => void;
+  onError: (message: string) => void;
+}) {
+  const w = useWriteProps();
+  const canEdit = useCanWriteAdmin();
+  const [templates, setTemplates] = useState<ReviewMessage[] | null>(null);
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+
+  async function load() {
+    const r = await fetch('/api/v1/review-messages');
+    if (!r.ok) return;
+    const j = (await r.json()) as { items: ReviewMessage[] };
+    setTemplates(j.items);
+    setKey((k) => (j.items.some((t) => t.key === k) ? k : (j.items[0]?.key ?? '')));
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function send() {
+    if (!key) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/v1/suspects/${item.id}/message`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key }),
+      });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        throw new Error(
+          j.error === 'no_telegram_chat'
+            ? 'این پرداخت به چت تلگرامی وصل نیست.'
+            : (j.error ?? `${r.status}`),
+        );
+      }
+      onSent();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'message_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const chosen = templates?.find((t) => t.key === key);
+  const last = item.messagedTemplate
+    ? (templates?.find((t) => t.key === item.messagedTemplate)?.text ?? item.messagedTemplate)
+    : null;
+  return (
+    <section className="drawer-section">
+      <h3 className="drawer-section__heading">پیام به مشتری</h3>
+      {item.messagedAt != null && (
+        <p className="muted">
+          آخرین پیام {formatExactDateTime(item.messagedAt)}
+          {last ? `: «${last}»` : ''}
+        </p>
+      )}
+      {templates && templates.length === 0 && (
+        <p className="muted">هنوز متنی تعریف نشده است.</p>
+      )}
+      {templates && templates.length > 0 && (
+        <>
+          <label>
+            متن آماده
+            <select value={key} onChange={(e) => setKey(e.target.value)}>
+              {templates.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.text.length > 60 ? `${t.text.slice(0, 60)}…` : t.text}
+                </option>
+              ))}
+            </select>
+          </label>
+          {chosen && <p className="muted payment-review__message-preview">{chosen.text}</p>}
+        </>
+      )}
+      <div className="payment-review__actions">
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || !chosen}
+          onClick={() => void send()}
+          {...w}
+        >
+          ارسال از طریق ربات
+        </button>
+        {canEdit && (
+          <button type="button" className="ghost" onClick={() => setEditing(true)}>
+            ویرایش فهرست
+          </button>
+        )}
+      </div>
+      {editing && templates && (
+        <ReviewMessagesEditor
+          items={templates}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false);
+            void load();
+          }}
+          onError={onError}
+        />
+      )}
+    </section>
+  );
+}
+
+/**
+ * The list itself. A key is minted once, when a text is added, and never
+ * changes: the bot's outbox dedupes on it, so renaming a key would let the
+ * same text reach the same customer twice for the same claim.
+ */
+function ReviewMessagesEditor({
+  items,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  items: ReviewMessage[];
+  onClose: () => void;
+  onSaved: () => void;
+  onError: (message: string) => void;
+}) {
+  const [draft, setDraft] = useState<ReviewMessage[]>(items);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    try {
+      const r = await fetch('/api/v1/admin/review-messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ items: draft.map((t) => ({ key: t.key, text: t.text.trim() })) }),
+      });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `${r.status}`);
+      }
+      onSaved();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'save_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="ویرایش متن‌های آماده"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="modal-body">
+        <h3>متن‌های آمادهٔ پیام به مشتری</h3>
+        <p className="muted">هر متن یک‌بار برای هر پرداخت می‌رود؛ همان متن دوباره به همان مشتری نمی‌رسد.</p>
+        {draft.map((t, i) => (
+          <label key={t.key}>
+            متن {i + 1}
+            <textarea
+              value={t.text}
+              rows={2}
+              maxLength={1000}
+              onChange={(e) =>
+                setDraft((d) => d.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))
+              }
+            />
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => setDraft((d) => d.filter((_, j) => j !== i))}
+            >
+              حذف
+            </button>
+          </label>
+        ))}
+        <div className="payment-review__actions">
+          <button
+            type="button"
+            className="ghost"
+            disabled={draft.length >= 50}
+            onClick={() =>
+              setDraft((d) => [...d, { key: `m${Date.now().toString(36)}`, text: '' }])
+            }
+          >
+            + متن تازه
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy || draft.some((t) => !t.text.trim())}
+            onClick={() => void save()}
+          >
+            ذخیره
+          </button>
+          <button type="button" className="ghost" disabled={busy} onClick={onClose}>
+            انصراف
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ReviewPanel({
   item,
   cache,
@@ -2327,6 +2551,8 @@ function ReviewPanel({
     item.reviewState === 'WAITING' ||
     item.reviewState === 'NO_TRANSFER_FOUND';
   const canMarkFake = item.reviewState === 'NO_TRANSFER_FOUND';
+  /** Same population the server accepts a message for: an undecided claim. */
+  const canMessage = item.claimStatus === 'PENDING' || item.claimStatus === 'MATCH_SUGGESTED';
   /**
    * The claim is delivered and waiting for its bank credit.
    *
@@ -2598,6 +2824,10 @@ function ReviewPanel({
             </>
           )}
         </section>
+      )}
+
+      {canMessage && (
+        <CustomerMessageSection item={item} onSent={onRefresh} onError={onError} />
       )}
 
       <section className="drawer-section">

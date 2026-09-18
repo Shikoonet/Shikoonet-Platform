@@ -847,6 +847,119 @@ describe('the open review queue', () => {
     expect(open.items.map((i) => i.id)).toEqual(['p-stay']);
   });
 
+  it('a claim the operator wrote to moves to «پیام داده‌شده» and the customer is queued a message (#320)', async () => {
+    // A full queue, not one row: the tab predicates are what is under test
+    // and a table with one claim cannot show a row leaking into two tabs.
+    await seedClaim('m-open', { suspectReason: 'NO_TRANSACTION', customerReference: '4242' });
+    await seedClaim('m-stay', { suspectReason: 'OUTSIDE_WINDOW' });
+    await seedClaim('m-none', { receipt: false, customerReference: '4343' });
+    await seedClaim('m-parked', { suspectReason: 'NO_TRANSACTION', customerReference: '4444' });
+    await seedClaim('m-done', { status: 'VERIFIED' });
+    await seedClaim('m-nochat', { suspectReason: 'NO_TRANSACTION', customerReference: 'Poyan test' });
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET parked_at = ?1 WHERE id = 'm-parked'`)
+      .bind(Date.now())
+      .run();
+    await baseEnv.DB.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'review-msg:%'`).run();
+
+    async function message(id: string, key: string, email = EMAIL) {
+      return app.fetch(
+        new Request(`https://example.com/api/v1/suspects/${id}/message`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ key }),
+        }),
+        envAs(email),
+      );
+    }
+    const KEY = 'receipt_landed_call_support';
+
+    // The text 0076 seeded is offered.
+    const list = await app.fetch(new Request('https://example.com/api/v1/review-messages'), envAs());
+    const texts = ((await list.json()) as { items: Array<{ key: string; text: string }> }).items;
+    expect(texts.map((t) => t.key)).toContain(KEY);
+
+    expect((await message('m-open', KEY)).status).toBe(200);
+    // Twice is one message — the outbox key is the claim and the text.
+    const again = await message('m-open', KEY);
+    expect(again.status).toBe(200);
+    expect(((await again.json()) as { queued: boolean }).queued).toBe(false);
+    // No receipt yet is still undecided, so it can be written to; so can a
+    // parked one, and being spoken to outranks being set aside.
+    expect((await message('m-none', KEY)).status).toBe(200);
+    expect((await message('m-parked', KEY)).status).toBe(200);
+    // A settled claim, an unknown text, a claim whose reference is no chat.
+    expect((await message('m-done', KEY)).status).toBe(404);
+    expect((await message('m-open', 'no-such-text')).status).toBe(404);
+    expect((await message('m-nochat', KEY)).status).toBe(409);
+
+    const queued = await baseEnv.DB.prepare(
+      `SELECT dedupe_key, chat_id, body FROM bot_notifications
+        WHERE dedupe_key LIKE 'review-msg:%' ORDER BY dedupe_key`,
+    ).all<{ dedupe_key: string; chat_id: number; body: string }>();
+    expect(queued.results.map((r) => [r.dedupe_key, r.chat_id])).toEqual([
+      [`review-msg:m-none:${KEY}`, 4343],
+      [`review-msg:m-open:${KEY}`, 4242],
+      [`review-msg:m-parked:${KEY}`, 4444],
+    ]);
+    expect(queued.results[0]?.body).toBe(texts.find((t) => t.key === KEY)?.text);
+
+    const open = await get('tab=open');
+    const messaged = await get('tab=messaged');
+    const parked = await get('tab=parked');
+    const awaiting = await get('tab=awaiting_receipt');
+    expect(open.items.map((i) => i.id).sort()).toEqual(['m-nochat', 'm-stay']);
+    expect(messaged.items.map((i) => i.id).sort()).toEqual(['m-none', 'm-open', 'm-parked']);
+    expect(parked.items).toEqual([]);
+    expect(awaiting.items).toEqual([]);
+    expect(messaged.items.find((i) => i.id === 'm-open')?.messagedTemplate).toBe(KEY);
+    // The four badges are still every undecided claim, none counted twice.
+    expect(open.counts['open']).toBe(2);
+    expect(open.counts['messaged']).toBe(3);
+    expect(open.counts['parked']).toBe(0);
+    expect(open.counts['awaitingReceipt']).toBe(0);
+
+    // The audit says which text went — and not to whom.
+    const audit = await baseEnv.DB.prepare(
+      `SELECT after_json FROM audit_logs WHERE action = 'claim.customer_messaged' AND entity_id = 'm-open'`,
+    ).all<{ after_json: string }>();
+    expect(audit.results).toHaveLength(1);
+    expect(audit.results[0]?.after_json).not.toContain('4242');
+
+    // The matcher settles it; the tab empties by itself.
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = 'm-open'`).run();
+    expect((await get('tab=messaged')).counts['messaged']).toBe(2);
+  });
+
+  it('the list of texts is the admin\'s to edit, and keeps its keys (#320)', async () => {
+    async function put(items: unknown, email = EMAIL) {
+      return app.fetch(
+        new Request('https://example.com/api/v1/admin/review-messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ items }),
+        }),
+        envAs(email),
+      );
+    }
+    const before = ((await (
+      await app.fetch(new Request('https://example.com/api/v1/review-messages'), envAs())
+    ).json()) as { items: Array<{ key: string; text: string }> }).items;
+    try {
+      const next = [...before, { key: 'call_us', text: 'لطفاً با پشتیبانی تماس بگیرید.' }];
+      expect((await put(next)).status).toBe(200);
+      const after = ((await (
+        await app.fetch(new Request('https://example.com/api/v1/review-messages'), envAs())
+      ).json()) as { items: Array<{ key: string; text: string }> }).items;
+      expect(after).toEqual(next);
+      // Two texts cannot share a key — the outbox dedupe is built on it.
+      expect((await put([...next, { key: 'call_us', text: 'x' }])).status).toBe(400);
+      expect((await put([{ key: 'Bad Key', text: 'x' }])).status).toBe(400);
+      expect((await put([{ key: 'ok', text: '' }])).status).toBe(400);
+    } finally {
+      expect((await put(before)).status).toBe(200);
+    }
+  });
+
   it('is what an operator lands on', async () => {
     // The default used to be `income`, which reads `transaction_candidates` —
     // a table a claim is never in. Sam went looking for the order he had just

@@ -189,7 +189,16 @@ const PENDING_CLAIM = `c.status IN ('PENDING','MATCH_SUGGESTED')`;
  * and so never lands here: the product has shipped and a receipt is no longer
  * a condition of anything.
  */
-const AWAITING_RECEIPT = `${PENDING_CLAIM} AND c.parked_at IS NULL AND c.receipt_url_or_r2_key IS NULL`;
+const AWAITING_RECEIPT = `${PENDING_CLAIM} AND c.parked_at IS NULL AND c.messaged_at IS NULL AND c.receipt_url_or_r2_key IS NULL`;
+/**
+ * «پیام داده‌شده» (#320): still undecided, but an operator has sent the
+ * customer a ready-made message through the bot, so the next move is the
+ * customer's. Out of every other undecided tab — parked included; being
+ * spoken to outranks being set aside — and, like parked, a view flag on a
+ * PENDING row that the matcher settles by itself.
+ */
+const MESSAGED = `${PENDING_CLAIM} AND c.messaged_at IS NOT NULL`;
+const PARKED = `${PENDING_CLAIM} AND c.parked_at IS NOT NULL AND c.messaged_at IS NULL`;
 const NO_TRANSFER_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
 
 /** The one match row that settled a claim, if any (auto beats manual). */
@@ -383,6 +392,8 @@ type ClaimRow = {
   // NULL on an imported Mirzabot claim the backfill could not classify; the
   // bot writes it from the order's kind (0069).
   purchase_type: string | null;
+  messaged_at: number | null;
+  messaged_template: string | null;
   operation_type: string | null;
 };
 
@@ -674,8 +685,9 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
          SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' THEN 1 ELSE 0 END) AS continuity_n,
          SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' AND c.reconciled_at IS NULL
                   THEN 1 ELSE 0 END) AS continuity_pending_n,
-         SUM(CASE WHEN c.parked_at IS NOT NULL AND ${PENDING_CLAIM} THEN 1 ELSE 0 END) AS parked_n,
-         SUM(CASE WHEN ${AWAITING_RECEIPT} THEN 1 ELSE 0 END) AS awaiting_receipt_n
+         SUM(CASE WHEN ${PARKED} THEN 1 ELSE 0 END) AS parked_n,
+         SUM(CASE WHEN ${AWAITING_RECEIPT} THEN 1 ELSE 0 END) AS awaiting_receipt_n,
+         SUM(CASE WHEN ${MESSAGED} THEN 1 ELSE 0 END) AS messaged_n
        FROM payment_claims c
        LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_ID})
        WHERE c.source_system = ?1
@@ -698,6 +710,7 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
       continuity_pending_n: number;
       parked_n: number;
       awaiting_receipt_n: number;
+      messaged_n: number;
     }>();
 
   const total: Record<ReviewState, number> = {
@@ -717,6 +730,7 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
   let continuityPending = 0;
   let parked = 0;
   let awaitingReceipt = 0;
+  let messaged = 0;
   for (const r of rows.results ?? []) {
     // `all` counts rows, so a state nobody can list still shows up there.
     all += r.n;
@@ -724,6 +738,7 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
     continuityPending += r.continuity_pending_n ?? 0;
     parked += r.parked_n ?? 0;
     awaitingReceipt += r.awaiting_receipt_n ?? 0;
+    messaged += r.messaged_n ?? 0;
     if (r.review_state == null) continue;
     total[r.review_state] += r.n;
     today[r.review_state] += r.n_today ?? 0;
@@ -765,11 +780,19 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
        * Minus the rows with no receipt (#307): those are the same population
        * one step earlier, and have their own tab and their own number so the
        * badge over «در انتظار بررسی» counts only what an operator can decide.
-       * `open + awaitingReceipt + parked` is still every undecided claim.
+       * `open + awaitingReceipt + parked + messaged` is still every undecided
+       * claim (#320 added the last: a customer who has been written to).
        */
-      open: total.NEEDS_REVIEW + total.WAITING + total.NO_TRANSFER_FOUND - parked - awaitingReceipt,
+      open:
+        total.NEEDS_REVIEW +
+        total.WAITING +
+        total.NO_TRANSFER_FOUND -
+        parked -
+        awaitingReceipt -
+        messaged,
       parked,
       awaitingReceipt,
+      messaged,
       autoVerified: total.AUTO_VERIFIED,
       botAutoVerified: total.AUTO_VERIFIED,
       manuallyVerified: total.MANUALLY_VERIFIED,
@@ -1124,6 +1147,7 @@ export function registerMirzabotRoutes(
         'open',
         'awaiting_receipt',
         'parked',
+        'messaged',
         'needs_review',
         'declined_income',
         'waiting',
@@ -1362,12 +1386,16 @@ export function registerMirzabotRoutes(
       // picture arrives is «در انتظار رسید», one tab over; the row moves on
       // its own the moment the bot records one.
       if (tab === 'open') {
-        where.push(`${PENDING_CLAIM} AND c.parked_at IS NULL AND c.receipt_url_or_r2_key IS NOT NULL`);
+        where.push(
+          `${PENDING_CLAIM} AND c.parked_at IS NULL AND c.messaged_at IS NULL AND c.receipt_url_or_r2_key IS NOT NULL`,
+        );
       }
       if (tab === 'awaiting_receipt') where.push(AWAITING_RECEIPT);
       // Same population, the half the operator set aside. Still PENDING, so
       // the matcher settles it and it leaves here by itself.
-      if (tab === 'parked') where.push(`${PENDING_CLAIM} AND c.parked_at IS NOT NULL`);
+      if (tab === 'parked') where.push(PARKED);
+      // …and the half the operator has written to (#320).
+      if (tab === 'messaged') where.push(MESSAGED);
       if (tab === 'continuity') {
         where.push(`c.fulfilment_mode = 'CONTINUITY'`);
         if (continuityState === 'pending') where.push(`c.reconciled_at IS NULL`);
@@ -1522,6 +1550,7 @@ export function registerMirzabotRoutes(
               c.fulfilment_mode, c.fulfilled_at, c.fulfilled_by,
               c.fulfilment_reason, c.reconciled_at,
               c.purchase_type, c.operation_type,
+              c.messaged_at, c.messaged_template,
               fa.display_name AS account_display, fa.bank_name AS account_bank,
               fa.account_hint,
               m.status AS match_status, m.mismatch_reasons_json AS match_mismatch_reasons_json,
@@ -1754,6 +1783,8 @@ export function registerMirzabotRoutes(
           suspectReason: row.suspect_reason,
           purchaseType: row.purchase_type ?? 'UNKNOWN',
           operationType: row.operation_type ?? null,
+          messagedAt: row.messaged_at ?? null,
+          messagedTemplate: row.messaged_template ?? null,
           waitingRemainingMs,
           waitingElapsedMs,
           timeDeltaMs: suspectMeta.timeDeltaMs ?? null,
@@ -1996,6 +2027,137 @@ export function registerMirzabotRoutes(
       .run();
     if (!r.meta.changes) return c.json({ ok: false, error: 'not_found' }, 404);
     return c.json({ ok: true });
+  });
+
+  /*
+   * «پیام به مشتری» (#320).
+   *
+   * The texts are one settings row, `('shop','review_messages')`, a JSON
+   * array of {key, text}; 0076 seeds the first and an ADMIN edits the list
+   * from the review screen. The key is what the dedupe is built on, so it
+   * is stable once minted: editing a text keeps its key, and the same text
+   * cannot go to the same customer twice for the same claim.
+   */
+  const ReviewMessageItem = z
+    .object({
+      key: z.string().regex(/^[a-z0-9_-]{1,40}$/),
+      text: z.string().trim().min(1).max(1000),
+    })
+    .strict();
+  type ReviewMessage = z.infer<typeof ReviewMessageItem>;
+  async function loadReviewMessages(db: D1Database): Promise<ReviewMessage[]> {
+    const row = await db
+      .prepare(`SELECT value FROM settings WHERE scope = 'shop' AND key = 'review_messages'`)
+      .first<{ value: unknown }>();
+    const parsed = z.array(ReviewMessageItem).safeParse(row?.value ?? []);
+    return parsed.success ? parsed.data : [];
+  }
+
+  app.get('/api/v1/review-messages', async (c) => {
+    return c.json({ ok: true, items: await loadReviewMessages(c.env.DB) });
+  });
+
+  app.post('/api/v1/admin/review-messages', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = z
+      .object({ items: z.array(ReviewMessageItem).max(50) })
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const keys = parsed.data.items.map((i) => i.key);
+    if (new Set(keys).size !== keys.length) {
+      return c.json({ ok: false, error: 'duplicate_key' }, 400);
+    }
+    const before = await loadReviewMessages(c.env.DB);
+    await c.env.DB.prepare(
+      `INSERT INTO settings (scope, key, value, updated_by)
+       VALUES ('shop', 'review_messages', ?1::jsonb, ?2)
+       ON CONFLICT (scope, key) DO UPDATE
+         SET value = excluded.value, updated_at = now(), updated_by = excluded.updated_by`,
+    )
+      .bind(JSON.stringify(parsed.data.items), ident.email)
+      .run();
+    await audit(
+      c.env.DB,
+      ident,
+      'setting.updated',
+      'SETTING',
+      'shop/review_messages',
+      { items: before },
+      { items: parsed.data.items },
+      null,
+    );
+    return c.json({ ok: true, items: parsed.data.items });
+  });
+
+  /*
+   * Send one of them. The dashboard holds no bot token and must not; the
+   * bot's outbox (`bot_notifications`, drained by `apps/bot/src/poll.ts`)
+   * is the only road to Telegram, and this is the first dashboard route to
+   * write to it. `dedupe_key` is derived from the claim and the text, as
+   * every producer's is, so a double click is one message; a DIFFERENT
+   * text to the same claim is allowed — the operator may need to say two
+   * things. `chat_id` is the claim's `customer_reference` and is not logged.
+   *
+   * Only an undecided claim can be written to — a settled one has nothing
+   * left to say — and the flag that moves the row to «پیام داده‌شده» is set
+   * in the same transaction as the outbox row. Audited: unlike parking,
+   * this reached the customer.
+   */
+  const ReviewMessageBody = z.object({ key: z.string().min(1).max(40) }).strict();
+  app.post('/api/v1/suspects/:claimId/message', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = ReviewMessageBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const template = (await loadReviewMessages(c.env.DB)).find((m) => m.key === parsed.data.key);
+    if (!template) return c.json({ ok: false, error: 'unknown_template' }, 404);
+    const claimId = c.req.param('claimId');
+    const claim = await c.env.DB.prepare(
+      `SELECT c.customer_reference FROM payment_claims c WHERE c.id = ?1 AND ${PENDING_CLAIM}`,
+    )
+      .bind(claimId)
+      .first<{ customer_reference: string }>();
+    if (!claim) return c.json({ ok: false, error: 'not_found' }, 404);
+    if (!/^\d{1,19}$/.test(claim.customer_reference)) {
+      return c.json({ ok: false, error: 'no_telegram_chat' }, 409);
+    }
+    const now = Date.now();
+    // One statement, so the flag and the audit line exist exactly when the
+    // outbox row does: a second click hits the dedupe, queues nothing, and
+    // therefore stamps nothing and audits nothing.
+    const r = await c.env.DB.prepare(
+      `WITH q AS (
+         INSERT INTO bot_notifications (dedupe_key, chat_id, body)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT (dedupe_key) DO NOTHING
+         RETURNING id
+       ), flagged AS (
+         UPDATE payment_claims SET messaged_at = ?5, messaged_template = ?6, updated_at = ?5
+          WHERE id = ?4 AND EXISTS (SELECT 1 FROM q)
+       )
+       INSERT INTO audit_logs
+         (id, actor_email, actor_role, action, entity_type, entity_id,
+          before_json, after_json, reason, request_id, created_at)
+       SELECT ?7, ?8, ?9, 'claim.customer_messaged', 'CLAIM', ?4, NULL, ?10, NULL, ?11, ?5
+        WHERE EXISTS (SELECT 1 FROM q)`,
+    )
+      .bind(
+        `review-msg:${claimId}:${template.key}`,
+        Number(claim.customer_reference),
+        template.text,
+        claimId,
+        now,
+        template.key,
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        JSON.stringify({ template: template.key }),
+        c.req.header('cf-ray') ?? null,
+      )
+      .run();
+    return c.json({ ok: true, queued: r.meta.changes > 0, template: template.key });
   });
 
   app.post('/api/v1/suspects/:claimId/reject', async (c) => {

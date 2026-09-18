@@ -86,6 +86,18 @@ const REVIEW_TABS = [
     countKey: 'parked' as const,
     Icon: IconWaiting,
   },
+  /**
+   * Undecided, and the customer has been written to (#320). The ball is in
+   * their court, so these are kept apart from the rows an operator still
+   * owes a first look. Still PENDING; the matcher settles them by itself.
+   */
+  {
+    value: 'messaged' as const,
+    label: 'پیام داده‌شده',
+    shortLabel: 'پیام',
+    countKey: 'messaged' as const,
+    Icon: IconWaiting,
+  },
   {
     value: 'continuity' as const,
     label: 'حالت تداوم',
@@ -156,6 +168,7 @@ export function parsePaymentTabFromLocation(search = window.location.search): Pa
     'open',
     'awaiting_receipt',
     'parked',
+    'messaged',
     'needs_review',
     'declined_income',
     'waiting',

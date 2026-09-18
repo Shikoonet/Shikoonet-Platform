@@ -45,6 +45,8 @@ export type PaymentTab =
   | 'awaiting_receipt'
   /** `open` rows an operator set aside to wait for the bank SMS (`parked_at`). */
   | 'parked'
+  /** Undecided rows whose customer an operator has written to (`messaged_at`, #320). */
+  | 'messaged'
   | 'needs_review'
   | 'declined_income'
   | 'waiting'
@@ -71,6 +73,7 @@ const OPEN_QUEUE_TABS = new Set<PaymentTab>([
   'open',
   'awaiting_receipt',
   'parked',
+  'messaged',
   'needs_review',
   'waiting',
   'suspected_fake',
