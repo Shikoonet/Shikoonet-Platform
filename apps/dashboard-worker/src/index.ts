@@ -2967,8 +2967,10 @@ app.post('/api/v1/accounts/:id/identifier', async (c) => {
       ).bind(accountId, value, now),
     );
   }
+  let added = false;
   try {
-    await c.env.DB.batch(stmts);
+    const [inserted] = await c.env.DB.batch(stmts);
+    added = (inserted?.meta.changes ?? 0) > 0;
   } catch (e) {
     if (isUniqueViolation(e)) {
       return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
@@ -3031,22 +3033,26 @@ app.post('/api/v1/accounts/:id/identifier', async (c) => {
       }
     }
   }
-  await c.env.DB.prepare(SQL.insertAudit)
-    .bind(
-      crypto.randomUUID(),
-      ident.email,
-      ident.role,
-      'account.identifier_added',
-      'ACCOUNT',
-      accountId,
-      null,
-      JSON.stringify({ kind, value, assign_historical: !!assign_historical, updated }),
-      null,
-      c.req.header('cf-ray') ?? null,
-      now,
-    )
-    .run();
-  return c.json({ ok: true, kind, value, preview, updated });
+  // A repeat of a number the account already answers to changed nothing
+  // and backfilled nothing; an audit row saying «added» would be a lie.
+  if (added || updated > 0) {
+    await c.env.DB.prepare(SQL.insertAudit)
+      .bind(
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        'account.identifier_added',
+        'ACCOUNT',
+        accountId,
+        null,
+        JSON.stringify({ kind, value, assign_historical: !!assign_historical, updated }),
+        null,
+        c.req.header('cf-ray') ?? null,
+        now,
+      )
+      .run();
+  }
+  return c.json({ ok: true, kind, value, added, preview, updated });
 });
 
 /**
@@ -3079,11 +3085,18 @@ app.delete('/api/v1/accounts/:id/identifier/:identId', async (c) => {
     return c.json({ ok: false, error: 'identifier_mirrors_column', column }, 409);
   }
   const now = Date.now();
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      `DELETE FROM financial_account_identifiers WHERE id = ?1 AND financial_account_id = ?2`,
-    ).bind(identId, accountId),
-    c.env.DB.prepare(SQL.insertAudit).bind(
+  // RETURNING, so two operators deleting the same row do not write two
+  // audit rows for one deletion: the second finds nothing and is told so.
+  const gone = await c.env.DB.prepare(
+    `DELETE FROM financial_account_identifiers
+      WHERE id = ?1 AND financial_account_id = ?2
+      RETURNING id`,
+  )
+    .bind(identId, accountId)
+    .first<{ id: string }>();
+  if (!gone) return c.json({ ok: false, error: 'not_found' }, 404);
+  await c.env.DB.prepare(SQL.insertAudit)
+    .bind(
       crypto.randomUUID(),
       ident.email,
       ident.role,
@@ -3095,8 +3108,8 @@ app.delete('/api/v1/accounts/:id/identifier/:identId', async (c) => {
       null,
       c.req.header('cf-ray') ?? null,
       now,
-    ),
-  ]);
+    )
+    .run();
   return c.json({ ok: true, kind: row.kind, value: row.value });
 });
 
