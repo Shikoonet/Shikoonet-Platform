@@ -1463,13 +1463,14 @@ export function registerMirzabotRoutes(
       // as the tail of `external_order_id` — `shikoo:<id>`, `mirzabot:<id>`,
       // `mirzabot:test:<id>` — which is exactly what the row prints. Exact
       // matches everywhere else: an operator pastes, they do not browse.
+      // `right()`, not LIKE: a username may carry `_`, which LIKE reads as
+      // «any character» (CodeRabbit on #332).
       if (search) {
         const q = p(search);
         where.push(`(
           c.customer_reference = ${q}
           OR lower(cu.username) = lower(${q})
-          OR c.external_order_id = 'shikoo:' || ${q}
-          OR c.external_order_id LIKE '%:' || ${q}
+          OR right(c.external_order_id, length(${q}) + 1) = ':' || ${q}
           OR EXISTS (
             SELECT 1 FROM reconciliation_matches rm
               JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
