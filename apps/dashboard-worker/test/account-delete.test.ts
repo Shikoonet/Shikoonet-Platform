@@ -85,7 +85,7 @@ async function seedIdentifier(accountId: string, value: string) {
     .run();
 }
 
-async function seedTransaction(accountId: string) {
+async function seedTransaction(accountId: string, amountIrr = 100000): Promise<string> {
   // Need a device row + raw_sms_event row first due to NOT NULL FK.
   const deviceId = crypto.randomUUID();
   await baseEnv.DB.prepare(
@@ -102,12 +102,33 @@ async function seedTransaction(accountId: string) {
   )
     .bind(smsId, deviceId, Date.now(), Date.now(), Date.now())
     .run();
+  const txId = crypto.randomUUID();
   await baseEnv.DB.prepare(
     `INSERT INTO transaction_candidates
      (id, raw_sms_event_id, financial_account_id, direction, amount_irr, status, bank_timestamp, confidence, parser_id, parser_version, parser_evidence_json, created_at, updated_at)
-     VALUES (?, ?, ?, 'CREDIT', 100000, 'NEEDS_REVIEW', ?, 1.0, 'test', 'v1', '{}', ?, ?)`,
+     VALUES (?, ?, ?, 'CREDIT', ?, 'NEEDS_REVIEW', ?, 1.0, 'test', 'v1', '{}', ?, ?)`,
   )
-    .bind(crypto.randomUUID(), smsId, accountId, Date.now(), Date.now(), Date.now())
+    .bind(txId, smsId, accountId, amountIrr, Date.now(), Date.now(), Date.now())
+    .run();
+  return txId;
+}
+
+/** A transaction some claim already consumed — money the books have counted. */
+async function consumeTransaction(txId: string) {
+  const claimId = crypto.randomUUID();
+  await baseEnv.DB.prepare(
+    `INSERT INTO payment_claims
+     (id, external_order_id, expected_amount_irr, target_financial_account_id, submitted_at, source_system, status, created_at, updated_at)
+     VALUES (?, ?, 100000, NULL, ?, 'test', 'VERIFIED', ?, ?)`,
+  )
+    .bind(claimId, `order-${claimId}`, Date.now(), Date.now(), Date.now())
+    .run();
+  await baseEnv.DB.prepare(
+    `INSERT INTO reconciliation_matches
+     (id, transaction_candidate_id, payment_claim_id, score, status, created_at, updated_at)
+     VALUES (?, ?, ?, 1.0, 'CONFIRMED', ?, ?)`,
+  )
+    .bind(crypto.randomUUID(), txId, claimId, Date.now(), Date.now())
     .run();
 }
 
@@ -336,5 +357,127 @@ describe('DELETE /api/v1/accounts/:id', () => {
       TEST_ACCESS_USER: 'admin@example.com',
     });
     expect(r.status).toBe(404);
+  });
+});
+
+/**
+ * Purging: the account AND its transactions go, in one statement batch.
+ *
+ * Sam, 2026-09-19, about an auto-discovered account that was a mistake and
+ * held two credits: «کلا میخوام خودش و تراکنش‌هاش رو پاک کنم». The dashboard
+ * had no way to say that — an account with history was a dead end unless its
+ * rows were moved to another account. The only line that must never cross:
+ * a transaction some claim already consumed is money the books have counted,
+ * and no purge may take it.
+ */
+describe('DELETE /api/v1/accounts/:id with purgeTransactions', () => {
+  const admin = { ...baseEnv, TEST_ACCESS_USER: 'admin@example.com' };
+  const countOf = async (table: string) =>
+    (await baseEnv.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>())?.n;
+
+  it('previews what a purge would take: count, sum, and what pins it', async () => {
+    const id = await seedAccount({ displayName: 'Auto: ****04.1', bank: 'UNKNOWN', active: false });
+    await seedTransaction(id, 70_000_000);
+    await seedTransaction(id, 113_000_000);
+    const r = await app.fetch(req('GET', `/api/v1/accounts/${id}/delete-preview`), admin);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      canDelete: boolean;
+      purge: { transactions: number; amountIrr: number; pinnedTransactions: number; canPurge: boolean };
+    };
+    expect(body.canDelete).toBe(false);
+    expect(body.purge).toEqual({
+      transactions: 2,
+      amountIrr: 183_000_000,
+      pinnedTransactions: 0,
+      canPurge: true,
+    });
+  });
+
+  it('deletes the account, its transactions and their cascades; keeps the raw SMS; audits the sum', async () => {
+    const id = await seedAccount({ displayName: 'Auto: ****04.1', bank: 'UNKNOWN', active: false });
+    await seedIdentifier(id, '777.888.21654304.1');
+    const tx1 = await seedTransaction(id, 70_000_000);
+    await seedTransaction(id, 113_000_000);
+    await baseEnv.DB.prepare(
+      `INSERT INTO transaction_detected_identifiers
+       (id, transaction_candidate_id, identifier_type, normalized_value, display_value_masked, parser_id, confidence, created_at)
+       VALUES (?, ?, 'ACCOUNT_HINT', '777.888.21654304.1', '****04.1', 'test', 1.0, ?)`,
+    )
+      .bind(crypto.randomUUID(), tx1, Date.now())
+      .run();
+
+    const r = await app.fetch(
+      req('DELETE', `/api/v1/accounts/${id}`, { purgeTransactions: true, reason: 'حساب اشتباهی' }),
+      admin,
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      ok: boolean;
+      purged: { transactions: number; amountIrr: number };
+    };
+    expect(body.ok).toBe(true);
+    expect(body.purged).toEqual({ transactions: 2, amountIrr: 183_000_000 });
+
+    expect(await countOf('financial_accounts')).toBe(0);
+    expect(await countOf('financial_account_identifiers')).toBe(0);
+    expect(await countOf('transaction_candidates')).toBe(0);
+    expect(await countOf('transaction_detected_identifiers')).toBe(0);
+    // The bank's own words stay: evidence of what arrived, owned by nobody.
+    expect(await countOf('raw_sms_events')).toBe(2);
+
+    const audit = await baseEnv.DB.prepare(
+      `SELECT entity_id, before_json, reason FROM audit_logs WHERE action = 'account.purged'`,
+    ).first<{ entity_id: string; before_json: string; reason: string }>();
+    expect(audit?.entity_id).toBe(id);
+    expect(audit?.reason).toBe('حساب اشتباهی');
+    expect(JSON.parse(audit!.before_json)).toMatchObject({
+      displayName: 'Auto: ****04.1',
+      purgedTransactionCount: 2,
+      purgedAmountIrr: 183_000_000,
+    });
+  });
+
+  it('refuses when one transaction is already consumed by a claim, and deletes nothing', async () => {
+    const id = await seedAccount({ displayName: 'Counted', bank: 'PARSIAN', active: false });
+    const pinned = await seedTransaction(id, 100000);
+    await consumeTransaction(pinned);
+    await seedTransaction(id, 100000);
+
+    const preview = (await (
+      await app.fetch(req('GET', `/api/v1/accounts/${id}/delete-preview`), admin)
+    ).json()) as { purge: { pinnedTransactions: number; canPurge: boolean } };
+    expect(preview.purge).toMatchObject({ pinnedTransactions: 1, canPurge: false });
+
+    const r = await app.fetch(
+      req('DELETE', `/api/v1/accounts/${id}`, { purgeTransactions: true }),
+      admin,
+    );
+    expect(r.status).toBe(409);
+    expect(((await r.json()) as { error: string }).error).toBe('transactions_in_use');
+    expect(await countOf('transaction_candidates')).toBe(2);
+    expect(await countOf('financial_accounts')).toBe(1);
+  });
+
+  it('still refuses an active account, and an account with payment claims', async () => {
+    const active = await seedAccount({ displayName: 'Live', bank: 'PARSIAN', active: true });
+    await seedTransaction(active);
+    const r1 = await app.fetch(
+      req('DELETE', `/api/v1/accounts/${active}`, { purgeTransactions: true }),
+      admin,
+    );
+    expect(r1.status).toBe(409);
+    expect(((await r1.json()) as { error: string }).error).toBe('account_must_be_inactive');
+
+    const claimed = await seedAccount({ displayName: 'Claimed', bank: 'PARSIAN', active: false });
+    await seedTransaction(claimed);
+    await seedPaymentClaim(claimed);
+    const r2 = await app.fetch(
+      req('DELETE', `/api/v1/accounts/${claimed}`, { purgeTransactions: true }),
+      admin,
+    );
+    expect(r2.status).toBe(409);
+    expect(((await r2.json()) as { error: string }).error).toBe('account_in_use');
+    expect(await countOf('transaction_candidates')).toBe(2);
   });
 });

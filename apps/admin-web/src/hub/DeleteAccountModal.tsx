@@ -6,11 +6,19 @@
  *   2. User must type the account display name exactly to enable the
  *      destructive Confirm button.
  *
+ * And a third door, since 2026-09-19, for an account that is blocked only by
+ * its own transactions: «حذف کامل با تراکنش‌ها». Sam: «ازم سوال کنه: میخوای
+ * کامل حذف کنی؟ بگم بله، بعد بگه X تراکنش و Y مبلغ از سیستم حسابداری و
+ * دیتابیس حذف می‌شه، بعد که تایید کردم کامل حذف کنه.» Saying yes turns the
+ * modal into that sentence — the count and the sum in Toman — and the typed
+ * name is the confirmation. The offer is not made while any transaction is
+ * pinned to the books; the server refuses that too.
+ *
  * On success, the parent (AccountsView) clears state, invalidates affected
  * query keys, and shows a success notification.
  */
 import { useEffect, useState } from 'react';
-import { count } from '../format.js';
+import { count, toman } from '../format.js';
 import type { AccountListItem } from './api.js';
 import { api } from './api.js';
 
@@ -25,6 +33,7 @@ interface PreviewResponse {
   };
   canDelete: boolean;
   blockingReasons: string[];
+  purge: { transactions: number; amountIrr: number; pinnedTransactions: number; canPurge: boolean };
 }
 
 export interface DeleteAccountModalProps {
@@ -45,6 +54,8 @@ export function DeleteAccountModal({
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** The operator said yes to «حذف کامل»; the modal now names the price. */
+  const [purging, setPurging] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,14 +87,24 @@ export function DeleteAccountModal({
     account_in_use: 'این حساب تراکنش یا ادعای پرداخت مرتبط دارد.',
   };
   const matchesTyped = typed.trim() === preview?.account.displayName.trim();
-  const canSubmit = !!preview && preview.canDelete && matchesTyped && !busy;
+  const canSubmit = !!preview && (preview.canDelete || purging) && matchesTyped && !busy;
+  const purge = preview?.purge;
+  // Only the account's own transactions stand in the way — a claim aimed at
+  // it is somebody's payment in flight and is never purged.
+  const purgeOffered =
+    !!preview &&
+    !preview.canDelete &&
+    !!purge &&
+    purge.canPurge &&
+    purge.transactions > 0 &&
+    (refs?.paymentClaims ?? 0) === 0;
 
   async function confirm() {
     if (!preview) return;
     setBusy(true);
     setErr(null);
     try {
-      await api.deleteAccount(account.id);
+      await api.deleteAccount(account.id, purging ? { purgeTransactions: true } : undefined);
       onDeleted(account.id);
     } catch (e) {
       setErr(String(e));
@@ -126,13 +147,39 @@ export function DeleteAccountModal({
               <dt>شناسه‌های اضافی</dt>
               <dd>{count(refs?.identifiers ?? 0)}</dd>
             </dl>
-            {preview.blockingReasons.length > 0 && (
+            {purging && purge && (
+              <div className="warn-banner">
+                <p>
+                  با پاک‌کردن کامل، <strong>{count(purge.transactions)} تراکنش</strong> به مبلغ{' '}
+                  <strong>{toman(purge.amountIrr)}</strong> از حسابداری و دیتابیس حذف می‌شود، همراه
+                  با خودِ حساب و شناسه‌هایش. پیامک‌های خام بانک می‌مانند.{' '}
+                  <strong>برگشت‌پذیر نیست.</strong>
+                </p>
+              </div>
+            )}
+            {!purging && preview.blockingReasons.length > 0 && (
               <div className="warn-banner">
                 {preview.blockingReasons.map((r) => (
                   <div key={r}>{reasonText[r] ?? r}</div>
                 ))}
                 {refs && (refs.transactions > 0 || refs.paymentClaims > 0) && (
                   <p>قبل از حذف، تراکنش‌ها و ادعاهای پرداختش را به حساب دیگری بده یا ادغام کن.</p>
+                )}
+                {purge && purge.pinnedTransactions > 0 && (
+                  <p>
+                    {count(purge.pinnedTransactions)} تراکنش این حساب در دفتر حساب شده (به یک پرداخت
+                    یا نماینده وصل است) و پاک‌شدنی نیست.
+                  </p>
+                )}
+                {purgeOffered && (
+                  <button
+                    type="button"
+                    className="danger"
+                    style={{ marginTop: '0.75rem' }}
+                    onClick={() => setPurging(true)}
+                  >
+                    حذف کامل با تراکنش‌ها…
+                  </button>
                 )}
                 {onMoveReferences && refs && (refs.transactions > 0 || refs.paymentClaims > 0) && (
                   <button
@@ -148,7 +195,7 @@ export function DeleteAccountModal({
             )}
           </>
         )}
-        {preview?.canDelete && (
+        {preview && (preview.canDelete || purging) && (
           <div className="form">
             <label>
               <span>
@@ -176,14 +223,16 @@ export function DeleteAccountModal({
             disabled={!canSubmit}
             onClick={confirm}
             title={
-              blocked
+              blocked && !purging
                 ? 'حساب در وضعیت فعلی‌اش حذف‌شدنی نیست.'
                 : !matchesTyped
                   ? 'برای تایید، نام نمایشی حساب را دقیقاً بنویس.'
-                  : 'این حساب برای همیشه حذف شود'
+                  : purging
+                    ? 'حساب و همهٔ تراکنش‌هایش برای همیشه حذف شوند'
+                    : 'این حساب برای همیشه حذف شود'
             }
           >
-            {busy ? 'در حال حذف…' : 'حذف همیشگی'}
+            {busy ? 'در حال حذف…' : purging ? 'بله، همه‌چیز را پاک کن' : 'حذف همیشگی'}
           </button>
         </div>
       </div>
