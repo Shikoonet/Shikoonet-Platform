@@ -165,6 +165,8 @@ describe('every write route, asked directly', () => {
       'POST /api/v1/suspects/:claimId/reject',
       // Setting a claim aside is queue housekeeping — the operator's job.
       'POST /api/v1/suspects/:claimId/park',
+      // So is writing to the customer about it (#320).
+      'POST /api/v1/suspects/:claimId/message',
       // Retrying a failed preparation. On this list rather than the admin
       // surface on purpose: the role that approves the payment is the one who
       // must be able to finish the job when the panel call fails, or the
@@ -478,6 +480,18 @@ describe('every write route, asked directly', () => {
     // beside it and the PATCH above — READ_ONLY refused by the first test
     // above — and `account-identifiers.test.ts` pins the 409 for a row that
     // mirrors a column.
-    expect(writeRoutes().length).toBe(164);
+    //
+    // 165, 2026-09-18: `POST /suspects/:claimId/message` — sends the
+    // customer one of the ready-made texts through the bot's outbox and
+    // moves the claim to «پیام داده‌شده» (#320). No money and no status
+    // change, so a REVIEWER may (it is their queue, and the test below says
+    // so); READ_ONLY refused by the first test above; audited, because
+    // unlike parking it reached a customer.
+    //
+    // 166, same day: `POST /admin/review-messages` — replaces the list of
+    // those texts. Words the shop says to customers, so ADMIN-only like the
+    // bot texts beside it; refused for a REVIEWER and a READ_ONLY by the
+    // tests above.
+    expect(writeRoutes().length).toBe(166);
   });
 });
