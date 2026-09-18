@@ -86,7 +86,7 @@ export interface AccountStatement {
   offBooksDebits: OffBooksLine[];
   /** The ledger's side of the same month, for comparison with the bank's. */
   ledger: { expenseCount: number; expenseIrr: number; feeIrr: number; unlinkedCount: number; unlinkedIrr: number };
-  /** Movements the operator wrote down because the bank never texted them (0078). */
+  /** Movements the operator wrote down because the bank never texted them (0079). */
   manual: { count: number; creditIrr: number; debitIrr: number };
   /** Every valid credit minus every valid debit, off-books included. */
   bankDeltaIrr: number;
@@ -406,7 +406,7 @@ export interface ManualMovementInput {
 }
 
 /**
- * A movement the bank did not text (0078). Off-books by construction — shop
+ * A movement the bank did not text (0079). Off-books by construction — shop
  * money that left without an SMS belongs in «هزینه‌ها», where the ledger
  * already counts an expense on an account with no SMS behind it.
  */

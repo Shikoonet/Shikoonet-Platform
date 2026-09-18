@@ -603,30 +603,31 @@ export function RequestsPage() {
                   <td>{r.description ?? '—'}</td>
                   <td>{dateTime(r.createdAt)}</td>
                   <td>
-                    <span
-                      className={
-                        r.status === 'APPROVED'
-                          ? 'badge badge-active'
+                    {/* Written to, and still waiting, is its own state — one
+                        green badge, not «در انتظار» plus a second blue one
+                        (#330, #344): at a glance the row an operator has
+                        already answered must not look like the one nobody
+                        has touched. */}
+                    {r.status === 'PENDING' && r.messagedAt != null ? (
+                      <span className="badge badge-active" title={dateTime(new Date(r.messagedAt).toISOString())}>
+                        پیام داده شد
+                      </span>
+                    ) : (
+                      <span
+                        className={
+                          r.status === 'APPROVED'
+                            ? 'badge badge-active'
+                            : r.status === 'REJECTED'
+                              ? 'badge badge-block'
+                              : 'badge badge-info'
+                        }
+                      >
+                        {r.status === 'APPROVED'
+                          ? 'تایید شده'
                           : r.status === 'REJECTED'
-                            ? 'badge badge-block'
-                            : 'badge badge-info'
-                      }
-                    >
-                      {r.status === 'APPROVED'
-                        ? 'تایید شده'
-                        : r.status === 'REJECTED'
-                          ? 'رد شده'
-                          : 'در انتظار'}
-                    </span>
-                    {/* Written to, and still waiting: the badge is what tells the
-                        operator this applicant is not in the dark (#330). */}
-                    {r.messagedAt != null && (
-                      <>
-                        {' '}
-                        <span className="badge badge-info" title={dateTime(new Date(r.messagedAt).toISOString())}>
-                          پیام داده‌شده
-                        </span>
-                      </>
+                            ? 'رد شده'
+                            : 'در انتظار'}
+                      </span>
                     )}
                   </td>
                   <td>

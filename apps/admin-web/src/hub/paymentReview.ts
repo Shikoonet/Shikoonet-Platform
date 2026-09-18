@@ -170,6 +170,8 @@ export interface PaymentItem {
   telegramUsername: string | null;
   expectedAmountIrr: number;
   expectedAmountToman: number;
+  /** What the wallet paid toward the same order; the card was asked for the rest. */
+  walletPaidToman: number;
   cardMasked: string | null;
   cardDisplay: string | null;
   accountId: string | null;

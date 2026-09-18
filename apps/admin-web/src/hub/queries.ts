@@ -21,6 +21,8 @@ export const KEYS = {
   NOTIFICATION_COUNTS: 'notifications.counts',
   /** Stable key for payment hub tab badges (Review sub-tabs, Income, etc.). */
   PAYMENT_TAB_COUNTS: 'payments.tabCounts',
+  /** `/api/v1/admin/attention` — the sidebar's waiting counts (#334). */
+  ATTENTION: 'admin.attention',
   PAYMENTS: (query: string) => `payments:${query}`,
   PAYMENT_CARDS: (accountId: string) => `payment_cards:${accountId}`,
 } as const;
@@ -38,6 +40,7 @@ export const QK = {
   seenIds: KEYS.SEEN_IDS,
   notificationCounts: KEYS.NOTIFICATION_COUNTS,
   paymentTabCounts: KEYS.PAYMENT_TAB_COUNTS,
+  attention: KEYS.ATTENTION,
   payments: (query: string) => KEYS.PAYMENTS(query),
   paymentCards: (accountId: string) => KEYS.PAYMENT_CARDS(accountId),
 };

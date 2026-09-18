@@ -25,9 +25,92 @@ type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
 /** Rows for the two "most recent" tables. Small and fixed — this is a summary. */
 const RECENT = 8;
 
+/**
+ * What still needs a person — the queues a shop can actually be blocked on.
+ *
+ * The dashboard answered «how is the shop doing» and nothing about what is
+ * waiting, so the first act of every morning was visiting four screens to
+ * find out whether there was anything to do.
+ *
+ * One function, two callers: the dashboard's «نیاز به توجه» strip through
+ * `/overview`, and the sidebar's badges through `/attention` (#334). The
+ * sidebar is on every screen and polls, and the overview also runs `shopStats`
+ * and two recent lists that a badge has no use for — so the counts got a
+ * route of their own rather than the sidebar paying for the dashboard every
+ * thirty seconds. Same numbers, by construction: there is one query.
+ */
+export async function loadAttention(db: D1Database, now: number) {
+  // `openClaims` is READ from the payments surface rather than counted here,
+  // and that is deliberate: a badge and its list disagreeing is the oldest
+  // bug on that surface, and it was fixed by making them one number. A third
+  // query would be a third answer.
+  const { start: dayStart, end: dayEnd } = tehranDayFromUtc(now);
+  const counts = await loadCounts(db, dayStart, dayEnd);
+
+  const waiting = await db
+    .prepare(
+      `SELECT
+         (SELECT count(*) FROM reseller_requests WHERE status = 'PENDING') AS pending_requests,
+         -- ACTIVE only: a REMOVED service is not expiring, it is gone. And
+         -- bounded below by now(), so an expiry that already passed is not
+         -- counted as something to act on today — that is a different queue.
+         (SELECT count(*) FROM subscriptions
+           WHERE status = 'ACTIVE' AND expires_at IS NOT NULL
+             AND expires_at BETWEEN now() AND now() + interval '7 days') AS expiring_7d,
+         -- A device that has not reported for a day is one the shop is not
+         -- hearing bank SMS from, which is silent by nature: nothing errors,
+         -- payments simply stop verifying.
+         (SELECT count(*) FROM devices
+           WHERE active = 1
+             AND (last_seen_at IS NULL OR last_seen_at < ?1)) AS stale_devices,
+         -- An ACTIVE panel with no secret cannot provision. The catalogue
+         -- will happily sell from it.
+         (SELECT count(*) FROM provisioning_providers
+           WHERE status = 'ACTIVE' AND secret_ref IS NULL) AS panels_without_secret`,
+    )
+    .bind(now - 24 * 60 * 60 * 1000)
+    .first<{
+      pending_requests: number;
+      expiring_7d: number;
+      stale_devices: number;
+      panels_without_secret: number;
+    }>();
+
+  /*
+   * «ممکنه یکسری از پرداختی‌ها رو بررسی نکرده باشیم» — Sam, 2026-09-16.
+   *
+   * Three queues, one number. A receipt nobody has decided about, a
+   * continuity delivery whose bank SMS has not been matched, and a bank
+   * credit no order claimed and nobody declined: each is money that a
+   * person still has to look at, and each lived on its own tab with its
+   * own count, so «is there anything unreviewed» took three visits. Sam
+   * chose all three for the sum. The parts travel with it so the payments
+   * screen can draw the same breakdown from the same numbers.
+   */
+  const unreviewed = {
+    openClaims: counts.total.open,
+    unreconciledContinuity: counts.total.continuityPending,
+    unassignedIncome: counts.total.income,
+  };
+
+  return {
+    unreviewedPayments:
+      unreviewed.openClaims + unreviewed.unreconciledContinuity + unreviewed.unassignedIncome,
+    ...unreviewed,
+    pendingRequests: Number(waiting?.pending_requests ?? 0),
+    expiringSubscriptions7d: Number(waiting?.expiring_7d ?? 0),
+    staleDevices: Number(waiting?.stale_devices ?? 0),
+    panelsWithoutSecret: Number(waiting?.panels_without_secret ?? 0),
+  };
+}
+
 export function registerAdminOverviewRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
+  app.get('/api/v1/admin/attention', async (c) => {
+    return c.json({ ok: true, attention: await loadAttention(c.env.DB, Date.now()) });
+  });
+
   app.get('/api/v1/admin/overview', async (c) => {
     const db = c.env.DB;
 
@@ -113,80 +196,11 @@ export function registerAdminOverviewRoutes(
         created_at: string;
       }>();
 
-    /*
-     * What still needs a person.
-     *
-     * The dashboard answered «how is the shop doing» and nothing about what is
-     * waiting, so the first act of every morning was visiting four screens to
-     * find out whether there was anything to do. These five are the queues a
-     * shop can actually be blocked on.
-     *
-     * `openClaims` is READ from the payments surface rather than counted here,
-     * and that is deliberate: a badge and its list disagreeing is the oldest
-     * bug on that surface, and it was fixed by making them one number. A third
-     * query would be a third answer.
-     */
-    const now = Date.now();
-    const { start: dayStart, end: dayEnd } = tehranDayFromUtc(now);
-    const counts = await loadCounts(db, dayStart, dayEnd);
-
-    const waiting = await db
-      .prepare(
-        `SELECT
-           (SELECT count(*) FROM reseller_requests WHERE status = 'PENDING') AS pending_requests,
-           -- ACTIVE only: a REMOVED service is not expiring, it is gone. And
-           -- bounded below by now(), so an expiry that already passed is not
-           -- counted as something to act on today — that is a different queue.
-           (SELECT count(*) FROM subscriptions
-             WHERE status = 'ACTIVE' AND expires_at IS NOT NULL
-               AND expires_at BETWEEN now() AND now() + interval '7 days') AS expiring_7d,
-           -- A device that has not reported for a day is one the shop is not
-           -- hearing bank SMS from, which is silent by nature: nothing errors,
-           -- payments simply stop verifying.
-           (SELECT count(*) FROM devices
-             WHERE active = 1
-               AND (last_seen_at IS NULL OR last_seen_at < ?1)) AS stale_devices,
-           -- An ACTIVE panel with no secret cannot provision. The catalogue
-           -- will happily sell from it.
-           (SELECT count(*) FROM provisioning_providers
-             WHERE status = 'ACTIVE' AND secret_ref IS NULL) AS panels_without_secret`,
-      )
-      .bind(now - 24 * 60 * 60 * 1000)
-      .first<{
-        pending_requests: number;
-        expiring_7d: number;
-        stale_devices: number;
-        panels_without_secret: number;
-      }>();
-
-    /*
-     * «ممکنه یکسری از پرداختی‌ها رو بررسی نکرده باشیم» — Sam, 2026-09-16.
-     *
-     * Three queues, one number. A receipt nobody has decided about, a
-     * continuity delivery whose bank SMS has not been matched, and a bank
-     * credit no order claimed and nobody declined: each is money that a
-     * person still has to look at, and each lived on its own tab with its
-     * own count, so «is there anything unreviewed» took three visits. Sam
-     * chose all three for the sum. The parts travel with it so the payments
-     * screen can draw the same breakdown from the same numbers.
-     */
-    const unreviewed = {
-      openClaims: counts.total.open,
-      unreconciledContinuity: counts.total.continuityPending,
-      unassignedIncome: counts.total.income,
-    };
+    const attention = await loadAttention(db, Date.now());
 
     return c.json({
       ok: true,
-      attention: {
-        unreviewedPayments:
-          unreviewed.openClaims + unreviewed.unreconciledContinuity + unreviewed.unassignedIncome,
-        ...unreviewed,
-        pendingRequests: Number(waiting?.pending_requests ?? 0),
-        expiringSubscriptions7d: Number(waiting?.expiring_7d ?? 0),
-        staleDevices: Number(waiting?.stale_devices ?? 0),
-        panelsWithoutSecret: Number(waiting?.panels_without_secret ?? 0),
-      },
+      attention,
       customers: stats.customers,
       customersToday: stats.customersToday,
       activeSubscriptions: stats.activeSubscriptions,

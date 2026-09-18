@@ -257,6 +257,22 @@ body {
   height: 18px;
   flex-shrink: 0;
 }
+/* The count of rows waiting behind a section (#334), drawn from the link's
+   `data-waiting` so it is not part of the link's text. Pushed to the far end
+   so every badge lines up in one column, whatever the label's length. */
+.sidebar-link[data-waiting]::after {
+  content: attr(data-waiting);
+  margin-inline-start: auto;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
 .sidebar-foot {
   margin-block-start: auto;
   padding-block-start: 14px;

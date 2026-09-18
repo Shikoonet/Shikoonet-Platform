@@ -12,7 +12,7 @@
  *   GET  /admin/books/opening                                 has the fresh start been written, and the wallet now
  *   POST /admin/books/open {force?}                            write it
  *   POST /admin/books/manual {accountId,direction,amountToman,movedAt,category,note?}
- *                                                              a movement the bank did not text (0078)
+ *                                                              a movement the bank did not text (0079)
  *   DELETE /admin/books/manual/:id                             void it
  *   PATCH /admin/books/off-books/:id {category,note?}          re-label a tag without restoring and re-tagging
  *

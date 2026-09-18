@@ -739,9 +739,10 @@ describe('the open review queue', () => {
       expect((await get('tab=bot_auto_verified&range=all&q=%40QSearcher')).items.map((i) => i.id)).toEqual(['q-one']);
       // The bank's tracking number.
       expect((await get('tab=bot_auto_verified&range=all&q=TRK77')).items.map((i) => i.id)).toEqual(['q-one']);
-      // Nothing matching finds nothing; rubbish is not a filter.
+      // Nothing matching finds nothing — and an injection is text that
+      // matches nothing, not a filter that matches everything.
       expect((await get('tab=bot_auto_verified&range=all&q=nope')).items).toEqual([]);
-      expect((await get(`tab=all&range=all&q=${encodeURIComponent("' OR 1=1")}`)).items.length).toBe(2);
+      expect((await get(`tab=all&range=all&q=${encodeURIComponent("' OR 1=1")}`)).items).toEqual([]);
     } finally {
       await baseEnv.DB.prepare(`DELETE FROM users WHERE id = ?1`).bind(user!.id).run();
     }
@@ -1192,6 +1193,48 @@ describe('the customer behind a claim', () => {
     expect(item.customerLiveSubscriptions).toBe(2);
   });
 
+  /**
+   * A 120,000 Toman invoice showed «مبلغ مورد انتظار ۱۱۴٬۰۵۰» and Sam asked
+   * why: the checkout had taken 5,950 off the card amount from the balance
+   * (#317). Correct, and invisible. The list now carries the wallet's share,
+   * read from the same PURCHASE rows the bot's `walletPaidOnOrder` sums.
+   */
+  it('says what the wallet paid toward the order', async () => {
+    const userId = await seedCustomer([]);
+    const order = await baseEnv.DB.prepare(
+      `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status)
+       VALUES ('wal-o', ?1, 'NEW_PURCHASE', 1200000, 1, 0, 1200000, 'COMPLETED')
+       ON CONFLICT (public_id) DO UPDATE SET user_id = EXCLUDED.user_id RETURNING id`,
+    )
+      .bind(userId)
+      .first<{ id: number }>();
+    await baseEnv.DB.prepare(
+      `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+       VALUES ('wal-p', ?1, ?2, 1140500, 'CARD_TO_CARD', 'PAID', now()) ON CONFLICT (public_id) DO NOTHING`,
+    )
+      .bind(userId, order!.id)
+      .run();
+    // Append-only, so the key is what makes a second run of this file pass.
+    await baseEnv.DB.prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, idempotency_key)
+       VALUES (?1, -59500, 'PURCHASE', ?2, 'test:wal-o:reserve') ON CONFLICT (idempotency_key) DO NOTHING`,
+    )
+      .bind(userId, order!.id)
+      .run();
+    await seedClaim('wal-c', { status: 'VERIFIED', customerReference: String(TG) });
+    await baseEnv.DB.prepare(
+      `UPDATE payment_claims SET external_order_id = 'shikoo:wal-p', expected_amount_irr = 1140500 WHERE id = 'wal-c'`,
+    ).run();
+    await seedClaim('wal-none', { status: 'VERIFIED', customerReference: String(TG) });
+
+    const body = await get('tab=all&range=all');
+    const paid = (id: string) =>
+      (body.items.find((i) => i.id === id) as unknown as { walletPaidToman: number })
+        .walletPaidToman;
+    expect(paid('wal-c')).toBe(5950);
+    expect(paid('wal-none')).toBe(0);
+  });
+
   it('says nothing, not zero, when the reference matches no customer', async () => {
     await seedClaim('hist-n', { status: 'VERIFIED', customerReference: 'Poyan test payment' });
 
@@ -1202,6 +1245,121 @@ describe('the customer behind a claim', () => {
     };
     expect(item.customerUserId).toBeNull();
     expect(item.customerSubscriptions).toBeNull();
+  });
+});
+
+/**
+ * One box, every queue (#333). The fields «همه» draws are one filter per
+ * kind; this is for the operator holding *something* a customer read out and
+ * not knowing which kind it is.
+ */
+describe('searching the payments list', () => {
+  const TG = 900_000_333;
+
+  beforeEach(async () => {
+    await baseEnv.DB.prepare(
+      `INSERT INTO users (telegram_id, username, registered_at) VALUES (?1, 'Sara_K', now())
+       ON CONFLICT (telegram_id) DO UPDATE SET username = EXCLUDED.username`,
+    )
+      .bind(TG)
+      .run();
+    await seedClaim('q-sara', { customerReference: String(TG), receipt: false });
+    await seedClaim('q-other', { customerReference: '5550001', receipt: false, cardDigits: '6037991234567890' });
+  });
+
+  it('finds a claim by order id, Telegram id, @username, and card — on a work queue, not only «همه»', async () => {
+    for (const q of ['q-sara', String(TG), '@sara_k', 'SARA', 'q-sar']) {
+      const body = await get(`tab=awaiting_receipt&q=${encodeURIComponent(q)}`);
+      expect(body.items.map((i) => i.id), q).toEqual(['q-sara']);
+      expect(body.total, q).toBe(1);
+    }
+    expect((await get('tab=awaiting_receipt&q=603799')).items.map((i) => i.id)).toEqual(['q-other']);
+  });
+
+  it('matches the amount whole, in toman or rial, and folds Persian digits', async () => {
+    expect((await get(`tab=awaiting_receipt&q=${AMOUNT / 10}`)).total).toBe(2);
+    expect((await get(`tab=awaiting_receipt&q=${AMOUNT}`)).total).toBe(2);
+    expect((await get(`tab=awaiting_receipt&q=${encodeURIComponent('۱۹۵۰۰۰')}`)).total).toBe(2);
+    expect((await get(`tab=awaiting_receipt&q=${String(AMOUNT / 10).slice(0, 3)}`)).total).toBe(0);
+  });
+
+  it('finds a claim by the tracking number of a match that was only suggested', async () => {
+    await seedTx('q-tx', Date.now());
+    await baseEnv.DB.prepare(
+      `UPDATE transaction_candidates SET transaction_reference = 'REF77X' WHERE id = 'q-tx'`,
+    ).run();
+    await baseEnv.DB.prepare(
+      `INSERT INTO reconciliation_matches
+         (id, transaction_candidate_id, payment_claim_id, score, matching_reasons_json,
+          mismatch_reasons_json, status, created_at, updated_at)
+       VALUES ('q-m', 'q-tx', 'q-other', 0.5, '[]', '[]', 'SUGGESTED', ?1, ?1)`,
+    )
+      .bind(Date.now())
+      .run();
+    expect((await get('tab=awaiting_receipt&q=ref77')).items.map((i) => i.id)).toEqual(['q-other']);
+  });
+
+  it('treats LIKE metacharacters as text, and an unknown string as nothing', async () => {
+    expect((await get(`tab=awaiting_receipt&q=${encodeURIComponent('%')}`)).total).toBe(0);
+    // A literal underscore: the one username that has one, not every row.
+    expect((await get(`tab=awaiting_receipt&q=${encodeURIComponent('_')}`)).items.map((i) => i.id)).toEqual(['q-sara']);
+    expect((await get(`tab=awaiting_receipt&q=${encodeURIComponent("' OR 1=1 --")}`)).total).toBe(0);
+    expect((await get('tab=awaiting_receipt&q=nope')).total).toBe(0);
+  });
+
+  /**
+   * «توی هر تبی بود … اون تب‌ها رو نشون بده» — Sam, 2026-09-18. The counts
+   * that ride with every answer are narrowed by the same text as the list,
+   * so the tab chips say where the match is and the screen can jump there.
+   * Asserted against the rows each tab lists for the same search, which is
+   * the only thing a count on a tab may promise.
+   */
+  it('narrows the tab counts by the search, so the tabs say where the match is', async () => {
+    await seedTx('q-inc', Date.now());
+    const hit = await get('tab=open&q=q-sara');
+    expect(hit.items).toEqual([]);
+    expect(hit.counts.open).toBe(0);
+    expect(hit.counts.awaitingReceipt).toBe(1);
+    expect(hit.counts.all).toBe(1);
+    expect(hit.counts.income).toBe(0);
+    expect((await get('tab=awaiting_receipt&q=q-sara')).items.map((i) => i.id)).toEqual(['q-sara']);
+    // The same text on the bank side: a credit, and no claim.
+    const inc = await get(`tab=open&q=${AMOUNT / 10}`);
+    expect(inc.counts.income).toBe(1);
+    expect(inc.counts.awaitingReceipt).toBe(2);
+    // No search, no narrowing — the badges are the whole population.
+    expect((await get('tab=open')).counts.awaitingReceipt).toBe(2);
+  });
+
+  it('searches «واریزی‌ها» by tracking number, account, and amount', async () => {
+    await seedTx('q-inc', Date.now());
+    await baseEnv.DB.prepare(
+      `UPDATE transaction_candidates SET transaction_reference = 'INC42' WHERE id = 'q-inc'`,
+    ).run();
+    for (const q of ['inc42', '6006', 'Melli', String(AMOUNT / 10)]) {
+      const body = await get(`tab=income&range=all&q=${encodeURIComponent(q)}`);
+      expect(body.items.map((i) => i.id), q).toEqual(['q-inc']);
+      expect(body.total, q).toBe(1);
+    }
+    expect((await get('tab=income&range=all&q=zzz')).total).toBe(0);
+  });
+
+  /**
+   * The bot writes `{telegramUserId, bot}` and no username into metadata_json
+   * (`apps/bot/src/payment.ts`), so every one of its claims showed a bare
+   * number. The users row knows the name; metadata still wins when it has one.
+   */
+  it('shows the username from the users row when the claim carries none', async () => {
+    await baseEnv.DB.prepare(
+      `UPDATE payment_claims SET metadata_json = '{"telegramUserId":"900000333","bot":"shikoo"}'
+        WHERE id = 'q-sara'`,
+    ).run();
+    const body = await get('tab=awaiting_receipt');
+    const byId = Object.fromEntries(
+      body.items.map((i) => [i.id, (i as unknown as { telegramUsername: string | null }).telegramUsername]),
+    );
+    expect(byId['q-sara']).toBe('Sara_K');
+    expect(byId['q-other']).toBe('ali');
   });
 });
 

@@ -224,9 +224,93 @@ describe('the panel can be told where to go', () => {
 
     fireEvent.change(screen.getByLabelText('نام بخش یا مشتری'), { target: { value: 'سفارشات' } });
     fireEvent.keyDown(document, { key: 'Enter' });
-    await waitFor(() => expect(document.querySelector('.sidebar-link.active')?.textContent).toContain('سفارشات'));
+    await waitFor(() =>
+      expect(document.querySelector('.sidebar-link.active')?.textContent).toContain('سفارشات'),
+    );
     // And it closes behind itself, or the next keystroke goes into a box that
     // is still on top of the screen it just opened.
     expect(document.querySelector('dialog[open]')).toBeNull();
+  });
+});
+
+/**
+ * The sidebar says what is waiting (#334).
+ *
+ * The dashboard's «نیاز به توجه» strip already counted these; the point of the
+ * badge is that an operator is on some other screen while a request waits.
+ * Asserted from `<App/>` with a stubbed `/attention`, and against the sidebar
+ * button rather than the badge element, because what matters is the entry an
+ * operator reads — the number has to be on THAT row.
+ */
+describe('the sidebar counts what is waiting', () => {
+  const withAttention = (attention: Record<string, number>) =>
+    vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.endsWith('/me')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, email: 'a@b.c', role: 'ADMIN' }),
+        };
+      }
+      if (u.endsWith('/api/v1/admin/attention')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, attention }) };
+      }
+      return Promise.reject(new Error('not stubbed'));
+    });
+
+  it(
+    'draws the pending count beside «لیست درخواست‌ها» and «پرداخت‌ها», and nothing beside the rest',
+    SHELL,
+    async () => {
+      // `openClaims`, not `unreviewedPayments`: the badge is «در انتظار بررسی»
+      // alone, not the three-queue sum the dashboard strip draws (Sam,
+      // 2026-09-18). The sum is in the fixture so a badge that read it
+      // would say ۴۰ and fail.
+      vi.stubGlobal(
+        'fetch',
+        withAttention({
+          pendingRequests: 3,
+          openClaims: 12,
+          unreviewedPayments: 40,
+          staleDevices: 4,
+        }),
+      );
+      await drawApp();
+      await waitFor(() =>
+        expect(document.querySelectorAll('.sidebar-link[data-waiting]')).toHaveLength(2),
+      );
+      // Persian digits, the panel's own `count()` — not `String(n)`. On the
+      // attribute CSS draws from, so the link's text is still only its label:
+      // the e2e walk reads `.sidebar-link.active` with `toHaveText`.
+      const badge = (name: RegExp) =>
+        screen.getByRole('button', { name }).getAttribute('data-waiting');
+      expect(badge(/لیست درخواست‌ها/)).toBe('۳');
+      expect(badge(/^پرداخت‌ها/)).toBe('۱۲');
+      expect(screen.getByRole('button', { name: /^پرداخت‌ها/ }).textContent).toBe('پرداخت‌ها');
+      // And the accessible name is the label alone — the e2e walk clicks
+      // `getByRole('button', { name, exact: true })`.
+      expect(screen.getByRole('button', { name: 'پرداخت‌ها' })).toBeTruthy();
+      // Four stale devices is on the dashboard strip, and deliberately NOT here:
+      // the badge is for the two queues a customer is waiting behind.
+      expect(badge(/دستگاه‌ها/)).toBeNull();
+    },
+  );
+
+  it('draws no badge at all when nothing is waiting', SHELL, async () => {
+    vi.stubGlobal(
+      'fetch',
+      withAttention({ pendingRequests: 0, openClaims: 0, unreviewedPayments: 20 }),
+    );
+    await drawApp();
+    // Let the attention query settle before asserting its absence.
+    await waitFor(() =>
+      expect(
+        (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.some((c) =>
+          String(c[0]).endsWith('/api/v1/admin/attention'),
+        ),
+      ).toBe(true),
+    );
+    expect(document.querySelectorAll('.sidebar-link[data-waiting]')).toHaveLength(0);
   });
 });

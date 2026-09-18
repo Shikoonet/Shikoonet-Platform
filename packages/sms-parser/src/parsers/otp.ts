@@ -55,20 +55,27 @@ const OTP_MARKERS: readonly RegExp[] = [
   /(?:رمز|کد)\s*(?:یک\s*بار\s*مصرف|یک\s*بار|پویا|موقت|دوم|دومرحله)/,
   // کد تایید · کد تأیید · کد فعالسازی · کد فعال سازی · کد ورود · کد احراز
   /کد\s*(?:تایید|تأیید|فعال\s*سازی|فعالسازی|ورود|احراز|امنیتی)/,
+  // A transfer REQUEST asking for its confirmation code — «رمز زیر را وارد
+  // نمایید», «درصورت تایید, رمز …». Mehr and Resalat send these when the
+  // owner starts an internet transfer; three reached `normalized_body` with
+  // the code intact on 2026-09-16/17 because nothing below matched «رمز»
+  // followed by a space instead of a colon.
+  /رمز\s*زیر\s*را\s*وارد|درصورت\s*تایید\s*,?\s*رمز/,
   // English, and only in its authentication senses. A bare «code» is NOT
   // here: marketing messages are full of it.
   /\b(?:otp|one[-\s]?time\s+(?:password|code|pin|passcode)|verification\s+code|security\s+code|auth(?:entication)?\s+code|2fa)\b/i,
 ];
 
 /**
- * `کد: 123456` — a labelled code with nothing else to identify it.
+ * `کد: 123456` — or `رمز 123456`, the colon is optional since 2026-09-18 —
+ * a labelled code with nothing else to identify it.
  *
  * Kept from the original vocabulary and kept SEPARATE, because it is the
  * weakest signal here: it says «a thing called a code has a number», which is
  * also true of a discount code. It only counts as an OTP when nothing in the
  * message is selling anything.
  */
-const BARE_LABELLED_CODE = /(?:رمز|کد)\s*:\s*\d{4,8}(?!\d)/;
+const BARE_LABELLED_CODE = /(?:رمز|کد)\s*:?\s*\d{4,8}(?!\d)/;
 
 /**
  * Language that makes the same words NOT an authentication code.

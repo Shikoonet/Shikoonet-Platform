@@ -55,6 +55,8 @@ import {
   loadIncomeCount,
   loadResellerCount,
   OPEN_QUEUE_TABS,
+  searchParam,
+  claimSearchClause,
 } from './paymentsHubRoutes.js';
 import {
   claimEventKey,
@@ -388,11 +390,15 @@ type ClaimRow = {
    */
   customer_is_reseller: boolean | null;
   customer_user_id: number | null;
+  customer_username: string | null;
   customer_status: string | null;
   customer_blocked_reason: string | null;
   // «تا حالا چند تا اکانت خریده، چند تا فعال داره» — null with no customer.
   customer_subscriptions: number | null;
   customer_live_subscriptions: number | null;
+  // What the balance already put toward the order, in IRR. Zero for an
+  // imported Mirzabot claim, which has no order here.
+  wallet_paid_irr: number;
   effective_ts: number;
   // NULL on an imported Mirzabot claim the backfill could not classify; the
   // bot writes it from the order's kind (0069).
@@ -562,21 +568,6 @@ function referenceParam(raw: string | null): string | null {
   return /^[A-Za-z0-9-]{1,64}$/.test(v) ? v : null;
 }
 
-/**
- * `?q=` — the one search box on a queue (#321): whatever the operator has in
- * hand — the order id off the row, the customer's Telegram id or @username,
- * or the bank's tracking number — without first choosing which it is. Same
- * folding and the same alphabet as `referenceParam`, plus `@` and `_` for a
- * username; the `@` is dropped, the rest is matched as typed.
- */
-function searchParam(raw: string | null): string | null {
-  if (!raw) return null;
-  let v = raw.trim().replace(/^@/, '');
-  for (let i = 0; i < 10; i++) {
-    v = v.replaceAll('۰۱۲۳۴۵۶۷۸۹'[i]!, String(i)).replaceAll('٠١٢٣٤٥٦٧٨٩'[i]!, String(i));
-  }
-  return /^[A-Za-z0-9_-]{1,64}$/.test(v) ? v : null;
-}
 
 /**
  * `page` and `pageSize`, clamped. `pageSize` was a hard 200 until 2026-09-03.
@@ -696,7 +687,23 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
 }
 
 /** Tab badges + the "today" header, counted over the whole population. */
-export async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, actorEmail?: string) {
+export async function loadCounts(
+  db: D1Database,
+  dayStart: number,
+  dayEnd: number,
+  actorEmail?: string,
+  /**
+   * The search box (#333). With it, every count is the number of rows that
+   * tab would list for the same text — so the tabs themselves say which
+   * queue the payment is in, and the screen can jump there.
+   */
+  q: string | null = null,
+) {
+  const binds: unknown[] = [MIRZABOT_SOURCE, dayStart, dayEnd];
+  const p = (v: unknown) => {
+    binds.push(v);
+    return `?${binds.length}`;
+  };
   const rows = await db
     .prepare(
       `SELECT
@@ -711,18 +718,29 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
          SUM(CASE WHEN ${MESSAGED} THEN 1 ELSE 0 END) AS messaged_n
        FROM payment_claims c
        LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_ID})
-       WHERE c.source_system = ?1
+       ${
+         // The two joins the search clause reads, exactly as the list joins
+         // them («claimsFrom» below) so the two answers are over the same
+         // rows — and only under a search, because the users join is a hash
+         // join the sidebar's poll has no use for.
+         q
+           ? `LEFT JOIN financial_accounts fa ON fa.id = c.target_financial_account_id
+       LEFT JOIN users cu ON cu.telegram_id::text = c.customer_reference`
+           : ''
+       }
+       WHERE c.source_system = ?1${claimSearchClause(q, p)}
        GROUP BY review_state`,
     )
-    // Three binds, not four. The fourth was the clock, for a `WHEN` arm that
-    // applied the ten-minute cutoff and was followed immediately by an
-    // identical arm without it — so the first could only ever match rows the
-    // second would have caught anyway. Dead, and not harmlessly: that arm was
-    // the badge's half of a disagreement with `stateSql`, which DID drop the
-    // stale rows. Removing it also has to remove the bind, because
-    // `packages/db` refuses a statement with a parameter nothing uses rather
-    // than guessing — SQLite ignored those, Postgres cannot.
-    .bind(MIRZABOT_SOURCE, dayStart, dayEnd)
+    // Three binds without a search, not four. The fourth was the clock, for a
+    // `WHEN` arm that applied the ten-minute cutoff and was followed
+    // immediately by an identical arm without it — so the first could only
+    // ever match rows the second would have caught anyway. Dead, and not
+    // harmlessly: that arm was the badge's half of a disagreement with
+    // `stateSql`, which DID drop the stale rows. Removing it also has to
+    // remove the bind, because `packages/db` refuses a statement with a
+    // parameter nothing uses rather than guessing — SQLite ignored those,
+    // Postgres cannot.
+    .bind(...binds)
     .all<{
       review_state: ReviewState | null;
       n: number;
@@ -819,7 +837,7 @@ export async function loadCounts(db: D1Database, dayStart: number, dayEnd: numbe
       manuallyVerified: total.MANUALLY_VERIFIED,
       continuity,
       continuityPending,
-      income: await loadIncomeCount(db),
+      income: await loadIncomeCount(db, q),
       declinedIncome: await loadDeclinedIncomeCount(db),
       reseller: await loadResellerCount(db),
       all,
@@ -1193,7 +1211,8 @@ export function registerMirzabotRoutes(
 
     const financialSummary = await loadFinancialSummary(c.env.DB, range, now, day);
     const { start, end } = tehranDayFromUtc(now);
-    const counts = await loadCounts(c.env.DB, start, end, ident.email);
+    const q = searchParam(url.searchParams.get('q'));
+    const counts = await loadCounts(c.env.DB, start, end, ident.email, q);
     const domainDb = c.env.DB as unknown as DomainD1Database;
 
     /**
@@ -1219,8 +1238,9 @@ export function registerMirzabotRoutes(
         tabPageSize,
         ident.email,
         tabOffset,
+        q,
       );
-      const incomeTotals = await loadIncomeTotals(c.env.DB, range, now, day);
+      const incomeTotals = await loadIncomeTotals(c.env.DB, range, now, day, q);
       return c.json({
         ok: true,
         tab,
@@ -1334,7 +1354,6 @@ export function registerMirzabotRoutes(
     const cardDigits = cardDigitsParam(url.searchParams.get('cardDigits'));
     const telegramId = telegramIdParam(url.searchParams.get('telegramId'));
     const reference = referenceParam(url.searchParams.get('reference'));
-    const search = searchParam(url.searchParams.get('q'));
     const { page, pageSize } = pageParams(url);
 
     /*
@@ -1459,23 +1478,13 @@ export function registerMirzabotRoutes(
             JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
            WHERE rm.payment_claim_id = c.id AND rt.transaction_reference = ${p(reference)})`);
       }
-      // One box, four things it might hold (#321). The order id is matched
-      // as the tail of `external_order_id` — `shikoo:<id>`, `mirzabot:<id>`,
-      // `mirzabot:test:<id>` — which is exactly what the row prints. Exact
-      // matches everywhere else: an operator pastes, they do not browse.
-      // `right()`, not LIKE: a username may carry `_`, which LIKE reads as
-      // «any character» (CodeRabbit on #332).
-      if (search) {
-        const q = p(search);
-        where.push(`(
-          c.customer_reference = ${q}
-          OR lower(cu.username) = lower(${q})
-          OR right(c.external_order_id, length(${q}) + 1) = ':' || ${q}
-          OR EXISTS (
-            SELECT 1 FROM reconciliation_matches rm
-              JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
-             WHERE rm.payment_claim_id = c.id AND rt.transaction_reference = ${q}))`);
-      }
+      /*
+       * Free text, on EVERY claim tab — unlike the fields above, which are
+       * only drawn on «همه». The whole point (#333) is finding one payment
+       * without knowing which queue it sits in. The same clause narrows the
+       * tab counts above, so the tabs say where the match is.
+       */
+      if (q) where.push(`TRUE${claimSearchClause(q, p)}`);
       // Three-state, and «unknown» is its own answer rather than «personal»:
       // a claim whose reference matches no user is a real payment we cannot
       // attribute, and filing it under «شخصی» would be inventing a fact.
@@ -1610,6 +1619,9 @@ export function registerMirzabotRoutes(
               -- all is a real state (one production row holds «Poyan test
               -- payment»). Null here means «no button», which is right.
               cu.id AS customer_user_id,
+              -- The bot writes no username into metadata_json, so until #333
+              -- every one of its claims showed a bare number here.
+              cu.username AS customer_username,
               cu.status AS customer_status,
               cu.blocked_reason AS customer_blocked_reason,
               -- The customer's history in two numbers, so the reviewer can
@@ -1624,6 +1636,15 @@ export function registerMirzabotRoutes(
               (SELECT COUNT(*)::int FROM subscriptions s
                 WHERE s.user_id = cu.id
                   AND s.status IN ('ACTIVE', 'ON_HOLD')) AS customer_live_subscriptions,
+              -- The balance's share of the invoice. The checkout takes it off
+              -- the card amount (#317), so «مبلغ مورد انتظار» alone reads as
+              -- a wrong price; a 120,000 invoice showed 114,050 and Sam asked
+              -- why. Same sum as the bot's walletPaidOnOrder; idx_wallet_entries_order
+              -- (0078) serves it.
+              (SELECT coalesce(-sum(w.amount_irr), 0)::bigint
+                 FROM payments wp
+                 JOIN wallet_entries w ON w.order_id = wp.order_id AND w.kind = 'PURCHASE'
+                WHERE c.external_order_id = 'shikoo:' || wp.public_id) AS wallet_paid_irr,
               ${EFFECTIVE_TS} AS effective_ts
        ${claimsFrom}
        WHERE ${where.join(' AND ')}
@@ -1786,7 +1807,7 @@ export function registerMirzabotRoutes(
           id: row.id,
           orderId: row.external_order_id.replace(/^mirzabot:test:/, ''),
           telegramUserId: meta.telegramUserId ?? row.customer_reference,
-          telegramUsername: meta.telegramUsername ?? null,
+          telegramUsername: meta.telegramUsername ?? row.customer_username ?? null,
           // Null when the reference matches no customer — not every claim has
           // one, and a screen that assumed it did would offer a button that
           // 404s.
@@ -1798,6 +1819,7 @@ export function registerMirzabotRoutes(
             row.customer_user_id != null ? row.customer_live_subscriptions : null,
           expectedAmountIrr: row.expected_amount_irr,
           expectedAmountToman: Math.floor(row.expected_amount_irr / 10),
+          walletPaidToman: Math.floor(row.wallet_paid_irr / 10),
           cardMasked: cardDigits ? maskCardDigits(cardDigits) : null,
           // The review page shows the whole number — the admin compares it
           // against the receipt, and a masked one cannot be compared.

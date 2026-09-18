@@ -38,6 +38,7 @@ function waitingClaim(over: Partial<PaymentItem> = {}): PaymentItem {
     telegramUsername: 'demo',
     expectedAmountIrr: 1_500_000,
     expectedAmountToman: 150_000,
+    walletPaidToman: 0,
     cardMasked: null,
     cardDisplay: null,
     accountId: null,
