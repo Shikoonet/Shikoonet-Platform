@@ -11,7 +11,13 @@
  *                                         single-digit months and days, and
  *                                         sometimes omits the seconds
  *
- * Direction: CREDIT (explicit "واریز" phrase).
+ * Direction: CREDIT on «واریز به», DEBIT on «برداشت از» — the bank sends the
+ * same six lines for a withdrawal («خرید با کارت», «انتقال وجه کارتی») with
+ * only that phrase changed. Until 2026-09-18 this parser knew only the credit
+ * phrase, failed its required-field check on the debit one, and — because a
+ * named parser's UNKNOWN is final in `registry.ts` — the generic debit parser
+ * never got to read it. Nine real withdrawals in two days went to «رویدادها»
+ * as unparsed, and «دفتر بانک» showed no money leaving.
  *
  * The date is read AFTER the amount and the account, and it cannot veto them.
  * This paragraph used to say «no fallback needed since the message supplies the
@@ -44,7 +50,10 @@ export const shahrCreditParser = {
 
   parse(input: NormalizedSms): ParseResult {
     const text = input.text;
-    const accountHint = extractValueAfter(text, /(?:واريز|واریز)\s*به\s*:?\s*/);
+    const credited = extractValueAfter(text, /(?:واريز|واریز)\s*به\s*:?\s*/);
+    const debited = credited ? null : extractValueAfter(text, /برداشت\s*از\s*:?\s*/);
+    const accountHint = credited ?? debited;
+    const direction = credited ? 'CREDIT' : 'DEBIT';
     const amountRaw = extractValueAfter(text, /مبلغ\s*:?\s*/);
     const balanceRaw = extractValueAfter(text, /(?:موجودي|موجودی)\s*:?\s*/);
     if (!accountHint || !amountRaw || !balanceRaw) {
@@ -98,7 +107,7 @@ export const shahrCreditParser = {
 
     return matched({
       classification: 'BANK_TRANSACTION',
-      direction: 'CREDIT',
+      direction,
       amountIrr,
       balanceIrr,
       accountHint,
@@ -109,7 +118,7 @@ export const shahrCreditParser = {
       evidence: {
         bank: 'SHAHR',
         accountHint,
-        directionSource: 'explicit_credit_phrase',
+        directionSource: credited ? 'explicit_credit_phrase' : 'explicit_debit_phrase',
         amountRaw,
         balanceRaw,
         // Nullable since the parse stopped depending on the date: the `!` here

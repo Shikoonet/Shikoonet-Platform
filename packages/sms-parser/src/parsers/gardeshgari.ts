@@ -9,7 +9,10 @@
  *   <MM/DD>/<YY>_<HH>:<mm>          e.g. 05/05/14_09:45
  *   موجودی: <balance> ریال
  *
- * Direction: CREDIT (explicit "واریز" phrase).
+ * Direction: CREDIT on «واریز به», DEBIT on «برداشت از» — a withdrawal
+ * («کارت», «درگاه مجازی») is the same layout with that one phrase changed.
+ * See the note in `shahr.ts`: until 2026-09-18 the debit phrase failed the
+ * required-field check here and the message was lost as UNKNOWN.
  *
  * The bank name is prefixed with optional asterisks; we accept either form.
  * Recognized variants of each Persian keyword after normalization:
@@ -49,7 +52,10 @@ export const gardeshgariCreditParser = {
 
   parse(input: NormalizedSms): ParseResult {
     const text = input.text;
-    const accountHint = extractValueAfter(text, /(?:واريز|واریز)\s*به\s*:?\s*/);
+    const credited = extractValueAfter(text, /(?:واريز|واریز)\s*به\s*:?\s*/);
+    const debited = credited ? null : extractValueAfter(text, /برداشت\s*از\s*:?\s*/);
+    const accountHint = credited ?? debited;
+    const direction = credited ? 'CREDIT' : 'DEBIT';
     const amountRaw = extractValueAfter(text, /مبلغ\s*:?\s*/);
     const balanceRaw = extractValueAfter(text, /(?:موجودي|موجودی)\s*:?\s*/);
     if (!accountHint || !amountRaw || !balanceRaw) {
@@ -103,7 +109,7 @@ export const gardeshgariCreditParser = {
 
     return matched({
       classification: 'BANK_TRANSACTION',
-      direction: 'CREDIT',
+      direction,
       amountIrr,
       balanceIrr,
       accountHint,
@@ -114,7 +120,7 @@ export const gardeshgariCreditParser = {
       evidence: {
         bank: 'GARDESHGARI',
         accountHint,
-        directionSource: 'explicit_credit_phrase',
+        directionSource: credited ? 'explicit_credit_phrase' : 'explicit_debit_phrase',
         amountRaw,
         balanceRaw,
         dateRaw: dtMatch[0]!,
