@@ -472,6 +472,12 @@ describe('every write route, asked directly', () => {
     // monthly statement to the head admin starts from, so ADMIN-only,
     // audited, refused twice unless told to overwrite; `books.test.ts` pins
     // the 409 and the REVIEWER 403.
-    expect(writeRoutes().length).toBe(163);
+    //
+    // 164, 2026-09-18: `DELETE /accounts/:id/identifier/:identId` — takes one
+    // extra number away from an account (#316). Same guard as the POST
+    // beside it and the PATCH above — READ_ONLY refused by the first test
+    // above — and `account-identifiers.test.ts` pins the 409 for a row that
+    // mirrors a column.
+    expect(writeRoutes().length).toBe(164);
   });
 });

@@ -580,6 +580,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  deleteIdentifier: (accountId: string, identId: string) =>
+    req<{ ok: boolean; kind: string; value: string }>(
+      `/api/v1/accounts/${encodeURIComponent(accountId)}/identifier/${encodeURIComponent(identId)}`,
+      { method: 'DELETE' },
+    ),
   rerunMatching: () =>
     req<{ ok: boolean; suggested: number; processed: number }>('/api/v1/accounts/rerun-matching', {
       method: 'POST',

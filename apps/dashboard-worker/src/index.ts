@@ -2931,24 +2931,57 @@ app.post('/api/v1/accounts/:id/identifier', async (c) => {
   }
 
   const now = Date.now();
+  /*
+   * One more number the account answers to — not a replacement for the one
+   * it has. Until 2026-09-18 a canonical kind here overwrote the column, so
+   * «add a second account number» silently dropped the first. Bank Keshavarzi
+   * keys the same account by its full number in one SMS («واریز پل») and by
+   * `کارت*XXXX` in the next; an account needs both, and two of one kind is
+   * the case the four fields on the form cannot express (#316).
+   *
+   * The row goes into `financial_account_identifiers`, which the resolver
+   * already reads. When the matching column is still empty the number is
+   * mirrored there too, exactly as `POST /accounts` would have written it;
+   * when the column holds another number, it keeps it. `WHERE NOT EXISTS`
+   * for the same account, so a repeat is a no-op — the cross-account case
+   * was refused by the probe above, and the unique index is the backstop.
+   */
+  const column = (Object.entries(MIRRORED_IDENTIFIER_KINDS) as Array<
+    [keyof MirroredColumns, string]
+  >).find(([, k]) => k === kind)?.[0];
+  const stmts: D1PreparedStatement[] = [
+    c.env.DB.prepare(
+      `INSERT INTO financial_account_identifiers
+         (id, financial_account_id, kind, value, label, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6
+        WHERE NOT EXISTS (
+          SELECT 1 FROM financial_account_identifiers
+           WHERE financial_account_id = ?2 AND kind = ?3 AND value = ?4)`,
+    ).bind(crypto.randomUUID(), accountId, kind, value, label ?? null, now),
+  ];
+  if (column) {
+    stmts.push(
+      c.env.DB.prepare(
+        `UPDATE financial_accounts SET ${column} = ?2, updated_at = ?3
+          WHERE id = ?1 AND ${column} IS NULL`,
+      ).bind(accountId, value, now),
+    );
+  }
+  let added = false;
+  try {
+    const [inserted] = await c.env.DB.batch(stmts);
+    added = (inserted?.meta.changes ?? 0) > 0;
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
+    }
+    throw e;
+  }
   let preview = 0;
   let updated = 0;
   if (kind === 'ACCOUNT_HINT') {
     preview = await previewUnassignedForHint(domainDb(c.env.DB), value);
     if (assign_historical) {
-      // Mirror into the canonical column AND backfill.
-      try {
-        await c.env.DB.prepare(
-          `UPDATE financial_accounts SET account_hint = ?2, updated_at = ?3 WHERE id = ?1`,
-        )
-          .bind(accountId, value, now)
-          .run();
-      } catch (e) {
-        if (isUniqueViolation(e)) {
-          return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
-        }
-        throw e;
-      }
       // Backfill: only NULL financial_account_id rows whose evidence hint matches.
       // JSON predicate without JSON1 is approximated by selecting rows then
       // updating from JS. The LIMIT in previewUnassignedForHint caps the scan.
@@ -2999,78 +3032,85 @@ app.post('/api/v1/accounts/:id/identifier', async (c) => {
         }
       }
     }
-  } else if (kind === 'CARD_LAST_FOUR') {
-    try {
-      await c.env.DB.prepare(
-        `UPDATE financial_accounts SET card_last_four = ?2, updated_at = ?3 WHERE id = ?1`,
-      )
-        .bind(accountId, value, now)
-        .run();
-    } catch (e) {
-      if (isUniqueViolation(e)) {
-        return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
-      }
-      throw e;
-    }
-  } else if (kind === 'ACCOUNT_LAST_FOUR') {
-    try {
-      await c.env.DB.prepare(
-        `UPDATE financial_accounts SET account_last_four = ?2, updated_at = ?3 WHERE id = ?1`,
-      )
-        .bind(accountId, value, now)
-        .run();
-    } catch (e) {
-      if (isUniqueViolation(e)) {
-        return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
-      }
-      throw e;
-    }
-  } else if (kind === 'IBAN') {
-    try {
-      await c.env.DB.prepare(
-        `UPDATE financial_accounts SET iban = ?2, updated_at = ?3 WHERE id = ?1`,
-      )
-        .bind(accountId, value, now)
-        .run();
-    } catch (e) {
-      if (isUniqueViolation(e)) {
-        return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
-      }
-      throw e;
-    }
-  } else {
-    // OTHER / arbitrary: store in the additional_identifiers table.
-    try {
-      await c.env.DB.prepare(
-        `INSERT INTO financial_account_identifiers
-             (id, financial_account_id, kind, value, label, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-      )
-        .bind(crypto.randomUUID(), accountId, kind, value, label ?? null, now)
-        .run();
-    } catch (e) {
-      if (isUniqueViolation(e)) {
-        return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
-      }
-      throw e;
-    }
   }
+  // A repeat of a number the account already answers to changed nothing
+  // and backfilled nothing; an audit row saying «added» would be a lie.
+  if (added || updated > 0) {
+    await c.env.DB.prepare(SQL.insertAudit)
+      .bind(
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        'account.identifier_added',
+        'ACCOUNT',
+        accountId,
+        null,
+        JSON.stringify({ kind, value, assign_historical: !!assign_historical, updated }),
+        null,
+        c.req.header('cf-ray') ?? null,
+        now,
+      )
+      .run();
+  }
+  return c.json({ ok: true, kind, value, added, preview, updated });
+});
+
+/**
+ * Take one number away from an account. Only the rows the form lists as
+ * «شناسه‌های دیگر» — a row that mirrors one of the four columns is refused
+ * (409 `identifier_mirrors_column`): that number is edited through the field
+ * above it, and `PATCH /accounts/:id` moves the column and its row together.
+ * Deleting the row alone would leave the column answering to a number the
+ * identifier table no longer knows — the 2026-09-16 divergence, backwards.
+ */
+app.delete('/api/v1/accounts/:id/identifier/:identId', async (c) => {
+  const ident = c.get('identity');
+  if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
+  const accountId = c.req.param('id');
+  const identId = c.req.param('identId');
+  const row = await c.env.DB.prepare(
+    `SELECT fai.kind, fai.value,
+            fa.account_hint, fa.card_last_four, fa.account_last_four, fa.iban
+       FROM financial_account_identifiers fai
+       JOIN financial_accounts fa ON fa.id = fai.financial_account_id
+      WHERE fai.id = ?1 AND fai.financial_account_id = ?2`,
+  )
+    .bind(identId, accountId)
+    .first<{ kind: string; value: string } & MirroredColumns>();
+  if (!row) return c.json({ ok: false, error: 'not_found' }, 404);
+  const column = (Object.entries(MIRRORED_IDENTIFIER_KINDS) as Array<
+    [keyof MirroredColumns, string]
+  >).find(([, k]) => k === row.kind)?.[0];
+  if (column && row[column] === row.value) {
+    return c.json({ ok: false, error: 'identifier_mirrors_column', column }, 409);
+  }
+  const now = Date.now();
+  // RETURNING, so two operators deleting the same row do not write two
+  // audit rows for one deletion: the second finds nothing and is told so.
+  const gone = await c.env.DB.prepare(
+    `DELETE FROM financial_account_identifiers
+      WHERE id = ?1 AND financial_account_id = ?2
+      RETURNING id`,
+  )
+    .bind(identId, accountId)
+    .first<{ id: string }>();
+  if (!gone) return c.json({ ok: false, error: 'not_found' }, 404);
   await c.env.DB.prepare(SQL.insertAudit)
     .bind(
       crypto.randomUUID(),
       ident.email,
       ident.role,
-      'account.identifier_added',
+      'account.identifier_removed',
       'ACCOUNT',
       accountId,
       null,
-      JSON.stringify({ kind, value, assign_historical: !!assign_historical, updated }),
+      JSON.stringify({ kind: row.kind, value: row.value }),
       null,
       c.req.header('cf-ray') ?? null,
       now,
     )
     .run();
-  return c.json({ ok: true, kind, value, preview, updated });
+  return c.json({ ok: true, kind: row.kind, value: row.value });
 });
 
 /** Rerun matching on demand — useful after backfills. */
