@@ -393,6 +393,9 @@ type ClaimRow = {
   // «تا حالا چند تا اکانت خریده، چند تا فعال داره» — null with no customer.
   customer_subscriptions: number | null;
   customer_live_subscriptions: number | null;
+  // What the balance already put toward the order, in IRR. Zero for an
+  // imported Mirzabot claim, which has no order here.
+  wallet_paid_irr: number;
   effective_ts: number;
   // NULL on an imported Mirzabot claim the backfill could not classify; the
   // bot writes it from the order's kind (0069).
@@ -1590,6 +1593,15 @@ export function registerMirzabotRoutes(
               (SELECT COUNT(*)::int FROM subscriptions s
                 WHERE s.user_id = cu.id
                   AND s.status IN ('ACTIVE', 'ON_HOLD')) AS customer_live_subscriptions,
+              -- The balance's share of the invoice. The checkout takes it off
+              -- the card amount (#317), so «مبلغ مورد انتظار» alone reads as
+              -- a wrong price; a 120,000 invoice showed 114,050 and Sam asked
+              -- why. Same sum as the bot's walletPaidOnOrder; idx_wallet_entries_order
+              -- (0078) serves it.
+              (SELECT coalesce(-sum(w.amount_irr), 0)::bigint
+                 FROM payments wp
+                 JOIN wallet_entries w ON w.order_id = wp.order_id AND w.kind = 'PURCHASE'
+                WHERE c.external_order_id = 'shikoo:' || wp.public_id) AS wallet_paid_irr,
               ${EFFECTIVE_TS} AS effective_ts
        ${claimsFrom}
        WHERE ${where.join(' AND ')}
@@ -1764,6 +1776,7 @@ export function registerMirzabotRoutes(
             row.customer_user_id != null ? row.customer_live_subscriptions : null,
           expectedAmountIrr: row.expected_amount_irr,
           expectedAmountToman: Math.floor(row.expected_amount_irr / 10),
+          walletPaidToman: Math.floor(row.wallet_paid_irr / 10),
           cardMasked: cardDigits ? maskCardDigits(cardDigits) : null,
           // The review page shows the whole number — the admin compares it
           // against the receipt, and a masked one cannot be compared.
