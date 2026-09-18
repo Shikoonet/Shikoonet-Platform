@@ -563,6 +563,22 @@ function referenceParam(raw: string | null): string | null {
 }
 
 /**
+ * `?q=` — the one search box on a queue (#321): whatever the operator has in
+ * hand — the order id off the row, the customer's Telegram id or @username,
+ * or the bank's tracking number — without first choosing which it is. Same
+ * folding and the same alphabet as `referenceParam`, plus `@` and `_` for a
+ * username; the `@` is dropped, the rest is matched as typed.
+ */
+function searchParam(raw: string | null): string | null {
+  if (!raw) return null;
+  let v = raw.trim().replace(/^@/, '');
+  for (let i = 0; i < 10; i++) {
+    v = v.replaceAll('۰۱۲۳۴۵۶۷۸۹'[i]!, String(i)).replaceAll('٠١٢٣٤٥٦٧٨٩'[i]!, String(i));
+  }
+  return /^[A-Za-z0-9_-]{1,64}$/.test(v) ? v : null;
+}
+
+/**
  * `page` and `pageSize`, clamped. `pageSize` was a hard 200 until 2026-09-03.
  *
  * 200 is both the default AND the ceiling, and the ceiling is the interesting
@@ -1318,6 +1334,7 @@ export function registerMirzabotRoutes(
     const cardDigits = cardDigitsParam(url.searchParams.get('cardDigits'));
     const telegramId = telegramIdParam(url.searchParams.get('telegramId'));
     const reference = referenceParam(url.searchParams.get('reference'));
+    const search = searchParam(url.searchParams.get('q'));
     const { page, pageSize } = pageParams(url);
 
     /*
@@ -1441,6 +1458,23 @@ export function registerMirzabotRoutes(
           SELECT 1 FROM reconciliation_matches rm
             JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
            WHERE rm.payment_claim_id = c.id AND rt.transaction_reference = ${p(reference)})`);
+      }
+      // One box, four things it might hold (#321). The order id is matched
+      // as the tail of `external_order_id` — `shikoo:<id>`, `mirzabot:<id>`,
+      // `mirzabot:test:<id>` — which is exactly what the row prints. Exact
+      // matches everywhere else: an operator pastes, they do not browse.
+      // `right()`, not LIKE: a username may carry `_`, which LIKE reads as
+      // «any character» (CodeRabbit on #332).
+      if (search) {
+        const q = p(search);
+        where.push(`(
+          c.customer_reference = ${q}
+          OR lower(cu.username) = lower(${q})
+          OR right(c.external_order_id, length(${q}) + 1) = ':' || ${q}
+          OR EXISTS (
+            SELECT 1 FROM reconciliation_matches rm
+              JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
+             WHERE rm.payment_claim_id = c.id AND rt.transaction_reference = ${q}))`);
       }
       // Three-state, and «unknown» is its own answer rather than «personal»:
       // a claim whose reference matches no user is a real payment we cannot

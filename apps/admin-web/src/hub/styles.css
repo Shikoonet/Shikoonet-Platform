@@ -668,80 +668,7 @@
   }}
 
 
-/* === Bot verified metrics + table === */
-.bot-metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.metric-card {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  padding: var(--space-md);
-  background: var(--surface-2);
-  border: 1px solid var(--border-gold);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.metric-card::before {
-  content: '';
-  position: absolute;
-  inset-inline-end: -20%;
-  top: -30%;
-  width: 55%;
-  height: 120%;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.12), transparent 70%);
-  pointer-events: none;
-}
-
-.metric-card__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 999px;
-  background: var(--gold-muted);
-  color: var(--gold);
-  border: 1px solid var(--border-gold);
-  flex-shrink: 0;
-}
-
-.metric-card__body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-}
-
-.metric-card--accent {
-  background: linear-gradient(135deg, var(--gold-muted), transparent);
-  border-color: var(--border-gold);
-  box-shadow: var(--shadow-glow);
-}
-
-.metric-card__label {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-
-.metric-card__value {
-  font-size: 1.35rem;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.metric-card__meta {
-  font-size: 0.75rem;
-}
-
+/* === Bot verified table === */
  /* «تایید خودکار ربات» — the table and its rail (#321).
 
    The rail is the FIRST grid column, and in an RTL document the first column
@@ -1088,10 +1015,6 @@
 }
 
 @media (max-width: 1199px) {
-  .bot-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   /* One column; the rail comes first, as two cards side by side above the
      table. Before this the rail was simply not rendered under 1200px. */
   .bot-verified-layout {
@@ -1174,10 +1097,6 @@
 }
 
 @media (max-width: 639px) {
-
-  .bot-metrics {
-    grid-template-columns: 1fr;
-  }
 
   /* The header asked for 578px inside 366: hamburger 44 + wordmark block 217 +
      controls 317. The brand collapsed to zero width but kept painting its full
@@ -3087,16 +3006,29 @@
   color: #0a0a0a;
 }
 
-@media (min-width: 1200px) {
+/* One line of controls (#321): the two segmented filters, the search box and
+   «خواندن همه» — from tablet width up. Below that they stack, and the search
+   box takes the full width because a phone keyboard wants room. */
+@media (min-width: 768px) {
   .bot-filter {
     flex-direction: row;
     align-items: center;
-    justify-content: space-between;
     flex-wrap: wrap;
   }
-  .segmented--dates {
-    align-self: flex-end;
-  }}
+  .bot-filter__search {
+    flex: 1 1 9rem;
+    min-width: 9rem;
+    max-width: 24rem;
+    margin-inline-start: auto;
+  }
+}
+
+.bot-filter__search input {
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.875rem;
+}
 
 .bot-verified-empty {
   display: flex;
@@ -3117,38 +3049,6 @@
 .txn-row__verified-at {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-}
-
-/* === DEV: Bot Auto Verified live statistics desktop fix ===
-   Resolves cramped / overflowing layout at 1366 / 1440 / 1920 widths. */
-.bot-metrics {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-@media (min-width: 1100px) {
-  .bot-metrics {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }}
-
-@media (max-width: 720px) {
-  .bot-metrics {
-    grid-template-columns: 1fr;
-  }}
-
-.metric-card {
-  min-width: 0;
-}
-
-.metric-card__body {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.metric-card__value {
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  line-height: 1.15;
 }
 
 .stats-rail__grid-row dd {

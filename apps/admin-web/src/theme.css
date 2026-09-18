@@ -2123,6 +2123,26 @@ button.cat-card--new:hover {
 .attention--strip .attention__title .attention__n {
   font-size: 18px;
 }
+/* One line (#321): the sum and its chips side by side, and — when there is
+   nothing to review — a quiet caption rather than a bordered box the operator
+   scrolls past on the way to the table. */
+.attention--strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.attention--strip .attention__title {
+  margin: 0;
+}
+.attention--strip.attention--clear {
+  border: 0;
+  padding: 2px 4px;
+}
+.attention--strip.attention--clear p {
+  margin: 0;
+  font-size: 13px;
+}
 
 /* ── The chart ────────────────────────────────────────────────────────────
    No library: `preserveAspectRatio="none"` on a viewBox lets the bars scale
