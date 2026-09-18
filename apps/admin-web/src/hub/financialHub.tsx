@@ -5,6 +5,7 @@ import { useWriteProps } from '../role.js';
 import { formatTomanFromIrr, formatTime } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { NewBadge } from './NewBadge.js';
+import { CustomerLink } from '../CustomerLink.js';
 import {
   bankName,
   formatToman,
@@ -240,6 +241,25 @@ export function IncomeRow({
           {item.bankTimestamp ? formatTime(item.bankTimestamp) : '—'} · {masked}
         </div>
       </button>
+      {/* The guess the operator used to make by hand: an expired invoice for
+          this amount, on this account's card, from the day before. Drawn
+          outside the button so the customer link is an anchor, not an anchor
+          inside a button. It decides nothing — «تخصیص» is still the act. */}
+      {item.expiredInvoice && (
+        <div className="hub-list-row__line2 muted hub-list-row__hint">
+          احتمالاً فاکتور <IdentifierText value={item.expiredInvoice.publicId} tone="hint" /> (منقضی،{' '}
+          {formatTime(item.expiredInvoice.invoiceAt)}
+          {item.expiredInvoice.customer ? (
+            <>
+              ، مشتری <CustomerLink customer={item.expiredInvoice.customer} />
+            </>
+          ) : (
+            '، مشتری حذف‌شده'
+          )}
+          )
+          {item.expiredInvoice.others > 0 && ` و ${count(item.expiredInvoice.others)} فاکتور منقضی دیگر`}
+        </div>
+      )}
       <div className="hub-list-row__actions" onClick={(e) => e.stopPropagation()}>
         <button type="button" className="ghost hub-list-row__action" onClick={onAssign}>
           تخصیص

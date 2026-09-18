@@ -1415,6 +1415,23 @@
   margin-top: 0.15rem;
 }
 
+/* «احتمالاً فاکتور X» under an income row. A sibling of the row's button, not a
+   child — it carries a link, and an anchor inside a button is invalid HTML —
+   so the row wraps and the hint takes the full width beneath, aligned with
+   the button's text. `display: block` because the line2 flex would tear the
+   sentence into gapped fragments. */
+.hub-list-row--income {
+  flex-wrap: wrap;
+}
+
+.hub-list-row__hint {
+  display: block;
+  flex-basis: 100%;
+  order: 10;
+  padding: 0 0.75rem 0.55rem;
+  margin-top: -0.25rem;
+}
+
 .hub-list-row__identity {
   display: inline-flex;
   flex-wrap: wrap;

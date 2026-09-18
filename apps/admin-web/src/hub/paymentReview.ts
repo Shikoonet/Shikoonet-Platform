@@ -256,6 +256,13 @@ export interface IncomeItem {
   reference: string | null;
   statusLabel: string;
   isNew?: boolean;
+  /** «احتمالاً فاکتور X» — an expired invoice this deposit fits (#275). A hint, never a match. */
+  expiredInvoice?: {
+    publicId: string;
+    invoiceAt: number;
+    customer: { id: number; telegramId: string; username: string | null } | null;
+    others: number;
+  } | null;
 }
 
 export interface DeclinedIncomeItem {
