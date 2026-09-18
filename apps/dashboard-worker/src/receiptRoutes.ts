@@ -80,8 +80,18 @@ const CONTENT_TYPES: Record<string, string> = {
  */
 function contentTypeFor(filePath: string, isDocument: boolean): string | null {
   if (!isDocument) return 'image/jpeg';
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-  return CONTENT_TYPES[ext] ?? null;
+  return CONTENT_TYPES[extensionOf(filePath)] ?? null;
+}
+
+/**
+ * The extension of the LAST segment, or '' — so a dot in a directory name
+ * (`documents.private/file`) yields nothing rather than a path fragment,
+ * which matters because this is the one part of the path that is logged.
+ */
+function extensionOf(filePath: string): string {
+  const name = filePath.slice(filePath.lastIndexOf('/') + 1);
+  const dot = name.lastIndexOf('.');
+  return dot === -1 ? '' : name.slice(dot + 1).toLowerCase();
 }
 
 export function registerReceiptRoutes(
@@ -254,8 +264,11 @@ export function registerReceiptRoutes(
       // The extension is logged and the path is not: the path is a download
       // URL fragment, the extension is the one fact that explains a refusal —
       // and it took half a day of #303 to learn it was «none» without it.
-      const ext = filePath.includes('.') ? filePath.split('.').pop() : '';
-      log.warn('receipt.type_refused', { claimId, ext, consequence: 'receipt not shown' });
+      log.warn('receipt.type_refused', {
+        claimId,
+        ext: extensionOf(filePath),
+        consequence: 'receipt not shown',
+      });
       return c.json({ ok: false, error: 'unsupported_type' }, 415);
     }
 
