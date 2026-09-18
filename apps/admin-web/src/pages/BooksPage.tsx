@@ -18,8 +18,8 @@
  * explains, it never replaces.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { JALALI_MONTHS, toJalali } from '@shikoo/contracts';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { JALALI_MONTHS, jalaliToIsoDate, toJalali } from '@shikoo/contracts';
 import {
   api,
   OFF_BOOKS_CATEGORY_FA,
@@ -86,7 +86,8 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-  const [tagging, setTagging] = useState<BankMovement | null>(null);
+  const [tagging, setTagging] = useState<TagTarget | null>(null);
+  const [walletNow, setWalletNow] = useState<{ walletIrr: number; accounts: number; missing: number } | null>(null);
   const [starting, setStarting] = useState(false);
   const [reload, setReload] = useState(0);
 
@@ -96,6 +97,14 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
       .then((r) => setAccounts(r.items))
       .catch((e) => setErr(message(e)));
   }, []);
+
+  // The wallet this instant is not a property of the month on screen.
+  useEffect(() => {
+    api
+      .booksOpening()
+      .then((r) => setWalletNow(r.now))
+      .catch(() => setWalletNow(null));
+  }, [reload]);
 
   useEffect(() => {
     let live = true;
@@ -221,7 +230,8 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
 
       {opening === null && !loading && (
         <FreshStartCard
-          walletNowIrr={totals?.closingIrr ?? null}
+          walletNowIrr={walletNow?.walletIrr ?? null}
+          missing={walletNow?.missing ?? 0}
           canWrite={canWrite}
           busy={starting}
           onStart={startFresh}
@@ -248,11 +258,14 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
             tone="tone-purple"
             icon="receipt"
             value={tomanCompact(totals.ledgerExpenseIrr + totals.ledgerFeeIrr)}
-            label="هزینه‌های فروشگاه"
+            label="هزینه‌های فروشگاه از حساب‌ها"
             foot={
-              totals.ledgerFeeIrr
+              (totals.ledgerFeeIrr
                 ? `${toman(totals.ledgerExpenseIrr + totals.ledgerFeeIrr)} · کارمزد بانک ${toman(totals.ledgerFeeIrr)}`
-                : toman(totals.ledgerExpenseIrr)
+                : toman(totals.ledgerExpenseIrr)) +
+              (totals.expensesNoAccountCount
+                ? ` · ${count(totals.expensesNoAccountCount)} هزینهٔ دیگر (${toman(totals.expensesNoAccountIrr)}) حساب ندارد و این‌جا نیست`
+                : '')
             }
           />
           <Stat
@@ -273,7 +286,7 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
             label="اختلاف با بانک"
             foot={
               gapAccounts
-                ? `${count(gapAccounts)} حساب — پیامکی جا افتاده`
+                ? `${count(gapAccounts)} حساب — پولی رفته یا آمده که نه پیامک دارد نه توضیح؛ حساب را باز کن`
                 : totals.accountsUnknown
                   ? `${count(totals.accountsUnknown)} حساب هنوز موجودی نفرستاده`
                   : 'موجودی بانک با جمع حرکت‌ها یکی است'
@@ -312,19 +325,36 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
           <Statement rows={statements} totals={totals} loading={loading} />
           {accountId && (
             <Movements
+              accountId={accountId}
               accountName={accountName}
               items={movements}
               canWrite={canWrite}
-              onTag={(m) => setTagging(m)}
+              tagging={tagging}
+              onTag={(t) => setTagging(t)}
               onUntag={async (m) => {
                 try {
-                  await api.backOnBooks(m.id);
-                  setDone('به دفتر برگشت.');
+                  if (m.kind === 'manual') await api.voidManualMovement(m.id);
+                  else await api.backOnBooks(m.id);
+                  setDone(m.kind === 'manual' ? 'ردیف دستی حذف شد.' : 'به دفتر برگشت.');
                   refresh();
                 } catch (e) {
                   setErr(message(e));
                 }
               }}
+              tagForm={
+                tagging && (
+                  <TagForm
+                    target={tagging}
+                    onClose={() => setTagging(null)}
+                    onDone={(msg) => {
+                      setTagging(null);
+                      setDone(msg);
+                      refresh();
+                    }}
+                    onError={setErr}
+                  />
+                )
+              }
             />
           )}
           {!accountId && statements.length > 0 && (
@@ -336,19 +366,20 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
       )}
 
       {tab === 'off-books' && (
-        <OffBooksList items={offBooks} csvUrl={api.booksOffBooksCsvUrl(month, accountId || undefined)} />
-      )}
-
-      {tagging && (
-        <TagForm
-          movement={tagging}
-          onClose={() => setTagging(null)}
-          onDone={(msg) => {
-            setTagging(null);
-            setDone(msg);
-            refresh();
+        <OffBooksList
+          items={offBooks}
+          csvUrl={api.booksOffBooksCsvUrl(month, accountId || undefined)}
+          canWrite={canWrite}
+          onRelabel={async (it, category) => {
+            try {
+              if (it.kind === 'manual') throw new Error('ردیف دستی را حذف کن و دوباره بنویس.');
+              await api.relabelOffBooks(it.id, category);
+              setDone('دلیل عوض شد.');
+              refresh();
+            } catch (e) {
+              setErr(message(e));
+            }
           }}
-          onError={setErr}
         />
       )}
     </div>
@@ -357,11 +388,13 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
 
 function FreshStartCard({
   walletNowIrr,
+  missing,
   canWrite,
   busy,
   onStart,
 }: {
   walletNowIrr: number | null;
+  missing: number;
   canWrite: boolean;
   busy: boolean;
   onStart: (force: boolean) => void;
@@ -381,7 +414,7 @@ function FreshStartCard({
         <p style={{ fontSize: 22, fontWeight: 800, margin: '8px 0 12px' }}>
           {toman(walletNowIrr)}
           <span className="muted" style={{ fontSize: 13, fontWeight: 400, marginInlineStart: 8 }}>
-            جمع موجودی حساب‌های روشن، همین لحظه
+            جمع موجودی حساب‌های روشن، همین لحظه{missing ? ` — ${count(missing)} حساب هنوز موجودی نفرستاده` : ''}
           </span>
         </p>
       )}
@@ -491,7 +524,7 @@ function Statement({
         </div>
       </div>
       <div className="table-wrap">
-        <table className="app-table" data-testid="statement">
+        <table className="app-table" data-testid="statement" style={{ minWidth: 900 }}>
           <thead>
             <tr>
               <th>حساب</th>
@@ -563,11 +596,11 @@ function Statement({
                       <Signed irr={offBooksSum(s.offBooksCredits)} sign="+" muted />
                     </td>
                     <td>
-                      <Signed irr={s.explainedWithdrawals.amountIrr} sign="−" />
+                      <Signed irr={s.ledger.expenseIrr + s.ledger.feeIrr} sign="−" />
                       {s.ledger.expenseCount > 0 && (
                         <div className="muted" style={{ fontSize: 11 }}>
-                          دفتر: {toman(s.ledger.expenseIrr)}
-                          {s.ledger.feeIrr > 0 ? ` + کارمزد ${toman(s.ledger.feeIrr)}` : ''}
+                          {count(s.ledger.expenseCount)} هزینه
+                          {s.ledger.feeIrr > 0 ? ` · کارمزد ${toman(s.ledger.feeIrr)}` : ''}
                           {s.ledger.unlinkedCount > 0 ? ` · ${count(s.ledger.unlinkedCount)} بدون پیامک` : ''}
                         </div>
                       )}
@@ -604,7 +637,7 @@ function Statement({
                       ) : (
                         <span
                           className="badge badge-block"
-                          title="موجودی بانک با جمع حرکت‌ها نمی‌خواند — پیامکی جا افتاده"
+                          title="موجودی بانک با جمع حرکت‌ها نمی‌خواند — پولی رفته یا آمده که نه پیامک دارد نه توضیح؛ حساب را باز کن و ردیف خاکستری را توضیح بده"
                         >
                           {toman(s.gapIrr)}
                         </span>
@@ -619,7 +652,10 @@ function Statement({
             <tfoot>
               <tr data-testid="statement-totals" style={{ fontWeight: 700 }}>
                 <td>جمع {count(totals.accounts)} حساب</td>
-                <td className="tabular-nums">{toman(totals.openingIrr)}</td>
+                <td className="tabular-nums" title={totals.accountsUnknown ? 'بدون حساب‌هایی که موجودی نفرستاده‌اند' : undefined}>
+                  {toman(totals.openingIrr)}
+                  {totals.accountsUnknown ? <span className="muted"> + ؟</span> : null}
+                </td>
                 <td>
                   <Signed irr={totals.customerIncomeIrr} sign="+" />
                 </td>
@@ -627,7 +663,7 @@ function Statement({
                   <Signed irr={totals.offBooksCreditsIrr} sign="+" muted />
                 </td>
                 <td>
-                  <Signed irr={totals.explainedWithdrawalsIrr} sign="−" />
+                  <Signed irr={totals.ledgerExpenseIrr + totals.ledgerFeeIrr} sign="−" />
                 </td>
                 <td>
                   <Signed irr={totals.unexplainedWithdrawalsIrr} sign="−" />
@@ -635,7 +671,10 @@ function Statement({
                 <td>
                   <Signed irr={totals.offBooksDebitsIrr} sign="−" muted />
                 </td>
-                <td className="tabular-nums">{toman(totals.closingIrr)}</td>
+                <td className="tabular-nums">
+                  {toman(totals.closingIrr)}
+                  {totals.accountsUnknown ? <span className="muted"> + ؟</span> : null}
+                </td>
                 <td>
                   {totals.accountsWithGap
                     ? `${count(totals.accountsWithGap)} حساب`
@@ -656,7 +695,8 @@ function MovementState({ m }: { m: BankMovement }) {
   if (m.offBooks) {
     return (
       <span className="badge" title={m.offBooks.note ?? undefined}>
-        خارج از دفتر — {m.offBooks.categoryFa}
+        {m.kind === 'manual' ? 'دستی — ' : 'خارج از دفتر — '}
+        {m.offBooks.categoryFa}
         {m.offBooks.note ? ` · ${m.offBooks.note}` : ''}
       </span>
     );
@@ -679,20 +719,82 @@ function MovementState({ m }: { m: BankMovement }) {
   return <span className="badge badge-warning">برداشت بی‌توضیح</span>;
 }
 
+/** A movement the bank's balances imply but no row carries: found between two SMS. */
+export interface Hole {
+  accountId: string;
+  direction: 'CREDIT' | 'DEBIT';
+  amountIrr: number;
+  /** Just before the SMS whose balance revealed it. */
+  at: number;
+  /** The SMS after the hole, so the row can sit beside it. */
+  beforeId: string;
+}
+
+export type TagTarget = { kind: 'sms'; movement: BankMovement } | { kind: 'hole'; hole: Hole };
+
+/**
+ * Walk the list oldest-first and hold each balance-bearing SMS against the
+ * one before it. The bank's «موجودی بعد» is the outside truth here: when
+ * prev.balance ± everything between does not reach this.balance, money moved
+ * that nobody texted. Hand-written rows count toward «everything between»,
+ * which is how writing one down closes the hole it explains.
+ */
+export function findHoles(accountId: string, items: BankMovement[]): Hole[] {
+  const asc = [...items].sort((a, b) => a.bankTimestamp - b.bankTimestamp);
+  const holes: Hole[] = [];
+  let expected: number | null = null;
+  for (const m of asc) {
+    const signed = m.direction === 'CREDIT' ? m.amountIrr : -m.amountIrr;
+    if (m.kind === 'manual' || m.balanceIrr === null) {
+      if (expected !== null) expected += signed;
+      continue;
+    }
+    if (expected !== null) {
+      const diff = m.balanceIrr - (expected + signed);
+      if (diff !== 0) {
+        holes.push({
+          accountId,
+          direction: diff > 0 ? 'CREDIT' : 'DEBIT',
+          amountIrr: Math.abs(diff),
+          at: m.bankTimestamp - 1000,
+          beforeId: m.id,
+        });
+      }
+    }
+    expected = m.balanceIrr;
+  }
+  return holes;
+}
+
 function Movements({
+  accountId,
   accountName,
   items,
   canWrite,
+  tagging,
+  tagForm,
   onTag,
   onUntag,
 }: {
+  accountId: string;
   accountName: string;
   items: BankMovement[];
   canWrite: boolean;
-  onTag: (m: BankMovement) => void;
+  tagging: TagTarget | null;
+  tagForm: ReactNode;
+  onTag: (t: TagTarget) => void;
   onUntag: (m: BankMovement) => void;
 }) {
   const open = items.filter((m) => m.direction === 'DEBIT' && !m.expense && !m.offBooks).length;
+  const holes = useMemo(() => findHoles(accountId, items), [accountId, items]);
+  const holeBefore = new Map(holes.map((h) => [h.beforeId, h]));
+  const formRow = (
+    <tr data-testid="tag-form-row">
+      <td colSpan={5} style={{ padding: 0 }}>
+        {tagForm}
+      </td>
+    </tr>
+  );
   return (
     <div className="card" style={{ marginBlockStart: 12 }}>
       <div className="card__head">
@@ -701,10 +803,12 @@ function Movements({
           هر پیامک بانک، و آنچه دفتر درباره‌اش می‌گوید.
           {open > 0 &&
             ` ${count(open)} برداشت هنوز توضیح ندارد: یا در «هزینه‌ها» ثبت و به همین پیامک وصل کن، یا این‌جا خارج از دفتر بزن.`}
+          {holes.length > 0 &&
+            ` ${count(holes.length)} جا موجودی بانک با پیامک‌ها نمی‌خواند — ردیف خاکستری را توضیح بده.`}
         </div>
       </div>
       <div className="table-wrap">
-        <table className="app-table" data-testid="movements">
+        <table className="app-table" data-testid="movements" style={{ minWidth: 640 }}>
           <thead>
             <tr>
               <th>زمان</th>
@@ -722,32 +826,93 @@ function Movements({
                 </td>
               </tr>
             )}
-            {items.map((m) => (
-              <tr key={m.id} data-testid={`movement-${m.id}`}>
-                <td className="tabular-nums">{dateTime(m.bankTimestamp)}</td>
-                <td>
-                  <Signed irr={m.amountIrr} sign={m.direction === 'CREDIT' ? '+' : '−'} />
-                </td>
-                <td className="tabular-nums">
-                  {m.balanceIrr === null ? <span className="muted">—</span> : toman(m.balanceIrr)}
-                </td>
-                <td>
-                  <MovementState m={m} />
-                </td>
-                <td className="cell-actions" style={{ whiteSpace: 'nowrap' }}>
-                  {canWrite && !m.matched && !m.expense && !m.offBooks && (
-                    <button type="button" className="btn btn-sm" onClick={() => onTag(m)}>
-                      خارج از دفتر
-                    </button>
+            {items.map((m) => {
+              const hole = holeBefore.get(m.id);
+              const taggingThis = tagging?.kind === 'sms' && tagging.movement.id === m.id;
+              const taggingHole = tagging?.kind === 'hole' && tagging.hole.beforeId === m.id;
+              return (
+                <Fragment key={m.id}>
+                  <tr data-testid={`movement-${m.id}`} style={m.kind === 'manual' ? { opacity: 0.85 } : undefined}>
+                    <td className="tabular-nums">{dateTime(m.bankTimestamp)}</td>
+                    <td>
+                      <Signed irr={m.amountIrr} sign={m.direction === 'CREDIT' ? '+' : '−'} />
+                    </td>
+                    <td className="tabular-nums">
+                      {m.balanceIrr === null ? (
+                        <span className="muted" title={m.kind === 'manual' ? `نوشتهٔ ${m.by ?? ''}` : 'بانک موجودی نگفته'}>
+                          —
+                        </span>
+                      ) : (
+                        toman(m.balanceIrr)
+                      )}
+                    </td>
+                    <td>
+                      <MovementState m={m} />
+                    </td>
+                    <td className="cell-actions" style={{ whiteSpace: 'nowrap' }}>
+                      {canWrite && m.kind === 'sms' && !m.matched && !m.expense && !m.offBooks && (
+                        <button type="button" className="btn btn-sm" onClick={() => onTag({ kind: 'sms', movement: m })}>
+                          خارج از دفتر
+                        </button>
+                      )}
+                      {canWrite && m.kind === 'sms' && m.offBooks && (
+                        <button type="button" className="btn btn-sm" onClick={() => onUntag(m)}>
+                          برگردان به دفتر
+                        </button>
+                      )}
+                      {canWrite && m.kind === 'manual' && (
+                        <button type="button" className="btn btn-sm" onClick={() => onUntag(m)}>
+                          حذف
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {taggingThis && formRow}
+                  {hole && (
+                    <tr
+                      data-testid={`hole-${m.id}`}
+                      style={{ background: 'color-mix(in srgb, var(--warning, #f59e0b) 8%, transparent)' }}
+                    >
+                      <td className="tabular-nums muted">پیش از {dateTime(m.bankTimestamp)}</td>
+                      <td>
+                        <Signed irr={hole.amountIrr} sign={hole.direction === 'CREDIT' ? '+' : '−'} muted />
+                      </td>
+                      <td className="muted">—</td>
+                      <td>
+                        <span
+                          className="badge badge-warning"
+                          title="موجودیِ این پیامک با پیامک قبلی و هرچه بینشان ثبت شده نمی‌خواند"
+                        >
+                          بانک {hole.direction === 'CREDIT' ? 'واریزی' : 'برداشتی'} دیده که پیامکش نرسیده
+                        </span>
+                      </td>
+                      <td className="cell-actions" style={{ whiteSpace: 'nowrap' }}>
+                        {canWrite && hole.direction === 'DEBIT' && (
+                          <a
+                            className="btn btn-sm"
+                            href={`/admin/expenses?account=${encodeURIComponent(accountId)}&amount=${Math.round(hole.amountIrr / 10)}&date=${jalaliToIsoDate(toJalali(hole.at))}`}
+                            title="هزینهٔ فروشگاه بود — در «هزینه‌ها» با همین حساب و مبلغ ثبت می‌شود"
+                          >
+                            هزینهٔ فروشگاه
+                          </a>
+                        )}
+                        {canWrite && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            style={{ marginInlineStart: 6 }}
+                            onClick={() => onTag({ kind: 'hole', hole })}
+                          >
+                            خارج از دفتر
+                          </button>
+                        )}
+                      </td>
+                    </tr>
                   )}
-                  {canWrite && m.offBooks && (
-                    <button type="button" className="btn btn-sm" onClick={() => onUntag(m)}>
-                      برگردان به دفتر
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
+                  {taggingHole && formRow}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -756,25 +921,40 @@ function Movements({
 }
 
 function TagForm({
-  movement,
+  target,
   onClose,
   onDone,
   onError,
 }: {
-  movement: BankMovement;
+  target: TagTarget;
   onClose: () => void;
   onDone: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
-  const debit = movement.direction === 'DEBIT';
+  const direction = target.kind === 'sms' ? target.movement.direction : target.hole.direction;
+  const amountIrr = target.kind === 'sms' ? target.movement.amountIrr : target.hole.amountIrr;
+  const at = target.kind === 'sms' ? target.movement.bankTimestamp : target.hole.at;
+  const debit = direction === 'DEBIT';
   const [category, setCategory] = useState<OffBooksCategory>(debit ? 'PERSONAL' : 'TRANSFER');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   async function submit() {
     setBusy(true);
     try {
-      await api.offBooks(movement.id, category, note.trim() || undefined);
-      onDone('از دفتر بیرون رفت.');
+      if (target.kind === 'sms') {
+        await api.offBooks(target.movement.id, category, note.trim() || undefined);
+        onDone('از دفتر بیرون رفت.');
+      } else {
+        await api.addManualMovement({
+          accountId: target.hole.accountId,
+          direction,
+          amountToman: Math.round(amountIrr / 10),
+          movedAt: at,
+          category,
+          ...(note.trim() ? { note: note.trim() } : {}),
+        });
+        onDone('نوشته شد — بانک و دفتر حالا می‌خوانند.');
+      }
     } catch (e) {
       onError(message(e));
     } finally {
@@ -782,11 +962,18 @@ function TagForm({
     }
   }
   return (
-    <div className="card" style={{ marginBlockStart: 12, borderColor: 'var(--accent)' }} data-testid="tag-form">
+    <div
+      className="card"
+      style={{ margin: 8, borderColor: 'var(--accent)' }}
+      data-testid="tag-form"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onClose();
+      }}
+    >
       <div className="card__head">
         <div className="card__title">
-          خارج از دفتر — {debit ? 'برداشت' : 'واریز'} {toman(movement.amountIrr)} ·{' '}
-          {dateTime(movement.bankTimestamp)}
+          {target.kind === 'hole' ? 'پیامک نرسیده — ' : 'خارج از دفتر — '}
+          {debit ? 'برداشت' : 'واریز'} {toman(amountIrr)} · {dateTime(at)}
         </div>
       </div>
       <div className="filters">
@@ -798,6 +985,7 @@ function TagForm({
             id="tag-category"
             className="form-control"
             value={category}
+            autoFocus
             onChange={(e) => setCategory(e.target.value as OffBooksCategory)}
           >
             {CATEGORIES.filter((c) => c !== 'OTHER').map((c) => (
@@ -817,13 +1005,19 @@ function TagForm({
             value={note}
             placeholder={debit ? 'مثلاً قسط وام پارسیان' : 'مثلاً واریز اشتباهی مادر'}
             onChange={(e) => setNote(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !busy) void submit();
+            }}
           />
         </div>
       </div>
       <p className="muted" style={{ marginBlockStart: 8 }}>
         از هیچ جمعی حساب نمی‌شود — نه واریز، نه برداشت، نه هزینه. موجودی دست نمی‌خورد؛ بانک خودش
         حسابش کرده.
+        {target.kind === 'hole' &&
+          ' این حرکت را بانک نشان داده ولی پیامکش نیامده؛ با همین دکمه در دفتر نوشته می‌شود و ستون «اختلاف با بانک» بسته می‌شود.'}
         {debit &&
+          target.kind === 'sms' &&
           ' کارمزدی که بانک در پیامک جدا فرستاده را «کارمزد بانک» بزن؛ اگر با خودِ برداشت یکی بود، در ردیف هزینه بنویسش، نه این‌جا.'}
       </p>
       <div style={{ display: 'flex', gap: 8, marginBlockStart: 12 }}>
@@ -838,7 +1032,17 @@ function TagForm({
   );
 }
 
-function OffBooksList({ items, csvUrl }: { items: OffBooksItem[]; csvUrl: string }) {
+function OffBooksList({
+  items,
+  csvUrl,
+  canWrite,
+  onRelabel,
+}: {
+  items: OffBooksItem[];
+  csvUrl: string;
+  canWrite: boolean;
+  onRelabel: (it: OffBooksItem, category: OffBooksCategory) => void;
+}) {
   const [category, setCategory] = useState<OffBooksCategory | ''>('');
   const shown = category ? items.filter((i) => i.category === category) : items;
   const totals = useMemo(() => {
@@ -885,10 +1089,11 @@ function OffBooksList({ items, csvUrl }: { items: OffBooksItem[]; csvUrl: string
               {totals[c]!.debit ? <Signed irr={totals[c]!.debit} sign="−" muted /> : null} ({count(totals[c]!.n)})
             </span>
           ))}
+          {totals.OTHER && <span> — «سایر» یعنی هنوز نگفته‌ای چه پولی است؛ از همین ستون عوضش کن.</span>}
         </p>
       )}
       <div className="table-wrap">
-        <table className="app-table" data-testid="off-books">
+        <table className="app-table" data-testid="off-books" style={{ minWidth: 720 }}>
           <thead>
             <tr>
               <th>تاریخ</th>
@@ -913,8 +1118,31 @@ function OffBooksList({ items, csvUrl }: { items: OffBooksItem[]; csvUrl: string
                 <td>{it.accountName ?? <span className="muted">—</span>}</td>
                 <td>
                   <Signed irr={it.amountIrr} sign={it.direction === 'CREDIT' ? '+' : '−'} />
+                  {it.kind === 'manual' && (
+                    <span className="badge" style={{ marginInlineStart: 6 }} title="بانک پیامکش را نفرستاده؛ ادمین نوشته">
+                      دستی
+                    </span>
+                  )}
                 </td>
-                <td>{it.categoryFa}</td>
+                <td>
+                  {canWrite && it.kind !== 'manual' ? (
+                    <select
+                      aria-label={`دلیل ${toman(it.amountIrr)}`}
+                      className="form-control"
+                      style={{ minWidth: 200 }}
+                      value={it.category}
+                      onChange={(e) => onRelabel(it, e.target.value as OffBooksCategory)}
+                    >
+                      {CATEGORIES.map((c) => (
+                        <option key={c} value={c} disabled={c === 'OTHER' && it.category !== 'OTHER'}>
+                          {OFF_BOOKS_CATEGORY_FA[c]}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    it.categoryFa
+                  )}
+                </td>
                 <td>{it.note ?? <span className="muted">—</span>}</td>
                 <td>
                   {it.by}

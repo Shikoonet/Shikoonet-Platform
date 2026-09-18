@@ -653,6 +653,8 @@ export interface AccountStatement {
   unexplainedWithdrawals: { count: number; amountIrr: number };
   offBooksDebits: OffBooksLine[];
   ledger: { expenseCount: number; expenseIrr: number; feeIrr: number; unlinkedCount: number; unlinkedIrr: number };
+  /** Movements written by hand because the bank never texted them (0078). */
+  manual: { count: number; creditIrr: number; debitIrr: number };
   bankDeltaIrr: number;
   gapIrr: number | null;
   beforeStart: boolean;
@@ -674,6 +676,9 @@ export interface StatementTotals {
   gapIrr: number;
   accountsWithGap: number;
   accountsUnknown: number;
+  /** Expenses of the month with no account — money the bank pages cannot see. */
+  expensesNoAccountCount: number;
+  expensesNoAccountIrr: number;
 }
 
 export interface BooksOpening {
@@ -684,7 +689,9 @@ export interface BooksOpening {
 
 export interface OffBooksItem {
   id: string;
-  transactionId: string;
+  /** `manual` — a row the operator wrote because the bank never texted it. */
+  kind: 'sms' | 'manual';
+  transactionId: string | null;
   direction: 'CREDIT' | 'DEBIT';
   amountIrr: number;
   bankTimestamp: number;
@@ -699,6 +706,8 @@ export interface OffBooksItem {
 
 export interface BankMovement {
   id: string;
+  /** `sms` — the bank said it; `manual` — the operator wrote it down. */
+  kind: 'sms' | 'manual';
   direction: 'CREDIT' | 'DEBIT';
   amountIrr: number;
   balanceIrr: number | null;
@@ -706,6 +715,8 @@ export interface BankMovement {
   matched: boolean;
   offBooks: { category: OffBooksCategory; categoryFa: string; note: string | null } | null;
   expense: { id: number; note: string | null } | null;
+  /** Who wrote a manual row. */
+  by?: string;
 }
 
 export interface RevenueAdjustmentRow {
@@ -2131,7 +2142,28 @@ export const api = {
     return req<{ ok: boolean; items: BankMovement[] }>(`/books/movements?${qs}`);
   },
   booksOpening() {
-    return req<{ ok: boolean; opening: BooksOpening | null }>('/books/opening');
+    return req<{ ok: boolean; opening: BooksOpening | null; now: { walletIrr: number; accounts: number; missing: number } }>(
+      '/books/opening',
+    );
+  },
+  addManualMovement(body: {
+    accountId: string;
+    direction: 'CREDIT' | 'DEBIT';
+    amountToman: number;
+    movedAt: number;
+    category: OffBooksCategory;
+    note?: string;
+  }) {
+    return req<{ ok: boolean; id: string }>('/books/manual', { method: 'POST', body: JSON.stringify(body) });
+  },
+  voidManualMovement(id: string) {
+    return req<{ ok: boolean }>(`/books/manual/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+  relabelOffBooks(id: string, category: OffBooksCategory, note?: string) {
+    return req<{ ok: boolean }>(`/books/off-books/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ category, ...(note ? { note } : {}) }),
+    });
   },
   openBooks(force = false) {
     return req<{

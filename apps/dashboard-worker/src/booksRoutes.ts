@@ -9,8 +9,12 @@
  *   GET  /admin/books/off-books?month=[&accountId=&category=]  every movement tagged «not ours»
  *   GET  /admin/books/off-books.csv?month=
  *   GET  /admin/books/withdrawals?accountId=&day=YYYY-MM-DD    debits the expense form may link
- *   GET  /admin/books/opening                                 has the fresh start been written
+ *   GET  /admin/books/opening                                 has the fresh start been written, and the wallet now
  *   POST /admin/books/open {force?}                            write it
+ *   POST /admin/books/manual {accountId,direction,amountToman,movedAt,category,note?}
+ *                                                              a movement the bank did not text (0078)
+ *   DELETE /admin/books/manual/:id                             void it
+ *   PATCH /admin/books/off-books/:id {category,note?}          re-label a tag without restoring and re-tagging
  *
  * The arithmetic lives in `@shikoo/domain` (`books.ts`); this file only
  * parses, checks the role, and shapes. Reads are open to ADMIN and REVIEWER
@@ -27,11 +31,15 @@ import { formatJalali } from '@shikoo/contracts';
 import {
   OFF_BOOKS_CATEGORIES,
   accountStatement,
+  addManualMovement,
   booksOpening,
   monthStatements,
   openBooks,
   parseJalaliMonth,
+  tehranDateStringFromMs,
   tehranDayBoundsFromDate,
+  voidManualMovement,
+  walletNow,
   withdrawalsNear,
   type AccountStatement,
   type OffBooksCategory,
@@ -51,6 +59,20 @@ export const OFF_BOOKS_CATEGORY_FA: Record<OffBooksCategory, string> = {
 };
 
 const toman = (irr: number) => irr / IRR_PER_TOMAN;
+
+/** Expenses of the month that name no account — real money the bank pages cannot see. */
+async function expensesWithoutAccount(db: D1Database, month: { start: number; end: number }) {
+  const row = await db
+    .prepare(
+      `SELECT count(*)::int AS n, COALESCE(SUM(-amount_irr + fee_irr),0) AS irr
+         FROM revenue_adjustments
+        WHERE kind = 'EXPENSE' AND voided_at IS NULL AND financial_account_id IS NULL
+          AND spent_on >= ?1::date AND spent_on < ?2::date`,
+    )
+    .bind(tehranDateStringFromMs(month.start), tehranDateStringFromMs(month.end))
+    .first<{ n: number; irr: string | number }>();
+  return { count: row?.n ?? 0, amountIrr: Number(row?.irr ?? 0) };
+}
 
 function statementTotals(accounts: AccountStatement[]) {
   const sum = (pick: (s: AccountStatement) => number) => accounts.reduce((acc, s) => acc + pick(s), 0);
@@ -100,11 +122,12 @@ export function registerBooksRoutes(
     const loaded = await loadStatements(c);
     if ('error' in loaded) return c.json({ ok: false, error: loaded.error }, 400);
     const { start: _s, end: _e, ...monthOut } = loaded.month;
+    const noAccount = c.req.query('accountId') ? { count: 0, amountIrr: 0 } : await expensesWithoutAccount(c.env.DB, loaded.month);
     return c.json({
       ok: true,
       month: { ...monthOut, start: loaded.month.start, end: loaded.month.end },
       accounts: loaded.accounts,
-      totals: statementTotals(loaded.accounts),
+      totals: { ...statementTotals(loaded.accounts), expensesNoAccountCount: noAccount.count, expensesNoAccountIrr: noAccount.amountIrr },
       opening: await booksOpening(c.env.DB),
     });
   });
@@ -195,20 +218,69 @@ export function registerBooksRoutes(
       )
       .bind(...binds)
       .all<OffBooksRow>();
-    const items = (rows.results ?? []).map((r) => ({
-      id: r.id,
-      transactionId: r.transaction_id,
-      direction: r.direction,
-      amountIrr: Number(r.amount_irr),
-      bankTimestamp: Number(r.bank_timestamp),
-      accountId: r.account_id,
-      accountName: r.account_name,
-      category: r.category,
-      categoryFa: OFF_BOOKS_CATEGORY_FA[r.category] ?? r.category,
-      note: r.reason,
-      by: r.declined_by,
-      at: Number(r.declined_at),
-    }));
+    const mbinds: unknown[] = [month.start, month.end];
+    let mextra = '';
+    if (q.accountId) {
+      mbinds.push(q.accountId);
+      mextra += ` AND m.financial_account_id = ?${mbinds.length}`;
+    }
+    if (q.category) {
+      mbinds.push(q.category);
+      mextra += ` AND m.category = ?${mbinds.length}`;
+    }
+    const manual = await db
+      .prepare(
+        `SELECT m.id, m.direction, m.amount_irr, m.moved_at, m.financial_account_id AS account_id,
+                fa.display_name AS account_name, m.category, m.note, m.created_by, m.created_at
+           FROM manual_bank_movements m
+           LEFT JOIN financial_accounts fa ON fa.id = m.financial_account_id
+          WHERE m.voided_at IS NULL AND m.moved_at >= ?1 AND m.moved_at < ?2${mextra}`,
+      )
+      .bind(...mbinds)
+      .all<{
+        id: string;
+        direction: 'CREDIT' | 'DEBIT';
+        amount_irr: string | number;
+        moved_at: string | number;
+        account_id: string;
+        account_name: string | null;
+        category: OffBooksCategory;
+        note: string | null;
+        created_by: string;
+        created_at: string | number;
+      }>();
+    const items = [
+      ...(rows.results ?? []).map((r) => ({
+        id: r.id,
+        kind: 'sms' as const,
+        transactionId: r.transaction_id as string | null,
+        direction: r.direction,
+        amountIrr: Number(r.amount_irr),
+        bankTimestamp: Number(r.bank_timestamp),
+        accountId: r.account_id,
+        accountName: r.account_name,
+        category: r.category,
+        categoryFa: OFF_BOOKS_CATEGORY_FA[r.category] ?? r.category,
+        note: r.reason,
+        by: r.declined_by,
+        at: Number(r.declined_at),
+      })),
+      ...(manual.results ?? []).map((m) => ({
+        id: m.id,
+        kind: 'manual' as const,
+        transactionId: null as string | null,
+        direction: m.direction,
+        amountIrr: Number(m.amount_irr),
+        bankTimestamp: Number(m.moved_at),
+        accountId: m.account_id as string | null,
+        accountName: m.account_name,
+        category: m.category,
+        categoryFa: OFF_BOOKS_CATEGORY_FA[m.category] ?? m.category,
+        note: m.note,
+        by: m.created_by,
+        at: Number(m.created_at),
+      })),
+    ].sort((x, y) => y.bankTimestamp - x.bankTimestamp);
     const totals: Record<string, { count: number; creditIrr: number; debitIrr: number }> = {};
     for (const it of items) {
       const t = (totals[it.category] ??= { count: 0, creditIrr: 0, debitIrr: 0 });
@@ -309,10 +381,25 @@ export function registerBooksRoutes(
         expense_note: string | null;
         matched: boolean;
       }>();
-    return c.json({
-      ok: true,
-      items: (rows.results ?? []).map((r) => ({
+    const manual = await c.env.DB.prepare(
+      `SELECT id, direction, amount_irr, moved_at, category, note, created_by
+         FROM manual_bank_movements
+        WHERE financial_account_id = ?1 AND voided_at IS NULL AND moved_at >= ?2 AND moved_at < ?3`,
+    )
+      .bind(accountId, from, month.end)
+      .all<{
+        id: string;
+        direction: 'CREDIT' | 'DEBIT';
+        amount_irr: string | number;
+        moved_at: string | number;
+        category: OffBooksCategory;
+        note: string | null;
+        created_by: string;
+      }>();
+    const items = [
+      ...(rows.results ?? []).map((r) => ({
         id: r.id,
+        kind: 'sms' as const,
         direction: r.direction,
         amountIrr: Number(r.amount_irr),
         balanceIrr: r.balance_irr == null ? null : Number(r.balance_irr),
@@ -323,7 +410,104 @@ export function registerBooksRoutes(
           : null,
         expense: r.expense_id == null ? null : { id: Number(r.expense_id), note: r.expense_note },
       })),
+      // Hand-written rows sit in the same list, at the moment the operator
+      // said the bank moved the money, so the balance chain can be read
+      // across them.
+      ...(manual.results ?? []).map((m) => ({
+        id: m.id,
+        kind: 'manual' as const,
+        direction: m.direction,
+        amountIrr: Number(m.amount_irr),
+        balanceIrr: null,
+        bankTimestamp: Number(m.moved_at),
+        matched: false,
+        offBooks: { category: m.category, categoryFa: OFF_BOOKS_CATEGORY_FA[m.category], note: m.note },
+        expense: null,
+        by: m.created_by,
+      })),
+    ].sort((a, b) => b.bankTimestamp - a.bankTimestamp);
+    return c.json({ ok: true, items });
+  });
+
+  const ManualBody = z
+    .object({
+      accountId: z.string().min(1),
+      direction: z.enum(['CREDIT', 'DEBIT']),
+      amountToman: z.number().int().positive(),
+      movedAt: z.number().int().positive(),
+      category: z.enum(OFF_BOOKS_CATEGORIES),
+      note: z.string().trim().max(200).optional(),
+    })
+    .strict();
+
+  /**
+   * A movement the bank did not text. ADMIN only, like the fresh start:
+   * every write under `/admin/` is the owner's (`write-roles.test.ts`), and
+   * this one puts the owner's own word into the monthly statement. Never in
+   * the future — the operator is explaining a hole the bank has already
+   * shown, not predicting one.
+   */
+  app.post('/api/v1/admin/books/manual', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const body = ManualBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const now = Date.now();
+    if (body.data.movedAt > now) return c.json({ ok: false, error: 'in_the_future' }, 400);
+    const r = await addManualMovement(c.env.DB, {
+      accountId: body.data.accountId,
+      direction: body.data.direction,
+      amountIrr: body.data.amountToman * IRR_PER_TOMAN,
+      movedAt: body.data.movedAt,
+      category: body.data.category,
+      note: body.data.note || null,
+      actorEmail: ident.email,
+      now,
     });
+    if (!r.ok) return c.json({ ok: false, error: 'account_not_found' }, 404);
+    await audit(c.env.DB, ident, 'books.manual_movement', 'MANUAL_BANK_MOVEMENT', r.id, null, body.data, body.data.note ?? null);
+    return c.json({ ok: true, id: r.id });
+  });
+
+  app.delete('/api/v1/admin/books/manual/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const id = c.req.param('id');
+    const r = await voidManualMovement(c.env.DB, { id, actorEmail: ident.email, now: Date.now() });
+    if (!r.ok) return c.json({ ok: false, error: 'not_found' }, 404);
+    await audit(c.env.DB, ident, 'books.manual_movement_voided', 'MANUAL_BANK_MOVEMENT', id, null, null, null);
+    return c.json({ ok: true });
+  });
+
+  const RelabelBody = z
+    .object({ category: z.enum(OFF_BOOKS_CATEGORIES), note: z.string().trim().max(200).optional() })
+    .strict();
+
+  /**
+   * Change a tag's reason in place. Eight of the first ten tags on
+   * production were «سایر» because «رد کردن» on the payments page had no
+   * category picker; restoring and re-tagging each one is the wrong price
+   * for that.
+   */
+  app.patch('/api/v1/admin/books/off-books/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const id = c.req.param('id');
+    const body = RelabelBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const before = await c.env.DB.prepare(
+      `SELECT category, reason FROM income_declined_transactions WHERE id = ?1 AND restored_at IS NULL`,
+    )
+      .bind(id)
+      .first<{ category: OffBooksCategory; reason: string | null }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+    await c.env.DB.prepare(
+      `UPDATE income_declined_transactions SET category = ?2, reason = COALESCE(?3, reason) WHERE id = ?1 AND restored_at IS NULL`,
+    )
+      .bind(id, body.data.category, body.data.note ?? null)
+      .run();
+    await audit(c.env.DB, ident, 'books.off_books_relabelled', 'INCOME_DECLINED', id, before, body.data, null);
+    return c.json({ ok: true });
   });
 
   app.get('/api/v1/admin/books/withdrawals', async (c) => {
@@ -342,7 +526,9 @@ export function registerBooksRoutes(
   app.get('/api/v1/admin/books/opening', async (c) => {
     const ident = c.get('identity');
     if (!mayRead(ident.role)) return c.json({ ok: false, error: 'forbidden' }, 403);
-    return c.json({ ok: true, opening: await booksOpening(c.env.DB) });
+    // The wallet this instant beside the opening: the card that offers the
+    // fresh start reads it, whichever month the page is on.
+    return c.json({ ok: true, opening: await booksOpening(c.env.DB), now: await walletNow(c.env.DB, Date.now()) });
   });
 
   const OpenBody = z.object({ force: z.boolean().optional() }).strict();

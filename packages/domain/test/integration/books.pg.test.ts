@@ -11,10 +11,13 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPostgresD1 } from '@shikoo/db';
 import {
   accountStatement,
+  addManualMovement,
   booksOpening,
   monthStatements,
   openBooks,
   parseJalaliMonth,
+  voidManualMovement,
+  walletNow,
   withdrawalsNear,
 } from '../../src/books.js';
 import { declineIncomeTransaction, restoreIncomeTransaction, isOffBooksEligible } from '../../src/declineIncomeTransaction.js';
@@ -93,6 +96,7 @@ async function purge(): Promise<void> {
   await db.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM income_declined_transactions WHERE transaction_candidate_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM account_opening_balances WHERE financial_account_id LIKE ?1`).bind(`${P}%`).run();
+  await db.prepare(`DELETE FROM manual_bank_movements WHERE financial_account_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM transaction_candidates WHERE id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM raw_sms_events WHERE id LIKE ?1`).bind(`${P}%`).run();
 }
@@ -187,6 +191,45 @@ describe('accountStatement', () => {
     const s = (await accountStatement(db, ACCT, month))!;
     expect(s.closing?.balanceIrr).toBe(1_500_000);
     expect(s.gapIrr).toBe(300_000);
+  });
+
+  it('a hole the bank showed is closed by a hand-written movement, and reopens when it is voided', async () => {
+    await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 1_000_000, at: month.start - DAY });
+    // 1M, then a 200k deposit and the bank says 700k: 500k left, no SMS.
+    await tx({ direction: 'CREDIT', amountIrr: 200_000, balanceIrr: 700_000, at: T(2) });
+    expect((await accountStatement(db, ACCT, month))!.gapIrr).toBe(-500_000);
+
+    const w = await addManualMovement(db, {
+      accountId: ACCT,
+      direction: 'DEBIT',
+      amountIrr: 500_000,
+      movedAt: T(2) - 1000,
+      category: 'PERSONAL',
+      actorEmail: 't',
+      now: NOW,
+    });
+    expect(w.ok).toBe(true);
+    const s = (await accountStatement(db, ACCT, month))!;
+    expect(s.gapIrr).toBe(0);
+    expect(s.manual).toEqual({ count: 1, creditIrr: 0, debitIrr: 500_000 });
+    expect(s.offBooksDebits).toEqual([{ category: 'PERSONAL', count: 1, amountIrr: 500_000 }]);
+    // Written after the closing SMS: in the boxes, not in the check.
+    await addManualMovement(db, { accountId: ACCT, direction: 'DEBIT', amountIrr: 1, movedAt: T(3), category: 'PERSONAL', actorEmail: 't', now: NOW });
+    expect((await accountStatement(db, ACCT, month))!.gapIrr).toBe(0);
+
+    expect(w.ok && (await voidManualMovement(db, { id: w.id, actorEmail: 't', now: NOW })).ok).toBe(true);
+    expect(w.ok && (await voidManualMovement(db, { id: w.id, actorEmail: 't', now: NOW })).ok).toBe(false);
+    expect((await accountStatement(db, ACCT, month))!.gapIrr).toBe(-500_000);
+    expect((await addManualMovement(db, { accountId: `${P}nope`, direction: 'DEBIT', amountIrr: 1, movedAt: T(1), category: 'OTHER', actorEmail: 't', now: NOW })).ok).toBe(false);
+  });
+
+  it('the wallet this instant is the last balance of every live account, and says who never sent one', async () => {
+    await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 1_000_000, at: T(1) });
+    await tx({ account: ACCT2, direction: 'CREDIT', amountIrr: 100, balanceIrr: 250_000, at: T(1) });
+    await tx({ account: ACCT2, direction: 'CREDIT', amountIrr: 100, balanceIrr: null, at: T(2) });
+    const w = await walletNow(db, NOW);
+    expect(w.walletIrr).toBeGreaterThanOrEqual(1_250_000);
+    expect(w.accounts).toBeGreaterThanOrEqual(2);
   });
 
   it('closes on the opening when the month moved nothing', async () => {

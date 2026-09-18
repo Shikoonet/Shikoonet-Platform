@@ -2939,12 +2939,16 @@ function DeclineIncomeModal({
   onError: (msg: string) => void;
 }) {
   const [reason, setReason] = useState('');
+  // The same reasons «دفتر بانک» uses. Without this the tag landed as «سایر»
+  // and the monthly statement could not say whose money it was — eight of
+  // the first ten tags on production.
+  const [category, setCategory] = useState('PERSONAL');
   const [busy, setBusy] = useState(false);
 
   async function submit() {
     setBusy(true);
     try {
-      await api.declineIncome(item.id, reason.trim() || undefined);
+      await api.declineIncome(item.id, reason.trim() || undefined, category);
       onDone();
     } catch (e) {
       onError(e instanceof Error ? e.message : 'decline_failed');
@@ -2964,11 +2968,21 @@ function DeclineIncomeModal({
           حساب: <AccountRef account={item} />
         </p>
         <p className="muted">
-          This will remove it from active Income. The original bank transaction will remain intact
-          and can be restored later.
+          از «واریز مشتری‌ها» بیرون می‌رود و در «دفتر بانک» زیر «خارج از دفتر» می‌نشیند. پیامک بانک
+          دست نمی‌خورد و هر وقت خواستی برمی‌گردد.
         </p>
         <label>
-          دلیل
+          چه پولی است
+          <select value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="TRANSFER">جابه‌جایی بین حساب‌های خودمان</option>
+            <option value="PERSONAL">شخصی</option>
+            <option value="MISTAKE_RETURNED">اشتباهی و برگشت‌داده‌شده</option>
+            <option value="BANK_FEE">کارمزد بانک</option>
+            <option value="BANK_INTEREST">سود بانکی</option>
+          </select>
+        </label>
+        <label>
+          یادداشت
           <input value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
         <div className="modal__actions">

@@ -914,12 +914,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ tab }),
     }),
-  declineIncome: (transactionId: string, reason?: string) =>
+  declineIncome: (transactionId: string, reason?: string, category?: string) =>
     req<{ ok: boolean }>(
       `/api/v1/transactions/${encodeURIComponent(transactionId)}/decline-income`,
       {
         method: 'POST',
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({ reason, ...(category ? { category } : {}) }),
       },
     ),
   declineIncomeBulk: (transactionIds: string[], reason?: string) =>
