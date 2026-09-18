@@ -139,6 +139,14 @@ const FIXTURES: readonly Fixture[] = [
     expect: { classification: 'BANK_TRANSACTION', direction: 'CREDIT', amountIrr: 1_000_000 },
   },
   {
+    parserId: 'keshavarzi-v1',
+    label: 'Keshavarzi',
+    // The card's four digits are the last number in the body, and `generic-credit`
+    // was recording them as the balance — every production row said 4,006 IRR.
+    body: ['واریز1,000,000', 'مانده12,054,098', '050627-21:30', 'کارت4006*', 'bki. ir'].join('\n'),
+    expect: { classification: 'BANK_TRANSACTION', direction: 'CREDIT', amountIrr: 1_000_000 },
+  },
+  {
     parserId: 'melli-transfer-v1',
     label: 'Melli transfer',
     body: [
@@ -271,7 +279,8 @@ describe('every registered parser has a fixture', () => {
     // wrong. This one exists so the number itself has somewhere to live that
     // is checked, rather than being recounted by hand into a document.
     // Fifteen since 2026-08-29: `mellat-credit-v1` joined the named banks.
-    expect(REGISTRY.length).toBe(15);
+    // Sixteen since 2026-09-19: `keshavarzi-v1`, for the same reason as Mellat.
+    expect(REGISTRY.length).toBe(16);
 
     // And the ids in order, so a reordering — which changes which parser wins
     // a body both could claim — is a visible diff rather than a silent one.
@@ -283,6 +292,7 @@ describe('every registered parser has a fixture', () => {
       'melli-transfer-v1',
       'gardeshgari-credit-v1',
       'mellat-credit-v1',
+      'keshavarzi-v1',
       'internet-transfer-signed-v1',
       'account-transfer-signed-v1',
       'parsian-signed-v1',
