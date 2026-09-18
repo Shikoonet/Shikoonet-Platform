@@ -742,21 +742,35 @@
   font-size: 0.75rem;
 }
 
-.bot-verified-layout--wide {
+ /* «تایید خودکار ربات» — the table and its rail (#321).
+
+   The rail is the FIRST grid column, and in an RTL document the first column
+   is the right-hand one: the reading edge. It used to be `minmax(0,1fr) 290px`
+   with the main first, which put the live stats on the far left of a page read
+   from the right. Placement is explicit rather than by DOM order so the DOM can
+   stay main-then-rail, which is the order a screen reader wants. */
+.bot-verified-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 290px;
+  grid-template-columns: 290px minmax(0, 1fr);
   gap: var(--space-lg);
   align-items: start;
 }
 
 .bot-verified-layout__main {
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   gap: 14px;
   min-width: 0;
 }
 
+/* `grid-row: 1` on both, because the DOM order is main-then-rail and the
+   auto-placement cursor has already passed column 1 by the time the rail asks
+   for it — without the row it lands in row 2, under the table. */
 .bot-verified-layout__rail {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
@@ -795,6 +809,31 @@
   min-width: 900px;
 }
 
+/* Six columns since #321, so the floor is lower and a 1366px laptop with the
+   rail beside it no longer scrolls. */
+.txn-table--bot-auto-verified {
+  min-width: 640px;
+}
+
+/* One line per row on the wide table. The account cell used to be three
+   stacked spans in a column narrow enough to wrap each of them, and a row was
+   five lines tall on a 1600px screen. */
+.txn-table--bot-auto-verified tbody td {
+  white-space: nowrap;
+  height: auto;
+}
+
+.txn-table--bot-auto-verified .txn-row__customer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem 0.5rem;
+}
+
+.txn-table--bot-auto-verified .txn-row__customer strong {
+  display: inline;
+}
+
 .txn-table thead th {
   text-align: start;
   padding: 0.55rem 0.65rem;
@@ -827,18 +866,6 @@
   font-weight: 600;
 }
 
-.txn-row__verified-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.35rem;
-  height: 1.35rem;
-  border-radius: 999px;
-  background: var(--gold-muted);
-  color: var(--gold);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
 
 .txn-row__customer strong {
   display: block;
@@ -1065,13 +1092,86 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .bot-verified-layout--wide {
+  /* One column; the rail comes first, as two cards side by side above the
+     table. Before this the rail was simply not rendered under 1200px. */
+  .bot-verified-layout {
     grid-template-columns: 1fr;
   }
 
+  .bot-verified-layout__main {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
   .bot-verified-layout__rail {
+    grid-column: 1;
+    grid-row: 1;
     position: static;
-  }}
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+}
+
+@media (max-width: 767px) {
+  .bot-verified-layout__rail {
+    grid-template-columns: 1fr;
+  }
+
+  /* The table becomes a stack of cards. Six columns of identifiers do not
+     fit a phone, and a 900px table under `overflow-x: auto` is a scrollbar
+     the operator drags to find the amount. Each cell is labelled by its own
+     `data-label`, which is the header it stood under. */
+  .txn-table--bot-auto-verified {
+    min-width: 0;
+  }
+
+  .txn-table--bot-auto-verified thead {
+    display: none;
+  }
+
+  .txn-table--bot-auto-verified tbody,
+  .txn-table--bot-auto-verified tr {
+    display: block;
+  }
+
+  .txn-table--bot-auto-verified tr {
+    position: relative;
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .txn-table--bot-auto-verified tbody td {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.15rem 0;
+    border: 0;
+    height: auto;
+  }
+
+  .txn-table--bot-auto-verified td[data-label]::before {
+    content: attr(data-label);
+    flex: 0 0 5.5rem;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+  }
+
+  .txn-table--bot-auto-verified .txn-row__actions {
+    position: absolute;
+    top: 0.4rem;
+    inset-inline-end: 0.5rem;
+    padding: 0;
+  }
+
+  .txn-table--bot-auto-verified .txn-row--new td:first-child {
+    box-shadow: none;
+  }
+
+  .txn-table--bot-auto-verified .txn-row--new {
+    box-shadow: inset 3px 0 0 0 var(--gold);
+  }
+}
 
 @media (max-width: 639px) {
 
@@ -2995,12 +3095,6 @@
   color: var(--text-base);
 }
 
-.txn-row__telegram-id {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 9rem;
-}
 
 /* === DEV: exact Verified At === */
 .txn-row__verified-at {

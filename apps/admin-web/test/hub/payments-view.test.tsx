@@ -366,7 +366,9 @@ describe('PaymentsView tabs', () => {
     });
     renderView();
     fireEvent.click(await hubNav().findByRole('tab', { name: /تایید خودکار ربات 143/i }));
-    expect(await screen.findByText(/@sara/)).toBeTruthy();
+    // In the table and again in «فعالیت اخیر» — the rail is in the DOM at
+    // every width since #321.
+    expect((await screen.findAllByText(/@sara/)).length).toBeGreaterThan(0);
     expect(screen.getByText('A12B')).toBeTruthy();
     // Verified At must be rendered as exact YYYY-MM-DD HH:mm:ss (Asia/Tehran)
     // rather than a relative "X minutes ago".
