@@ -263,9 +263,18 @@ describe('the sidebar counts what is waiting', () => {
     'draws the pending count beside «لیست درخواست‌ها» and «پرداخت‌ها», and nothing beside the rest',
     SHELL,
     async () => {
+      // `openClaims`, not `unreviewedPayments`: the badge is «در انتظار بررسی»
+      // alone, not the three-queue sum the dashboard strip draws (Sam,
+      // 2026-09-18). The sum is in the fixture so a badge that read it
+      // would say ۴۰ and fail.
       vi.stubGlobal(
         'fetch',
-        withAttention({ pendingRequests: 3, unreviewedPayments: 12, staleDevices: 4 }),
+        withAttention({
+          pendingRequests: 3,
+          openClaims: 12,
+          unreviewedPayments: 40,
+          staleDevices: 4,
+        }),
       );
       await drawApp();
       await waitFor(() =>
@@ -289,7 +298,10 @@ describe('the sidebar counts what is waiting', () => {
   );
 
   it('draws no badge at all when nothing is waiting', SHELL, async () => {
-    vi.stubGlobal('fetch', withAttention({ pendingRequests: 0, unreviewedPayments: 0 }));
+    vi.stubGlobal(
+      'fetch',
+      withAttention({ pendingRequests: 0, openClaims: 0, unreviewedPayments: 20 }),
+    );
     await drawApp();
     // Let the attention query settle before asserting its absence.
     await waitFor(() =>

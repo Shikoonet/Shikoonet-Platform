@@ -353,13 +353,18 @@ function Shell({
   // re-asked on every section change, because approving a request on
   // «لیست درخواست‌ها» and then leaving should not show the old number for
   // another thirty seconds. Silent on error — a badge is a hint, not a page.
+  //
+  // «پرداخت‌ها» counts «در انتظار بررسی» alone, not the three-queue sum the
+  // dashboard strip adds up — Sam, 2026-09-18: twenty unclaimed bank credits
+  // are not twenty things a customer is waiting behind; a receipt nobody
+  // has decided about is.
   const attention = cache.useQuery<{ attention: Attention }>(QK.attention, {
     fetcher: () => api.attention(),
   }).data?.attention;
   useEffect(() => cache.invalidate(QK.attention), [cache, page]);
   const waiting = (id: PageId): number =>
     id === 'payments'
-      ? (attention?.unreviewedPayments ?? 0)
+      ? (attention?.openClaims ?? 0)
       : id === 'requests'
         ? (attention?.pendingRequests ?? 0)
         : 0;
