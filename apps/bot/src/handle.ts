@@ -783,9 +783,11 @@ async function handleReceipt(
   //
   // Nothing is granted by recording it, which is the same reason the membership
   // gate lets a receipt past: `recordReceipt` attaches evidence to a payment
-  // that is ALREADY waiting and answers `none` when there is none. An operator
-  // still decides. A blocked customer cannot start a payment to attach one to.
-  const result = await recordReceipt(tx, user.id, fileId, Date.now(), isDocument);
+  // that is already waiting — or, for the one live invoice a photo can only be
+  // about, opens the claim the way «پرداخت کردم» would (#309) — and answers
+  // `none` when there is neither. An operator still decides. A blocked
+  // customer cannot start a payment to attach one to.
+  const result = await recordReceipt(tx, user.id, from.id, fileId, Date.now(), isDocument);
 
   // The silence is kept for the case it was written for. A blocked customer
   // with nothing waiting gets no answer at all, so the block still costs a

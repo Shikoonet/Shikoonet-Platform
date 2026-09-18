@@ -611,7 +611,9 @@ export type ReceiptResult =
  * one claim under review can only be about that claim, and asking them to press
  * something before sending it is how the legacy bot lost receipts — its
  * `cart_to_cart_user` step is cleared by any other tap, and the picture that
- * arrives afterwards is dropped without a word.
+ * arrives afterwards is dropped without a word. The same reasoning one step
+ * earlier: a photo from a customer with one live invoice and no claim IS
+ * their «پرداخت کردم», and opens it (`claimFromPhoto`, #309).
  *
  * The claim keeps the handle, never the picture. Nothing is downloaded, so a
  * receipt costs no storage and no egress, and the admin sees the original
@@ -631,6 +633,7 @@ export type ReceiptResult =
 export async function recordReceipt(
   tx: D1DatabaseSession,
   userId: number,
+  telegramId: number,
   fileId: string,
   now: number = Date.now(),
   /** True when it arrived with «Send as File» and must be sent back as one. */
@@ -641,27 +644,8 @@ export async function recordReceipt(
   if (!RECEIPT_FILE_ID.test(fileId)) return { outcome: 'none' };
   const stored = storedReceipt(fileId, isDocument);
 
-  const claim = await tx
-    .prepare(
-      `SELECT c.id, c.status, p.public_id
-         FROM payments p
-         JOIN payment_claims c ON c.external_order_id = 'shikoo:' || p.public_id
-        WHERE p.user_id = ?1
-          AND (p.status = 'AWAITING_REVIEW'
-               OR (p.status = 'PAID' AND c.status = 'FULFILLED_UNRECONCILED'))
-        -- A claim with no receipt yet wins, and only then the newest.
-        --
-        -- On updated_at alone (no backticks here: this is inside a JS template
-        -- literal) a customer with two open claims could only ever feed the newer
-        -- one: the first photo landed there, and the second REPLACED it rather
-        -- than reaching the older claim, which then had no way to receive
-        -- evidence at all. Under CONTINUITY that also released the wrong order
-        -- and acknowledged a receipt the other one was waiting for.
-        ORDER BY (c.receipt_url_or_r2_key IS NOT NULL), p.updated_at DESC, p.id DESC
-        LIMIT 1`,
-    )
-    .bind(userId)
-    .first<{ id: string; status: string; public_id: string }>();
+  const claim =
+    (await claimUnderReview(tx, userId)) ?? (await claimFromPhoto(tx, userId, telegramId, now));
   if (!claim) return { outcome: 'none' };
 
   // The status is checked in the statement, not above it. A claim verified
@@ -712,6 +696,83 @@ export async function recordReceipt(
   return updated.receipt_submitted_at === now
     ? { outcome: 'received', publicId: claim.public_id }
     : { outcome: 'replaced', publicId: claim.public_id };
+}
+
+type ClaimRow = { id: string; public_id: string };
+
+/** The claim the customer is waiting on, if they have pressed «پرداخت کردم». */
+async function claimUnderReview(tx: D1DatabaseSession, userId: number): Promise<ClaimRow | null> {
+  return tx
+    .prepare(
+      `SELECT c.id, c.status, p.public_id
+         FROM payments p
+         JOIN payment_claims c ON c.external_order_id = 'shikoo:' || p.public_id
+        WHERE p.user_id = ?1
+          AND (p.status = 'AWAITING_REVIEW'
+               OR (p.status = 'PAID' AND c.status = 'FULFILLED_UNRECONCILED'))
+        -- A claim with no receipt yet wins, and only then the newest.
+        --
+        -- On updated_at alone (no backticks here: this is inside a JS template
+        -- literal) a customer with two open claims could only ever feed the newer
+        -- one: the first photo landed there, and the second REPLACED it rather
+        -- than reaching the older claim, which then had no way to receive
+        -- evidence at all. Under CONTINUITY that also released the wrong order
+        -- and acknowledged a receipt the other one was waiting for.
+        ORDER BY (c.receipt_url_or_r2_key IS NOT NULL), p.updated_at DESC, p.id DESC
+        LIMIT 1`,
+    )
+    .bind(userId)
+    .first<ClaimRow>();
+}
+
+/**
+ * The picture that came BEFORE the button.
+ *
+ * Issue #309: a customer transfers, screenshots, sends the picture — and only
+ * then presses «پرداخت کردم». Nothing was under review when the photo
+ * arrived, so it was answered «الان پرداختی در انتظار بررسی ندارید» and
+ * dropped; the claim opened seconds later went to the queue as «رسید
+ * نفرستاد», and since 2026-09-17 a receipt is a condition of automatic
+ * verification, so that order waited for a person who believed the customer
+ * had sent nothing. Measured on production: bank 11:54:17, button 11:55:41 —
+ * eighty-five seconds is exactly «screenshot, send, then tap».
+ *
+ * A picture is a stronger claim than a button. If the customer has exactly
+ * ONE live invoice, the photo is their «پرداخت کردم»: the claim is opened by
+ * the same path the button takes — same lock, same deadline check, same
+ * unique index — and the receipt lands on it. Two live invoices and it is
+ * not known which one they mean, so nothing is guessed and today's answer
+ * stands; `recordPaidClick` says «expired» for a deadline the sweep has not
+ * reached yet and that is a «none» here too.
+ */
+async function claimFromPhoto(
+  tx: D1DatabaseSession,
+  userId: number,
+  telegramId: number,
+  now: number,
+): Promise<ClaimRow | null> {
+  const live = await tx
+    .prepare(
+      `SELECT p.order_id
+         FROM payments p
+         JOIN orders o ON o.id = p.order_id
+        WHERE p.user_id = ?1
+          AND p.status = 'PENDING'
+          AND o.status = 'AWAITING_PAYMENT'
+          AND (o.expires_at IS NULL OR o.expires_at > to_timestamp(?2 / 1000.0))
+        LIMIT 2`,
+    )
+    .bind(userId, now)
+    .all<{ order_id: number }>();
+  const [only, second] = live.results ?? [];
+  if (!only || second) return null;
+
+  const paid = await recordPaidClick(tx, userId, only.order_id, telegramId, now);
+  if (paid.outcome !== 'claimed' && paid.outcome !== 'already') return null;
+  return tx
+    .prepare(`SELECT id, ?2 AS public_id FROM payment_claims WHERE external_order_id = ?1`)
+    .bind(`shikoo:${paid.publicId}`, paid.publicId)
+    .first<ClaimRow>();
 }
 
 /** The receipt an admin is about to look at, if the customer sent one. */
