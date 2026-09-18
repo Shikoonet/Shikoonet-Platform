@@ -6,9 +6,11 @@
  *
  *   - The line moves on MONEY, not on being shown (Sam, 2026-08-21). A
  *     shown-and-abandoned checkout is the common case, and when that cost a
- *     card its turn the money piled onto a fraction of the cards.
- *   - A card in a customer's hands is out of the line for ten minutes — longer
- *     once they press «پرداخت کردم» — and the lease is the open `payments` row.
+ *     card its turn the money piled onto a fraction of the cards. Money is
+ *     the bank SMS (0074, issue #304), or a claim settled without one.
+ *   - A card in a customer's hands is out of the line for ten minutes — for
+ *     any amount — and the lease is the open `payments` row. Handed out busy
+ *     anyway, because every card is, it takes a ticket.
  *   - Only a live card is in the line: card ACTIVE, account on.
  *
  * These count real assignments through `rotateCard` rather than reasoning about
@@ -19,7 +21,7 @@
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { CARD_HOLD_MS } from '@shikoo/domain';
 import { afterEach, describe, expect, it } from 'vitest';
-import { rotateCard } from '../src/payment.js';
+import { rotateCard, ticketBusyCard } from '../src/payment.js';
 import { db } from './helpers/env.js';
 
 /** A fixed instant every draw is measured from — the picker reads no clock. */
@@ -100,14 +102,18 @@ async function pool(count: number): Promise<string[]> {
   return cards;
 }
 
-/** Every fixture invoice and claim in this file is for this much. */
-const AMOUNT = 1_000_000;
-
-/** Assign `times` cards through the real rotation and count who got them. */
-async function draw(times: number, at: number = T, amount = AMOUNT): Promise<Map<string, number>> {
+/**
+ * Assign `times` cards through the real rotation and count who got them. The
+ * two statements `checkoutFor` runs around its insert, without the insert.
+ */
+async function draw(times: number, at: number = T): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   for (let i = 0; i < times; i++) {
-    const card = await db.withSession((tx) => rotateCard(tx, at + i, amount));
+    const card = await db.withSession(async (tx) => {
+      const picked = await rotateCard(tx, at + i);
+      if (picked) await ticketBusyCard(tx, picked);
+      return picked;
+    });
     if (!card) throw new Error(`rotation returned no card on draw ${i}`);
     counts.set(card.card_digits, (counts.get(card.card_digits) ?? 0) + 1);
   }
@@ -132,7 +138,8 @@ async function openClaim(digits: string): Promise<string> {
 }
 
 /**
- * Money confirmed on `digits`.
+ * Money confirmed on `digits` without a bank SMS — a hand delivery, or a
+ * verification the operator typed in.
  *
  * Deliberately a bare UPDATE. Nothing from `mirzabotVerify.ts` or the dashboard
  * routes is imported here, because a claim reaches VERIFIED down three separate
@@ -145,9 +152,76 @@ async function deposit(digits: string): Promise<void> {
   await db.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = ?1`).bind(id).run();
 }
 
+let smsSeq = 0;
+
+/**
+ * The bank's word that money landed: the rows ingest writes for a deposit
+ * SMS — an actionable CREDIT on `accountId` unless told otherwise, or one it
+ * could not place (`null`). Bare INSERTs for the same reason `deposit()` is
+ * a bare UPDATE. Returns the transaction id.
+ */
+async function sms(
+  accountId: string | null,
+  opts: { direction?: 'CREDIT' | 'DEBIT'; disposition?: string } = {},
+): Promise<string> {
+  const id = `${CLAIM_PREFIX}sms-${smsSeq++}`;
+  await db
+    .prepare(
+      `INSERT INTO devices (id, device_code, display_name, active, created_at, updated_at)
+       VALUES (?1, ?1, 'rotation fixture', 1, 0, 0)
+       ON CONFLICT (id) DO NOTHING`,
+    )
+    .bind(`${CLAIM_PREFIX}device`)
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO raw_sms_events
+         (id, device_id, sender, normalized_body, body_sha256, app_checksum,
+          sms_timestamp, received_at, classification, parser_status, created_at)
+       VALUES (?1, ?2, 'BANK', 'x', ?1, 'c', 0, 0, 'BANK_TRANSACTION', 'OK', 0)`,
+    )
+    .bind(id, `${CLAIM_PREFIX}device`)
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO transaction_candidates
+         (id, raw_sms_event_id, financial_account_id, direction, amount_irr, status,
+          processing_disposition, bank_timestamp, confidence, parser_id, parser_version,
+          parser_evidence_json, created_at, updated_at)
+       VALUES (?1, ?1, ?2, ?3, 1000000, 'PARSED', ?4, 0, 1.0, 'test', 'v1', '{}', 0, 0)`,
+    )
+    .bind(id, accountId, opts.direction ?? 'CREDIT', opts.disposition ?? 'ACTIONABLE')
+    .run();
+  return id;
+}
+
+/**
+ * Moves `digits` onto an account of its own, as production cards are — one
+ * card, one account — so an SMS on it moves that card and no other. Returns
+ * the account id.
+ */
+async function ownAccount(digits: string): Promise<string> {
+  const id = `${ACCOUNT_ID}-${digits}`;
+  await db
+    .prepare(
+      `INSERT INTO financial_accounts
+         (id, bank_name, display_name, account_type, account_hint, card_last_four,
+          active, parser_configuration, created_at, updated_at)
+       VALUES (?1, 'ROTATION', 'حساب تست چرخش', 'CARD', ?2, ?2, 1, '{}', 0, 0)
+       ON CONFLICT (id) DO NOTHING`,
+    )
+    .bind(id, digits.slice(-4))
+    .run();
+  await db
+    .prepare(`UPDATE payment_cards SET financial_account_id = ?2 WHERE card_digits = ?1`)
+    .bind(digits, id)
+    .run();
+  return id;
+}
+
 /** Draw one card through the real rotation and return its number. */
-async function drawOne(at: number = T, amount = AMOUNT): Promise<string> {
-  const [card] = [...(await draw(1, at, amount)).keys()];
+async function drawOne(at: number = T): Promise<string> {
+  const [card] = [...(await draw(1, at)).keys()];
   if (!card) throw new Error('rotation returned no card');
   return card;
 }
@@ -182,9 +256,12 @@ async function hold(digits: string, shownAt: number, claimed = false): Promise<n
 
 afterEach(async () => {
   await db.prepare(`DELETE FROM payments WHERE public_id LIKE ?1`).bind(`${CLAIM_PREFIX}%`).run();
+  // The transaction and the match go with the SMS (ON DELETE CASCADE).
+  await db.prepare(`DELETE FROM raw_sms_events WHERE id LIKE ?1`).bind(`${CLAIM_PREFIX}%`).run();
+  await db.prepare(`DELETE FROM devices WHERE id = ?1`).bind(`${CLAIM_PREFIX}device`).run();
   await db.prepare(`DELETE FROM payment_claims WHERE id LIKE ?1`).bind(`${CLAIM_PREFIX}%`).run();
   await db.prepare(`DELETE FROM payment_cards WHERE id LIKE ?1`).bind(`${PREFIX}%`).run();
-  await db.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(ACCOUNT_ID).run();
+  await db.prepare(`DELETE FROM financial_accounts WHERE id LIKE ?1`).bind(`${ACCOUNT_ID}%`).run();
   await db.prepare(`UPDATE payment_cards SET status = 'ACTIVE'`).run();
   /*
    * And every ACCOUNT back on.
@@ -286,8 +363,7 @@ describe('the line moves on money, not on being shown', { timeout: 60_000 }, () 
     // Sam, 2026-09-15: «اگر دستی تایید کنم یعنی بله، باید ته صف بره». Manual
     // delivery and continuity mode write FULFILLED_UNRECONCILED and the bank
     // SMS reconciles it to VERIFIED hours later; the card moves on the first
-    // of the two, and NOT again on the second — a second ticket would push it
-    // behind cards that took money in between.
+    // of the two, and the reconciliation itself moves nothing.
     const cards = await pool(3);
     const id = await openClaim(cards[0]!);
     await db
@@ -296,14 +372,92 @@ describe('the line moves on money, not on being shown', { timeout: 60_000 }, () 
       .run();
     expect(await drawOne()).toBe(cards[1]!);
 
-    // Card 1 takes money the ordinary way, so it is now behind card 0.
     await deposit(cards[1]!);
-    // The SMS for card 0's order arrives. Card 0 must stay in front of card 1.
     await db.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = ?1`).bind(id).run();
 
     expect(await drawOne()).toBe(cards[2]!);
     await deposit(cards[2]!);
     expect(await drawOne()).toBe(cards[0]!);
+  });
+
+  it('moves the line when the bank SMS lands, claimed or not', async () => {
+    // Issue #304. Five deposits in twelve minutes on one production card:
+    // the line waited for a claim to be VERIFIED, and between the deposit and
+    // that lie the relay phone, the customer's «پرداخت کردم» and the matcher's
+    // cron. The SMS is the money; the SMS moves the card. Every card of the
+    // account, because the SMS names the account, not the card.
+    const cards = await pool(3);
+    const account0 = await ownAccount(cards[0]!);
+    expect(await drawOne()).toBe(cards[0]!);
+
+    // No claim anywhere.
+    await sms(account0);
+    expect(await drawOne()).toBe(cards[1]!);
+    // Card 0 takes another: a fresh ticket, still at the back.
+    await sms(account0);
+    expect(await drawOne()).toBe(cards[1]!);
+    await sms(await ownAccount(cards[1]!));
+    expect(await drawOne()).toBe(cards[2]!);
+  });
+
+  it('gives one ticket per deposit when the SMS is then matched to a claim', async () => {
+    // The SMS moved the card; the auto-verification that follows must not
+    // move it again, or every ordinary sale would be two tickets and a
+    // hand-delivered one only one. The match row is what tells the claim
+    // trigger to stand down — written before the claim, as both verify
+    // paths do.
+    const cards = await pool(2);
+    const account0 = await ownAccount(cards[0]!);
+    const claimId = await openClaim(cards[0]!);
+    const txId = await sms(account0);
+    expect(await drawOne()).toBe(cards[1]!);
+    await deposit(cards[1]!);
+    expect(await drawOne()).toBe(cards[0]!);
+
+    await db
+      .prepare(
+        `INSERT INTO reconciliation_matches
+           (id, transaction_candidate_id, payment_claim_id, score, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 1, 'AUTO_VERIFIED', 0, 0)`,
+      )
+      .bind(`${CLAIM_PREFIX}match`, txId, claimId)
+      .run();
+    await db.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = ?1`).bind(claimId).run();
+    // Still in front: the verification drew no second ticket.
+    expect(await drawOne()).toBe(cards[0]!);
+  });
+
+  it('ignores debits, admin transfers and deposits nobody could place', async () => {
+    const cards = await pool(2);
+    const account0 = await ownAccount(cards[0]!);
+    await sms(account0, { direction: 'DEBIT', disposition: 'OUTGOING_IGNORED' });
+    expect(await drawOne()).toBe(cards[0]!);
+    await sms(account0, { disposition: 'ADMIN_EXCLUDED' });
+    expect(await drawOne()).toBe(cards[0]!);
+    await sms(null);
+    expect(await drawOne()).toBe(cards[0]!);
+  });
+
+  it('moves the line when the operator places a stray deposit on an account', async () => {
+    // Ingest could not tell whose SMS it was; the transaction screen's
+    // «change account» is the deposit landing, late.
+    const cards = await pool(2);
+    const account0 = await ownAccount(cards[0]!);
+    const txId = await sms(null);
+    expect(await drawOne()).toBe(cards[0]!);
+
+    // Writing the same NULL again is not a placement.
+    await db
+      .prepare(`UPDATE transaction_candidates SET financial_account_id = NULL WHERE id = ?1`)
+      .bind(txId)
+      .run();
+    expect(await drawOne()).toBe(cards[0]!);
+
+    await db
+      .prepare(`UPDATE transaction_candidates SET financial_account_id = ?2 WHERE id = ?1`)
+      .bind(txId, account0)
+      .run();
+    expect(await drawOne()).toBe(cards[1]!);
   });
 
   it('does not move the queue for a claim imported already VERIFIED', async () => {
@@ -438,6 +592,33 @@ describe("a card in a customer's hands is out of the line", () => {
     expect(await drawOne(T)).toBe(cards[1]!);
   });
 
+  it('sends a card handed out busy to the back of the line', async () => {
+    // Issue #304, Sam 2026-09-18. Being shown moves nothing — except when
+    // every card is in somebody's hands: then a rush bigger than the pool
+    // walks the line instead of piling onto whichever hold is oldest, and
+    // once the holds lift the line has turned as if money had landed.
+    const cards = await pool(3);
+    await hold(cards[0]!, T);
+    await hold(cards[1]!, T);
+    await hold(cards[2]!, T);
+
+    expect(await drawOne(T)).toBe(cards[0]!);
+    // Still busy (the draw wrote no invoice), but now at the back.
+    expect(await drawOne(T)).toBe(cards[1]!);
+    expect(await drawOne(T)).toBe(cards[2]!);
+    expect(await drawOne(T)).toBe(cards[0]!);
+    // Holds lifted: the line stands as the rush left it.
+    expect(await drawOne(T + CARD_HOLD_MS)).toBe(cards[1]!);
+  });
+
+  it('draws no ticket for a free card, however many times it is shown', async () => {
+    const cards = await pool(2);
+    await draw(5);
+    await hold(cards[1]!, T);
+
+    expect(await drawOne(T)).toBe(cards[0]!);
+  });
+
   it('prefers any free card, however far back in the line, to a busy one', async () => {
     const cards = await pool(3);
     await hold(cards[0]!, T);
@@ -446,36 +627,17 @@ describe("a card in a customer's hands is out of the line", () => {
     expect(await drawOne(T)).toBe(cards[2]!);
   });
 
-  /*
-   * The hold is about an AMOUNT, not about the card.
-   *
-   * What the auto-matcher cannot untangle is two customers told to pay the
-   * SAME amount into the same card inside one window: the exact-amount rule
-   * has nothing to choose by. A customer paying a different amount into that
-   * card is no such problem — their SMS cannot match the other claim, and
-   * the other's late SMS cannot match theirs.
-   *
-   * Production, 2026-09-17: six of seven live cards stood behind 24h holds
-   * from «پرداخت کردم» presses nobody had settled, and the shop sold four
-   * invoices in a row on the one free card. Held per amount, the same
-   * evening would have run the whole line.
-   */
-  it('hands out a held card to an order for a different amount', async () => {
+  it('holds the card for an order of a different amount too', async () => {
+    // Until #304 a held card was handed to any order for another amount, on
+    // the reasoning that only same-amount invoices confuse the matcher. True,
+    // and beside the point: the line moves when the SMS lands, minutes after
+    // the checkout, so in a busy quarter-hour the front card was everybody's.
+    // Production 2026-09-18: five deposits on one card while five stood free.
     const cards = await pool(2);
     await hold(cards[0]!, T, true);
 
-    // Inside the hold, so the amount is what decides — a claimed hold no
-    // longer outlasts the ten minutes.
-    expect(await drawOne(T + MINUTE, 1_000_000)).toBe(cards[1]!);
-    expect(await drawOne(T + MINUTE, 2_490_000)).toBe(cards[0]!);
-  });
-
-  it('holds the same amount whether shown or claimed', async () => {
-    const cards = await pool(2);
-    await hold(cards[0]!, T);
-
-    expect(await drawOne(T, 1_000_000)).toBe(cards[1]!);
-    expect(await drawOne(T, 1_000_001)).toBe(cards[0]!);
+    expect(await drawOne(T + MINUTE)).toBe(cards[1]!);
+    expect(await drawOne(T + MINUTE)).toBe(cards[1]!);
   });
 });
 
@@ -509,7 +671,7 @@ describe('a card is only handed out while its account is in service', () => {
 
     await accountState(0, 'ACTIVE');
 
-    const card = await db.withSession((tx) => rotateCard(tx, T, AMOUNT));
+    const card = await db.withSession((tx) => rotateCard(tx, T));
     // Null is the honest answer, and `checkoutFor` turns it into «کارت موجود
     // نیست». Handing the card out anyway is what this is fixing.
     expect(card).toBeNull();
@@ -520,7 +682,7 @@ describe('a card is only handed out while its account is in service', () => {
       await pool(3);
       await accountState(1, status);
 
-      expect(await db.withSession((tx) => rotateCard(tx, T, AMOUNT))).toBeNull();
+      expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
     });
   }
 
@@ -529,11 +691,11 @@ describe('a card is only handed out while its account is in service', () => {
     // a gate with no way back is a shop that cannot sell again.
     await pool(3);
     await accountState(0, 'ACTIVE');
-    expect(await db.withSession((tx) => rotateCard(tx, T, AMOUNT))).toBeNull();
+    expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
 
     await accountState(1, 'ACTIVE');
 
-    const card = await db.withSession((tx) => rotateCard(tx, T + 1, AMOUNT));
+    const card = await db.withSession((tx) => rotateCard(tx, T + 1));
     expect(card?.card_digits).toBeTruthy();
   });
 

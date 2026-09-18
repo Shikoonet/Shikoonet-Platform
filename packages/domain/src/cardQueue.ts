@@ -7,17 +7,16 @@
  * fragment below reads it, and both the bot's picker and the dashboard's card
  * list use the same one so they cannot disagree about who is busy.
  *
- * Out of the line FOR THAT AMOUNT. What the auto-matcher cannot untangle is
- * two customers told to pay the same amount into the same card inside one
- * window — the exact-amount rule then has nothing to choose by. A customer
- * paying a different amount into the same card is no such problem: their
- * SMS cannot match the other claim and the other's late SMS cannot match
- * theirs. So the picker asks «is this card holding an invoice for MY
- * amount», and the dashboard, which has no order in hand, asks «is it
- * holding any». Production 2026-09-17 is why: six of seven live cards stood
- * behind 24h holds from unsettled «پرداخت کردم» presses, and the shop sold
- * four invoices in a row on the one free card, while Mirzabot before it
- * never held a card beyond its ten-minute lease.
+ * Out of the line for ANY amount — issue #304, 2026-09-18. Until then the
+ * picker asked «is this card holding an invoice for MY amount», on the
+ * reasoning that only same-amount invoices confuse the matcher. True, and
+ * beside the point: the line moves only when money lands, and money lands
+ * minutes after the checkout (the relay phone delivered three SMS eleven
+ * minutes late that morning), so every customer of a busy quarter-hour was
+ * told the same front card — five deposits on one card while five others
+ * stood free, and two of them for the same amount, eleven minutes apart. A
+ * held card is in somebody's hands; the next customer takes the next one.
+ * Same fragment, bot and dashboard both.
  *
  * ONE length, and «I paid» does not stretch it — Sam, 2026-09-17: «ما سقف
  * نداریم اصلا؛ یک زمانی رو مشخص میکنیم، اگر پول اومد که هیچ، اگر نیومد کارت
@@ -65,23 +64,13 @@ export const CARD_HOLD_MINUTES_SQL = `COALESCE(
  * Scalar subquery, correlated on an outer `pc` (a `payment_cards` row): the
  * epoch-ms until which the card is held, or NULL when no invoice holds it.
  * Compare against the caller's own `now` — nothing in here reads the clock.
- *
- * `amountParam` names the bound parameter carrying the order's amount
- * (`?2`); only invoices for that amount count. Without it every open invoice
- * counts — the dashboard's «در دست مشتری تا …», which is about the card, not
- * about an order.
  */
-export function cardHeldUntilSql(amountParam?: string): string {
-  return `(
+export const CARD_HELD_UNTIL_SQL = `(
   SELECT MAX((EXTRACT(EPOCH FROM p.created_at) * 1000)::bigint
              + ${CARD_HOLD_MINUTES_SQL} * 60000)
     FROM payments p
    WHERE p.assigned_card_number = pc.card_digits
-     AND p.status IN ('PENDING', 'AWAITING_REVIEW')${amountParam ? `
-     AND p.amount_irr = ${amountParam}` : ''})`;
-}
-
-export const CARD_HELD_UNTIL_SQL = cardHeldUntilSql();
+     AND p.status IN ('PENDING', 'AWAITING_REVIEW'))`;
 
 /**
  * Where the outer `pc` stands in the line, 1-based, among every card in

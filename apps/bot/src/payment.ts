@@ -26,7 +26,7 @@ import {
 } from '@shikoo/contracts';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import {
-  cardHeldUntilSql,
+  CARD_HELD_UNTIL_SQL,
   fulfilMirzabotClaimWithoutPayment,
   NO_TRANSFER_REASONS,
   readContinuityMode,
@@ -51,24 +51,29 @@ export interface CheckoutPayment {
  *
  * A bakery queue — Sam, 2026-09-15. The line is `rotation_cursor` ascending.
  * Being SHOWN moves nothing: a card leaves the front of the line only when
- * money lands on it, and then it goes to the back (`card_to_back_of_queue`,
- * migration 0064, a trigger on `payment_claims` because a claim reaches
- * VERIFIED down three code paths plus the live PHP bot). So thirty cards see
+ * money lands on it, and then it goes to the back. Since 0074 (issue #304)
+ * «money lands» means the bank SMS — an actionable CREDIT row in
+ * `transaction_candidates` sends the account's cards to the back the moment
+ * ingest writes it, whether or not anybody ever claims it. The claim trigger
+ * (0029/0065, on `payment_claims`) covers the two arrivals with no SMS behind
+ * them, a hand delivery and a typed-in verification. So thirty cards see
  * thirty deposits in turn, however many customers open a checkout and walk
  * away — measured before 0029 on a pool of 30, ten cards took everything.
  *
- * While an invoice holds a card, the card is out of the line FOR THAT AMOUNT:
+ * While an invoice holds a card, the card is out of the line:
  * `pay/card_hold_minutes` from being shown, ten by default, and «پرداخت کردم»
- * does not stretch it (Sam, 2026-09-17). That keeps two customers from being told to
- * pay the same amount into the same card inside one window, which is the one
- * thing the auto-matcher cannot untangle (`AMBIGUOUS_CLAIMS`); an order for a
- * different amount is handed the card as if it were free. The hold is the
- * open `payments` row itself, read through `cardHeldUntilSql`.
+ * does not stretch it (Sam, 2026-09-17). For any amount, since #304: the
+ * SMS lands minutes after the checkout, so until it does the front card
+ * would be everybody's card — five deposits on one in a quarter-hour while
+ * five stood free. The hold is the open `payments` row itself, read through
+ * `CARD_HELD_UNTIL_SQL`.
  *
  * When EVERY card is in somebody's hands the shop does not stop selling —
  * Sam's call — and the card that frees soonest is handed out; the match may
- * land in review, and review is better than no sale. Free cards always come
- * first, in line order.
+ * land in review, and review is better than no sale. A card handed out busy
+ * takes a ticket on being shown (#304, `ticketBusyCard`): a rush bigger than
+ * the pool then walks the line instead of piling onto its oldest hold. Free
+ * cards always come first, in line order.
  *
  * This replaced two earlier designs: `ORDER BY last_assigned_at NULLS FIRST`
  * (a fresh card won every checkout) and a weighted virtual clock (0007/0029)
@@ -78,23 +83,23 @@ export interface CheckoutPayment {
  * covers the hold. SKIP LOCKED is what makes two simultaneous checkouts take
  * two different cards instead of queueing behind one row.
  */
-export async function rotateCard(
-  tx: D1DatabaseSession,
-  now: number,
-  amountIrr: number,
-): Promise<{
+export interface RotatedCard {
   card_digits: string;
   holder_name: string | null;
   financial_account_id: string;
-} | null> {
+  /** In somebody's hands when handed out — every card was. */
+  busy: boolean;
+}
+
+export async function rotateCard(tx: D1DatabaseSession, now: number): Promise<RotatedCard | null> {
   return tx
     .prepare(
-      `UPDATE payment_cards
+      `UPDATE payment_cards pc
           SET last_assigned_at = ?1
-        WHERE id = (
+        WHERE pc.id = (
           SELECT pc.id FROM payment_cards pc
            JOIN financial_accounts fa ON fa.id = pc.financial_account_id
-           LEFT JOIN LATERAL (SELECT ${cardHeldUntilSql('?2')} AS held_until) h ON TRUE
+           LEFT JOIN LATERAL (SELECT ${CARD_HELD_UNTIL_SQL} AS held_until) h ON TRUE
            WHERE pc.status = 'ACTIVE'
              -- The ACCOUNT has to be live too, and it did not used to be asked.
              --
@@ -124,10 +129,31 @@ export async function rotateCard(
            LIMIT 1
            FOR UPDATE OF pc SKIP LOCKED
         )
-        RETURNING card_digits, holder_name, financial_account_id`,
+        RETURNING card_digits, holder_name, financial_account_id,
+                  -- Re-read on the row just chosen; the subquery's own reading
+                  -- cannot reach here.
+                  COALESCE(${CARD_HELD_UNTIL_SQL} > ?1, false) AS busy`,
     )
-    .bind(now, amountIrr)
-    .first<{ card_digits: string; holder_name: string | null; financial_account_id: string }>();
+    .bind(now)
+    .first<RotatedCard>();
+}
+
+/**
+ * The ticket a busy card takes on being shown — its own statement, after the
+ * checkout is written, not inside `rotateCard`: two calls for the same order
+ * arriving together each pick a card, and only the one whose invoice wins
+ * `idx_payments_one_open_per_order` has shown anything. The loser's card was
+ * never seen and keeps its place.
+ */
+export async function ticketBusyCard(tx: D1DatabaseSession, card: RotatedCard): Promise<void> {
+  if (!card.busy) return;
+  await tx
+    .prepare(
+      `UPDATE payment_cards SET rotation_cursor = nextval('payment_card_queue_seq')
+        WHERE card_digits = ?1`,
+    )
+    .bind(card.card_digits)
+    .run();
 }
 
 /**
@@ -184,7 +210,7 @@ export async function checkoutFor(
     };
   }
 
-  const card = await rotateCard(tx, now, totalIrr);
+  const card = await rotateCard(tx, now);
   if (!card) return null;
 
   // `ON CONFLICT DO NOTHING` against `idx_payments_one_open_per_order` (0022).
@@ -243,6 +269,7 @@ export async function checkoutFor(
     };
   }
 
+  await ticketBusyCard(tx, card);
   return {
     publicId: row.public_id,
     amountIrr: row.amount_irr,
