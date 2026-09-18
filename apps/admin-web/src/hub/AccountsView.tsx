@@ -121,6 +121,47 @@ function PaymentCardCell({ a }: { a: AccountListItem }) {
   );
 }
 
+/**
+ * The numbers an account answers to beyond the four fields on its form — a
+ * second account number, a card the bank writes as `کارت*XXXX` next to it
+ * (#316). `additional_identifiers` is every identifier row, including the
+ * four that mirror the columns; those are already on screen as the columns,
+ * so only the rest are listed here.
+ */
+type ExtraIdentifier = AccountListItem['additional_identifiers'][number];
+const MIRRORED_KINDS: Record<string, keyof AccountListItem> = {
+  ACCOUNT_HINT: 'account_hint',
+  CARD_LAST_FOUR: 'card_last_four',
+  ACCOUNT_LAST_FOUR: 'account_last_four',
+  IBAN: 'iban',
+};
+function extraIdentifiers(a: AccountListItem): ExtraIdentifier[] {
+  return (a.additional_identifiers ?? []).filter((i) => {
+    const column = MIRRORED_KINDS[i.kind];
+    return !column || a[column] !== i.value;
+  });
+}
+const IDENTIFIER_KIND_LABEL: Record<string, string> = {
+  ACCOUNT_HINT: 'شمارهٔ حساب',
+  CARD_LAST_FOUR: '۴ رقم کارت',
+  ACCOUNT_LAST_FOUR: '۴ رقم حساب',
+  IBAN: 'شبا',
+  OTHER: 'دیگر',
+};
+function ExtraIdentifierTexts({ a }: { a: AccountListItem }) {
+  return (
+    <>
+      {extraIdentifiers(a).map((i) => (
+        <IdentifierText
+          key={i.id}
+          value={i.kind === 'CARD_LAST_FOUR' || i.kind === 'ACCOUNT_LAST_FOUR' ? `*${i.value}` : i.value}
+          {...(i.label ? { label: i.label } : {})}
+        />
+      ))}
+    </>
+  );
+}
+
 export function AccountsView({ cache }: AccountsViewProps) {
   const w = useWriteProps();
   const { data: accountsPayload } = cache.useQuery<{
@@ -439,6 +480,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         <IdentifierText value={`*${a.account_last_four}`} />
                       ) : null}
                       <IdentifierText value={a.iban} />
+                      <ExtraIdentifierTexts a={a} />
                     </span>
                   </div>
                 )}
@@ -579,6 +621,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                           {a.account_hint && <IdentifierText value={a.account_hint} />}
                           <PaymentCardCell a={a} />
                           {a.iban && <IdentifierText value={a.iban} />}
+                          <ExtraIdentifierTexts a={a} />
                         </span>
                       ) : (
                         <IdentifierText value={null} />
@@ -842,6 +885,7 @@ function accountCellAccessor(column: string): (a: AccountListItem) => unknown {
           a.account_hint,
           formatPaymentCardCell(a) !== '—' ? formatPaymentCardCell(a) : null,
           a.iban,
+          ...extraIdentifiers(a).map((i) => i.value),
         ].filter(Boolean);
         return parts.join(' · ');
       }
@@ -913,6 +957,7 @@ function AccountCard({
             <PaymentCardCell a={a} />
             {a.account_last_four ? <IdentifierText value={`*${a.account_last_four}`} /> : null}
             <IdentifierText value={a.iban} />
+            <ExtraIdentifierTexts a={a} />
           </span>
         </div>
       )}
@@ -1342,6 +1387,141 @@ export function PaymentCardsPanel({
   );
 }
 
+/**
+ * «شناسه‌های دیگر» — the numbers beyond the four fields. One bank keys the
+ * same account two ways (Keshavarzi: the full number in «واریز پل», then
+ * `کارت*XXXX` in the plain «واریز» hours later), and two of one kind is what
+ * the fixed fields cannot hold. The list is `account.additional_identifiers`
+ * minus the rows the fields already show; the parent's account query is the
+ * only state, refreshed through `onChanged` after every add or delete.
+ */
+function ExtraIdentifiersPanel({
+  account,
+  onChanged,
+}: {
+  account: AccountListItem;
+  onChanged?: () => void;
+}) {
+  const w = useWriteProps();
+  const [kind, setKind] = useState<'ACCOUNT_HINT' | 'CARD_LAST_FOUR' | 'ACCOUNT_LAST_FOUR' | 'IBAN' | 'OTHER'>(
+    'ACCOUNT_HINT',
+  );
+  const [value, setValue] = useState('');
+  const [label, setLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const extras = extraIdentifiers(account);
+
+  function explain(e: unknown): string {
+    const body = (e as { body?: { error?: string } }).body;
+    if (body?.error === 'identifier_owned_by_other_account' || body?.error === 'ACCOUNT_IDENTIFIER_AMBIGUOUS')
+      return 'حساب دیگری همین شناسه را دارد؛ اول آن را از آن حساب بردار.';
+    if (body?.error === 'identifier_mirrors_column')
+      return 'این شناسه همان فیلد بالاست؛ از همان‌جا ویرایشش کن.';
+    return e instanceof Error ? e.message : String(e);
+  }
+
+  async function add() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.addIdentifier(account.id, { kind, value: value.trim(), label: label.trim() || null });
+      setValue('');
+      setLabel('');
+      onChanged?.();
+    } catch (e) {
+      setErr(explain(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.deleteIdentifier(account.id, id);
+      onChanged?.();
+    } catch (e) {
+      setErr(explain(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const fourDigits = kind === 'CARD_LAST_FOUR' || kind === 'ACCOUNT_LAST_FOUR';
+  return (
+    <div className="payment-cards-panel">
+      <h4>شناسه‌های دیگر</h4>
+      <p className="muted">
+        شماره‌های دیگری که بانک برای همین حساب در پیامک می‌نویسد — مثلاً شمارهٔ حساب دوم، یا
+        «کارت*۱۲۳۴» وقتی فیلد کارت پر است.
+      </p>
+      {err && <div className="error">{err}</div>}
+      <ul className="payment-cards-list">
+        {extras.length === 0 && (
+          <li className="payment-cards-list__empty">جز چهار فیلد بالا، شناسهٔ دیگری ثبت نشده.</li>
+        )}
+        {extras.map((i) => (
+          <li key={i.id}>
+            <div className="payment-card__identity">
+              <span className="badge">{IDENTIFIER_KIND_LABEL[i.kind] ?? i.kind}</span>
+              <IdentifierText value={i.value} {...(i.label ? { label: i.label } : {})} />
+              <span className="spacer" />
+              <button
+                type="button"
+                className="btn-sm payment-card__remove"
+                disabled={busy}
+                onClick={() => void remove(i.id)}
+                {...w}
+              >
+                حذف
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div className="payment-cards-add">
+        <h5>افزودن شناسه</h5>
+        <label className="payment-card__field">
+          <span className="form-label">نوع</span>
+          <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+            {Object.entries(IDENTIFIER_KIND_LABEL).map(([k, l]) => (
+              <option key={k} value={k}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="payment-card__field">
+          <span className="form-label">مقدار — همان‌طور که در پیامک می‌آید</span>
+          <input
+            dir="ltr"
+            value={value}
+            maxLength={fourDigits ? 4 : 64}
+            onChange={(e) =>
+              setValue(fourDigits ? e.target.value.replace(/\D/g, '').slice(0, 4) : e.target.value)
+            }
+          />
+        </label>
+        <label className="payment-card__field">
+          <span className="form-label">برچسب (اختیاری)</span>
+          <input value={label} onChange={(e) => setLabel(e.target.value)} />
+        </label>
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || !value.trim() || (fourDigits && value.length !== 4)}
+          onClick={() => void add()}
+          {...w}
+        >
+          افزودن شناسه
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProps) {
   const w = useWriteProps();
   const [bankName, setBankName] = useState(account?.bank_name ?? '');
@@ -1430,6 +1610,12 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
           <input value={iban} onChange={(e) => setIban(e.target.value)} />
         </label>
       </div>
+      {account && (
+        <ExtraIdentifiersPanel
+          account={account}
+          {...(onCardsChanged ? { onChanged: onCardsChanged } : {})}
+        />
+      )}
       {account?.id && (
         <PaymentCardsPanel
           accountId={account.id}
