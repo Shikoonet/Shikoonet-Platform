@@ -21,7 +21,7 @@
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { CARD_HOLD_MS } from '@shikoo/domain';
 import { afterEach, describe, expect, it } from 'vitest';
-import { rotateCard } from '../src/payment.js';
+import { rotateCard, ticketBusyCard } from '../src/payment.js';
 import { db } from './helpers/env.js';
 
 /** A fixed instant every draw is measured from — the picker reads no clock. */
@@ -102,11 +102,18 @@ async function pool(count: number): Promise<string[]> {
   return cards;
 }
 
-/** Assign `times` cards through the real rotation and count who got them. */
+/**
+ * Assign `times` cards through the real rotation and count who got them. The
+ * two statements `checkoutFor` runs around its insert, without the insert.
+ */
 async function draw(times: number, at: number = T): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   for (let i = 0; i < times; i++) {
-    const card = await db.withSession((tx) => rotateCard(tx, at + i));
+    const card = await db.withSession(async (tx) => {
+      const picked = await rotateCard(tx, at + i);
+      if (picked) await ticketBusyCard(tx, picked);
+      return picked;
+    });
     if (!card) throw new Error(`rotation returned no card on draw ${i}`);
     counts.set(card.card_digits, (counts.get(card.card_digits) ?? 0) + 1);
   }

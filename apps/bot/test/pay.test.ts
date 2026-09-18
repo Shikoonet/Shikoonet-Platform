@@ -215,12 +215,28 @@ describe('the checkout screen', () => {
       )
       .bind(Date.now())
       .run();
+    // Every card busy, so each racer's pick is a card that takes a ticket on
+    // being shown (#304) — and only the one that was shown may take it.
+    // The loser's pick was never on a screen and keeps its place in the line.
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, amount_irr, method, status, assigned_card_number,
+                               created_at, updated_at)
+         SELECT 'race-hold-' || card_digits, 1, 'CARD_TO_CARD', 'PENDING', card_digits,
+                now(), now()
+           FROM payment_cards WHERE status = 'ACTIVE'`,
+      )
+      .run();
+    const cursorsBefore = await cursors();
 
     try {
       const both = await Promise.all([
         db.withSession((tx) => checkoutFor(tx, user, order, 1_000_000, `race-a-${order}`)),
         db.withSession((tx) => checkoutFor(tx, user, order, 1_000_000, `race-b-${order}`)),
       ]);
+
+      const moved = [...(await cursors())].filter(([d, c]) => cursorsBefore.get(d) !== c);
+      expect(moved.map(([d]) => d)).toEqual([both[0]!.cardDigits]);
 
       const open = await db
         .prepare(
@@ -241,9 +257,18 @@ describe('the checkout screen', () => {
       expect(both[0]?.cardDigits).toBe(both[1]?.cardDigits);
       expect(await activeCard(both[0]!.cardDigits)).toBe(true);
     } finally {
+      await db.prepare(`DELETE FROM payments WHERE public_id LIKE 'race-hold-%'`).run();
       await db.prepare(`DELETE FROM payment_cards WHERE id = '__race-card'`).run();
     }
   });
+
+  /** Where every ACTIVE card stands in the line. */
+  async function cursors(): Promise<Map<string, number>> {
+    const { results } = await db
+      .prepare(`SELECT card_digits, rotation_cursor FROM payment_cards WHERE status = 'ACTIVE'`)
+      .all<{ card_digits: string; rotation_cursor: number }>();
+    return new Map(results.map((r) => [r.card_digits, r.rotation_cursor]));
+  }
 
   it('hands two customers two different cards while the first invoice is open', async () => {
     // The bakery queue's hold, through the door the customer uses. The lease

@@ -71,9 +71,9 @@ export interface CheckoutPayment {
  * When EVERY card is in somebody's hands the shop does not stop selling —
  * Sam's call — and the card that frees soonest is handed out; the match may
  * land in review, and review is better than no sale. A card handed out busy
- * takes a ticket on being shown (#304): a rush bigger than the pool then
- * walks the line instead of piling onto its oldest hold. Free cards always
- * come first, in line order.
+ * takes a ticket on being shown (#304, `ticketBusyCard`): a rush bigger than
+ * the pool then walks the line instead of piling onto its oldest hold. Free
+ * cards always come first, in line order.
  *
  * This replaced two earlier designs: `ORDER BY last_assigned_at NULLS FIRST`
  * (a fresh card won every checkout) and a weighted virtual clock (0007/0029)
@@ -83,23 +83,19 @@ export interface CheckoutPayment {
  * covers the hold. SKIP LOCKED is what makes two simultaneous checkouts take
  * two different cards instead of queueing behind one row.
  */
-export async function rotateCard(
-  tx: D1DatabaseSession,
-  now: number,
-): Promise<{
+export interface RotatedCard {
   card_digits: string;
   holder_name: string | null;
   financial_account_id: string;
-} | null> {
+  /** In somebody's hands when handed out — every card was. */
+  busy: boolean;
+}
+
+export async function rotateCard(tx: D1DatabaseSession, now: number): Promise<RotatedCard | null> {
   return tx
     .prepare(
       `UPDATE payment_cards pc
-          SET last_assigned_at = ?1,
-              -- Busy when handed out: to the back. The hold is re-read on the
-              -- row just chosen; the subquery's own reading cannot reach here.
-              rotation_cursor = CASE WHEN ${CARD_HELD_UNTIL_SQL} > ?1
-                                     THEN nextval('payment_card_queue_seq')
-                                     ELSE pc.rotation_cursor END
+          SET last_assigned_at = ?1
         WHERE pc.id = (
           SELECT pc.id FROM payment_cards pc
            JOIN financial_accounts fa ON fa.id = pc.financial_account_id
@@ -133,10 +129,31 @@ export async function rotateCard(
            LIMIT 1
            FOR UPDATE OF pc SKIP LOCKED
         )
-        RETURNING card_digits, holder_name, financial_account_id`,
+        RETURNING card_digits, holder_name, financial_account_id,
+                  -- Re-read on the row just chosen; the subquery's own reading
+                  -- cannot reach here.
+                  COALESCE(${CARD_HELD_UNTIL_SQL} > ?1, false) AS busy`,
     )
     .bind(now)
-    .first<{ card_digits: string; holder_name: string | null; financial_account_id: string }>();
+    .first<RotatedCard>();
+}
+
+/**
+ * The ticket a busy card takes on being shown — its own statement, after the
+ * checkout is written, not inside `rotateCard`: two calls for the same order
+ * arriving together each pick a card, and only the one whose invoice wins
+ * `idx_payments_one_open_per_order` has shown anything. The loser's card was
+ * never seen and keeps its place.
+ */
+export async function ticketBusyCard(tx: D1DatabaseSession, card: RotatedCard): Promise<void> {
+  if (!card.busy) return;
+  await tx
+    .prepare(
+      `UPDATE payment_cards SET rotation_cursor = nextval('payment_card_queue_seq')
+        WHERE card_digits = ?1`,
+    )
+    .bind(card.card_digits)
+    .run();
 }
 
 /**
@@ -252,6 +269,7 @@ export async function checkoutFor(
     };
   }
 
+  await ticketBusyCard(tx, card);
   return {
     publicId: row.public_id,
     amountIrr: row.amount_irr,
