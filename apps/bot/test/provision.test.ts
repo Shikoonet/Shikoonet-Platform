@@ -135,7 +135,7 @@ async function subsFor(orderId: number) {
   const { results } = await db
     .prepare(
       `SELECT public_id, remote_username, status, price_irr, volume_gb, duration_days,
-              remote_ref, provider_name_at_sale, plan_name_at_sale, expires_at
+              remote_ref, provider_name_at_sale, plan_name_at_sale, expires_at, activated_at
          FROM subscriptions WHERE order_id = ?1`,
     )
     .bind(orderId)
@@ -150,6 +150,7 @@ async function subsFor(orderId: number) {
       provider_name_at_sale: string | null;
       plan_name_at_sale: string;
       expires_at: string | null;
+      activated_at: string | null;
     }>();
   return results ?? [];
 }
@@ -179,16 +180,66 @@ describe('delivering a paid order', () => {
     expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
     const subs = await subsFor(order.orderId);
     expect(subs).toHaveLength(1);
+    // ON_HOLD, with no date: the panel holds the clock until the customer
+    // connects, and stamps the real expiry then (#325). `sync.ts` reads it
+    // back; writing `now + 30 days` here would be a date wrong by however
+    // long they wait, which «ours wins» in the sync would then defend.
     expect(subs[0]).toMatchObject({
       public_id: order.publicId,
       remote_username: remoteUsernameFor(order.telegramId, order.publicId),
-      status: 'ACTIVE',
+      status: 'ON_HOLD',
       price_irr: 1_950_000,
+      expires_at: null,
+      activated_at: null,
     });
+    // …and the panel was told so, in the shape Marzban.php:268 sends.
+    const body = panel.bodies.find(
+      (b) => b['username'] === remoteUsernameFor(order.telegramId, order.publicId),
+    );
+    expect(body).toMatchObject({ status: 'on_hold', expire: 0, on_hold_expire_duration: 30 * 86_400 });
     // What the customer is sent must be the link that actually exists.
     const note = notes.find((n) => n.chatId === order.telegramId);
     expect(note?.text).toContain(`https://panel.test/sub/${remoteUsernameFor(order.telegramId, order.publicId)}`);
     expect(panel.created).toContain(remoteUsernameFor(order.telegramId, order.publicId));
+  });
+
+  it('a trial is not a sale: it starts running at once, with its date', async () => {
+    // The same order, turned into a trial: kind TRIAL, and the panel's config
+    // carries what a trial is (`trialFor`). `on_hold_test = 0` was the
+    // production default and Sam's decision was about SOLD services.
+    const order = await paidOrder();
+    await db
+      .prepare(
+        `UPDATE provisioning_providers
+            SET config = config || '{"trial_enabled":true,"trial_volume_gb":1,"trial_duration_hours":12}'::jsonb
+          WHERE id = (SELECT pr.provider_id FROM orders o
+                        JOIN product_plans pl ON pl.id = o.plan_id
+                        JOIN products pr ON pr.id = pl.product_id
+                       WHERE o.id = ?1)`,
+      )
+      .bind(order.orderId)
+      .run();
+    await db
+      .prepare(
+        `UPDATE orders o SET kind = 'TRIAL', total_irr = 0, unit_price_irr = 0,
+                provider_id = pr.provider_id
+           FROM product_plans pl JOIN products pr ON pr.id = pl.product_id
+          WHERE o.id = ?1 AND pl.id = o.plan_id`,
+      )
+      .bind(order.orderId)
+      .run();
+    const panel = fakePanel();
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    const subs = await subsFor(order.orderId);
+    expect(subs[0]).toMatchObject({ status: 'ACTIVE' });
+    expect(subs[0]?.expires_at).not.toBeNull();
+    const body = panel.bodies.find(
+      (b) => b['username'] === remoteUsernameFor(order.telegramId, order.publicId),
+    );
+    expect(body?.['status']).toBeUndefined();
+    expect(typeof body?.['expire']).toBe('string');
   });
 
   /**

@@ -34,6 +34,19 @@ export interface ProvisionRequest {
   planAttrs: Record<string, unknown>;
   /** Absolute expiry, resolved by the caller so the adapter has no clock. */
   expiresAt: Date | null;
+  /**
+   * The clock starts at the customer's first connection, not at the sale.
+   *
+   * Sam, 2026-09-18 (#325): «وقتی سرویسی فروخته می‌شه، استاتوس اکانت روی
+   * پاسارگاد باید on_hold باشه». A sold service is created `on_hold` with
+   * `on_hold_expire_duration` = its days, and the panel turns it `active`
+   * and stamps the real `expire` the first time the customer connects —
+   * the `conecton` branch of `Marzban.php:262`. A trial is not a sale and
+   * keeps the absolute date (`on_hold_test = 0`, the production default).
+   * Meaningless without `durationDays`: a plan with no days has no clock
+   * to hold.
+   */
+  onHold?: boolean;
 }
 
 /**
@@ -49,9 +62,10 @@ export interface ProvisionRequest {
  *      13    ریست حجم و زمان                       RESET  (renewal switched off)
  *      14    ریست حجم و زمان                       RESET
  *
- * The other three are not implemented for the same reason the `on_hold` branches
- * of `provision` are not: nothing selects them, and a branch nobody runs is a
- * branch nobody notices is wrong.
+ * The other three are not implemented because nothing selects them, and a
+ * branch nobody runs is a branch nobody notices is wrong. (The `on_hold`
+ * branch of `provision` used to be cited here as the same case; since #325 it
+ * is written, because Sam selected it.)
  *
  * RESET  — the usage counter goes to zero, the quota becomes the plan's, and
  *          the clock starts again from the moment of renewal.
@@ -140,6 +154,14 @@ export interface ProvisionOk {
    */
   expiresAt?: Date | null;
   volumeGb?: number | null;
+  /**
+   * The account is waiting for its first connection (#325): created
+   * `on_hold`, or found already `on_hold` by a retry. What the panel did,
+   * not what was asked — so the subscription row can say ON_HOLD only when
+   * the panel really holds the clock, and a shelf or manual account, which
+   * nothing holds, stays ACTIVE.
+   */
+  held?: boolean;
 }
 
 export interface ProvisionFailed {

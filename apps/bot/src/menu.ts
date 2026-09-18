@@ -2079,6 +2079,8 @@ export interface ServiceListItem {
   volume_gb: number | null;
   used_bytes: number | null;
   expires_at: string | null;
+  /** What was sold — the only clock a held service has until it is used (#325). */
+  duration_days?: number | null;
 }
 
 /** Everything the detail screen shows. */
@@ -2266,7 +2268,18 @@ export function serviceDetail(service: ServiceView, now: number): string {
   }
 
   if (service.expires_at === null) {
-    lines.push(t.raw('SERVICE_DETAIL_NO_EXPIRY'));
+    // A held service has its days but not its date: the panel stamps the date
+    // at the first connection (#325). Until then the honest line is the
+    // duration, not «no limit».
+    if (state === 'ON_HOLD' && service.duration_days != null && service.duration_days > 0) {
+      lines.push(
+        t.render('SERVICE_DETAIL_HELD_DAYS', {
+          days: service.duration_days.toLocaleString('en-US'),
+        }),
+      );
+    } else {
+      lines.push(t.raw('SERVICE_DETAIL_NO_EXPIRY'));
+    }
   } else {
     const expiry = new Date(service.expires_at);
     lines.push(t.render('SERVICE_DETAIL_EXPIRES', { date: formatTehranDate(expiry) }));
@@ -2276,9 +2289,10 @@ export function serviceDetail(service: ServiceView, now: number): string {
     }
   }
 
-  if (state === 'ACTIVE' && service.subscription_url) {
+  // A held service gets its link too — connecting with it is what starts it.
+  if ((state === 'ACTIVE' || state === 'ON_HOLD') && service.subscription_url) {
     lines.push('', t.raw('SERVICE_DETAIL_LINK_LABEL'), service.subscription_url);
-  } else if (state === 'ACTIVE') {
+  } else if (state === 'ACTIVE' || state === 'ON_HOLD') {
     // Provisioned by a person, or a row migrated from the old bot that the sync
     // has not reached yet. Saying so beats an empty space where a link goes.
     lines.push('', t.raw('SERVICE_DETAIL_NO_LINK'));

@@ -879,6 +879,8 @@ async function deliver(
     providerConfig: row.provider_config ?? {},
     planAttrs: planAttrsFor(row),
     expiresAt,
+    // A sale is held until the first connection (#325); a trial is not a sale.
+    onHold: trial === null,
   };
 
   const provider: ProviderContext = {
@@ -974,6 +976,7 @@ async function deliver(
       durationDays,
       expiresAt,
       shop.commissionPercent,
+      result.held === true,
     );
   } catch (err) {
     if (!isDuplicatePanelAccount(err)) throw err;
@@ -994,7 +997,14 @@ async function deliver(
   // back — the customer must get their link either way.
   return (
     (await purchasedScreen(db, row, now)) ??
-    handedOver(menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt))
+    handedOver(
+      menu.serviceReady(
+        result.subscriptionUrl,
+        result.remoteUsername,
+        // A held account has no date yet — the panel stamps it at first use.
+        result.held === true ? null : expiresAt,
+      ),
+    )
   );
 }
 
@@ -1022,6 +1032,17 @@ async function writeSubscription(
   durationDays: number | null,
   expiresAt: Date | null,
   commissionPercent: number,
+  /**
+   * The account was created `on_hold` (#325): the row is ON_HOLD, has no
+   * `activated_at`, and — the part that matters — no `expires_at`. The date
+   * is not known until the customer connects; `now + days` would be a date
+   * that is wrong by exactly as long as they wait, and «ours wins» in
+   * `sync.ts` would then defend the wrong date forever. NULL is the honest
+   * value, and `sync.ts` fills it from the panel once the panel has stamped
+   * it — the same path the imported services take. `duration_days` still
+   * says what was sold.
+   */
+  onHold = false,
 ): Promise<void> {
   await db.withSession(async (tx) => {
     // The guard is in the statement, not in a read before it. It used to be a
@@ -1040,7 +1061,7 @@ async function writeSubscription(
               remote_ref, remote_username, subscription_url, volume_gb, duration_days,
               status, purchased_at, activated_at, expires_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9::jsonb, ?10, ?11, ?12, ?13,
-                   'ACTIVE', now(), now(), ?14)
+                   ?15, now(), CASE WHEN ?15 = 'ON_HOLD' THEN NULL ELSE now() END, ?14)
            ON CONFLICT (order_id) WHERE order_id IS NOT NULL DO NOTHING`,
         )
         .bind(
@@ -1065,7 +1086,8 @@ async function writeSubscription(
           result.subscriptionUrl,
           volumeGb,
           durationDays,
-          expiresAt === null ? null : expiresAt.toISOString(),
+          onHold ? null : expiresAt === null ? null : expiresAt.toISOString(),
+          onHold ? 'ON_HOLD' : 'ACTIVE',
         )
         .run();
     }

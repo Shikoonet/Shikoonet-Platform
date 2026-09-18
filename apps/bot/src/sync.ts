@@ -15,10 +15,15 @@
  *
  * What is deliberately NOT written:
  *
- *   - `status`. Marzban says active / limited / expired / disabled / on_hold;
- *     the column allows six different values and no honest mapping exists.
- *     Expiry and exhaustion are derived at display time from data that cannot
- *     be lost (`menu.serviceState`).
+ *   - `status`, with ONE exception. Marzban says active / limited / expired /
+ *     disabled / on_hold; the column allows six different values and no
+ *     honest mapping exists. Expiry and exhaustion are derived at display
+ *     time from data that cannot be lost (`menu.serviceState`). The exception
+ *     is the one transition the panel makes on its own and we cannot see any
+ *     other way: an ON_HOLD row whose account the panel no longer reports as
+ *     `on_hold` has been connected to, so it becomes ACTIVE and gets its
+ *     `activated_at` (#325). One direction only — nothing here ever puts a
+ *     row back on hold.
  *   - `expires_at`, WHERE WE ALREADY HAVE ONE. We sold the duration, so we own
  *     the date, and a panel clock that is wrong must not be able to shorten
  *     what a customer paid for. Where the column is NULL there is no date to
@@ -193,6 +198,17 @@ async function writeAccounts(
         `UPDATE subscriptions s
             SET used_bytes       = v.used_bytes,
                 subscription_url = COALESCE(v.url, s.subscription_url),
+                -- The first connection, seen from the panel's side: it stops
+                -- saying on_hold. Only then, and only forward (#325).
+                status           = CASE WHEN s.status = 'ON_HOLD'
+                                         AND v.panel_status IS NOT NULL
+                                         AND v.panel_status <> 'on_hold'
+                                        THEN 'ACTIVE' ELSE s.status END,
+                activated_at     = CASE WHEN s.status = 'ON_HOLD'
+                                         AND v.panel_status IS NOT NULL
+                                         AND v.panel_status <> 'on_hold'
+                                        THEN COALESCE(s.activated_at, v.panel_online_at, now())
+                                        ELSE s.activated_at END,
                 -- Ours first, always. to_timestamp(NULL) is NULL, so a panel
                 -- that names no expiry leaves the column exactly as it was.
                 expires_at       = COALESCE(s.expires_at,

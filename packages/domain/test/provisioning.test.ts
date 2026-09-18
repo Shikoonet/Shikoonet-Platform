@@ -1017,6 +1017,105 @@ describe('the expire field, in the shape the live PHP uses', () => {
     expect(typeof body['expire']).toBe('string');
   });
 
+  /**
+   * A SOLD account is held (#325, Sam 2026-09-18): the days go into
+   * `on_hold_expire_duration` and the panel stamps the real date at the first
+   * connection — Marzban.php:268-270, the `conecton` branch nothing selected
+   * until now. A trial keeps the absolute date, which is the test above.
+   */
+  it('creates a sold account on_hold, with its days in seconds', async () => {
+    const panel = fakePanel();
+
+    const result = await marzbanAdapter.provision(
+      request({ onHold: true, durationDays: 30, expiresAt: new Date(AT) }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    const body = createCall(panel.calls)?.body as Record<string, unknown>;
+    expect(body).toMatchObject({ expire: 0, status: 'on_hold', on_hold_expire_duration: 30 * 86_400 });
+    expect(result).toMatchObject({ ok: true, held: true });
+  });
+
+  it('holds nothing for a plan with no days, and says so', async () => {
+    const panel = fakePanel();
+
+    const result = await marzbanAdapter.provision(
+      request({ onHold: true, durationDays: null, expiresAt: null }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    const body = createCall(panel.calls)?.body as Record<string, unknown>;
+    expect(body['expire']).toBe(0);
+    expect(body['status']).toBeUndefined();
+    expect(result).toMatchObject({ ok: true, held: false });
+  });
+
+  it('a retry that finds the account already held reports it held', async () => {
+    const panel = fakePanel({
+      users: { [request().username]: { subscription_url: '/sub/x', status: 'on_hold' } },
+    });
+
+    const result = await marzbanAdapter.provision(
+      request({ onHold: true }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(result).toMatchObject({ ok: true, alreadyExisted: true, held: true });
+  });
+
+  /** A held account, as the panel reports it: no date, its days in seconds. */
+  function heldPanel(heldSeconds: number) {
+    const puts: Record<string, unknown>[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 't' }), { status: 200 });
+      }
+      if (url.endsWith('/reset')) return new Response('{}', { status: 200 });
+      if (method === 'GET') {
+        return new Response(
+          JSON.stringify({
+            expire: 0,
+            status: 'on_hold',
+            on_hold_expire_duration: heldSeconds,
+            data_limit: 10 * 1024 ** 3,
+          }),
+          { status: 200 },
+        );
+      }
+      puts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ username: 'u' }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    return { puts, fetchImpl };
+  }
+
+  it('renewing a held account adds days to the hold, not a date the panel would refuse', async () => {
+    const panel = heldPanel(30 * 86_400);
+
+    const result = await marzbanAdapter.renew!(
+      renewal({ mode: 'ADD', durationDays: 10 }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(panel.puts[0]).toMatchObject({
+      expire: 0,
+      status: 'on_hold',
+      on_hold_expire_duration: 40 * 86_400,
+    });
+    // The date is still the panel's to stamp, at the first connection.
+    expect(result).toMatchObject({ ok: true, expiresAt: null });
+  });
+
+  it('resetting a held account replaces the hold with the plan’s days', async () => {
+    const panel = heldPanel(30 * 86_400);
+
+    await marzbanAdapter.renew!(renewal({ mode: 'RESET', durationDays: 30 }), provider({ fetch: panel.fetchImpl }));
+
+    expect(panel.puts[0]).toMatchObject({ status: 'on_hold', on_hold_expire_duration: 30 * 86_400 });
+    expect(panel.puts[0]?.['expire']).toBe(0);
+  });
+
   it('extends with unix seconds, like panels.php:1958', async () => {
     const panel = renewPanel(0);
 

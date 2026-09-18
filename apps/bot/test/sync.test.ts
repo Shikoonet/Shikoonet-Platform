@@ -38,6 +38,9 @@ function fakePanel(
     /** What the panel says about expiry. Left out entirely when undefined,
      *  which is the «this panel does not report one» case. */
     expire?: number | string | null;
+    /** The panel's own word: active / on_hold / … Left out when undefined. */
+    status?: string;
+    online_at?: string | null;
   }[],
 ) {
   const calls: string[] = [];
@@ -55,6 +58,8 @@ function fakePanel(
             used_traffic: a.used,
             subscription_url: a.url === undefined ? `/sub/${a.username}` : a.url,
             expire: a.expire,
+            status: a.status,
+            online_at: a.online_at,
           })),
           total: accounts.length,
         }),
@@ -112,7 +117,7 @@ async function makeService(
 async function readService(id: number) {
   return db
     .prepare(
-      `SELECT used_bytes, subscription_url, last_synced_at, expires_at
+      `SELECT used_bytes, subscription_url, last_synced_at, expires_at, status, activated_at
          FROM subscriptions WHERE id = ?1`,
     )
     .bind(id)
@@ -121,6 +126,8 @@ async function readService(id: number) {
       subscription_url: string | null;
       last_synced_at: string | null;
       expires_at: string | null;
+      status: string;
+      activated_at: string | null;
     }>();
 }
 
@@ -225,6 +232,47 @@ describe('refreshing what the customer sees', () => {
 
     expect(summary).toMatchObject({ panels: 1, updated: 1 });
     expect((await readService(id))?.used_bytes).toBe(2 * GIB);
+  });
+
+  it('a held service becomes ACTIVE the first time the panel stops saying on_hold (#325)', async () => {
+    // A sold account is created on_hold with no date; the panel turns it
+    // active and stamps `expire` when the customer first connects. That is
+    // the one status the sweep writes, and only in that direction.
+    const userId = await makeCustomer(nextTelegramId());
+    const held = await makeService(userId, panelId, {
+      publicId: 'sync-held',
+      username: 'u_held',
+      usedBytes: null,
+      status: 'ON_HOLD',
+    });
+    const stillHeld = await makeService(userId, panelId, {
+      publicId: 'sync-still',
+      username: 'u_still',
+      usedBytes: null,
+      status: 'ON_HOLD',
+    });
+    await db
+      .prepare(`UPDATE subscriptions SET expires_at = NULL, activated_at = NULL WHERE id IN (?1, ?2)`)
+      .bind(held, stillHeld)
+      .run();
+    const connectedAt = new Date(NOW_MS - 60_000).toISOString();
+    const expireAt = Math.floor((NOW_MS + 30 * 86_400_000) / 1000);
+    const panel = fakePanel([
+      { username: 'u_held', used: GIB, status: 'active', online_at: connectedAt, expire: expireAt },
+      { username: 'u_still', used: 0, status: 'on_hold', expire: 0 },
+    ]);
+
+    await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
+
+    const live = await readService(held);
+    expect(live?.status).toBe('ACTIVE');
+    expect(Date.parse(live?.activated_at ?? '')).toBe(Date.parse(connectedAt));
+    // …and the date it never had is the panel's, now that the panel has one.
+    expect(Date.parse(live?.expires_at ?? '')).toBe(expireAt * 1000);
+    const waiting = await readService(stillHeld);
+    expect(waiting?.status).toBe('ON_HOLD');
+    expect(waiting?.activated_at).toBeNull();
+    expect(waiting?.expires_at).toBeNull();
   });
 
   it('never touches a subscription that is not active', async () => {
