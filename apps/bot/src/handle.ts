@@ -114,6 +114,7 @@ import {
   spendOnOrder,
   topupAmount,
   topupNeededIrr,
+  walletPaidOnOrder,
   topupPresetsIrr,
 } from './wallet.js';
 import type {
@@ -1668,16 +1669,17 @@ async function handleAddonAmount(
         kind,
         quantity,
         service.plan_name_at_sale,
-        placed.totalIrr,
+        checkout.amountIrr,
         checkout.cardDigits,
         checkout.cardHolder,
         placed.expiresAt,
+        checkout.walletIrr,
       ),
       menu.checkoutMenu(
         placed.id,
-        placed.totalIrr,
+        checkout.amountIrr,
         checkout.cardDigits,
-        { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
+        { balanceIrr: await balanceFor(tx, user.id), totalIrr: checkout.amountIrr },
         SHOP.showsCopyButtons,
       ),
     ),
@@ -2067,17 +2069,18 @@ async function placeOrderScreen(
       menu.checkout(
         placed.publicId,
         plan,
-        placed.totalIrr,
+        checkout.amountIrr,
         checkout.cardDigits,
         checkout.cardHolder,
         held ? appliedOf(held, plan) : null,
         placed.expiresAt,
+        checkout.walletIrr,
       ),
       menu.checkoutMenu(
         placed.id,
-        placed.totalIrr,
+        checkout.amountIrr,
         checkout.cardDigits,
-        { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
+        { balanceIrr: await balanceFor(tx, user.id), totalIrr: checkout.amountIrr },
         SHOP.showsCopyButtons,
       ),
     ),
@@ -3072,16 +3075,17 @@ async function handleCallback(
             placed.publicId,
             service.plan_name_at_sale,
             plan,
-            placed.totalIrr,
+            checkout.amountIrr,
             checkout.cardDigits,
             checkout.cardHolder,
             held ? appliedOf(held, plan) : null,
             placed.expiresAt,
             plan.providerId !== service.provider_id,
+            checkout.walletIrr,
           ),
-          menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
+          menu.checkoutMenu(placed.id, checkout.amountIrr, checkout.cardDigits, {
             balanceIrr: await balanceFor(tx, user.id),
-            totalIrr: placed.totalIrr,
+            totalIrr: checkout.amountIrr,
           }),
         ),
         checkout.publicId,
@@ -3144,6 +3148,7 @@ async function handleCallback(
                 result.cardDigits,
                 result.cardHolder,
                 order.expires_at,
+                result.walletIrr,
               ),
               menu.checkoutMenu(
                 order.id,
@@ -3378,8 +3383,10 @@ async function handleCallback(
       if (!order) return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       // Recomputed from the order and the balance as they are now. The amount
       // is never taken from the button, because a customer could name their own.
+      // Less what the invoice already took from the balance (#317): a deposit
+      // sized against the full total would be twice the wallet's share too big.
       const needed = topupNeededIrr(
-        order.total_irr,
+        order.total_irr - (await walletPaidOnOrder(tx, order.id)),
         await balanceFor(tx, user.id),
         SHOP.topupMinIrr,
       );
@@ -3456,14 +3463,18 @@ async function handleCallback(
       if (alreadyClaimed) {
         return screen(menu.paidAlready(alreadyClaimed.public_id), menu.afterPaidMenu(order.id));
       }
-      const spent = await spendOnOrder(tx, user.id, order.id, order.total_irr);
+      // The rest of the price, not all of it: the invoice may already have
+      // taken part of it from the balance (`reserveForOrder`, #317), and that
+      // part must not be taken twice.
+      const owedIrr = order.total_irr - (await walletPaidOnOrder(tx, order.id));
+      const spent = await spendOnOrder(tx, user.id, order.id, owedIrr);
       if (spent === 'INSUFFICIENT') {
         // Say how much is missing. The customer is looking at a screen whose
         // total and whose balance live on two different screens, and the
         // subtraction is the only thing between them and the deposit buttons
         // underneath.
         return screen(
-          menu.walletTooLittle(order.total_irr - (await balanceFor(tx, user.id))),
+          menu.walletTooLittle(owedIrr - (await balanceFor(tx, user.id))),
           menu.walletMenu(),
         );
       }
@@ -3522,7 +3533,7 @@ async function handleCallback(
            ON CONFLICT (order_id) WHERE order_id IS NOT NULL AND status = 'PAID'
            DO NOTHING`,
         )
-        .bind(newPublicId(), user.id, order.id, order.total_irr)
+        .bind(newPublicId(), user.id, order.id, owedIrr)
         .run();
       return screen(
         menu.walletPaid(order.public_id, await balanceFor(tx, user.id)),
@@ -3553,7 +3564,15 @@ async function topup(
   // for every caller, so this branch exists rather than a non-null assertion
   // that would become a lie the day deposits gain a discount.
   if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.walletMenu());
-  const checkout = await checkoutFor(tx, userId, placed.id, placed.totalIrr, newPublicId());
+  const checkout = await checkoutFor(
+    tx,
+    userId,
+    placed.id,
+    placed.totalIrr,
+    newPublicId(),
+    Date.now(),
+    false,
+  );
   if (!checkout) return screen(menu.NO_CARD_AVAILABLE, menu.walletMenu());
   if (checkout.claimed) return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
   return asInvoice(

@@ -35,6 +35,7 @@
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
 import { enqueue } from './notify.js';
+import { refundOrder } from './wallet.js';
 
 /*
  * The deadline is NOT here.
@@ -185,10 +186,14 @@ export async function expireUnpaidOrders(
     // invoice when its message is known — no keyboard, so «پرداخت کردم» and
     // the copy buttons go with the card number.
     for (const row of expired ?? []) {
+      // What the invoice took from the balance goes back with it (#317). Same
+      // transaction, for the same reason as the message: an order cannot be
+      // EXPIRED while still holding part of its price.
+      const refunded = await refundOrder(tx, row.id, 'invoice expired');
       await enqueue(tx, {
         dedupeKey: `expire:${row.public_id}`,
         chatId: row.telegram_id,
-        text: menu.orderExpired(row.public_id),
+        text: menu.orderExpired(row.public_id, refunded),
         editMessageId: invoiceMessageOf.get(row.id) ?? null,
       });
     }

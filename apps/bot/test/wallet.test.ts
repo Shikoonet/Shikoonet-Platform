@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { newPublicId, placeTopupOrder, type PlacedOrder } from '../src/order.js';
 import { provisionPaidOrders } from '../src/provision.js';
 import { settleVerifiedPayments } from '../src/settle.js';
+import { expireUnpaidOrders } from '../src/expire.js';
 import {
   balanceFor,
   spendOnOrder,
@@ -24,7 +25,9 @@ import {
   TOPUP_MIN_IRR,
 } from '../src/wallet.js';
 import { handleUpdate } from '../src/handle.js';
+import { checkoutFor } from '../src/payment.js';
 import * as menu from '../src/menu.js';
+import { formatToman } from '../src/money.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -682,5 +685,171 @@ describe('an order paid from the wallet that cannot be delivered', () => {
 
     expect(await balanceFor(db, userId)).toBe(1_000_000);
     expect(notes.some((n) => n.text.includes('محفوظ است'))).toBe(true);
+  });
+});
+
+/**
+ * Issue #317. The legacy bot always asked for «price minus balance»
+ * (`index.php:1885`), its customers still transfer exactly that, and the new
+ * invoice named the full price — so a 490,000 Toman receipt met a 500,000
+ * expectation, auto-verification refused it, and the ten thousand sat in the
+ * wallet for an admin to remove by hand.
+ *
+ * Asserted against the ledger and the claim, not the screen: the money is the
+ * bug, the screen is how the customer finds out.
+ */
+describe('an invoice takes what the wallet has and asks the card for the rest', () => {
+  async function invoiceWith(telegramId: number, updateId: number, balanceIrr: number) {
+    const userId = await makeCustomer(telegramId);
+    if (balanceIrr > 0) await credit(userId, balanceIrr, `t:${userId}:part`);
+    const plan = await planId('sim-gold-10');
+    const out = await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const order = await db
+      .prepare(
+        `SELECT id, public_id, total_irr FROM orders
+          WHERE user_id = ?1 AND kind = 'NEW_PURCHASE' ORDER BY id DESC LIMIT 1`,
+      )
+      .bind(userId)
+      .first<{ id: number; public_id: string; total_irr: number }>();
+    const payment = await db
+      .prepare(
+        `SELECT amount_irr FROM payments WHERE order_id = ?1 AND status = 'PENDING'`,
+      )
+      .bind(order!.id)
+      .first<{ amount_irr: number }>();
+    return { userId, order: order!, cardIrr: payment!.amount_irr, screen: out.replies[0]! };
+  }
+
+  it('names the difference on the invoice, the button and the claim', async () => {
+    const telegramId = 920_100_040;
+    const { userId, order, cardIrr, screen } = await invoiceWith(telegramId, 920_100_940, 100_000);
+
+    expect(cardIrr).toBe(order.total_irr - 100_000);
+    expect(await balanceFor(db, userId)).toBe(0);
+    // The amount the customer reads and the one they copy are the card's
+    // share — a customer who transfers what the invoice says is verified.
+    expect(screen.text).toContain(formatToman(cardIrr));
+    expect(screen.text).toContain('10,000');
+    expect(screen.text).not.toContain(formatToman(order.total_irr));
+    const copies = (screen.keyboard ?? []).flat().map((b) => b.copy_text?.text);
+    expect(copies).toContain(String(cardIrr));
+    expect(copies).not.toContain(String(order.total_irr));
+
+    // «پرداخت کردم» opens the claim at the same number, which is what the
+    // bank's SMS is matched against — exactly, with no tolerance.
+    await handleUpdate(db, press(920_100_941, telegramId, `paid:${order.id}`));
+    const claim = await db
+      .prepare(
+        `SELECT c.expected_amount_irr FROM payment_claims c
+           JOIN payments p ON c.external_order_id = 'shikoo:' || p.public_id
+          WHERE p.order_id = ?1`,
+      )
+      .bind(order.id)
+      .first<{ expected_amount_irr: number }>();
+    expect(claim?.expected_amount_irr).toBe(cardIrr);
+  });
+
+  it('takes it once, however many times the invoice is drawn', async () => {
+    const telegramId = 920_100_041;
+    const { userId, order, cardIrr } = await invoiceWith(telegramId, 920_100_942, 100_000);
+    const plan = await planId('sim-gold-10');
+    const again = await handleUpdate(db, press(920_100_943, telegramId, `order:${plan}`));
+
+    expect(await balanceFor(db, userId)).toBe(0);
+    expect(again.replies[0]!.text).toContain(formatToman(cardIrr));
+    const entries = await db
+      .prepare(`SELECT count(*)::int AS n FROM wallet_entries WHERE order_id = ?1`)
+      .bind(order.id)
+      .first<{ n: number }>();
+    expect(entries?.n).toBe(1);
+  });
+
+  it('leaves a balance that covers the order alone — that customer has the wallet button', async () => {
+    const { userId, order, cardIrr, screen } = await invoiceWith(920_100_042, 920_100_944, 50_000_000);
+
+    expect(cardIrr).toBe(order.total_irr);
+    expect(await balanceFor(db, userId)).toBe(50_000_000);
+    const datas = (screen.keyboard ?? []).flat().map((b) => b.callback_data);
+    expect(datas).toContain(`wpay:${order.id}`);
+  });
+
+  it('never takes from the balance for a deposit', async () => {
+    const telegramId = 920_100_043;
+    const userId = await makeCustomer(telegramId);
+    await credit(userId, 3_000_000, `t:${userId}:a`);
+
+    await handleUpdate(db, press(920_100_945, telegramId, 'top'));
+    await handleUpdate(db, press(920_100_946, telegramId, 'tp:1'));
+
+    expect(await balanceFor(db, userId)).toBe(3_000_000);
+  });
+
+  it('gives it back when the invoice expires, and says so', async () => {
+    const { userId, order } = await invoiceWith(920_100_044, 920_100_947, 100_000);
+    await db
+      .prepare(`UPDATE orders SET expires_at = now() - interval '1 minute' WHERE id = ?1`)
+      .bind(order.id)
+      .run();
+
+    await expireUnpaidOrders(db);
+    await expireUnpaidOrders(db);
+
+    expect(await balanceFor(db, userId)).toBe(100_000);
+    const notes = await pendingNotifications();
+    expect(
+      notes.some((n) => n.text.includes(order.public_id) && n.text.includes('به کیف پول شما برگشت')),
+    ).toBe(true);
+  });
+
+  it('charges the wallet only for the rest when the customer tops up and pays from it', async () => {
+    const telegramId = 920_100_045;
+    const { userId, order, cardIrr } = await invoiceWith(telegramId, 920_100_948, 100_000);
+    // The deposit lands the way the settle sweep would land it.
+    await credit(userId, cardIrr + 20_000, `t:${userId}:later`);
+
+    await handleUpdate(db, press(920_100_949, telegramId, `wpay:${order.id}`));
+
+    // 100,000 at the invoice, the rest now, and the 20,000 over stays.
+    expect(await balanceFor(db, userId)).toBe(20_000);
+    const paid = await db
+      .prepare(
+        `SELECT o.status, p.amount_irr FROM orders o
+           JOIN payments p ON p.order_id = o.id AND p.method = 'WALLET' AND p.status = 'PAID'
+          WHERE o.id = ?1`,
+      )
+      .bind(order.id)
+      .first<{ status: string; amount_irr: number }>();
+    expect(paid).toMatchObject({ status: 'PAID', amount_irr: cardIrr });
+  });
+
+  it('gives the wallet share back when a card-paid order cannot be delivered', async () => {
+    const userId = await makeCustomer(920_100_046);
+    await credit(userId, 100_000, `t:${userId}:a`);
+    const plan = await planId('sim-vip-1m-20');
+    const order = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
+                             unit_price_irr, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, 1000000, 0, 1000000, 'AWAITING_PAYMENT')
+         RETURNING id, public_id`,
+      )
+      .bind(newPublicId(), userId, plan)
+      .first<{ id: number; public_id: string }>();
+    const checkout = await db.withSession((tx) =>
+      checkoutFor(tx, userId, order!.id, 1_000_000, newPublicId()),
+    );
+    expect(checkout).toMatchObject({ amountIrr: 900_000, walletIrr: 100_000 });
+    // The transfer arrived and was settled; only delivery is left.
+    await db
+      .prepare(`UPDATE payments SET status = 'PAID' WHERE order_id = ?1`)
+      .bind(order!.id)
+      .run();
+    await db.prepare(`UPDATE orders SET status = 'PAID' WHERE id = ?1`).bind(order!.id).run();
+
+    await provisionPaidOrders(db);
+    const notes = await pendingNotifications();
+
+    expect(await balanceFor(db, userId)).toBe(100_000);
+    expect(notes.some((n) => n.text.includes('10,000') && n.text.includes('به کیف پول شما برگشت'))).toBe(true);
   });
 });
