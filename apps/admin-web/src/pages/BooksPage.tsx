@@ -202,7 +202,7 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
           <select
             aria-label="حساب"
             className="form-control"
-            style={{ maxWidth: 240 }}
+            style={{ maxWidth: 200 }}
             value={accountId}
             onChange={(e) => setAccountId(e.target.value)}
           >
@@ -215,8 +215,8 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
               </option>
             ))}
           </select>
-          <a className="btn" href={api.booksStatementCsvUrl(month, accountId || undefined)} download>
-            خروجی صورت‌حساب
+          <a className="btn btn-sm" href={api.booksStatementCsvUrl(month, accountId || undefined)} download>
+            خروجی CSV
           </a>
         </div>
       </div>
@@ -239,13 +239,13 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
       )}
 
       {totals && (
-        <div className="stats-grid" data-testid="books-tiles">
+        <div className="stats-grid stats-grid--five" data-testid="books-tiles">
           <Stat
             tone="tone-blue"
             icon="wallet"
             value={tomanCompact(totals.closingIrr)}
             label="کیف پول — آخر ماه، به گفتهٔ بانک"
-            foot={`${toman(totals.closingIrr)} · اول ماه ${toman(totals.openingIrr)}`}
+            foot={`${toman(totals.closingIrr)} · اول ماه ${toman(totals.openingIrr)}${totals.accountsUnknown ? ' + ؟' : ''}`}
           />
           <Stat
             tone="tone-green"
@@ -260,11 +260,9 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
             value={tomanCompact(totals.ledgerExpenseIrr + totals.ledgerFeeIrr)}
             label="هزینه‌های فروشگاه از حساب‌ها"
             foot={
-              (totals.ledgerFeeIrr
-                ? `${toman(totals.ledgerExpenseIrr + totals.ledgerFeeIrr)} · کارمزد بانک ${toman(totals.ledgerFeeIrr)}`
-                : toman(totals.ledgerExpenseIrr)) +
+              (totals.ledgerFeeIrr ? `کارمزد بانک ${toman(totals.ledgerFeeIrr)}` : toman(totals.ledgerExpenseIrr)) +
               (totals.expensesNoAccountCount
-                ? ` · ${count(totals.expensesNoAccountCount)} هزینهٔ دیگر (${toman(totals.expensesNoAccountIrr)}) حساب ندارد و این‌جا نیست`
+                ? ` · ${count(totals.expensesNoAccountCount)} هزینهٔ بی‌حساب (${toman(totals.expensesNoAccountIrr)}) این‌جا نیست`
                 : '')
             }
           />
@@ -275,7 +273,7 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
             label="برداشت بی‌توضیح"
             foot={
               unexplained
-                ? `${count(unexplained)} برداشت — نه هزینه‌ای برایش ثبت شده، نه خارج از دفتر`
+                ? `${count(unexplained)} پیامک برداشت که نه هزینه است نه خارج از دفتر`
                 : 'هر برداشت یا هزینه است یا خارج از دفتر'
             }
           />
@@ -286,7 +284,7 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
             label="اختلاف با بانک"
             foot={
               gapAccounts
-                ? `${count(gapAccounts)} حساب — پولی رفته یا آمده که نه پیامک دارد نه توضیح؛ حساب را باز کن`
+                ? `${count(gapAccounts)} حساب نمی‌خواند — بازش کن و ردیف خاکستری را توضیح بده`
                 : totals.accountsUnknown
                   ? `${count(totals.accountsUnknown)} حساب هنوز موجودی نفرستاده`
                   : 'موجودی بانک با جمع حرکت‌ها یکی است'
@@ -524,7 +522,7 @@ function Statement({
         </div>
       </div>
       <div className="table-wrap">
-        <table className="app-table" data-testid="statement" style={{ minWidth: 900 }}>
+        <table className="app-table app-table--tight" data-testid="statement" style={{ minWidth: 880 }}>
           <thead>
             <tr>
               <th>حساب</th>
@@ -611,7 +609,7 @@ function Statement({
                           className="badge badge-warning"
                           title="برداشتی که نه هزینه‌ای برایش ثبت شده نه خارج از دفتر است — حساب را انتخاب کن و برچسب بزن"
                         >
-                          −{toman(s.unexplainedWithdrawals.amountIrr)} · {count(s.unexplainedWithdrawals.count)}
+                          {toman(s.unexplainedWithdrawals.amountIrr)} ({count(s.unexplainedWithdrawals.count)})
                         </span>
                       ) : (
                         <span className="muted">—</span>
@@ -705,6 +703,7 @@ function MovementState({ m }: { m: BankMovement }) {
     return (
       <span className="badge badge-info" title={m.expense.note ?? undefined}>
         هزینهٔ #{m.expense.id}
+        {m.kind === 'expense' ? ' · بدون پیامک' : ''}
         {m.expense.note ? ` · ${m.expense.note}` : ''}
       </span>
     );
@@ -745,7 +744,7 @@ export function findHoles(accountId: string, items: BankMovement[]): Hole[] {
   let expected: number | null = null;
   for (const m of asc) {
     const signed = m.direction === 'CREDIT' ? m.amountIrr : -m.amountIrr;
-    if (m.kind === 'manual' || m.balanceIrr === null) {
+    if (m.kind !== 'sms' || m.balanceIrr === null) {
       if (expected !== null) expected += signed;
       continue;
     }
@@ -808,7 +807,7 @@ function Movements({
         </div>
       </div>
       <div className="table-wrap">
-        <table className="app-table" data-testid="movements" style={{ minWidth: 640 }}>
+        <table className="app-table app-table--tight" data-testid="movements" style={{ minWidth: 640 }}>
           <thead>
             <tr>
               <th>زمان</th>
@@ -832,14 +831,23 @@ function Movements({
               const taggingHole = tagging?.kind === 'hole' && tagging.hole.beforeId === m.id;
               return (
                 <Fragment key={m.id}>
-                  <tr data-testid={`movement-${m.id}`} style={m.kind === 'manual' ? { opacity: 0.85 } : undefined}>
+                  <tr data-testid={`movement-${m.id}`} style={m.kind !== 'sms' ? { opacity: 0.85 } : undefined}>
                     <td className="tabular-nums">{dateTime(m.bankTimestamp)}</td>
                     <td>
                       <Signed irr={m.amountIrr} sign={m.direction === 'CREDIT' ? '+' : '−'} />
                     </td>
                     <td className="tabular-nums">
                       {m.balanceIrr === null ? (
-                        <span className="muted" title={m.kind === 'manual' ? `نوشتهٔ ${m.by ?? ''}` : 'بانک موجودی نگفته'}>
+                        <span
+                          className="muted"
+                          title={
+                            m.kind === 'manual'
+                              ? `نوشتهٔ ${m.by ?? ''}`
+                              : m.kind === 'expense'
+                                ? 'از «هزینه‌ها»، پیامکی وصل نیست'
+                                : 'بانک موجودی نگفته'
+                          }
+                        >
                           —
                         </span>
                       ) : (
@@ -1114,8 +1122,10 @@ function OffBooksList({
             )}
             {shown.map((it) => (
               <tr key={it.id}>
-                <td className="tabular-nums">{dateTime(it.bankTimestamp)}</td>
-                <td>{it.accountName ?? <span className="muted">—</span>}</td>
+                <td className="tabular-nums" style={{ whiteSpace: 'nowrap' }}>
+                  {dateTime(it.bankTimestamp)}
+                </td>
+                <td style={{ whiteSpace: 'nowrap' }}>{it.accountName ?? <span className="muted">—</span>}</td>
                 <td>
                   <Signed irr={it.amountIrr} sign={it.direction === 'CREDIT' ? '+' : '−'} />
                   {it.kind === 'manual' && (

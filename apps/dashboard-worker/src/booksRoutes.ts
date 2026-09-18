@@ -396,7 +396,31 @@ export function registerBooksRoutes(
         note: string | null;
         created_by: string;
       }>();
+    // An expense on this account that no SMS carries is a movement the
+    // ledger knows and the bank never texted — the other way a hole gets
+    // closed. Placed at the start of its day: the withdrawal happened some
+    // time that day, and the SMS whose balance revealed it came after.
+    const unlinked = await c.env.DB.prepare(
+      `SELECT ra.id, ra.note, ra.spent_on::text AS spent_on, (-ra.amount_irr + ra.fee_irr) AS irr
+         FROM revenue_adjustments ra
+        WHERE ra.financial_account_id = ?1 AND ra.kind = 'EXPENSE' AND ra.voided_at IS NULL
+          AND ra.transaction_candidate_id IS NULL
+          AND ra.spent_on >= ?2::date AND ra.spent_on < ?3::date`,
+    )
+      .bind(accountId, tehranDateStringFromMs(from), tehranDateStringFromMs(month.end))
+      .all<{ id: number; note: string | null; spent_on: string; irr: string | number }>();
     const items = [
+      ...(unlinked.results ?? []).map((e) => ({
+        id: `expense:${e.id}`,
+        kind: 'expense' as const,
+        direction: 'DEBIT' as const,
+        amountIrr: Number(e.irr),
+        balanceIrr: null as number | null,
+        bankTimestamp: Math.max(from, tehranDayBoundsFromDate(e.spent_on.slice(0, 10)).start),
+        matched: false,
+        offBooks: null as null | { category: OffBooksCategory; categoryFa: string; note: string | null },
+        expense: { id: Number(e.id), note: e.note } as null | { id: number; note: string | null },
+      })),
       ...(rows.results ?? []).map((r) => ({
         id: r.id,
         kind: 'sms' as const,

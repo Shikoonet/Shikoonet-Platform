@@ -706,8 +706,8 @@ export interface OffBooksItem {
 
 export interface BankMovement {
   id: string;
-  /** `sms` — the bank said it; `manual` — the operator wrote it down. */
-  kind: 'sms' | 'manual';
+  /** `sms` — the bank said it; `manual` — the operator wrote it down; `expense` — a ledger row on this account with no SMS behind it. */
+  kind: 'sms' | 'manual' | 'expense';
   direction: 'CREDIT' | 'DEBIT';
   amountIrr: number;
   balanceIrr: number | null;

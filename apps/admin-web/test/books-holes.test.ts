@@ -49,6 +49,12 @@ describe('findHoles', () => {
     ]);
   });
 
+  it('is closed by an expense row on the account the same way', () => {
+    const items = [sms('a', 1000, 'CREDIT', 100, 1_000_000), sms('b', 3000, 'CREDIT', 200_000, 700_000)];
+    const expense: BankMovement = { ...sms('expense:1', 2000, 'DEBIT', 500_000, null), kind: 'expense', expense: { id: 1, note: null } };
+    expect(findHoles('acct', [...items, expense])).toEqual([]);
+  });
+
   it('reads the list in any order and skips an SMS the parser found no balance in', () => {
     const items = [
       sms('c', 3000, 'CREDIT', 100_000, 1_300_000),

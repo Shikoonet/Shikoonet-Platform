@@ -463,6 +463,11 @@ describe('the monthly statement', () => {
     }).accounts[0]!;
     expect(s.ledger).toMatchObject({ unlinkedCount: 1, unlinkedIrr: 500_000 });
     expect(s.gapIrr).toBe(0);
+    // …and the list carries it, so the hole finder on the page closes the same hole.
+    const moves = (await (await get(`/api/v1/admin/books/movements?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      items: Array<{ kind: string; amountIrr: number; direction: string; expense: { id: number } | null }>;
+    };
+    expect(moves.items.find((m) => m.kind === 'expense')).toMatchObject({ direction: 'DEBIT', amountIrr: 500_000 });
   });
 
   it('refuses a hand-written movement in the future, on no account, or from anyone but an ADMIN', async () => {
