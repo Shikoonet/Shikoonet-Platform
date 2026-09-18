@@ -1193,6 +1193,48 @@ describe('the customer behind a claim', () => {
     expect(item.customerLiveSubscriptions).toBe(2);
   });
 
+  /**
+   * A 120,000 Toman invoice showed «مبلغ مورد انتظار ۱۱۴٬۰۵۰» and Sam asked
+   * why: the checkout had taken 5,950 off the card amount from the balance
+   * (#317). Correct, and invisible. The list now carries the wallet's share,
+   * read from the same PURCHASE rows the bot's `walletPaidOnOrder` sums.
+   */
+  it('says what the wallet paid toward the order', async () => {
+    const userId = await seedCustomer([]);
+    const order = await baseEnv.DB.prepare(
+      `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status)
+       VALUES ('wal-o', ?1, 'NEW_PURCHASE', 1200000, 1, 0, 1200000, 'COMPLETED')
+       ON CONFLICT (public_id) DO UPDATE SET user_id = EXCLUDED.user_id RETURNING id`,
+    )
+      .bind(userId)
+      .first<{ id: number }>();
+    await baseEnv.DB.prepare(
+      `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+       VALUES ('wal-p', ?1, ?2, 1140500, 'CARD_TO_CARD', 'PAID', now()) ON CONFLICT (public_id) DO NOTHING`,
+    )
+      .bind(userId, order!.id)
+      .run();
+    // Append-only, so the key is what makes a second run of this file pass.
+    await baseEnv.DB.prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, idempotency_key)
+       VALUES (?1, -59500, 'PURCHASE', ?2, 'test:wal-o:reserve') ON CONFLICT (idempotency_key) DO NOTHING`,
+    )
+      .bind(userId, order!.id)
+      .run();
+    await seedClaim('wal-c', { status: 'VERIFIED', customerReference: String(TG) });
+    await baseEnv.DB.prepare(
+      `UPDATE payment_claims SET external_order_id = 'shikoo:wal-p', expected_amount_irr = 1140500 WHERE id = 'wal-c'`,
+    ).run();
+    await seedClaim('wal-none', { status: 'VERIFIED', customerReference: String(TG) });
+
+    const body = await get('tab=all&range=all');
+    const paid = (id: string) =>
+      (body.items.find((i) => i.id === id) as unknown as { walletPaidToman: number })
+        .walletPaidToman;
+    expect(paid('wal-c')).toBe(5950);
+    expect(paid('wal-none')).toBe(0);
+  });
+
   it('says nothing, not zero, when the reference matches no customer', async () => {
     await seedClaim('hist-n', { status: 'VERIFIED', customerReference: 'Poyan test payment' });
 

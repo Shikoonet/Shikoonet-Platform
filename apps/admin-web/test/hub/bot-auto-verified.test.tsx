@@ -31,6 +31,7 @@ function makeClaimItem(over: Partial<PaymentItem> & { id: string }): PaymentItem
     telegramUsername: 'ali',
     expectedAmountIrr: 1_950_000,
     expectedAmountToman: 195_000,
+    walletPaidToman: 0,
     cardMasked: '**** **** **** 5678',
     cardDisplay: '5054-1617-0627-5678',
     accountId: 'acc-1',

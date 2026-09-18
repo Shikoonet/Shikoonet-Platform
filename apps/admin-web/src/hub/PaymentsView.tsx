@@ -2470,6 +2470,15 @@ function ReviewPanel({
           </dd>
           <dt>مبلغ مورد انتظار</dt>
           <dd className="tabular-nums">{formatToman(item.expectedAmountToman)}</dd>
+          {item.walletPaidToman > 0 && (
+            <>
+              <dt>از کیف پول</dt>
+              <dd className="tabular-nums">
+                {formatToman(item.walletPaidToman)} — فاکتور{' '}
+                {formatToman(item.expectedAmountToman + item.walletPaidToman)}
+              </dd>
+            </>
+          )}
           <dt>کارت نمایش‌داده‌شده</dt>
           <dd className="ltr tabular-nums">{item.cardDisplay ?? item.cardMasked ?? '—'}</dd>
           <dt>وضعیت</dt>

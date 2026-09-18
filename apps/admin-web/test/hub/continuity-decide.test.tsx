@@ -34,6 +34,7 @@ function continuityClaim(over: Partial<PaymentItem> = {}): PaymentItem {
     telegramUsername: 'demo',
     expectedAmountIrr: 2_000_000,
     expectedAmountToman: 200_000,
+    walletPaidToman: 0,
     cardMasked: null,
     cardDisplay: null,
     accountId: null,

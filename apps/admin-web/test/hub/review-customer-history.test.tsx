@@ -23,6 +23,7 @@ function claim(over: Partial<PaymentItem> = {}): PaymentItem {
     telegramUsername: null,
     expectedAmountIrr: 1_500_000,
     expectedAmountToman: 150_000,
+    walletPaidToman: 0,
     cardMasked: null,
     cardDisplay: null,
     accountId: null,
