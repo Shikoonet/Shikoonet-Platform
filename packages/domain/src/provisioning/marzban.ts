@@ -678,7 +678,9 @@ export const marzbanAdapter: ProvisioningAdapter = {
         remoteRef: { panel: provider.code, username: request.username },
         subscriptionUrl: absoluteSubUrl(created.subscription_url, base),
         alreadyExisted: false,
-        held: body['status'] === 'on_hold',
+        // The panel's word first — the response is the created user, status
+        // included — and what was asked only when it says nothing.
+        held: (asString(created.status) ?? body['status']) === 'on_hold',
       };
     } catch (error) {
       // A timeout, a DNS failure, a panel that is down. All worth another pass;

@@ -257,13 +257,23 @@ describe('refreshing what the customer sees', () => {
       .run();
     const connectedAt = new Date(NOW_MS - 60_000).toISOString();
     const expireAt = Math.floor((NOW_MS + 30 * 86_400_000) / 1000);
+    // …and one an admin switched off before anybody connected: still held.
+    const switchedOff = await makeService(userId, panelId, {
+      publicId: 'sync-off',
+      username: 'u_off',
+      usedBytes: null,
+      status: 'ON_HOLD',
+    });
+    await db.prepare(`UPDATE subscriptions SET expires_at = NULL, activated_at = NULL WHERE id = ?1`).bind(switchedOff).run();
     const panel = fakePanel([
       { username: 'u_held', used: GIB, status: 'active', online_at: connectedAt, expire: expireAt },
       { username: 'u_still', used: 0, status: 'on_hold', expire: 0 },
+      { username: 'u_off', used: 0, status: 'disabled', expire: 0 },
     ]);
 
     await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
 
+    expect((await readService(switchedOff))?.status).toBe('ON_HOLD');
     const live = await readService(held);
     expect(live?.status).toBe('ACTIVE');
     expect(Date.parse(live?.activated_at ?? '')).toBe(Date.parse(connectedAt));

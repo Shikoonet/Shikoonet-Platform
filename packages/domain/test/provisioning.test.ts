@@ -78,8 +78,13 @@ function fakePanel(options: { users?: Record<string, unknown>; onCreate?: () => 
     }
     if (method === 'POST' && url.endsWith('/api/user')) {
       if (options.onCreate) return options.onCreate();
-      const created = body as { username: string };
-      const row = { username: created.username, subscription_url: `/sub/${created.username}-tok` };
+      const created = body as { username: string; status?: string };
+      // The real panel answers with the created user, status included.
+      const row = {
+        username: created.username,
+        subscription_url: `/sub/${created.username}-tok`,
+        status: created.status ?? 'active',
+      };
       users[created.username] = row;
       return new Response(JSON.stringify(row), { status: 200 });
     }
@@ -1034,6 +1039,23 @@ describe('the expire field, in the shape the live PHP uses', () => {
     const body = createCall(panel.calls)?.body as Record<string, unknown>;
     expect(body).toMatchObject({ expire: 0, status: 'on_hold', on_hold_expire_duration: 30 * 86_400 });
     expect(result).toMatchObject({ ok: true, held: true });
+  });
+
+  it('believes the panel over the request about whether the account is held', async () => {
+    // A panel that answers `active` to an on_hold request did not hold it.
+    const panel = fakePanel({
+      onCreate: () =>
+        new Response(JSON.stringify({ username: 'x', subscription_url: '/sub/x', status: 'active' }), {
+          status: 200,
+        }),
+    });
+
+    const result = await marzbanAdapter.provision(
+      request({ onHold: true, durationDays: 30 }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(result).toMatchObject({ ok: true, held: false });
   });
 
   it('holds nothing for a plan with no days, and says so', async () => {

@@ -198,15 +198,17 @@ async function writeAccounts(
         `UPDATE subscriptions s
             SET used_bytes       = v.used_bytes,
                 subscription_url = COALESCE(v.url, s.subscription_url),
-                -- The first connection, seen from the panel's side: it stops
-                -- saying on_hold. Only then, and only forward (#325).
+                -- The first connection, seen from the panel's side: the clock
+                -- has started. active, and the two states an account can only
+                -- reach AFTER starting — limited and expired — in case a sync
+                -- was missed in between. Not disabled: an admin can switch a
+                -- held account off without anybody ever connecting, and that
+                -- row must stay ON_HOLD. Only forward (#325).
                 status           = CASE WHEN s.status = 'ON_HOLD'
-                                         AND v.panel_status IS NOT NULL
-                                         AND v.panel_status <> 'on_hold'
+                                         AND v.panel_status IN ('active', 'limited', 'expired')
                                         THEN 'ACTIVE' ELSE s.status END,
                 activated_at     = CASE WHEN s.status = 'ON_HOLD'
-                                         AND v.panel_status IS NOT NULL
-                                         AND v.panel_status <> 'on_hold'
+                                         AND v.panel_status IN ('active', 'limited', 'expired')
                                         THEN COALESCE(s.activated_at, v.panel_online_at, now())
                                         ELSE s.activated_at END,
                 -- Ours first, always. to_timestamp(NULL) is NULL, so a panel

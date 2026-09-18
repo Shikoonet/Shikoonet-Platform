@@ -37,11 +37,16 @@ function fakePanel() {
         : new Response('{}', { status: 404 });
     }
     if (method === 'POST' && url.endsWith('/api/user')) {
-      const body = JSON.parse(String(init?.body)) as { username: string };
+      const body = JSON.parse(String(init?.body)) as { username: string; status?: string };
       created.push(body.username);
       bodies.push(body);
+      // The real panel echoes the created user, status included.
       return new Response(
-        JSON.stringify({ username: body.username, subscription_url: `/sub/${body.username}` }),
+        JSON.stringify({
+          username: body.username,
+          subscription_url: `/sub/${body.username}`,
+          status: body.status ?? 'active',
+        }),
         { status: 200 },
       );
     }
