@@ -127,8 +127,13 @@ describe('writing to an applicant (#330)', () => {
     draw();
     await screen.findByText('درخواست 1');
 
-    // Row 3 carries the badge; rows 1 and 2 do not.
-    expect(screen.getAllByText('پیام داده‌شده')).toHaveLength(1);
+    // Row 3 is «پیام داده شد» and green in place of «در انتظار» (#344);
+    // rows 1 and 2 still wait.
+    const messaged = screen.getAllByText('پیام داده شد');
+    expect(messaged).toHaveLength(1);
+    expect(messaged[0]!.className).toBe('badge badge-active');
+    // Two rows plus the filter's option.
+    expect(screen.getAllByText('در انتظار')).toHaveLength(3);
 
     fireEvent.click(screen.getAllByRole('button', { name: 'پیام' })[0]!);
     // In the select and in the preview under it, so two nodes carry it.
