@@ -67,4 +67,23 @@ describe('findHoles', () => {
   it('says nothing about the first SMS — there is nothing before it to hold it against', () => {
     expect(findHoles('acct', [sms('a', 1000, 'DEBIT', 5, 10)])).toEqual([]);
   });
+
+  it('holds the first SMS against the opening balance when the books are open', () => {
+    // ملی-سارا, 2026-09-18: opened at 15,393,140 (a late text's stale balance);
+    // the first SMS after it is +2,000,000 with «مانده» 18,893,140 — the bank
+    // has 1,500,000 more than the books can account for.
+    const opening = { balanceIrr: 15_393_140, asOf: 5000, source: 'opening' as const };
+    const items = [sms('b', 9000, 'CREDIT', 2_000_000, 18_893_140)];
+    expect(findHoles('acct', items, opening)).toEqual([
+      { accountId: 'acct', direction: 'CREDIT', amountIrr: 1_500_000, at: 8000, beforeId: 'b' },
+    ]);
+    // A hand-written row between the two closes it.
+    expect(findHoles('acct', [...items, manual('m', 7000, 'CREDIT', 1_500_000)], opening)).toEqual([]);
+  });
+
+  it('ignores movements from before the opening — the opening balance already contains them', () => {
+    const opening = { balanceIrr: 1_000_000, asOf: 5000, source: 'opening' as const };
+    const items = [sms('old', 1000, 'CREDIT', 999, 400_000), sms('b', 9000, 'CREDIT', 100, 1_000_100)];
+    expect(findHoles('acct', items, opening)).toEqual([]);
+  });
 });

@@ -24,6 +24,7 @@ import {
   api,
   OFF_BOOKS_CATEGORY_FA,
   type AccountStatement,
+  type BalancePoint,
   type BankMovement,
   type BooksOpening,
   type OffBooksCategory,
@@ -326,6 +327,7 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
               accountId={accountId}
               accountName={accountName}
               items={movements}
+              opening={statements.find((s) => s.accountId === accountId)?.opening ?? null}
               canWrite={canWrite}
               tagging={tagging}
               onTag={(t) => setTagging(t)}
@@ -738,10 +740,17 @@ export type TagTarget = { kind: 'sms'; movement: BankMovement } | { kind: 'hole'
  * that nobody texted. Hand-written rows count toward «everything between»,
  * which is how writing one down closes the hole it explains.
  */
-export function findHoles(accountId: string, items: BankMovement[]): Hole[] {
-  const asc = [...items].sort((a, b) => a.bankTimestamp - b.bankTimestamp);
+export function findHoles(accountId: string, items: BankMovement[], opening: BalancePoint | null = null): Hole[] {
+  // The opening balance is a bank balance too, so the gap between it and the
+  // first SMS after it is a hole like any other. Without this seed the month's
+  // «اختلاف با بانک» could be non-zero with no grey row to explain it — seen on
+  // production 2026-09-18, when a late Melli text left the opening 150,000
+  // toman short and the first movement after it "did not reach" the bank.
+  const asc = [...items]
+    .filter((m) => opening === null || m.bankTimestamp > opening.asOf)
+    .sort((a, b) => a.bankTimestamp - b.bankTimestamp);
   const holes: Hole[] = [];
-  let expected: number | null = null;
+  let expected: number | null = opening?.balanceIrr ?? null;
   for (const m of asc) {
     const signed = m.direction === 'CREDIT' ? m.amountIrr : -m.amountIrr;
     if (m.kind !== 'sms' || m.balanceIrr === null) {
@@ -769,6 +778,7 @@ function Movements({
   accountId,
   accountName,
   items,
+  opening,
   canWrite,
   tagging,
   tagForm,
@@ -778,6 +788,7 @@ function Movements({
   accountId: string;
   accountName: string;
   items: BankMovement[];
+  opening: BalancePoint | null;
   canWrite: boolean;
   tagging: TagTarget | null;
   tagForm: ReactNode;
@@ -785,7 +796,7 @@ function Movements({
   onUntag: (m: BankMovement) => void;
 }) {
   const open = items.filter((m) => m.direction === 'DEBIT' && !m.expense && !m.offBooks).length;
-  const holes = useMemo(() => findHoles(accountId, items), [accountId, items]);
+  const holes = useMemo(() => findHoles(accountId, items, opening), [accountId, items, opening]);
   const holeBefore = new Map(holes.map((h) => [h.beforeId, h]));
   const formRow = (
     <tr data-testid="tag-form-row">
