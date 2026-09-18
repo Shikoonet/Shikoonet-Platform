@@ -2364,6 +2364,15 @@
   font-size: 0.8rem;
 }
 
+.payments-search {
+  margin: 0.75rem 0;
+}
+
+.payments-search input {
+  width: 100%;
+  max-width: 34rem;
+}
+
 
 .notification-bell__counts--scoped {
   grid-template-columns: 1fr 1fr;
@@ -3023,8 +3032,13 @@
   }
 }
 
+.bot-filter__search .payments-search {
+  margin: 0;
+}
+
 .bot-filter__search input {
   width: 100%;
+  max-width: none;
   min-height: 2.25rem;
   padding: 0.35rem 0.65rem;
   font-size: 0.875rem;

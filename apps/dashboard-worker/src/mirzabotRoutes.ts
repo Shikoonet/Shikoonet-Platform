@@ -55,6 +55,9 @@ import {
   loadIncomeCount,
   loadResellerCount,
   OPEN_QUEUE_TABS,
+  searchParam,
+  searchLikeBind,
+  searchLikeSql,
 } from './paymentsHubRoutes.js';
 import {
   claimEventKey,
@@ -388,6 +391,7 @@ type ClaimRow = {
    */
   customer_is_reseller: boolean | null;
   customer_user_id: number | null;
+  customer_username: string | null;
   customer_status: string | null;
   customer_blocked_reason: string | null;
   // «تا حالا چند تا اکانت خریده، چند تا فعال داره» — null with no customer.
@@ -562,21 +566,6 @@ function referenceParam(raw: string | null): string | null {
   return /^[A-Za-z0-9-]{1,64}$/.test(v) ? v : null;
 }
 
-/**
- * `?q=` — the one search box on a queue (#321): whatever the operator has in
- * hand — the order id off the row, the customer's Telegram id or @username,
- * or the bank's tracking number — without first choosing which it is. Same
- * folding and the same alphabet as `referenceParam`, plus `@` and `_` for a
- * username; the `@` is dropped, the rest is matched as typed.
- */
-function searchParam(raw: string | null): string | null {
-  if (!raw) return null;
-  let v = raw.trim().replace(/^@/, '');
-  for (let i = 0; i < 10; i++) {
-    v = v.replaceAll('۰۱۲۳۴۵۶۷۸۹'[i]!, String(i)).replaceAll('٠١٢٣٤٥٦٧٨٩'[i]!, String(i));
-  }
-  return /^[A-Za-z0-9_-]{1,64}$/.test(v) ? v : null;
-}
 
 /**
  * `page` and `pageSize`, clamped. `pageSize` was a hard 200 until 2026-09-03.
@@ -1211,6 +1200,7 @@ export function registerMirzabotRoutes(
     const tabOffset = (tabPage - 1) * tabPageSize;
 
     if (tab === 'income') {
+      const q = searchParam(url.searchParams.get('q'));
       const items = await loadIncomeItems(
         c.env.DB,
         range,
@@ -1219,8 +1209,9 @@ export function registerMirzabotRoutes(
         tabPageSize,
         ident.email,
         tabOffset,
+        q,
       );
-      const incomeTotals = await loadIncomeTotals(c.env.DB, range, now, day);
+      const incomeTotals = await loadIncomeTotals(c.env.DB, range, now, day, q);
       return c.json({
         ok: true,
         tab,
@@ -1334,7 +1325,7 @@ export function registerMirzabotRoutes(
     const cardDigits = cardDigitsParam(url.searchParams.get('cardDigits'));
     const telegramId = telegramIdParam(url.searchParams.get('telegramId'));
     const reference = referenceParam(url.searchParams.get('reference'));
-    const search = searchParam(url.searchParams.get('q'));
+    const q = searchParam(url.searchParams.get('q'));
     const { page, pageSize } = pageParams(url);
 
     /*
@@ -1459,22 +1450,32 @@ export function registerMirzabotRoutes(
             JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
            WHERE rm.payment_claim_id = c.id AND rt.transaction_reference = ${p(reference)})`);
       }
-      // One box, four things it might hold (#321). The order id is matched
-      // as the tail of `external_order_id` — `shikoo:<id>`, `mirzabot:<id>`,
-      // `mirzabot:test:<id>` — which is exactly what the row prints. Exact
-      // matches everywhere else: an operator pastes, they do not browse.
-      // `right()`, not LIKE: a username may carry `_`, which LIKE reads as
-      // «any character» (CodeRabbit on #332).
-      if (search) {
-        const q = p(search);
-        where.push(`(
-          c.customer_reference = ${q}
-          OR lower(cu.username) = lower(${q})
-          OR right(c.external_order_id, length(${q}) + 1) = ':' || ${q}
+      /*
+       * Free text, on EVERY claim tab — unlike the fields above, which are
+       * only drawn on «همه». The whole point (#333) is finding one payment
+       * without knowing which queue it sits in.
+       *
+       * The tracking number is asked for through any match, settled or only
+       * suggested, exactly as `reference` is above. The amount is matched as
+       * the customer sees it (toman) and as the row stores it (rial), whole
+       * — a substring of an amount is noise.
+       *
+       * ponytail: leading-wildcard ILIKE is a scan over payment_claims; add
+       * pg_trgm on customer_reference/external_order_id if the table ever
+       * makes this slow.
+       */
+      if (q) {
+        const like = p(searchLikeBind(q));
+        where.push(`(${searchLikeSql(
+          ['c.external_order_id', 'c.customer_reference', 'cu.username', 'c.card_digits', 'fa.account_hint', 'fa.display_name'],
+          like,
+        )}
+          OR (c.expected_amount_irr / 10)::text = ${p(q)}
+          OR c.expected_amount_irr::text = ${p(q)}
           OR EXISTS (
             SELECT 1 FROM reconciliation_matches rm
               JOIN transaction_candidates rt ON rt.id = rm.transaction_candidate_id
-             WHERE rm.payment_claim_id = c.id AND rt.transaction_reference = ${q}))`);
+             WHERE rm.payment_claim_id = c.id AND rt.transaction_reference ILIKE ${like} ESCAPE '\\'))`);
       }
       // Three-state, and «unknown» is its own answer rather than «personal»:
       // a claim whose reference matches no user is a real payment we cannot
@@ -1610,6 +1611,9 @@ export function registerMirzabotRoutes(
               -- all is a real state (one production row holds «Poyan test
               -- payment»). Null here means «no button», which is right.
               cu.id AS customer_user_id,
+              -- The bot writes no username into metadata_json, so until #333
+              -- every one of its claims showed a bare number here.
+              cu.username AS customer_username,
               cu.status AS customer_status,
               cu.blocked_reason AS customer_blocked_reason,
               -- The customer's history in two numbers, so the reviewer can
@@ -1786,7 +1790,7 @@ export function registerMirzabotRoutes(
           id: row.id,
           orderId: row.external_order_id.replace(/^mirzabot:test:/, ''),
           telegramUserId: meta.telegramUserId ?? row.customer_reference,
-          telegramUsername: meta.telegramUsername ?? null,
+          telegramUsername: meta.telegramUsername ?? row.customer_username ?? null,
           // Null when the reference matches no customer — not every claim has
           // one, and a screen that assumed it did would offer a button that
           // 404s.
