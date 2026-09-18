@@ -30,6 +30,15 @@ const EMAIL = 'admin@example.com';
 const READER = 'reader-receipt@example.com';
 const TOKEN = '1234567890:AAsecret-bot-token-value';
 const GOOD_HANDLE = 'AgACAgQAAxkBAAIBY2receipt01';
+/** A document receipt, as `storedReceipt(id, true)` writes it. */
+const DOC_HANDLE = 'doc:BQACAgQAAxkBAAIBY2receipt02';
+/**
+ * What `getFile` REALLY answers for a photo — recorded from production on
+ * 2026-09-18 (#303). No extension. The fixture used to say `photos/f_1.jpg`,
+ * which Telegram has never said, and the allow-list was green against it
+ * while refusing every receipt the shop had.
+ */
+const PHOTO_PATH = 'photos/file_82';
 
 /**
  * The worker's bindings, with or without the bot token.
@@ -146,7 +155,7 @@ describe('serving a receipt', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
       const url = String(input);
       if (url.includes('/getFile')) {
-        return new Response(JSON.stringify({ ok: true, result: { file_path: 'photos/f_1.jpg' } }), {
+        return new Response(JSON.stringify({ ok: true, result: { file_path: PHOTO_PATH } }), {
           status: 200,
         });
       }
@@ -155,11 +164,12 @@ describe('serving a receipt', () => {
 
     const res = await get('r-ok');
     expect(res.status).toBe(200);
-    // From the extension, via the allow-list — never from Telegram's own
-    // `Content-Type`, and never from the file's claim about itself. This is
-    // served inside our origin to an authenticated operator; if a customer
-    // could make the shop answer `text/html` here, a bank receipt would be a
-    // stored-XSS delivery mechanism.
+    // Ours, from the kind of handle — a photo is JPEG because Telegram stores
+    // it as one — never from Telegram's own `Content-Type`, and never from the
+    // file's claim about itself. This is served inside our origin to an
+    // authenticated operator; if a customer could make the shop answer
+    // `text/html` here, a bank receipt would be a stored-XSS delivery
+    // mechanism.
     expect(res.headers.get('content-type')).toBe('image/jpeg');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     // A customer's bank receipt behind an operator's session. A shared cache
@@ -175,8 +185,25 @@ describe('serving a receipt', () => {
     expect(await res.text()).toBe('JPEGBYTES');
   });
 
-  it('refuses a file type that is not on the list', async () => {
-    await seedClaim('r-html', GOOD_HANDLE);
+  it('serves a document by its extension, through the allow-list', async () => {
+    await seedClaim('r-pdf', DOC_HANDLE);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+      if (String(input).includes('/getFile')) {
+        return new Response(
+          JSON.stringify({ ok: true, result: { file_path: 'documents/file_1.pdf' } }),
+          { status: 200 },
+        );
+      }
+      return new Response('PDFBYTES', { status: 200 });
+    });
+
+    const res = await get('r-pdf');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/pdf');
+  });
+
+  it('refuses a document whose type is not on the list', async () => {
+    await seedClaim('r-html', DOC_HANDLE);
     vi.spyOn(globalThis, 'fetch').mockImplementation(
       async () =>
         new Response(JSON.stringify({ ok: true, result: { file_path: 'docs/evil.html' } }), {
@@ -186,6 +213,29 @@ describe('serving a receipt', () => {
 
     const res = await get('r-html');
     expect(res.status).toBe(415);
+  });
+
+  it('never lets the path of a PHOTO decide — Telegram gives it no extension', async () => {
+    // The production shape, and the one a hostile path could try: a photo
+    // handle is JPEG whatever `getFile` calls the file, because Telegram
+    // re-encoded it, and it is refused by nothing short of Telegram refusing.
+    for (const [id, filePath] of [
+      ['r-photo-bare', 'photos/file_82'],
+      ['r-photo-html', 'photos/evil.html'],
+    ] as const) {
+      await seedClaim(id, GOOD_HANDLE);
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: Parameters<typeof fetch>[0]) =>
+        String(input).includes('/getFile')
+          ? new Response(JSON.stringify({ ok: true, result: { file_path: filePath } }), {
+              status: 200,
+            })
+          : new Response('JPEGBYTES', { status: 200 }),
+      );
+      const res = await get(id);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('image/jpeg');
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    }
   });
 
   it('never writes the token or the handle anywhere it can be read', async () => {
@@ -328,7 +378,7 @@ describe('a bot connected from the dashboard', () => {
   }
 
   const okFile = () =>
-    new Response(JSON.stringify({ ok: true, result: { file_path: 'photos/f_9.jpg' } }), {
+    new Response(JSON.stringify({ ok: true, result: { file_path: PHOTO_PATH } }), {
       status: 200,
     });
 
