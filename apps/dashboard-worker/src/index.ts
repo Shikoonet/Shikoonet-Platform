@@ -21,6 +21,7 @@ import {
   assertTransitionStatus,
   auditActionForTransition,
   verifyMirzabotClaim,
+  CONSUMING_MATCH_STATUSES,
   type AccountStatus,
   type D1Database as DomainD1Database,
 } from '@shikoo/domain';
@@ -2700,6 +2701,54 @@ async function countAccountReferences(db: DB, accountId: string): Promise<Accoun
 }
 
 /**
+ * What a purge would take with the account, and what forbids it.
+ *
+ * Sam, 2026-09-19: an auto-discovered account that was a mistake held two
+ * credits, and «حذف همیشگی» had nowhere to go — the only exits were moving the
+ * rows to another account or SQL by hand. So the account and its
+ * transactions may now go together, on one condition that is not a
+ * preference: a transaction some claim has consumed is money the books have
+ * counted, and a purge that took it would make the ledger lie. The same for
+ * a credit a reseller was paid from, and for one an adjustment or an opening
+ * balance is anchored on. Those are `pinned`; one pinned row and no purge.
+ *
+ * The raw SMS rows are not counted and not deleted: they are the bank's own
+ * words and owned by nobody once the candidate is gone.
+ */
+interface AccountPurge {
+  transactions: number;
+  amountIrr: number;
+  pinnedTransactions: number;
+}
+
+/** True for a transaction row `t` the books have counted. */
+const TX_IS_PINNED_SQL = `(
+  EXISTS (SELECT 1 FROM reconciliation_matches m
+           WHERE m.transaction_candidate_id = t.id
+             AND m.status IN ${CONSUMING_MATCH_STATUSES})
+  OR EXISTS (SELECT 1 FROM reseller_transactions r WHERE r.transaction_candidate_id = t.id)
+  OR EXISTS (SELECT 1 FROM revenue_adjustments a WHERE a.transaction_candidate_id = t.id)
+  OR EXISTS (SELECT 1 FROM account_opening_balances b WHERE b.transaction_candidate_id = t.id))`;
+
+async function countAccountPurge(db: DB, accountId: string): Promise<AccountPurge> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*)::int AS transactions,
+              COALESCE(SUM(amount_irr), 0)::bigint AS amount_irr,
+              COUNT(*) FILTER (WHERE ${TX_IS_PINNED_SQL})::int AS pinned
+         FROM transaction_candidates t
+        WHERE t.financial_account_id = ?1`,
+    )
+    .bind(accountId)
+    .first<{ transactions: number; amount_irr: number; pinned: number }>();
+  return {
+    transactions: row?.transactions ?? 0,
+    amountIrr: row?.amount_irr ?? 0,
+    pinnedTransactions: row?.pinned ?? 0,
+  };
+}
+
+/**
  * Reference counts used by both the preview and DELETE handler. None of
  * these tables cascades on device delete, so any non-zero count means the
  * device is still in use and MUST be blocked.
@@ -2757,11 +2806,14 @@ app.get('/api/v1/accounts/:id/delete-preview', async (c) => {
     .bind(id)
     .first<{ id: string; display_name: string; bank_name: string; active: number }>();
   if (!account) return c.json({ ok: false, error: 'not_found' }, 404);
-  const refs = await countAccountReferences(c.env.DB, id);
+  const [refs, purge] = await Promise.all([
+    countAccountReferences(c.env.DB, id),
+    countAccountPurge(c.env.DB, id),
+  ]);
   // "in_use" = there is history attached. The two FK columns use ON DELETE
   // SET NULL so the DELETE itself would succeed, but the spec forbids
   // silent detachment: we block the call when history exists and require
-  // reassignment / merge first.
+  // reassignment / merge first — or, since 2026-09-19, an explicit purge.
   const inUse = refs.transactions > 0 || refs.paymentClaims > 0;
   const blockingReasons: string[] = [];
   if (account.active === 1) blockingReasons.push('account_must_be_inactive');
@@ -2782,8 +2834,32 @@ app.get('/api/v1/accounts/:id/delete-preview', async (c) => {
     },
     canDelete: blockingReasons.length === 0,
     blockingReasons,
+    // Deleting the transactions with the account is the way past
+    // `account_in_use` — open only while nothing pins them and no claim
+    // targets the account.
+    purge: {
+      ...purge,
+      canPurge:
+        account.active === 0 && refs.paymentClaims === 0 && purge.pinnedTransactions === 0,
+    },
   });
 });
+
+/** A body that is not JSON is an invalid body, not a crash. */
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+const DeleteAccountBody = z
+  .object({
+    purgeTransactions: z.boolean().default(false),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict();
 
 app.delete('/api/v1/accounts/:id', async (c) => {
   const ident = c.get('identity');
@@ -2795,6 +2871,12 @@ app.delete('/api/v1/accounts/:id', async (c) => {
     .bind(id)
     .first<{ id: string; display_name: string; bank_name: string; active: number }>();
   if (!account) return c.json({ ok: false, error: 'not_found' }, 404);
+  // A DELETE without a body is the pre-purge call and still means «only if
+  // nothing refers to it».
+  const rawBody = await c.req.text();
+  const parsedBody = DeleteAccountBody.safeParse(rawBody ? safeJson(rawBody) : {});
+  if (!parsedBody.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+  const { purgeTransactions, reason } = parsedBody.data;
   const refs = await countAccountReferences(c.env.DB, id);
   // Active accounts can never be deleted (must be deactivated first).
   if (account.active === 1) {
@@ -2807,8 +2889,10 @@ app.delete('/api/v1/accounts/:id', async (c) => {
       409,
     );
   }
-  // Inactive accounts with history are blocked — we do not silently detach.
-  if (refs.transactions > 0 || refs.paymentClaims > 0) {
+  // A claim aimed at this account is somebody's payment in flight; the purge
+  // does not cover claims and never will — move them, or wait them out.
+  if (refs.paymentClaims > 0 || (refs.transactions > 0 && !purgeTransactions)) {
+    // Inactive accounts with history are blocked — we do not silently detach.
     return c.json(
       {
         ok: false,
@@ -2817,6 +2901,9 @@ app.delete('/api/v1/accounts/:id', async (c) => {
       },
       409,
     );
+  }
+  if (purgeTransactions && refs.transactions > 0) {
+    return purgeAccount(c, { account, refs, reason: reason ?? null });
   }
   // Delete the account row; CASCADE removes its identifiers; idempotent
   // (no other rows reference the account now).
@@ -2843,6 +2930,101 @@ app.delete('/api/v1/accounts/:id', async (c) => {
   ]);
   return c.json({ ok: true, deleted: id, references: refs });
 });
+
+/**
+ * The account and every transaction attributed to it, in one guarded statement.
+ *
+ * The counts above were read a moment ago; this is the guard-in-the-statement
+ * rule (CLAUDE.md): a claim aimed at the account or a pin on one of its rows
+ * that lands between that read and this write must stop the purge, not be
+ * SET NULL / CASCADEd away by it. So the same conditions are re-evaluated
+ * INSIDE the statement that deletes, and the audit row is written from the
+ * rows the DELETE actually returned — a credit assigned in the gap is counted
+ * or the whole thing refuses; it is never silently gone.
+ *
+ * The lock first: `FOR UPDATE` on the account and its rows makes a concurrent
+ * claim insert (KEY SHARE on the account) or match insert (KEY SHARE on the
+ * row) wait for this transaction, and find the account gone when it wakes,
+ * instead of slipping under the DELETE and losing its target.
+ */
+async function purgeAccount(
+  c: Context<AppBindings>,
+  args: {
+    account: { id: string; display_name: string; bank_name: string };
+    refs: AccountRefCounts;
+    reason: string | null;
+  },
+) {
+  const ident = c.get('identity');
+  const { account, refs } = args;
+  const purge = await countAccountPurge(c.env.DB, account.id);
+  if (purge.pinnedTransactions > 0) {
+    return c.json({ ok: false, error: 'transactions_in_use', references: refs, purge }, 409);
+  }
+  const [, , result] = await c.env.DB.batch<{ n: number; amount_irr: number; deleted: number }>([
+    c.env.DB.prepare(`SELECT id FROM financial_accounts WHERE id = ?1 FOR UPDATE`).bind(account.id),
+    c.env.DB
+      .prepare(`SELECT id FROM transaction_candidates WHERE financial_account_id = ?1 FOR UPDATE`)
+      .bind(account.id),
+    c.env.DB
+      .prepare(
+        `WITH ok AS (
+           SELECT 1
+            WHERE EXISTS (SELECT 1 FROM financial_accounts WHERE id = ?1 AND active = 0)
+              AND NOT EXISTS (SELECT 1 FROM payment_claims WHERE target_financial_account_id = ?1)
+              AND NOT EXISTS (SELECT 1 FROM transaction_candidates t
+                               WHERE t.financial_account_id = ?1 AND ${TX_IS_PINNED_SQL})),
+         gone AS (
+           DELETE FROM transaction_candidates
+            WHERE financial_account_id = ?1 AND EXISTS (SELECT 1 FROM ok)
+            RETURNING amount_irr),
+         acct AS (
+           DELETE FROM financial_accounts
+            WHERE id = ?1 AND EXISTS (SELECT 1 FROM ok)
+            RETURNING display_name, bank_name),
+         audit AS (
+           INSERT INTO audit_logs
+             (id, actor_email, actor_role, action, entity_type, entity_id,
+              before_json, after_json, reason, request_id, created_at)
+           SELECT ?2, ?3, ?4, 'account.purged', 'ACCOUNT', ?1,
+                  jsonb_build_object(
+                    'displayName', acct.display_name,
+                    'bank', acct.bank_name,
+                    'deletedIdentifierCount', ?5::int,
+                    'purgedTransactionCount', (SELECT COUNT(*) FROM gone),
+                    'purgedAmountIrr', (SELECT COALESCE(SUM(amount_irr), 0) FROM gone))::text,
+                  NULL, ?6, ?7, ?8
+             FROM acct
+           RETURNING 1)
+         SELECT (SELECT COUNT(*)::int FROM gone) AS n,
+                (SELECT COALESCE(SUM(amount_irr), 0)::bigint FROM gone) AS amount_irr,
+                (SELECT COUNT(*)::int FROM acct) AS deleted`,
+      )
+      .bind(
+        account.id,
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        refs.identifiers,
+        args.reason,
+        c.req.header('cf-ray') ?? null,
+        Date.now(),
+      ),
+  ]);
+  const row = result?.results?.[0];
+  if (!row || row.deleted === 0) {
+    // Something moved between the counts and the write; say which.
+    const again = await countAccountPurge(c.env.DB, account.id);
+    const error = again.pinnedTransactions > 0 ? 'transactions_in_use' : 'account_in_use';
+    return c.json({ ok: false, error, references: refs, purge: again }, 409);
+  }
+  return c.json({
+    ok: true,
+    deleted: account.id,
+    references: refs,
+    purged: { transactions: row.n, amountIrr: row.amount_irr },
+  });
+}
 
 const AnalyzeBody = z.object({ body: z.string().min(1).max(8000) }).strict();
 

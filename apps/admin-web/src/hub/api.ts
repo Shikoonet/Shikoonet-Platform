@@ -547,15 +547,26 @@ export const api = {
       };
       canDelete: boolean;
       blockingReasons: string[];
+      /** What deleting the transactions with the account would take, and whether anything pins them. */
+      purge: {
+        transactions: number;
+        amountIrr: number;
+        pinnedTransactions: number;
+        canPurge: boolean;
+      };
     }>(`/api/v1/accounts/${encodeURIComponent(id)}/delete-preview`, {
       method: 'GET',
     }),
-  deleteAccount: (id: string) =>
+  deleteAccount: (id: string, opts?: { purgeTransactions: true; reason?: string }) =>
     req<{
       ok: boolean;
       deleted: string;
       references: { transactions: number; paymentClaims: number; identifiers: number };
-    }>(`/api/v1/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      purged?: { transactions: number; amountIrr: number };
+    }>(`/api/v1/accounts/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      ...(opts ? { body: JSON.stringify(opts) } : {}),
+    }),
   analyzeSample: (body: string) =>
     req<AnalyzeResult>('/api/v1/accounts/analyze', {
       method: 'POST',
