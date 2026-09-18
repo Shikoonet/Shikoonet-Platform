@@ -269,14 +269,19 @@ describe('the sidebar counts what is waiting', () => {
       );
       await drawApp();
       await waitFor(() =>
-        expect(document.querySelectorAll('.sidebar-link__badge')).toHaveLength(2),
+        expect(document.querySelectorAll('.sidebar-link[data-waiting]')).toHaveLength(2),
       );
-      // Persian digits, the panel's own `count()` — not `String(n)`.
-      expect(screen.getByRole('button', { name: /لیست درخواست‌ها/ }).textContent).toContain('۳');
-      expect(screen.getByRole('button', { name: /^پرداخت‌ها/ }).textContent).toContain('۱۲');
+      // Persian digits, the panel's own `count()` — not `String(n)`. On the
+      // attribute CSS draws from, so the link's text is still only its label:
+      // the e2e walk reads `.sidebar-link.active` with `toHaveText`.
+      const badge = (name: RegExp) =>
+        screen.getByRole('button', { name }).getAttribute('data-waiting');
+      expect(badge(/لیست درخواست‌ها/)).toBe('۳');
+      expect(badge(/^پرداخت‌ها/)).toBe('۱۲');
+      expect(screen.getByRole('button', { name: /^پرداخت‌ها/ }).textContent).toBe('پرداخت‌ها');
       // Four stale devices is on the dashboard strip, and deliberately NOT here:
       // the badge is for the two queues a customer is waiting behind.
-      expect(screen.getByRole('button', { name: /دستگاه‌ها/ }).textContent).not.toContain('۴');
+      expect(badge(/دستگاه‌ها/)).toBeNull();
     },
   );
 
@@ -291,6 +296,6 @@ describe('the sidebar counts what is waiting', () => {
         ),
       ).toBe(true),
     );
-    expect(document.querySelectorAll('.sidebar-link__badge')).toHaveLength(0);
+    expect(document.querySelectorAll('.sidebar-link[data-waiting]')).toHaveLength(0);
   });
 });

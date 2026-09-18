@@ -533,17 +533,17 @@ function Shell({
                   type="button"
                   aria-current={page === item.id ? 'page' : undefined}
                   className={page === item.id ? 'sidebar-link active' : 'sidebar-link'}
+                  // The count is drawn by CSS from this attribute rather than as
+                  // a child span, so the link's text stays its label: thirty-one
+                  // e2e assertions read `.sidebar-link.active` with `toHaveText`,
+                  // and «پرداخت‌ها۲۰۱» is not a section name.
+                  data-waiting={waiting(item.id) > 0 ? count(waiting(item.id)) : undefined}
                   onClick={() => go(item.id)}
                 >
                   <span className="sidebar-link__icon">
                     <Icon name={item.icon} />
                   </span>
                   <span>{item.label}</span>
-                  {waiting(item.id) > 0 && (
-                    <span className="sidebar-link__badge" title="در انتظار بررسی">
-                      {count(waiting(item.id))}
-                    </span>
-                  )}
                 </button>
               ))}
           </details>
