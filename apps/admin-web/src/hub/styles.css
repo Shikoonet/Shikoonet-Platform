@@ -3032,8 +3032,13 @@
   }
 }
 
+.bot-filter__search .payments-search {
+  margin: 0;
+}
+
 .bot-filter__search input {
   width: 100%;
+  max-width: none;
   min-height: 2.25rem;
   padding: 0.35rem 0.65rem;
   font-size: 0.875rem;

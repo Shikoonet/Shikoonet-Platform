@@ -739,9 +739,10 @@ describe('the open review queue', () => {
       expect((await get('tab=bot_auto_verified&range=all&q=%40QSearcher')).items.map((i) => i.id)).toEqual(['q-one']);
       // The bank's tracking number.
       expect((await get('tab=bot_auto_verified&range=all&q=TRK77')).items.map((i) => i.id)).toEqual(['q-one']);
-      // Nothing matching finds nothing; rubbish is not a filter.
+      // Nothing matching finds nothing — and an injection is text that
+      // matches nothing, not a filter that matches everything.
       expect((await get('tab=bot_auto_verified&range=all&q=nope')).items).toEqual([]);
-      expect((await get(`tab=all&range=all&q=${encodeURIComponent("' OR 1=1")}`)).items.length).toBe(2);
+      expect((await get(`tab=all&range=all&q=${encodeURIComponent("' OR 1=1")}`)).items).toEqual([]);
     } finally {
       await baseEnv.DB.prepare(`DELETE FROM users WHERE id = ?1`).bind(user!.id).run();
     }

@@ -212,7 +212,6 @@ function buildQuery(
   rangeState: HistoryRangeState,
   filters: Filters,
   botAutoFilterParams?: { purchaseType: string | null; range: string; day: string | null },
-  search = '',
 ): string {
   const qs = new URLSearchParams({ tab });
   if (tab === 'bot_auto_verified' && botAutoFilterParams) {
@@ -222,7 +221,6 @@ function buildQuery(
     if (botAutoFilterParams.purchaseType) {
       qs.set('purchaseType', botAutoFilterParams.purchaseType);
     }
-    if (search.trim()) qs.set('q', search.trim());
   } else {
     appendHistoryRangeQuery(qs, rangeState);
   }
@@ -297,9 +295,6 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const setSearch = useCallback((q: string) => setFilters((f) => ({ ...f, q })), []);
   // DEV-only: filters specific to the Bot Auto Verified tab.
   const botAutoFilter = useBotAutoVerifiedFilter();
-  /** The one search box on «تایید خودکار ربات» (#321): applied on Enter. */
-  const [botSearchDraft, setBotSearchDraft] = useState('');
-  const [botSearch, setBotSearch] = useState('');
   const [reviewingId, setReviewingId] = useState<string | null>(() => parseReviewIdFromLocation());
   const [incomeAction, setIncomeAction] = useState<IncomeItem | null>(null);
   const [assignIncome, setAssignIncome] = useState<IncomeItem | null>(null);
@@ -337,7 +332,6 @@ export function PaymentsView({ cache }: { cache: Cache }) {
     rangeState,
     filters,
     tab === 'bot_auto_verified' ? botAutoFilter.toQueryParams() : undefined,
-    tab === 'bot_auto_verified' ? botSearch : '',
   );
   /*
    * Page 1 whenever anything else about the question changes.
@@ -538,34 +532,16 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   }
 
   /*
-   * The rest of the bot tab's control row (#321): one search box for
-   * whatever the operator has in hand — order id, Telegram id, @username,
-   * bank tracking number — and «خواندن همه» when there is something unread.
-   * On the SAME line as the two segmented filters, not in a bar of its own
-   * above the table: the operator reaches the rows in one row of controls.
+   * The rest of the bot tab's control row (#321): the same search box every
+   * queue has (#333), and «خواندن همه» when there is something unread — on
+   * the SAME line as the two segmented filters, not in a bar of its own
+   * above the table, so the operator reaches the rows in one row of controls.
    */
   const botTrailing = (
     <>
-      <form
-        className="bot-filter__search"
-        role="search"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setBotSearch(botSearchDraft);
-        }}
-      >
-        <input
-          type="search"
-          dir="ltr"
-          aria-label="جست‌وجو: سفارش، شناسهٔ تلگرام، نام کاربری یا شمارهٔ پیگیری"
-          placeholder="سفارش، آی‌دی، @user، پیگیری…"
-          value={botSearchDraft}
-          onChange={(e) => {
-            setBotSearchDraft(e.target.value);
-            if (e.target.value === '') setBotSearch('');
-          }}
-        />
-      </form>
+      <div className="bot-filter__search">
+        <PaymentSearchBox value={filters.q} onChange={setSearch} />
+      </div>
       {(counts?.botAutoVerifiedUnread ?? 0) > 0 && (
         <PaymentTabReadAll
           unread={counts?.botAutoVerifiedUnread ?? 0}
@@ -788,7 +764,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
           </nav>
 
           <div className="payments-shell__content">
-            {tab !== 'declined_income' && tab !== 'reseller' && (
+            {/* The bot tab draws it inside its own control row instead (#321). */}
+            {tab !== 'declined_income' && tab !== 'reseller' && tab !== 'bot_auto_verified' && (
               <PaymentSearchBox value={filters.q} onChange={setSearch} />
             )}
             {tab === 'income' && <IncomeTotalsBar totals={data?.incomeTotals} />}
