@@ -30,6 +30,11 @@ import { MIRZABOT_SOURCE, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
 import { csvCell } from './revenueRoutes.js';
 import { audit } from './adminAudit.js';
 import {
+  MessageTemplateListBody,
+  loadMessageTemplates,
+  saveMessageTemplates,
+} from './messageTemplates.js';
+import {
   tehranDayFromUtc,
   tehranDayBoundsFromDate,
   parseHistoryRange,
@@ -2032,62 +2037,22 @@ export function registerMirzabotRoutes(
   /*
    * «پیام به مشتری» (#320).
    *
-   * The texts are one settings row, `('shop','review_messages')`, a JSON
-   * array of {key, text}; 0076 seeds the first and an ADMIN edits the list
-   * from the review screen. The key is what the dedupe is built on, so it
-   * is stable once minted: editing a text keeps its key, and the same text
-   * cannot go to the same customer twice for the same claim.
+   * The texts are one settings row, `('shop','review_messages')`, read and
+   * written through `messageTemplates.ts` — shared with the reseller-request
+   * page since #330. 0076 seeds the first and an ADMIN edits the list from
+   * the review screen.
    */
-  const ReviewMessageItem = z
-    .object({
-      key: z.string().regex(/^[a-z0-9_-]{1,40}$/),
-      text: z.string().trim().min(1).max(1000),
-    })
-    .strict();
-  type ReviewMessage = z.infer<typeof ReviewMessageItem>;
-  async function loadReviewMessages(db: D1Database): Promise<ReviewMessage[]> {
-    const row = await db
-      .prepare(`SELECT value FROM settings WHERE scope = 'shop' AND key = 'review_messages'`)
-      .first<{ value: unknown }>();
-    const parsed = z.array(ReviewMessageItem).safeParse(row?.value ?? []);
-    return parsed.success ? parsed.data : [];
-  }
-
   app.get('/api/v1/review-messages', async (c) => {
-    return c.json({ ok: true, items: await loadReviewMessages(c.env.DB) });
+    return c.json({ ok: true, items: await loadMessageTemplates(c.env.DB, 'review_messages') });
   });
 
   app.post('/api/v1/admin/review-messages', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
-    const parsed = z
-      .object({ items: z.array(ReviewMessageItem).max(50) })
-      .strict()
-      .safeParse(await c.req.json().catch(() => null));
+    const parsed = MessageTemplateListBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
-    const keys = parsed.data.items.map((i) => i.key);
-    if (new Set(keys).size !== keys.length) {
-      return c.json({ ok: false, error: 'duplicate_key' }, 400);
-    }
-    const before = await loadReviewMessages(c.env.DB);
-    await c.env.DB.prepare(
-      `INSERT INTO settings (scope, key, value, updated_by)
-       VALUES ('shop', 'review_messages', ?1::jsonb, ?2)
-       ON CONFLICT (scope, key) DO UPDATE
-         SET value = excluded.value, updated_at = now(), updated_by = excluded.updated_by`,
-    )
-      .bind(JSON.stringify(parsed.data.items), ident.email)
-      .run();
-    await audit(
-      c.env.DB,
-      ident,
-      'setting.updated',
-      'SETTING',
-      'shop/review_messages',
-      { items: before },
-      { items: parsed.data.items },
-      null,
-    );
+    const saved = await saveMessageTemplates(c.env.DB, ident, 'review_messages', parsed.data.items);
+    if (!saved.ok) return c.json({ ok: false, error: saved.error }, 400);
     return c.json({ ok: true, items: parsed.data.items });
   });
 
@@ -2111,7 +2076,9 @@ export function registerMirzabotRoutes(
     if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
     const parsed = ReviewMessageBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
-    const template = (await loadReviewMessages(c.env.DB)).find((m) => m.key === parsed.data.key);
+    const template = (await loadMessageTemplates(c.env.DB, 'review_messages')).find(
+      (m) => m.key === parsed.data.key,
+    );
     if (!template) return c.json({ ok: false, error: 'unknown_template' }, 404);
     const claimId = c.req.param('claimId');
     const claim = await c.env.DB.prepare(

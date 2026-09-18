@@ -993,6 +993,97 @@ describe('reseller requests', () => {
     expect(res.status).toBe(403);
   });
 
+  it('writes to the applicant through the bot, once per text, and the row says so (#330)', async () => {
+    const { id } = await makeRequest();
+    const decided = await makeRequest();
+    await baseEnv.DB.prepare(`UPDATE reseller_requests SET status = 'APPROVED' WHERE id = ?1`)
+      .bind(decided.id)
+      .run();
+    await baseEnv.DB.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'reseller-req-msg:%'`).run();
+    const KEY = 'request_received_under_review';
+
+    const list = await app.request('/api/v1/admin/reseller-requests/messages', {}, envAs(ADMIN));
+    expect(list.status).toBe(200);
+    const texts = ((await list.json()) as { items: Array<{ key: string; text: string }> }).items;
+    expect(texts.map((t) => t.key)).toContain(KEY);
+
+    const send = (rid: number, key: string, who = ADMIN) =>
+      app.request(
+        `/api/v1/admin/reseller-requests/${rid}/message`,
+        { method: 'POST', body: JSON.stringify({ key }) },
+        envAs(who),
+      );
+    expect((await send(id, KEY)).status).toBe(200);
+    const again = await send(id, KEY);
+    expect(again.status).toBe(200);
+    expect(((await again.json()) as { queued: boolean }).queued).toBe(false);
+    // A decided request has been answered by the decision; an unknown text
+    // is nothing to send; a reviewer does not run this page.
+    expect((await send(decided.id, KEY)).status).toBe(404);
+    expect((await send(id, 'no-such-text')).status).toBe(404);
+    expect((await send(id, KEY, REVIEWER)).status).toBe(403);
+
+    const queued = await baseEnv.DB.prepare(
+      `SELECT n.chat_id, n.body FROM bot_notifications n WHERE n.dedupe_key = ?1`,
+    )
+      .bind(`reseller-req-msg:${id}:${KEY}`)
+      .all<{ chat_id: number; body: string }>();
+    const applicant = await baseEnv.DB.prepare(
+      `SELECT u.telegram_id FROM reseller_requests r JOIN users u ON u.id = r.user_id WHERE r.id = ?1`,
+    )
+      .bind(id)
+      .first<{ telegram_id: number }>();
+    expect(queued.results).toEqual([
+      { chat_id: applicant!.telegram_id, body: texts.find((t) => t.key === KEY)!.text },
+    ]);
+
+    const rows = await app.request(
+      '/api/v1/admin/reseller-requests?status=PENDING&pageSize=100',
+      {},
+      envAs(ADMIN),
+    );
+    const row = ((await rows.json()) as {
+      items: Array<{ id: number; messagedAt: number | null; messagedTemplate: string | null }>;
+    }).items.find((r) => r.id === id);
+    expect(row?.messagedTemplate).toBe(KEY);
+    expect(row?.messagedAt).not.toBeNull();
+
+    const audit = await baseEnv.DB.prepare(
+      `SELECT after_json FROM audit_logs
+        WHERE action = 'reseller_request.customer_messaged' AND entity_id = ?1`,
+    )
+      .bind(String(id))
+      .all<{ after_json: string }>();
+    expect(audit.results).toHaveLength(1);
+    expect(audit.results[0]?.after_json).not.toContain(String(applicant!.telegram_id));
+  });
+
+  it('the texts are the admin\'s to edit, on a key that stays put (#330)', async () => {
+    const put = (items: unknown, who = ADMIN) =>
+      app.request(
+        '/api/v1/admin/reseller-requests/messages',
+        { method: 'POST', body: JSON.stringify({ items }) },
+        envAs(who),
+      );
+    const before = ((await (
+      await app.request('/api/v1/admin/reseller-requests/messages', {}, envAs(ADMIN))
+    ).json()) as { items: Array<{ key: string; text: string }> }).items;
+    try {
+      const next = [...before, { key: 'call_us', text: 'لطفاً با پشتیبانی تماس بگیرید.' }];
+      expect((await put(next)).status).toBe(200);
+      expect((await put(next, REVIEWER)).status).toBe(403);
+      expect((await put([...next, { key: 'call_us', text: 'x' }])).status).toBe(400);
+      expect((await put([{ key: 'Bad Key', text: 'x' }])).status).toBe(400);
+      // The list is its own: the payment page's texts are untouched.
+      const review = ((await (
+        await app.request('/api/v1/review-messages', {}, envAs(ADMIN))
+      ).json()) as { items: Array<{ key: string }> }).items;
+      expect(review.map((t) => t.key)).not.toContain('call_us');
+    } finally {
+      expect((await put(before)).status).toBe(200);
+    }
+  });
+
   it('approving one is what makes the customer a reseller', async () => {
     const { id, userId } = await makeRequest();
 

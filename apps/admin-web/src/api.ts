@@ -1388,6 +1388,9 @@ export interface ResellerRequestRow {
   status: string;
   createdAt: string;
   decidedAt: string | null;
+  /** When an operator last wrote to the applicant through the bot, and which text (#330). */
+  messagedAt: number | null;
+  messagedTemplate: string | null;
   customer: CustomerRef & { isReseller: boolean };
 }
 
