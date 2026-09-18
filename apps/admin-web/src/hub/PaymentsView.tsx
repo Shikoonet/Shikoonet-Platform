@@ -979,6 +979,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                           item={item}
                           isNew={isClaimNew(item)}
                           onReview={() => openClaim(item)}
+                          onPark={() => post(`/api/v1/suspects/${item.id}/park`, { parked: true })}
+                          onError={setError}
                         />
                       );
                     }
@@ -1406,12 +1408,28 @@ function NeedsReviewRow({
   item,
   isNew,
   onReview,
+  onPark,
+  onError,
 }: {
   item: PaymentItem;
   isNew?: boolean;
   onReview: () => void;
+  onPark: () => Promise<void>;
+  onError: (message: string) => void;
 }) {
+  const [busy, setBusy] = useState(false);
   const identity = paymentIdentityLine(item);
+
+  async function runPark() {
+    setBusy(true);
+    try {
+      await onPark();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'park_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <li className={`hub-list-row hub-list-row--review${isNew ? ' hub-list-row--new' : ''}`}>
@@ -1434,6 +1452,29 @@ function NeedsReviewRow({
           <ReceiptMark item={item} />
         </div>
       </RowBody>
+      {/*
+        «کنار بگذار» here too, not only on «واریزی پیدا نشد» (#302).
+
+        The backend has parked ANY open claim since the parked tab was built;
+        the button was only drawn on `NoTransferRow` because on that day only
+        «no transfer» rows waited for an SMS. «outside the window» and «no
+        receipt in ten minutes» arrived in this queue later, and they wait for
+        exactly the same thing — so without this an operator's only way to
+        clear such a row was a final decision it did not deserve yet.
+      */}
+      <div className="hub-list-row__inline-actions">
+        <button type="button" className="primary hub-list-row__action" onClick={onReview}>
+          بررسی
+        </button>
+        <button
+          type="button"
+          className="ghost hub-list-row__action"
+          disabled={busy}
+          onClick={() => void runPark()}
+        >
+          کنار بگذار
+        </button>
+      </div>
     </li>
   );
 }
