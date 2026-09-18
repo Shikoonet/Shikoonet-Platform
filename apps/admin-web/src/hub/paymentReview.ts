@@ -314,6 +314,13 @@ export interface PaymentsResponse {
   page?: number;
   pageSize?: number;
   total?: number;
+  /**
+   * How many bank transactions carry the `reference` that was searched for
+   * (#306); `null` when no reference was asked. A search that lists no claim
+   * and counts a transaction is «واریزی رسیده، ولی سفارشی ندارد» — a different
+   * answer from «این شماره هرگز نرسیده».
+   */
+  referenceTransactions?: number | null;
   counts: {
     needsReview: number;
     waiting: number;

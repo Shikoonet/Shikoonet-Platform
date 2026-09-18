@@ -179,6 +179,7 @@ type PaymentsBody = {
   page?: number;
   pageSize?: number;
   total?: number;
+  referenceTransactions?: number | null;
   summary: {
     botAutoVerified: { payments: number; amountIrr: number };
     unassignedIncome: { count: number; amountIrr: number };
@@ -709,6 +710,56 @@ describe('the open review queue', () => {
     const body = await get('tab=open');
     expect(body.counts['open']).toBe(body.items.length);
     expect(body.counts['open']).toBe(5);
+  });
+
+  it('finds a claim by the bank tracking number, settled or only suggested (#306)', async () => {
+    const base = Date.now();
+    await seedClaim('ref-settled', { status: 'VERIFIED' });
+    await seedClaim('ref-suggested', { status: 'MATCH_SUGGESTED' });
+    await seedClaim('ref-other', { status: 'VERIFIED' });
+    await seedTx('t-ref-a', base);
+    await seedTx('t-ref-b', base);
+    await seedTx('t-ref-c', base);
+    await seedTx('t-ref-alone', base);
+    await baseEnv.DB.prepare(
+      `UPDATE transaction_candidates SET transaction_reference = CASE id
+          WHEN 't-ref-a' THEN 'A1B2C3' WHEN 't-ref-b' THEN 'B2C3D4'
+          WHEN 't-ref-c' THEN 'ZZZZZZ' WHEN 't-ref-alone' THEN 'LONELY1' END
+        WHERE id LIKE 't-ref-%'`,
+    ).run();
+    await seedMatch('ref-settled', 't-ref-a', 'AUTO_VERIFIED');
+    await seedMatch('ref-other', 't-ref-c', 'CONFIRMED');
+    await baseEnv.DB.prepare(
+      `INSERT INTO reconciliation_matches
+         (id, transaction_candidate_id, payment_claim_id, score, matching_reasons_json,
+          mismatch_reasons_json, status, created_at, updated_at)
+       VALUES ('m-ref-sugg', 't-ref-b', 'ref-suggested', 0.9, '[]', '[]', 'SUGGESTED', ?1, ?1)`,
+    )
+      .bind(base)
+      .run();
+
+    // Settled match.
+    let body = await get('tab=all&reference=A1B2C3');
+    expect(body.items.map((i) => i.id)).toEqual(['ref-settled']);
+    expect(body.referenceTransactions).toBe(1);
+    // Only suggested — the claim an operator is on the phone about.
+    body = await get('tab=all&reference=B2C3D4');
+    expect(body.items.map((i) => i.id)).toEqual(['ref-suggested']);
+    // Persian digits type the same number.
+    body = await get(`tab=all&reference=${encodeURIComponent('A۱B۲C۳')}`);
+    expect(body.items.map((i) => i.id)).toEqual(['ref-settled']);
+    // The wrong number finds nothing, and says no transaction carries it.
+    body = await get('tab=all&reference=NOPE99');
+    expect(body.items).toEqual([]);
+    expect(body.referenceTransactions).toBe(0);
+    // Arrived, tied to no claim: the list is empty and the count says why.
+    body = await get('tab=all&reference=LONELY1');
+    expect(body.items).toEqual([]);
+    expect(body.referenceTransactions).toBe(1);
+    // A shape no bank prints is not a filter, not an error.
+    body = await get(`tab=all&reference=${encodeURIComponent("' OR 1=1")}`);
+    expect(body.items.length).toBe(3);
+    expect(body.referenceTransactions).toBeNull();
   });
 
   it('a claim with no receipt waits in «در انتظار رسید», not «در انتظار بررسی» (#307)', async () => {
