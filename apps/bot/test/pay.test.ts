@@ -130,6 +130,11 @@ describe('the checkout screen', () => {
     // the row names a card that really is active.
     const card = payments[0]!.assigned_card_number!;
     expect(text).toContain(menu.formatCard(card));
+    // Issue #322: the card is OUR entity, not one Telegram may detect — and it
+    // sits in the box with the amount and the holder, apart from the wording.
+    expect(text).toMatch(
+      new RegExp(`<blockquote>[^]*195,000 تومان[^]*<code>${menu.formatCard(card)}</code>[^]*</blockquote>`),
+    );
     expect(await activeCard(card)).toBe(true);
     // Nothing to review until the customer says they paid.
     expect(await claimsOf(user)).toHaveLength(0);

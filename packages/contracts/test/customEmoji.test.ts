@@ -19,8 +19,10 @@ import { describe, expect, it } from 'vitest';
 import {
   checkCustomEmoji,
   hasCustomEmoji,
+  hasMarkup,
   splitCustomEmojiLabel,
   stripCustomEmoji,
+  stripMarkup,
   toTelegramHtml,
 } from '../src/customEmoji.js';
 
@@ -133,6 +135,31 @@ describe('toTelegramHtml', () => {
 
   it('escapes quotes, which sit next to an attribute', () => {
     expect(toTelegramHtml('he said "hi"')).toBe('he said &quot;hi&quot;');
+  });
+});
+
+describe('the bot’s own formatting — #322', () => {
+  const BOXED = 'قیمت < ۱۰۰\n<blockquote>کارت:\n<code>6037-9975</code></blockquote>';
+
+  it('counts as markup on its own, with no emoji in the text', () => {
+    expect(hasMarkup(BOXED)).toBe(true);
+    expect(hasMarkup('قیمت < ۱۰۰')).toBe(false);
+    expect(hasCustomEmoji(BOXED)).toBe(false);
+  });
+
+  it('passes through the escape while everything around it is still escaped', () => {
+    expect(toTelegramHtml(BOXED)).toBe(
+      'قیمت &lt; ۱۰۰\n<blockquote>کارت:\n<code>6037-9975</code></blockquote>',
+    );
+    // Only these two tags, and only bare. An attribute or any other tag is
+    // still text — the admin-typed `<b>` case has not moved.
+    expect(toTelegramHtml('<b>x</b> <code class="y">z')).toBe(
+      '&lt;b&gt;x&lt;/b&gt; &lt;code class=&quot;y&quot;&gt;z',
+    );
+  });
+
+  it('strips to the words when the message must land plain', () => {
+    expect(stripMarkup(`${BOXED} ${FIRE}`)).toBe('قیمت < ۱۰۰\nکارت:\n6037-9975 \u{1F525}');
   });
 });
 

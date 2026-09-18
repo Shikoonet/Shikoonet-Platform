@@ -1580,7 +1580,17 @@ function amountLines(cardIrr: number, walletIrr: number): string[] {
 }
 
 /**
- * The card, the warning, and the closing line. Shared by all four invoices.
+ * The amount, the card, the warning, and the closing line. Shared by all four
+ * invoices.
+ *
+ * The amount, the card and the holder sit in one `<blockquote>` — the box Sam
+ * asked for (#322), so the three things the customer carries to a banking app
+ * are set apart from the sentences around them. The card number is `<code>`:
+ * tap-to-copy on every client, and OUR entity. Until #322 it was Telegram's —
+ * the server detects a bank card on plain text and not on a message sent with
+ * `parse_mode`, so a plan whose badge was a custom emoji lost the affordance.
+ * Every invoice goes as HTML now; `toTelegramHtml` escapes the admin's wording
+ * and the holder's name around these tags.
  *
  * `validUntil` is `orders.expires_at`: the moment the card is handed to the
  * next customer and this invoice dies with it. Said on the invoice because the
@@ -1589,13 +1599,20 @@ function amountLines(cardIrr: number, walletIrr: number): string[] {
  * predate the column; every invoice drawn today has one.
  */
 function checkoutTail(
+  totalIrr: number,
+  walletIrr: number,
   cardDigits: string,
   cardHolder: string | null,
   validUntil?: string | null,
 ): string[] {
   const t = TEXTS_NOW;
-  const lines = [t.raw('CHECKOUT_CARD_LABEL'), formatCard(cardDigits)];
-  if (cardHolder) lines.push(t.render('CHECKOUT_CARD_HOLDER', { name: cardHolder }));
+  const box = [
+    ...amountLines(totalIrr, walletIrr),
+    t.raw('CHECKOUT_CARD_LABEL'),
+    `<code>${formatCard(cardDigits)}</code>`,
+  ];
+  if (cardHolder) box.push(t.render('CHECKOUT_CARD_HOLDER', { name: cardHolder }));
+  const lines = [`<blockquote>${box.join('\n')}</blockquote>`];
   if (validUntil) {
     lines.push('', t.render('CHECKOUT_VALID_UNTIL', { time: formatTehranTime(new Date(validUntil)) }));
   }
@@ -1639,9 +1656,8 @@ export function checkout(
     lines.push(t.render('CHECKOUT_CODE_BONUS', { code: applied.code, bonus: applied.bonus }));
   }
   lines.push(
-    ...amountLines(totalIrr, walletIrr),
     '',
-    ...checkoutTail(cardDigits, cardHolder, validUntil),
+    ...checkoutTail(totalIrr, walletIrr, cardDigits, cardHolder, validUntil),
   );
   return lines.join('\n');
 }
@@ -1650,9 +1666,8 @@ export function checkout(
  * `6037997512345678` -> `6037-9975-1234-5678`.
  *
  * Grouped because a customer types this into a banking app by hand and an
- * unbroken 16-digit run is where the typo happens. Messages carry no
- * `parse_mode`, so there is no code formatting to lean on — the grouping is
- * the whole affordance.
+ * unbroken 16-digit run is where the typo happens. `checkoutTail` wraps it in
+ * `<code>` for tap-to-copy; the grouping is for the customer who reads it.
  */
 export function formatCard(digits: string): string {
   return digits.replace(/(\d{4})(?=\d)/g, '$1-');
@@ -1870,9 +1885,8 @@ export function invoiceReopened(
     t.raw('PAID_WITHDRAWN_TITLE'),
     '',
     t.render('CHECKOUT_ORDER_ID', { id: publicId }),
-    ...amountLines(totalIrr, walletIrr),
     '',
-    ...checkoutTail(cardDigits, cardHolder, validUntil),
+    ...checkoutTail(totalIrr, walletIrr, cardDigits, cardHolder, validUntil),
   ].join('\n');
 }
 
@@ -2486,9 +2500,8 @@ export function addonCheckout(
       what: addonQuantity(kind, quantity),
       service: serviceName,
     }),
-    ...amountLines(totalIrr, walletIrr),
     '',
-    ...checkoutTail(cardDigits, cardHolder, validUntil),
+    ...checkoutTail(totalIrr, walletIrr, cardDigits, cardHolder, validUntil),
   ].join('\n');
 }
 
@@ -2820,9 +2833,8 @@ export function renewCheckout(
     lines.push(t.render('CHECKOUT_CODE_BONUS', { code: applied.code, bonus: applied.bonus }));
   }
   lines.push(
-    ...amountLines(totalIrr, walletIrr),
     '',
-    ...checkoutTail(cardDigits, cardHolder, validUntil),
+    ...checkoutTail(totalIrr, walletIrr, cardDigits, cardHolder, validUntil),
   );
   return lines.join('\n');
 }
@@ -3194,9 +3206,8 @@ export function topupCheckout(
     t.raw('CHECKOUT_INTRO_TOPUP'),
     '',
     t.render('CHECKOUT_TRACKING_ID', { id: publicId }),
-    t.render('CHECKOUT_AMOUNT', { amount: formatToman(amountIrr) }),
     '',
-    ...checkoutTail(cardDigits, cardHolder, validUntil),
+    ...checkoutTail(amountIrr, 0, cardDigits, cardHolder, validUntil),
   ].join('\n');
 }
 

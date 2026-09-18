@@ -36,6 +36,22 @@ const TAG = /<tg-emoji\s+emoji-id="(\d{1,24})">([^<>]{1,16})<\/tg-emoji>/g;
 /** Anything that opens a tag we did not just match. */
 const ANY_TAG = /<[^>]*>/;
 
+/**
+ * Formatting the BOT writes into a message — never an admin.
+ *
+ * Issue #322: the card number on an invoice was tap-to-copy only when Telegram
+ * happened to detect it itself, and Telegram does not do that on a message sent
+ * with `parse_mode` — so a plan whose badge is a custom emoji lost the
+ * affordance. `<code>` makes it an entity of our own, and `<blockquote>` is the
+ * box the card, the amount and the holder sit in. Both are inert markup: what
+ * is between them is escaped like any other text.
+ */
+const FORMAT_TAG = /<\/?(?:code|blockquote)>/;
+const FORMAT_TAGS = /<\/?(?:code|blockquote)>/g;
+
+/** Every piece `toTelegramHtml` lets through as markup. */
+const MARKUP = /<tg-emoji\s+emoji-id="(\d{1,24})">([^<>]{1,16})<\/tg-emoji>|<\/?(?:code|blockquote)>/g;
+
 export type CustomEmojiProblem =
   | { kind: 'NOT_ALLOWED' }
   | { kind: 'MALFORMED_TAG' }
@@ -45,6 +61,11 @@ export type CustomEmojiProblem =
 export function hasCustomEmoji(text: string): boolean {
   TAG.lastIndex = 0;
   return TAG.test(text);
+}
+
+/** Whether the text must go as HTML at all: a custom emoji, or the bot's own formatting. */
+export function hasMarkup(text: string): boolean {
+  return hasCustomEmoji(text) || FORMAT_TAG.test(text);
 }
 
 /**
@@ -117,10 +138,13 @@ function escape(value: string): string {
 export function toTelegramHtml(text: string): string {
   let out = '';
   let at = 0;
-  TAG.lastIndex = 0;
-  for (const m of text.matchAll(TAG)) {
+  MARKUP.lastIndex = 0;
+  for (const m of text.matchAll(MARKUP)) {
     out += escape(text.slice(at, m.index));
-    out += `<tg-emoji emoji-id="${m[1] as string}">${escape(m[2] as string)}</tg-emoji>`;
+    out +=
+      m[1] === undefined
+        ? m[0]
+        : `<tg-emoji emoji-id="${m[1]}">${escape(m[2] as string)}</tg-emoji>`;
     at = m.index + m[0].length;
   }
   return out + escape(text.slice(at));
@@ -135,6 +159,11 @@ export function toTelegramHtml(text: string): string {
  */
 export function stripCustomEmoji(text: string): string {
   return text.replace(TAG, (_whole, _id: string, fallback: string) => fallback);
+}
+
+/** The same landing for a message the bot formatted: the words stay, the tags go. */
+export function stripMarkup(text: string): string {
+  return stripCustomEmoji(text).replace(FORMAT_TAGS, '');
 }
 
 /**
