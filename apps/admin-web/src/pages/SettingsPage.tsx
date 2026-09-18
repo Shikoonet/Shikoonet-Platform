@@ -29,6 +29,7 @@ import {
 } from '@shikoo/contracts';
 import { CustomerLink } from '../CustomerLink.js';
 import { RequiredChannelsPanel } from '../hub/RequiredChannelsPanel.js';
+import { CustomerMessageSection } from '../hub/CustomerMessageSection.js';
 import { count, dateTime } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -292,7 +293,10 @@ export function SettingsPage() {
 const REQUEST_PAGE_SIZE = 25;
 
 export function RequestsPage() {
+  const w = useAdminWriteProps();
   const [rows, setRows] = useState<ResellerRequestRow[]>([]);
+  /** The request whose applicant is being written to (#330). */
+  const [messaging, setMessaging] = useState<ResellerRequestRow | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [tiers, setTiers] = useState<ResellerTierRow[]>([]);
@@ -614,6 +618,16 @@ export function RequestsPage() {
                           ? 'رد شده'
                           : 'در انتظار'}
                     </span>
+                    {/* Written to, and still waiting: the badge is what tells the
+                        operator this applicant is not in the dark (#330). */}
+                    {r.messagedAt != null && (
+                      <>
+                        {' '}
+                        <span className="badge badge-info" title={dateTime(new Date(r.messagedAt).toISOString())}>
+                          پیام داده‌شده
+                        </span>
+                      </>
+                    )}
                   </td>
                   <td>
                     {/* Decided once: the buttons disappear afterwards, and the
@@ -656,6 +670,15 @@ export function RequestsPage() {
                           onClick={() => void decide(r, 'REJECTED')}
                         >
                           رد
+                        </button>{' '}
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={busy}
+                          onClick={() => setMessaging(r)}
+                          {...w}
+                        >
+                          پیام
                         </button>
                       </>
                     )}
@@ -688,6 +711,39 @@ export function RequestsPage() {
           </button>
         </div>
       </div>
+
+      {messaging && (
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="پیام به متقاضی"
+          onMouseDown={(e) => e.target === e.currentTarget && setMessaging(null)}
+        >
+          <div className="modal-body">
+            <h3>
+              پیام به <CustomerLink customer={messaging.customer} />
+            </h3>
+            <CustomerMessageSection
+              listUrl="/api/v1/admin/reseller-requests/messages"
+              saveUrl="/api/v1/admin/reseller-requests/messages"
+              sendUrl={`/api/v1/admin/reseller-requests/${messaging.id}/message`}
+              messagedAt={messaging.messagedAt}
+              messagedTemplate={messaging.messagedTemplate}
+              writeProps={w}
+              onSent={() => {
+                setMessaging(null);
+                setDone('پیام در صف ربات گذاشته شد.');
+                void load();
+              }}
+              onError={(m) => setErr(m)}
+            />
+            <button type="button" className="btn btn-sm" onClick={() => setMessaging(null)}>
+              بستن
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

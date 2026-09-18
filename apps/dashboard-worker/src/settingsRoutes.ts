@@ -42,6 +42,11 @@ import {
   shopSetting,
 } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
+import {
+  MessageTemplateListBody,
+  loadMessageTemplates,
+  saveMessageTemplates,
+} from './messageTemplates.js';
 
 /**
  * Keys whose value must never reach the browser.
@@ -353,6 +358,7 @@ export function registerSettingsRoutes(
     const offsetParam = params.length + 2;
     const rows = await c.env.DB.prepare(
       `SELECT r.id, r.description, r.kind, r.status, r.created_at, r.decided_at,
+              r.messaged_at, r.messaged_template,
               u.id AS user_id, u.telegram_id, u.username, u.is_reseller
          FROM reseller_requests r
          JOIN users u ON u.id = r.user_id
@@ -368,6 +374,8 @@ export function registerSettingsRoutes(
         status: string;
         created_at: string;
         decided_at: string | null;
+        messaged_at: number | null;
+        messaged_template: string | null;
         user_id: number;
         telegram_id: number;
         username: string | null;
@@ -386,6 +394,8 @@ export function registerSettingsRoutes(
         status: r.status,
         createdAt: r.created_at,
         decidedAt: r.decided_at,
+        messagedAt: r.messaged_at,
+        messagedTemplate: r.messaged_template,
         customer: {
           id: r.user_id,
           telegramId: r.telegram_id,
@@ -418,6 +428,100 @@ export function registerSettingsRoutes(
    * place is one `UPDATE ... WHERE id = ANY(...) AND status = 'PENDING'`
    * followed by a read-back of what it touched.
    */
+  /*
+   * «پیام به متقاضی» (#330) — the same thing #320 built on the payment
+   * review page, for the people who asked to become resellers. The texts
+   * are `('shop','reseller_request_messages')`, edited here by an ADMIN;
+   * sending goes through the bot's outbox exactly as `/suspects/:id/message`
+   * does: one statement, the flag and the audit line conditioned on the
+   * outbox row being written, so a second click sends, stamps and audits
+   * nothing. `chat_id` is the applicant's telegram id and is never logged.
+   *
+   * `messages` is registered before `:id` for the same reason `decide` is —
+   * to the router it is a perfectly good id. ADMIN-only, like the rest of
+   * this page.
+   */
+  app.get('/api/v1/admin/reseller-requests/messages', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    return c.json({
+      ok: true,
+      items: await loadMessageTemplates(c.env.DB, 'reseller_request_messages'),
+    });
+  });
+
+  app.post('/api/v1/admin/reseller-requests/messages', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = MessageTemplateListBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const saved = await saveMessageTemplates(
+      c.env.DB,
+      ident,
+      'reseller_request_messages',
+      parsed.data.items,
+    );
+    if (!saved.ok) return c.json({ ok: false, error: saved.error }, 400);
+    return c.json({ ok: true, items: parsed.data.items });
+  });
+
+  const RequestMessageBody = z.object({ key: z.string().min(1).max(40) }).strict();
+  app.post('/api/v1/admin/reseller-requests/:id/message', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    const parsed = RequestMessageBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const template = (await loadMessageTemplates(c.env.DB, 'reseller_request_messages')).find(
+      (m) => m.key === parsed.data.key,
+    );
+    if (!template) return c.json({ ok: false, error: 'unknown_template' }, 404);
+    // Only a request still being looked at: a decided one has been answered
+    // by the decision, and this is not the place to reopen the conversation.
+    const request = await c.env.DB.prepare(
+      `SELECT u.telegram_id FROM reseller_requests r JOIN users u ON u.id = r.user_id
+        WHERE r.id = ?1 AND r.status = 'PENDING'`,
+    )
+      .bind(id)
+      .first<{ telegram_id: number }>();
+    if (!request) return c.json({ ok: false, error: 'not_found' }, 404);
+    const now = Date.now();
+    const r = await c.env.DB.prepare(
+      `WITH q AS (
+         INSERT INTO bot_notifications (dedupe_key, chat_id, body)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT (dedupe_key) DO NOTHING
+         RETURNING id
+       ), flagged AS (
+         UPDATE reseller_requests SET messaged_at = ?5, messaged_template = ?6
+          WHERE id = ?4 AND EXISTS (SELECT 1 FROM q)
+       )
+       INSERT INTO audit_logs
+         (id, actor_email, actor_role, action, entity_type, entity_id,
+          before_json, after_json, reason, request_id, created_at)
+       SELECT ?7, ?8, ?9, 'reseller_request.customer_messaged', 'RESELLER_REQUEST', ?10,
+              NULL, ?11, NULL, ?12, ?5
+        WHERE EXISTS (SELECT 1 FROM q)`,
+    )
+      .bind(
+        `reseller-req-msg:${id}:${template.key}`,
+        request.telegram_id,
+        template.text,
+        id,
+        now,
+        template.key,
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        String(id),
+        JSON.stringify({ template: template.key }),
+        c.req.header('cf-ray') ?? null,
+      )
+      .run();
+    return c.json({ ok: true, queued: r.meta.changes > 0, template: template.key });
+  });
+
   app.post('/api/v1/admin/reseller-requests/decide', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);

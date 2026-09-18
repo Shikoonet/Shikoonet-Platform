@@ -24,6 +24,9 @@ const ROWS: ResellerRequestRow[] = [1, 2, 3].map((n) => ({
   status: 'PENDING',
   createdAt: '2026-09-01T09:00:00Z',
   decidedAt: null,
+  // The third applicant has been written to (#330); the row says so.
+  messagedAt: n === 3 ? Date.parse('2026-09-01T10:00:00Z') : null,
+  messagedTemplate: n === 3 ? 'request_received_under_review' : null,
   customer: { id: n, telegramId: 900_000 + n, username: `user${n}`, isReseller: false },
 }));
 
@@ -102,5 +105,48 @@ describe('deciding a selection of requests', () => {
     draw();
     await screen.findByText('درخواست 1');
     expect(screen.queryByRole('button', { name: /تایید انتخاب‌شده‌ها/ })).toBeNull();
+  });
+});
+
+describe('writing to an applicant (#330)', () => {
+  it('marks the row that was written to, and opens the texts for one that was not', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/reseller-requests/messages') && !init?.method) {
+        return new Response(
+          JSON.stringify({ ok: true, items: [{ key: 'k1', text: 'درخواست شما در حال بررسی است.' }] }),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith('/reseller-requests/1/message') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ ok: true, queued: true, template: 'k1' }), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    draw();
+    await screen.findByText('درخواست 1');
+
+    // Row 3 carries the badge; rows 1 and 2 do not.
+    expect(screen.getAllByText('پیام داده‌شده')).toHaveLength(1);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'پیام' })[0]!);
+    // In the select and in the preview under it, so two nodes carry it.
+    await waitFor(() => expect(screen.getAllByText('درخواست شما در حال بررسی است.').length).toBe(2));
+    fireEvent.click(screen.getByRole('button', { name: 'ارسال از طریق ربات' }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([u, i]) => String(u).endsWith('/reseller-requests/1/message') && i?.method === 'POST',
+        ),
+      ).toBe(true),
+    );
+    const sent = fetchMock.mock.calls.find(([u]) => String(u).endsWith('/reseller-requests/1/message'));
+    expect(JSON.parse(String(sent![1]!.body))).toEqual({ key: 'k1' });
+    // Sending closes the dialogue and reloads the list.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(resellerRequests.mock.calls.length).toBeGreaterThan(1);
+    vi.unstubAllGlobals();
   });
 });

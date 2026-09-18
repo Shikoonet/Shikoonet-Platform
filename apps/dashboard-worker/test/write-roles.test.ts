@@ -492,6 +492,15 @@ describe('every write route, asked directly', () => {
     // those texts. Words the shop says to customers, so ADMIN-only like the
     // bot texts beside it; refused for a REVIEWER and a READ_ONLY by the
     // tests above.
-    expect(writeRoutes().length).toBe(166);
+    //
+    // 167, 2026-09-18: `POST /admin/reseller-requests/:id/message` — the
+    // same act as 165 for a reseller applicant (#330): a ready-made text
+    // through the bot's outbox, a badge on the row, audited. ADMIN-only like
+    // every other write on that page; refused for a REVIEWER and a READ_ONLY
+    // by the tests above.
+    //
+    // 168, same day: `POST /admin/reseller-requests/messages` — the list of
+    // those texts, ADMIN-only for the same reason 166 is.
+    expect(writeRoutes().length).toBe(168);
   });
 });
