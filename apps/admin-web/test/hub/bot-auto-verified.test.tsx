@@ -289,12 +289,28 @@ describe('تایید خودکار ربات table — Phase 10 classification fix
       return new Response('{}', { status: 200 });
     });
     render(<PaymentsView cache={createCache()} />);
-    await waitFor(() => expect(screen.getAllByText(/BOT VERIFIED/i).length).toBeGreaterThan(0));
-    const row = screen.getAllByText(/BOT VERIFIED/i)[0]!.closest('tr')!;
+    // The row is found by what differs between rows — the customer — not by
+    // a badge every row of this tab used to carry (#321 dropped the three
+    // constant columns: «BOT VERIFIED», the ✓, «تطبیق یکتا»).
+    await waitFor(() => expect(screen.getByText('2028415747')).toBeTruthy());
+    const row = screen.getByText('2028415747').closest('tr')!;
     const cells = within(row).getAllByRole('cell');
-    // Telegram ID column must be present and contain the numeric id
-    expect(within(row).getByText('2028415747')).toBeTruthy();
-    expect(cells.length).toBeGreaterThanOrEqual(4);
+    // The Telegram id is in the customer cell, selectable and untruncated;
+    // it is no longer a second column saying the same thing.
+    expect(within(row).getByText('2028415747').closest('td')).toBe(cells[0]);
+    expect(within(row).getByText('@ali')).toBeTruthy();
+    expect(cells).toHaveLength(7);
+    // Each cell is labelled so it can stand alone as a card line on a phone.
+    expect(cells.slice(0, 6).map((c) => c.getAttribute('data-label'))).toEqual([
+      'مشتری',
+      'سفارش',
+      'مبلغ',
+      'حساب / کارت',
+      'مرجع',
+      'زمان تایید',
+    ]);
+    // The rail is rendered whatever the width; CSS places it.
+    expect(document.querySelector('.bot-verified-layout__rail')).toBeTruthy();
   });
 
   it('renders زمان تایید as exact YYYY-MM-DD HH:mm:ss in Tehran TZ', async () => {
@@ -320,9 +336,8 @@ describe('تایید خودکار ربات table — Phase 10 classification fix
       return new Response('{}', { status: 200 });
     });
     render(<PaymentsView cache={createCache()} />);
-    await waitFor(() => expect(screen.getAllByText(/BOT VERIFIED/i).length).toBeGreaterThan(0));
     // NOW - 5s = 10:29:55 in Tehran on 2026-08-10
-    expect(screen.getByText('2026-08-10 10:29:55')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('2026-08-10 10:29:55')).toBeTruthy());
   });
 
   it('forwards purchaseType=NEW_PURCHASE / RENEWAL to the API (Phase 7)', async () => {

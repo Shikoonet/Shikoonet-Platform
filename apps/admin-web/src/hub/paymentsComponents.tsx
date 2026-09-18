@@ -154,15 +154,6 @@ function maskCardHint(item: PaymentItem): string {
   return '—';
 }
 
-function customerCell(item: PaymentItem) {
-  return (
-    <div className="txn-row__customer">
-      {item.telegramUsername && <strong>@{item.telegramUsername}</strong>}
-      {item.telegramUserId && !item.telegramUsername && <span>{item.telegramUserId}</span>}
-      {!item.telegramUsername && !item.telegramUserId && <span className="muted">—</span>}
-    </div>
-  );
-}
 
 function verifiedAtLabel(item: PaymentItem): string {
   const ts =
@@ -182,12 +173,6 @@ function verifiedAtExactLabel(item: PaymentItem): string {
   return formatExactDateTime(ts);
 }
 
-function matchLabel(item: PaymentItem): ReactNode {
-  if (item.matchedTransaction) {
-    return <StatusBadge tone="match">تطبیق یکتا</StatusBadge>;
-  }
-  return '—';
-}
 
 export function TransactionTable({ children }: { children: ReactNode }) {
   return (
@@ -215,6 +200,18 @@ export function TransactionTable({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * One row of «تایید خودکار ربات», readable in a glance (#321).
+ *
+ * Six columns where there were eleven. Three said the same thing on every
+ * row of this tab — «BOT VERIFIED», the ✓, «تطبیق یکتا» — which is what the
+ * tab's name already says; two named the same customer twice («مشتری» and
+ * «شناسهٔ تلگرام», both the number when there is no username). What is
+ * left is what differs between rows: who, which order, how much, into what,
+ * the bank's reference, when. `data-label` on every cell is what lets the
+ * row become a card under 768px (see `styles.css`), where a 900px table is
+ * only a horizontal scrollbar.
+ */
 export function BotVerifiedTransactionRow({
   item,
   isNew,
@@ -225,37 +222,32 @@ export function BotVerifiedTransactionRow({
   onOpen: () => void;
 }) {
   const ref = item.matchedTransaction?.id ?? null;
-  // Telegram ID is shown as a separate column immediately after Customer,
-  // per task spec. Selectable text — no truncation, no tooltip masking.
   const telegramId = item.telegramUserId ?? null;
 
   return (
     <tr className={`txn-row${isNew ? ' txn-row--new' : ''}`}>
-      <td>
-        <StatusBadge tone="bot">BOT VERIFIED</StatusBadge>
+      <td data-label="مشتری">
+        <div className="txn-row__customer">
+          <NewBadge isNew={isNew} />
+          {item.telegramUsername && <strong>@{item.telegramUsername}</strong>}
+          {telegramId ? (
+            // No `users.id` on this row — the hub's payment tables are built from
+            // what the bank and the bot reported, not from a join. `?q=` finds
+            // them in one more query rather than leaving the cell a dead end.
+            // Selectable, untruncated: the operator copies it.
+            <CustomerLink customer={{ telegramId }} className="telegram-id-cell" />
+          ) : (
+            !item.telegramUsername && <span className="muted">—</span>
+          )}
+        </div>
       </td>
-      <td>
-        <span className="txn-row__verified-mark" aria-hidden>
-          ✓
-        </span>
-        <NewBadge isNew={isNew} />
-      </td>
-      <td>{customerCell(item)}</td>
-      <td className="txn-row__telegram-id">
-        {telegramId ? (
-          // No `users.id` on this row — the hub's payment tables are built from
-          // what the bank and the bot reported, not from a join. `?q=` finds
-          // them in one more query rather than leaving the column a dead end.
-          <CustomerLink customer={{ telegramId }} className="telegram-id-cell" />
-        ) : (
-          <span className="muted">—</span>
-        )}
-      </td>
-      <td>
+      <td data-label="سفارش">
         <IdentifierText value={item.orderId} />
       </td>
-      <td className="tabular-nums txn-row__amount">{formatToman(item.expectedAmountToman)}</td>
-      <td>
+      <td data-label="مبلغ" className="tabular-nums txn-row__amount">
+        {formatToman(item.expectedAmountToman)}
+      </td>
+      <td data-label="حساب / کارت">
         <div className="txn-row__account-card">
           <AccountRefCell
             account={{
@@ -264,24 +256,24 @@ export function BotVerifiedTransactionRow({
               accountDisplay: item.accountDisplay,
             }}
           />
-          <span className="txn-row__card-hint muted">{maskCardHint(item)}</span>
-          <span className="txn-row__device-hint muted">
-            دستگاه: {deviceInlineLabel(item.device)}
+          <span className="txn-row__card-hint muted">
+            {maskCardHint(item)} · {deviceInlineLabel(item.device)}
           </span>
         </div>
       </td>
-      <td>{ref ? <IdentifierText value={ref} tone="hint" /> : <span className="muted">—</span>}</td>
-      <td>{matchLabel(item)}</td>
-      <td className="tabular-nums muted txn-row__verified-at">
+      <td data-label="مرجع">
+        {ref ? <IdentifierText value={ref} tone="hint" /> : <span className="muted">—</span>}
+      </td>
+      <td data-label="زمان تایید" className="tabular-nums muted txn-row__verified-at">
         <time dateTime={new Date(item.matchedTransaction?.verifiedAt ?? 0).toISOString()}>
           {verifiedAtExactLabel(item)}
         </time>
       </td>
-      <td>
+      <td className="txn-row__actions">
         <button
           type="button"
           className="ghost txn-row__menu"
-          aria-label={`Actions for order ${item.orderId}`}
+          aria-label={`جزئیات سفارش ${item.orderId}`}
           onClick={onOpen}
         >
           ⋮
@@ -291,23 +283,15 @@ export function BotVerifiedTransactionRow({
   );
 }
 
-/**
- * DEV-only table header for the Bot Auto Verified view.
- * Adds "شناسهٔ تلگرام" immediately after "مشتری".
- */
 export function BotVerifiedTableHeader() {
   return (
     <thead>
       <tr>
-        <th scope="col">وضعیت</th>
-        <th scope="col">تاییدشده</th>
         <th scope="col">مشتری</th>
-        <th scope="col">شناسهٔ تلگرام</th>
-        <th scope="col">شناسهٔ سفارش</th>
+        <th scope="col">سفارش</th>
         <th scope="col">مبلغ</th>
         <th scope="col">حساب / کارت</th>
         <th scope="col">مرجع</th>
-        <th scope="col">تطبیق</th>
         <th scope="col">زمان تایید</th>
         <th scope="col">
           <span className="sr-only">عملیات</span>
@@ -337,7 +321,10 @@ export function StatsRail({
   cache?: Cache;
   rangeState?: HistoryRangeState;
 }) {
-  if (!analytics) return null;
+  // The shape, not just presence: the rail is in the DOM at every width now
+  // (#321) and an analytics response that is still loading, or an empty `{}`,
+  // must draw nothing rather than throw.
+  if (!analytics?.botAutoVerified || !analytics.manualVerified || !analytics.sales) return null;
 
   const botCount = analytics.botAutoVerified.count;
   const manualCount = analytics.manualVerified.count;

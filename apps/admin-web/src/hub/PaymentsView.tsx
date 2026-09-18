@@ -48,7 +48,6 @@ import {
   StatsRail,
   StatusBadge,
 } from './paymentsComponents.js';
-import { useMediaQuery } from './useMediaQuery.js';
 import { api } from './api.js';
 import type { AnalyticsResponse } from './analytics.js';
 import {
@@ -251,7 +250,6 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   // teaches nothing by being visible.
   const canExport = useCanWriteAdmin();
   const [tab, setTab] = useState<PaymentTab>(() => parsePaymentTabFromLocation());
-  const isWide = useMediaQuery('(min-width: 1200px)');
   const [rangeState, setRangeState] = useState<HistoryRangeState>(defaultHistoryRangeState());
   const [page, setPage] = useState(1);
   const [continuityPendingPage, setContinuityPendingPage] = useState(1);
@@ -1092,7 +1090,15 @@ export function PaymentsView({ cache }: { cache: Cache }) {
             )}
 
             {tab === 'bot_auto_verified' && claimItems.length > 0 && (
-              <div className={`bot-verified-layout${isWide ? ' bot-verified-layout--wide' : ''}`}>
+              <div className="bot-verified-layout">
+                {/*
+                  The rail is always in the DOM now and CSS places it (#321):
+                  the right-hand column from 1200px — the reading edge of an RTL
+                  page, where it used to sit on the LEFT — two cards above the
+                  table between 768 and 1199, one column under that. It used to
+                  be dropped entirely below 1200px, so a laptop saw no live
+                  stats at all.
+                */}
                 <div className="bot-verified-layout__main">
                   <BotAutoVerifiedFilter
                     value={botAutoFilter.value}
@@ -1111,18 +1117,16 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                     ))}
                   </BotVerifiedTable>
                 </div>
-                {isWide && (
-                  <div className="bot-verified-layout__rail">
-                    <StatsRail analytics={analytics} cache={cache} rangeState={rangeState} />
-                    <RecentActivity
-                      items={claimItems}
-                      onOpen={(id) => {
-                        const item = claimItems.find((i) => i.id === id);
-                        if (item) openClaim(item);
-                      }}
-                    />
-                  </div>
-                )}
+                <div className="bot-verified-layout__rail">
+                  <StatsRail analytics={analytics} cache={cache} rangeState={rangeState} />
+                  <RecentActivity
+                    items={claimItems}
+                    onOpen={(id) => {
+                      const item = claimItems.find((i) => i.id === id);
+                      if (item) openClaim(item);
+                    }}
+                  />
+                </div>
               </div>
             )}
 
