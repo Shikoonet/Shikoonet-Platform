@@ -19,8 +19,10 @@
 import { z } from 'zod';
 import {
   hasCustomEmoji,
+  hasMarkup,
   splitCustomEmojiLabel,
   stripCustomEmoji,
+  stripMarkup,
   toTelegramHtml,
 } from '@shikoo/contracts';
 import { createLogger } from '@shikoo/domain';
@@ -621,9 +623,13 @@ function keyboardHasCustomEmoji(keyboard?: InlineKeyboard): boolean {
  * on a button and need no parse mode at all. Deciding both from one flag is how
  * an unescaped `<` in a Persian sentence would have ridden along with an emoji
  * that happened to be on a button.
+ *
+ * "Markup" is a custom emoji OR the bot's own `<code>`/`<blockquote>` — the
+ * invoice carries the latter so its card number is an entity we set, not one
+ * Telegram may or may not detect (#322).
  */
 function richText(text: string): Record<string, unknown> {
-  return hasCustomEmoji(text) ? { text: toTelegramHtml(text), parse_mode: 'HTML' } : { text };
+  return hasMarkup(text) ? { text: toTelegramHtml(text), parse_mode: 'HTML' } : { text };
 }
 
 /** Omitted entirely when there is no keyboard, so a menu is never sent as `null`. */
@@ -819,11 +825,11 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     // markup into and both are refused the same way.
     const both = (premium: boolean): Record<string, unknown> =>
       replyKeyboard === undefined ? markup(keyboard, premium) : replyMarkup(replyKeyboard, premium);
-    const rich =
+    const emoji =
       hasCustomEmoji(clamped) ||
       keyboardHasCustomEmoji(keyboard) ||
       replyHasCustomEmoji(replyKeyboard);
-    if (!rich) return send({ text: clamped, ...both(false) });
+    if (!emoji && !hasMarkup(clamped)) return send({ text: clamped, ...both(false) });
     let richError: unknown;
     try {
       // `parse_mode` is decided by the TEXT alone. A plain sentence under a
@@ -839,7 +845,13 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       if (!(err instanceof TelegramRejection) || err.code !== 400 || isNotModified(err)) throw err;
       richError = err;
     }
-    const landed = await send({ text: stripCustomEmoji(clamped), ...both(false) });
+    const landed = await send({ text: stripMarkup(clamped), ...both(false) });
+    // A refusal with no custom emoji anywhere in the send was not about the
+    // emoji, and must not switch the shop's feature off (#322).
+    if (!emoji) {
+      log.warn('telegram.markup_refused', {}, richError);
+      return landed;
+    }
     log.warn('telegram.custom_emoji_refused', {}, richError);
     // `DOCUMENT_INVALID` names the emoji, not the bot's entitlement — and on
     // staging it named emoji that were valid. Three refusals (2026-09-07, -08,

@@ -367,6 +367,38 @@ describe('sending it, and being refused', () => {
     expect(bodies[0]!['text']).toContain('<tg-emoji');
   });
 
+  it('sends the bot’s own formatting as HTML, with the wording around it escaped', async () => {
+    // Issue #322: the invoice carries `<code>` and `<blockquote>` of its own,
+    // so it goes as HTML even with no custom emoji in it — and an admin's `<`
+    // in the wording is still escaped, never markup.
+    const { bodies, fetchImpl } = fakeTelegram(['ok']);
+    const api = createTelegramApi({ token: 't', baseUrl: 'https://x.test', fetch: fetchImpl });
+    await api.sendMessage(1, 'قیمت < ۱۰۰\n<blockquote>کارت:\n<code>6037-9975-1234-5678</code></blockquote>');
+    expect(bodies[0]!['parse_mode']).toBe('HTML');
+    expect(bodies[0]!['text']).toBe(
+      'قیمت &lt; ۱۰۰\n<blockquote>کارت:\n<code>6037-9975-1234-5678</code></blockquote>',
+    );
+  });
+
+  it('does not switch the feature off for a refusal with no emoji in the send', async () => {
+    // A 400 on a message that carried only the bot's own tags says nothing
+    // about the owner's Premium. It lands plain — tags gone, words kept — and
+    // the shop's switch stays where it was.
+    const refused = vi.fn();
+    const { bodies, fetchImpl } = fakeTelegram(['reject', 'ok']);
+    const api = createTelegramApi({
+      token: 't',
+      baseUrl: 'https://x.test',
+      fetch: fetchImpl,
+      onCustomEmojiRefused: refused,
+    });
+    await api.sendMessage(1, '<blockquote>کارت:\n<code>6037</code></blockquote>');
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]!['text']).toBe('کارت:\n6037');
+    expect(bodies[1]!['parse_mode']).toBeUndefined();
+    expect(refused).not.toHaveBeenCalled();
+  });
+
   it('lands the message plain when Telegram refuses, and says so once', async () => {
     // No API tells the bot whether its owner has Premium. It finds out here.
     const refused = vi.fn();
