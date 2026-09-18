@@ -82,7 +82,7 @@ export function ClaimChangeAccount({
           <option value="">— Unmapped —</option>
           {filtered.map((a) => (
             <option key={a.id} value={a.id}>
-              {a.display_name} ({a.bank_name})
+              {a.bank_name} — {a.display_name}
             </option>
           ))}
         </select>
