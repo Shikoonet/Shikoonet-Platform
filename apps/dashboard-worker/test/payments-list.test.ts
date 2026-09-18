@@ -173,6 +173,8 @@ type PaymentsBody = {
     fulfilledBy?: string | null;
     fulfilmentReason?: string | null;
     reconciledAt?: number | null;
+    messagedAt?: number | null;
+    messagedTemplate?: string | null;
   }>;
   counts: Record<string, number>;
   /** Present on every tab since the income tabs stopped cutting at 200. */
