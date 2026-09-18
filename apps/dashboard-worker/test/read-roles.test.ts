@@ -71,6 +71,8 @@ const PERSONAL = [
 
 const OPERATIONAL = [
   '/api/v1/admin/overview',
+  // The overview's counts alone — no name on it, same as the overview.
+  '/api/v1/admin/attention',
   '/api/v1/admin/products',
   '/api/v1/admin/product-categories',
   '/api/v1/admin/panels',
