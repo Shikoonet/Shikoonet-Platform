@@ -2527,6 +2527,14 @@ function ReviewPanel({
       <section className="drawer-section">
         <h3 className="drawer-section__heading">حساب</h3>
         <AccountRef account={item} />
+        {/* The card the customer was shown, in the same hand as the account
+            number above it — the receipt names a card, the row names an
+            account, and the reviewer pairs them here (#335). */}
+        {(item.cardDisplay ?? item.cardMasked) && (
+          <div>
+            <IdentifierText value={item.cardDisplay ?? item.cardMasked} tone="hint" />
+          </div>
+        )}
         {actionable && (
           <ClaimChangeAccount item={item} cache={cache} onSaved={onRefresh} onError={onError} />
         )}

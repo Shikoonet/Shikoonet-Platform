@@ -109,3 +109,22 @@ describe('who is paying', () => {
     expect(within(page).getByRole('link', { name: '555000111' }).getAttribute('href')).toContain('q=555000111');
   });
 });
+
+describe('the «حساب» block', () => {
+  it('shows the card the customer was shown, under the account number (#335)', async () => {
+    mockApi(
+      claim({
+        accountBank: 'بانک ملی',
+        accountHint: '7001018421022',
+        cardDisplay: '6037 9975 1234 5678',
+        cardMasked: '6037 **** **** 5678',
+      }),
+    );
+    renderReview();
+
+    const page = await screen.findByTestId('review-page');
+    const block = within(page).getByRole('heading', { name: 'حساب' }).parentElement!;
+    expect(within(block).getByText('7001018421022')).toBeTruthy();
+    expect(within(block).getByText('6037 9975 1234 5678')).toBeTruthy();
+  });
+});
