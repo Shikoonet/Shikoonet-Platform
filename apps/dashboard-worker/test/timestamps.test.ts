@@ -14,7 +14,7 @@
  * `transaction_candidates.bank_timestamp` ("Bank transaction time") is
  * a third, separate field used in the transaction detail modal only.
  */
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -169,6 +169,33 @@ describe('GET /api/v1/matches/unmatched — dual timestamp contract', () => {
     expect(tx).toBeDefined();
     expect(tx!.sms_timestamp).toBe(seeded.smsTimestamp);
     expect(tx!.received_at).toBe(seeded.receivedAt);
+  });
+
+  it('names the number the bank text carried, not the account hint', async () => {
+    // The Pol deposit of 2026-09-18: «to 47045299», landed on کشاورزی-مامان
+    // whose own hint is 4006. The row must say 47045299.
+    const now = Date.UTC(2026, 8, 18, 9, 34);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const seeded = await seedTransactionWithDistinctTimestamps();
+    await baseEnv.DB.prepare(
+      `INSERT INTO financial_accounts (id, bank_name, display_name, account_type, account_hint, active, status, parser_configuration, created_at, updated_at)
+       VALUES ('acct-mom', 'Keshavarzi', 'کشاورزی-مامان', 'ACCOUNT', '4006', 1, 'ACTIVE', '{}', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await baseEnv.DB.prepare(`UPDATE transaction_candidates SET financial_account_id = 'acct-mom' WHERE id = ?1`).bind(seeded.txId).run();
+    await baseEnv.DB.prepare(
+      `INSERT INTO transaction_detected_identifiers (id, transaction_candidate_id, identifier_type, normalized_value, display_value_masked, parser_id, confidence, created_at)
+       VALUES (?1, ?2, 'ACCOUNT_NUMBER', '47045299', '****5299', 'keshavarzi-v1', 1.0, ?3)`,
+    )
+      .bind(crypto.randomUUID(), seeded.txId, now)
+      .run();
+    const r = await app.fetch(req('/api/v1/matches/unmatched'), { ...baseEnv, TEST_ACCESS_USER: 'admin@example.com' });
+    const body = (await r.json()) as { items: Array<{ id: string; account_hint: string | null; account_display: string | null }> };
+    const tx = body.items.find((i) => i.id === seeded.txId)!;
+    expect(tx.account_display).toBe('کشاورزی-مامان');
+    expect(tx.account_hint).toBe('47045299');
+    vi.restoreAllMocks();
   });
 });
 

@@ -515,6 +515,19 @@ export function AccountsView({ cache }: AccountsViewProps) {
                   <span className="label">شناسایی‌شده</span>
                   <span>{formatTime(a.created_at)}</span>
                 </div>
+                {a.first_seen_direction && typeof a.first_seen_amount_irr === 'number' && (
+                  // What the bank's first text on this number said — enough to
+                  // accept or decline without opening anything else.
+                  <div className="card-row" data-testid="first-seen">
+                    <span className="label">دیده شد</span>
+                    <span>
+                      {a.first_seen_direction === 'CREDIT' ? 'واریز' : a.first_seen_direction === 'DEBIT' ? 'برداشت' : 'نامشخص'}{' '}
+                      {formatTomanFromIrr(a.first_seen_amount_irr)}
+                      {typeof a.first_seen_balance_irr === 'number' && <> · مانده {formatTomanFromIrr(a.first_seen_balance_irr)}</>}
+                      {typeof a.first_seen_at === 'number' && <> · {formatTime(a.first_seen_at)}</>}
+                    </span>
+                  </div>
+                )}
                 {a.status === 'PENDING' && a.suggested_owner_id && a.suggested_owner_name && (
                   // 0080: the bank's balance on this account's first text chains
                   // from exactly one live account — the number is most likely a

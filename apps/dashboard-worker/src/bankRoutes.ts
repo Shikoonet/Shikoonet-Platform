@@ -261,6 +261,9 @@ export function registerBankRoutes(
     for (const m of result.made) {
       await audit(c.env.DB, ident, 'sms.reparsed', 'TRANSACTION', m.transactionId, null, m);
     }
+    for (const u of result.upgraded) {
+      await audit(c.env.DB, ident, 'sms.reparsed', 'TRANSACTION', u.transactionId, null, { ...u, upgraded: true });
+    }
     return c.json({ ok: true, ...result });
   });
 
