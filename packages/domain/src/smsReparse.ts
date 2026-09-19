@@ -273,7 +273,10 @@ async function applyOne(
       }
       const fromText = p.evidence['bankTimestamp'];
       const bankTs = typeof fromText === 'number' && Math.abs(fromText - smsTs) <= 2 * 86_400_000 ? fromText : smsTs;
-      // One transaction: the row and its text change together or not at all.
+      // One transaction: the row, its text, and the books' anchor change
+      // together or not at all. The fresh start copied this row's balance and
+      // clock; if it stays on the guess, the ledger counts the same money
+      // twice — 2026-09-19 on production, a 9-second move opened a 400,000 T gap.
       await db.batch([
         db
           .prepare(
@@ -286,6 +289,9 @@ async function applyOne(
         db
           .prepare(`UPDATE raw_sms_events SET classification = ?2, parser_status = 'OK', parser_id = ?3, parser_version = ?4 WHERE id = ?1`)
           .bind(r.id, p.classification, p.parserId, p.parserVersion ?? '0.0.0'),
+        db
+          .prepare(`UPDATE account_opening_balances SET as_of = ?2, balance_irr = COALESCE(?3, balance_irr) WHERE transaction_candidate_id = ?1`)
+          .bind(r.generic_tx_id, bankTs, p.balanceIrr),
       ]);
       upgraded.push({ eventId: r.id, transactionId: r.generic_tx_id, parserId: p.parserId, direction: p.direction });
       return;
