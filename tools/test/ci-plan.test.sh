@@ -690,8 +690,12 @@ section 'M. the workflow believes exactly these outputs'
 # expect it to have run. Red, but for a reason nobody could see. This pins the
 # contract between the two files.
 CI_YML="$ROOT/.github/workflows/ci.yml"
+# Captured once, then searched from a here-string: `plan … | grep -q` was a
+# race — grep exits at the first match, ci-plan.sh's next printf gets EPIPE,
+# and under pipefail the pipeline fails with «absent from its output» (#361).
+PUBLISHED=$(plan pull_request false 'apps/bot/x.ts')
 for k in static unit db e2e deploy_suites image mode; do
-  if plan pull_request false 'apps/bot/x.ts' | grep -q "^${k}="; then
+  if grep -q "^${k}=" <<<"$PUBLISHED"; then
     ok "ci-plan.sh publishes '${k}'"
   else
     bad "ci-plan.sh publishes '${k}'" 'absent from its output'
