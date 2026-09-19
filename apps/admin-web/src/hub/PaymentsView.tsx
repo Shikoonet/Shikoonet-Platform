@@ -800,7 +800,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 />
               </div>
             )}
-            {tab === 'needs_review' && (counts?.needsReviewUnread ?? 0) > 0 && (
+            {tab === 'open' && (counts?.needsReviewUnread ?? 0) > 0 && (
               <div className="payment-table-header payment-table-header--end">
                 <PaymentTabReadAll
                   unread={counts?.needsReviewUnread ?? 0}
