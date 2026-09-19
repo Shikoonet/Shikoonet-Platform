@@ -383,6 +383,39 @@ describe('choosing what to renew', () => {
     expect(out.replies[0]?.text).toBe(menu.NOTHING_TO_RENEW);
   });
 
+  it('lists a service on a tier row retired from sale, while a sibling row at the address is live', async () => {
+    // The PHP asked the panel nothing (index.php:6355). Ours asked the
+    // service's OWN row to be ACTIVE — so retiring one tier from the shop told
+    // every account on it «سرویسی برای تمدید ندارید», although since #271 the
+    // sibling row at the same address renews it.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, otherPanelId, {
+      publicId: `ren-${telegramId}-ret`,
+      username: `u_${telegramId}`,
+      expiresInDays: -3,
+    });
+    await db
+      .prepare(`UPDATE provisioning_providers SET status = 'DISABLED' WHERE id = ?1`)
+      .bind(otherPanelId)
+      .run();
+    try {
+      const alone = await handleUpdate(db, press(updateId, telegramId, 'renew'));
+      expect(alone.replies[0]?.text).toBe(menu.NOTHING_TO_RENEW);
+
+      // The same address as sim-vip: now they are tiers of one panel.
+      await setPanelConfig(otherPanelId, { status_extend: 'on_extend' });
+      const together = await handleUpdate(db, press(updateId + 1, telegramId, 'renew'));
+      const buttons = together.replies[0]?.keyboard?.flat() ?? [];
+      expect(buttons.map((b) => b.callback_data)).toContain(`rnw:${subId}`);
+    } finally {
+      await db
+        .prepare(`UPDATE provisioning_providers SET status = 'ACTIVE' WHERE id = ?1`)
+        .bind(otherPanelId)
+        .run();
+    }
+  });
+
   it('names the service without the price its legacy name quotes', async () => {
     // Production, 2026-09-16 23:37 UTC: a service sold as «…-280.000ت» renewed
     // onto a 399,000 plan. The intro and the invoice both printed the old name,
