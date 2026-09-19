@@ -57,6 +57,7 @@ function service(
     rowIndex: null,
     badge: null,
     buttonStyle: null,
+    bonusPercent: 0,
     panel: PANEL,
     configs: configs.map((cfName, i) => ({
       id: id * 100 + i,
@@ -77,7 +78,8 @@ function service(
 }
 
 const SERVICES = [
-  service(8, 'پلاتینیوم', [6], ['۱ ماهه - ۱۰ گیگ', '۱ ماهه - ۲۰ گیگ', '۱ ماهه - ۳۰ گیگ']),
+  // The one service giving extra volume (0081) — its card says so, the others' do not.
+  { ...service(8, 'پلاتینیوم', [6], ['۱ ماهه - ۱۰ گیگ', '۱ ماهه - ۲۰ گیگ', '۱ ماهه - ۳۰ گیگ']), bonusPercent: 20 },
   service(9, 'طلایی', [7], ['۱ ماهه - ۱۰ گیگ']),
   // Two groups at once — the shape the live panel had, where four of these
   // rendered inline and came out as one four-digit number.
@@ -236,6 +238,8 @@ describe('the catalogue screen', () => {
     expect(screen.getByText('۲۰۰٬۰۰۰ تومان')).toBeTruthy();
     // And the header counts the shop, not the page.
     expect(screen.getByText(/۴ قابل خرید/)).toBeTruthy();
+    // The service's volume bonus is on its card, and only on its card.
+    expect(screen.getAllByText('+20٪ حجم')).toHaveLength(1);
   });
 
   it('opens a config editor from its chip, under its own card', async () => {

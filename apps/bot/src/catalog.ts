@@ -449,6 +449,11 @@ export interface CatalogPlan {
   durationDays: number | null;
   volumeGb: number | null;
   userLimit: number | null;
+  /**
+   * The service's own volume bonus (0081), as a percent of `volumeGb`. Zero
+   * for most; `serviceBonusGb` turns it into the gigabytes the order freezes.
+   */
+  bonusPercent: number;
   providerId: number;
   providerName: string;
   /** `products.kind` — what kind of thing this sells. Renewal never crosses it. */
@@ -513,6 +518,7 @@ interface PlanRow {
   duration_days: number | null;
   volume_gb: number | null;
   user_limit: number | null;
+  bonus_percent: number;
   provider_id: number;
   provider_name: string;
   category_id: number;
@@ -536,6 +542,7 @@ const PLAN_COLUMNS = `
   pl.duration_days AS duration_days,
   pl.volume_gb    AS volume_gb,
   pl.user_limit   AS user_limit,
+  p.bonus_percent AS bonus_percent,
   pr.id           AS provider_id,
   pr.name         AS provider_name,
   -- Read here rather than in a second query because every plan lookup already
@@ -584,6 +591,7 @@ function toPlan(row: PlanRow): CatalogPlan {
     durationDays: row.duration_days,
     volumeGb: row.volume_gb,
     userLimit: row.user_limit,
+    bonusPercent: Number(row.bonus_percent),
     providerId: row.provider_id,
     providerName: row.provider_name,
     categoryId: row.category_id,
@@ -593,6 +601,31 @@ function toPlan(row: PlanRow): CatalogPlan {
     usernameMode: row.username_mode,
     shelfAvailable: row.shelf_available,
   };
+}
+
+/**
+ * The gigabytes a service's own bonus (0081) adds to this plan.
+ *
+ * The same arithmetic and the same three decimals as a BONUS_PERCENT code
+ * (`bonusGbFor` in discount.ts), so the order, the panel and the screen
+ * agree; zero for a plan with no volume to add to, and for the ordinary
+ * service that gives none.
+ */
+export function serviceBonusGb(plan: Pick<CatalogPlan, 'volumeGb' | 'bonusPercent'>): number {
+  if (plan.volumeGb === null || plan.bonusPercent <= 0) return 0;
+  return Math.round(((plan.volumeGb * plan.bonusPercent) / 100) * 1000) / 1000;
+}
+
+/**
+ * The code's gigabytes plus the service's, as one number the order can hold.
+ * Rounded once more: two three-decimal floats add up to `0.30000000000000004`,
+ * and `place()` looks the open order up by this exact value.
+ */
+export function totalBonusGb(
+  codeBonusGb: number,
+  plan: Pick<CatalogPlan, 'volumeGb' | 'bonusPercent'>,
+): number {
+  return Math.round((codeBonusGb + serviceBonusGb(plan)) * 1000) / 1000;
 }
 
 /**

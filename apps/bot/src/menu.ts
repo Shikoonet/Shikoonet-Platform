@@ -34,7 +34,13 @@
 
 import { encode } from './callback.js';
 import { MAX_MESSAGE_LENGTH } from './telegram.js';
-import type { CatalogCategory, CatalogPlan, CatalogProduct, TrialPanel } from './catalog.js';
+import {
+  serviceBonusGb,
+  type CatalogCategory,
+  type CatalogPlan,
+  type CatalogProduct,
+  type TrialPanel,
+} from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
 import type { RenewMode } from '@shikoo/domain';
@@ -811,7 +817,7 @@ function tierText(plan: CatalogPlan, siblings: readonly CatalogPlan[]): string {
     new Set(siblings.map(of)).size > 1;
 
   const parts = [
-    varies((p) => p.volumeGb) ? volumeText(plan.volumeGb) : '',
+    varies((p) => p.volumeGb) ? volumeWithBonus(plan) : '',
     varies((p) => p.durationDays) ? durationText(plan.durationDays) : '',
     varies((p) => p.userLimit) ? usersTariffText(plan.userLimit) : '',
   ].filter((part) => part !== '');
@@ -963,6 +969,16 @@ export function volumeText(gb: number | null): string {
   // `numeric(12,3)` arrives as a number; 50.000 must draw as «50 گیگ».
   const shown = Number.isInteger(gb) ? gb : Number(gb.toFixed(3));
   return `${shown.toLocaleString('en-US')} گیگ`;
+}
+
+/**
+ * «60 گیگ +20٪» — the volume, and the service's own bonus (0081) beside it
+ * wherever the volume is drawn, so a customer sees the gift before the plan
+ * screen spells the total out. Just the volume for the ordinary service.
+ */
+function volumeWithBonus(plan: Pick<CatalogPlan, 'volumeGb' | 'bonusPercent'>): string {
+  const base = volumeText(plan.volumeGb);
+  return serviceBonusGb(plan) > 0 ? `${base} +${trimGb(plan.bonusPercent)}٪` : base;
 }
 
 /**
@@ -1141,7 +1157,7 @@ function planLabel(plan: CatalogPlan, discountPercent: number, template: string 
           name: plan.planName,
           badge: plan.badge ?? '',
           duration: durationText(plan.durationDays),
-          volume: volumeText(plan.volumeGb),
+          volume: volumeWithBonus(plan),
           users: usersText(plan.userLimit),
           price: formatToman(price.totalIrr),
         });
@@ -1310,6 +1326,18 @@ export function planDetail(plan: CatalogPlan, price: Price, applied?: AppliedCod
     plan.volumeGb === null
       ? t.raw('PLAN_VOLUME_UNLIMITED')
       : t.render('PLAN_VOLUME', { volume: plan.volumeGb }),
+    // The service's own bonus (0081), worded exactly like a BONUS_PERCENT
+    // code's, right under the volume it is a share of.
+    ...(serviceBonusGb(plan) > 0
+      ? [
+          t.render('PLAN_SERVICE_BONUS', {
+            bonus: bonusLabel(
+              { kind: 'BONUS_PERCENT', percent: plan.bonusPercent, bonus_gb: null },
+              plan.volumeGb,
+            )!,
+          }),
+        ]
+      : []),
     plan.durationDays === null
       ? t.raw('PLAN_DURATION_UNLIMITED')
       : t.render('PLAN_DURATION', { days: plan.durationDays }),
