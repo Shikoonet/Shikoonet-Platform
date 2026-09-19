@@ -45,7 +45,11 @@ import { detectedIdentifierFromRaw } from '../identifier.js';
  * through to `generic-credit`, which is the bug this file exists to fix.
  */
 const ACCOUNT_RE = /حساب[^\S\n]*[:：]?[^\S\n]*(\d[\d-]{4,})/;
+// «واریز» or «برداشت» — the only word that differs between the two bodies.
+// Withdrawals have been read since 2026-09-19; before that they fell to
+// `generic-debit`, which makes no row.
 const CREDIT_RE = /(?:واریز|واريز)/;
+const DEBIT_RE = /برداشت/;
 const BALANCE_RE = /مانده[^\S\n]*(?:حساب)?[^\S\n]*[:：]?[^\S\n]*([\d,،](?:[\d,،]|[^\S\n])*)/;
 /** `YY/MM/DD-HH:mm`, the two-digit-year form Mellat sends. */
 const DATE_RE = /(\d{2})\/(\d{1,2})\/(\d{1,2})[-\s_]+(\d{1,2}):(\d{2})/;
@@ -63,7 +67,7 @@ const AMOUNT_RE = /(\d{1,3}(?:[,،]\d{3})+)/;
  * a future bank cannot fall in here by accident.
  */
 function isMellat(text: string): boolean {
-  return ACCOUNT_RE.test(text) && CREDIT_RE.test(text) && BALANCE_RE.test(text);
+  return ACCOUNT_RE.test(text) && (CREDIT_RE.test(text) || DEBIT_RE.test(text)) && BALANCE_RE.test(text);
 }
 
 export const mellatCreditParser = {
@@ -129,9 +133,10 @@ export const mellatCreditParser = {
       detectedIdentifierFromRaw(accountHint, 'mellat-credit-v1', 0.99),
     ].filter(Boolean);
 
+    const direction = CREDIT_RE.test(text) ? 'CREDIT' : 'DEBIT';
     return matched({
       classification: 'BANK_TRANSACTION',
-      direction: 'CREDIT',
+      direction,
       amountIrr,
       balanceIrr,
       accountHint,
@@ -142,7 +147,7 @@ export const mellatCreditParser = {
       evidence: {
         bank: 'MELLAT',
         accountHint,
-        directionSource: 'explicit_credit_phrase',
+        directionSource: direction === 'CREDIT' ? 'explicit_credit_phrase' : 'explicit_debit_phrase',
         amountRaw: amountMatch[1] ?? '',
         balanceRaw: balanceMatch[1] ?? '',
         bankTimestamp,

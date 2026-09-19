@@ -31,7 +31,11 @@ const DAY_MS = 86_400_000;
 const FALLBACK_THRESHOLD_DAYS = 2;
 
 // Header + amount on a single line. Tolerates optional colon and whitespace.
-const AMOUNT_HEADER_RE = /^انتقال\s+اینترنت\s*:?\s*([+-]?)\s*([\d,،\s]+?)\s*([+-]?)\s*$/;
+// Maskan heads a deposit «انتقال اینترنت: +…» and a withdrawal «انتقال: -…»
+// or «قبض: -…» — same four lines, only the header word changes. The header is
+// optional-«اینترنت» since 2026-09-19; before that the withdrawals fell to
+// `generic-balance`, which makes no row.
+const AMOUNT_HEADER_RE = /^(?:انتقال(?:\s+اینترنت)?|قبض)\s*:?\s*([+-]?)\s*([\d,،\s]+?)\s*([+-]?)\s*$/;
 const ACCOUNT_RE = /^حساب\s*:?\s*(.+)$/;
 const BALANCE_RE = /^مانده\s*:?\s*([\d,،\s]+?)\s*$/;
 // MMDD-HH:mm  (Jalali M/D with no slash separator)

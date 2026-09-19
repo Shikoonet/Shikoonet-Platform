@@ -137,6 +137,25 @@ export function extractAmount(text: string): NormalizedNumber | null {
  * (تومان amounts are already ×10). If both currencies appear anywhere in
  * the text, every amount is marked AMBIGUOUS.
  */
+const BALANCE_LABEL_RE = /(?:مانده|موجودی|balance)[^\d\n]{0,12}([\d,،]+)/i;
+
+/**
+ * The amount the text itself labels as the balance — the number right after
+ * «مانده» / «موجودی» — or null when no number is labelled.
+ *
+ * The generic parsers used to take the LAST number in the body instead. In a
+ * Keshavarzi SMS that is the card's four digits, and every row of that bank on
+ * production carried balance 4,006 IRR until a named parser was written
+ * (2026-09-19). A guess that is silently wrong is worse than a null that the
+ * ledger shows as «؟», so the generic parsers no longer guess.
+ */
+export function labelledBalance(text: string, amounts: NormalizedNumber[]): NormalizedNumber | null {
+  const m = text.match(BALANCE_LABEL_RE);
+  if (!m) return null;
+  const digits = m[1]!.replace(/[,،]/g, '');
+  return amounts.find((a) => a.raw.replace(/[,،\s]/g, '') === digits) ?? null;
+}
+
 export function extractAllAmounts(text: string): NormalizedNumber[] {
   const wholeTextToman = textHasToman(text);
   const wholeTextRial = textHasRial(text);

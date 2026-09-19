@@ -31,13 +31,16 @@ import { jalaliToGregorianEpochMs } from '../jalali.js';
 import { parseIrr } from '../normalize.js';
 import { detectedIdentifierFromRaw } from '../identifier.js';
 
-const AMOUNT_RE = /^(?:واريز|واریز)\s*مبلغ\s*:?\s*([\d,،\s]+?)(?:\s*ریال|\s*ريال)?\s*$/;
-const ACCOUNT_RE = /^به\s*:?\s*(.+)$/;
+// A deposit is «واریز مبلغ N ریال» / «به <account>»; a withdrawal is
+// «برداشت مبلغ N <reason>» / «از <account>» (the reason is a word such as
+// خریدکالا). Withdrawals have been read since 2026-09-19.
+const AMOUNT_RE = /^(واريز|واریز|برداشت)\s*مبلغ\s*:?\s*([\d,،]+)(?:\s*ریال|\s*ريال)?(?:\s+[^\d\s]+)?\s*$/;
+const ACCOUNT_RE = /^(?:به|از)\s*:?\s*(.+)$/;
 const BALANCE_RE = /^مانده\s*:?\s*([\d,،\s]+?)\s*$/;
 // JY/M(M)/D(D)  — full Jalali date (year given explicitly)
 const DATE_RE = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/;
-// HH:mm on a separate line.
-const TIME_RE = /^(\d{1,2}):(\d{2})$/;
+// HH:mm on a separate line — with seconds on a withdrawal («15:01:07»).
+const TIME_RE = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
 
 function isSaman(text: string): boolean {
   return /(بانک|بانك)\s*سامان/.test(text);
@@ -83,10 +86,11 @@ export const samanCreditParser = {
     if (!amountMatch) {
       return unsupportedWarn('amount line malformed', 'saman_amount_malformed');
     }
-    const amountIrr = parseIrr(amountMatch[1] ?? '');
+    const amountIrr = parseIrr(amountMatch[2] ?? '');
     if (amountIrr === null) {
       return unsupportedWarn('amount digits malformed', 'saman_amount_malformed');
     }
+    const direction = amountMatch[1] === 'برداشت' ? 'DEBIT' : 'CREDIT';
 
     const accountMatch = accountLine.match(ACCOUNT_RE);
     const accountHint = (accountMatch?.[1] ?? '').trim();
@@ -133,7 +137,7 @@ export const samanCreditParser = {
 
     return matched({
       classification: 'BANK_TRANSACTION',
-      direction: 'CREDIT',
+      direction,
       amountIrr,
       balanceIrr,
       accountHint,
@@ -144,8 +148,8 @@ export const samanCreditParser = {
       evidence: {
         bank: 'SAMAN',
         accountHint,
-        directionSource: 'explicit_credit_phrase',
-        amountRaw: amountMatch[1] ?? '',
+        directionSource: direction === 'CREDIT' ? 'explicit_credit_phrase' : 'explicit_debit_phrase',
+        amountRaw: amountMatch[2] ?? '',
         balanceRaw: balanceMatch[1] ?? '',
         dateRaw: dateLine,
         timeRaw: timeLine,
