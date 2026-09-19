@@ -121,8 +121,21 @@ interface UnparsedShape {
  * already kept; this is the first place it can be seen. The CSV is what gets
  * handed to whoever writes the next parser.
  */
+interface ReparseCandidate {
+  eventId: string;
+  sender: string;
+  receivedAt: number;
+  was: { parserId: string | null; classification: string };
+  now: { parserId: string; direction: 'CREDIT' | 'DEBIT'; amountIrr: number; balanceIrr: number | null; accountHint: string | null };
+}
+
 function UnparsedSmsPanel() {
+  const w = useWriteProps();
   const [days, setDays] = useState(14);
+  const [reload, setReload] = useState(0);
+  const [reparse, setReparse] = useState<{ candidates: ReparseCandidate[]; stillUnread: number; scanned: number } | null>(null);
+  const [applied, setApplied] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [coverage, setCoverage] = useState<SenderCoverage[]>([]);
   const [shapes, setShapes] = useState<UnparsedShape[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -151,7 +164,49 @@ function UnparsedSmsPanel() {
     return () => {
       alive = false;
     };
-  }, [days]);
+  }, [days, reload]);
+
+  // «بازخوانی»: two steps. The dry-run shows what today's parsers can now
+  // read; apply makes those rows and only those, then the lists reload.
+  async function reparseDryRun() {
+    setBusy(true);
+    setApplied(null);
+    try {
+      const r = await fetch('/api/v1/admin/sms/reparse/dry-run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ days }),
+      });
+      const j = await readJson<{ report: { candidates: ReparseCandidate[]; stillUnread: number; scanned: number } }>(r);
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+      setReparse(j.report);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reparseApply() {
+    if (!reparse) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/v1/admin/sms/reparse/apply', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ eventIds: reparse.candidates.map((c) => c.eventId), confirm: true }),
+      });
+      const j = await readJson<{ made: unknown[]; skipped: unknown[] }>(r);
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+      setApplied(`${count(j.made.length)} ردیف ساخته شد${j.skipped.length ? `؛ ${count(j.skipped.length)} رد شد` : ''}.`);
+      setReparse(null);
+      setReload((n) => n + 1);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function tryParse(key: string, body: string) {
     const r = await fetch('/api/v1/banks/test-sms', {
@@ -195,7 +250,64 @@ function UnparsedSmsPanel() {
         <a className="btn btn-sm" href={`/api/v1/admin/sms/unparsed.csv?days=${days}`}>
           خروجی CSV
         </a>
+        <button type="button" className="btn-sm" disabled={busy} onClick={() => void reparseDryRun()} {...w} data-testid="reparse-dry-run">
+          بازخوانی با تحلیل‌گرهای امروز
+        </button>
       </div>
+      {applied && <p className="muted" data-testid="reparse-applied">{applied}</p>}
+      {reparse && (
+        <div className="card" style={{ marginBlockEnd: 12, padding: 12 }} data-testid="reparse-report">
+          <p style={{ margin: '0 0 8px' }}>
+            {reparse.candidates.length
+              ? `${count(reparse.candidates.length)} پیامک از ${count(reparse.scanned)} پیامک بی‌ردیف را تحلیل‌گرهای امروز می‌خوانند و می‌شود برایشان ردیف ساخت.`
+              : `از ${count(reparse.scanned)} پیامک بی‌ردیف، هیچ‌کدام را تحلیل‌گرهای امروز نمی‌خوانند.`}
+            {reparse.stillUnread ? ` ${count(reparse.stillUnread)} تا هنوز ناخوانده می‌مانند.` : ''}
+            {' '}هیچ پرداختی تطبیق داده نمی‌شود؛ واریز‌ها به «پرداخت‌ها» می‌روند و خودت تصمیم می‌گیری.
+          </p>
+          {reparse.candidates.length > 0 && (
+            <div className="table-wrap">
+              <table className="banks-table">
+                <thead>
+                  <tr>
+                    <th scope="col">فرستنده</th>
+                    <th scope="col">بود</th>
+                    <th scope="col">می‌شود</th>
+                    <th scope="col">جهت</th>
+                    <th scope="col">مبلغ (ریال)</th>
+                    <th scope="col">مانده (ریال)</th>
+                    <th scope="col">حساب</th>
+                    <th scope="col">رسید</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reparse.candidates.map((c) => (
+                    <tr key={c.eventId}>
+                      <td dir="ltr" style={{ textAlign: 'end' }}>{c.sender}</td>
+                      <td className="muted" dir="ltr" style={{ textAlign: 'end' }}>{c.was.parserId ?? '—'}</td>
+                      <td dir="ltr" style={{ textAlign: 'end' }}>{c.now.parserId}</td>
+                      <td>{c.now.direction === 'CREDIT' ? 'واریز' : 'برداشت'}</td>
+                      <td className="tabular-nums">{count(c.now.amountIrr)}</td>
+                      <td className="tabular-nums">{count(c.now.balanceIrr)}</td>
+                      <td dir="ltr" style={{ textAlign: 'end' }}>{c.now.accountHint ?? '—'}</td>
+                      <td className="tabular-nums" style={{ whiteSpace: 'nowrap' }}>{dateTime(c.receivedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="row toolbar" style={{ marginBlockStart: 8 }}>
+            {reparse.candidates.length > 0 && (
+              <button type="button" className="primary" disabled={busy} onClick={() => void reparseApply()} {...w} data-testid="reparse-apply">
+                بله، {count(reparse.candidates.length)} ردیف بساز
+              </button>
+            )}
+            <button type="button" className="btn-sm" onClick={() => setReparse(null)}>
+              انصراف
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="table-wrap">
         <table className="banks-table" data-testid="sms-coverage">

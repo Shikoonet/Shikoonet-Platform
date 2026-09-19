@@ -29,6 +29,8 @@ import {
   formatCardDigitsForDisplay,
   senderCoverage,
   unparsedShapes,
+  dryRunReparse,
+  applyReparse,
   type BankPrefix,
 } from '@shikoo/domain';
 import { csvCell } from './revenueRoutes.js';
@@ -227,6 +229,39 @@ export function registerBankRoutes(
       'content-type': 'text/csv; charset=utf-8',
       'content-disposition': `attachment; filename="unparsed-sms.csv"`,
     });
+  });
+
+  // --- «بازخوانی»: read the unread again with today's parsers --------------
+  //
+  //   POST /admin/sms/reparse/dry-run {days}        what today's named parsers can now read
+  //   POST /admin/sms/reparse/apply {eventIds}      make those rows, and only those
+  //
+  // Two steps on purpose (the `cleanup-debits` contract): the operator sees
+  // the list, then confirms it. ADMIN-only — it creates transaction rows —
+  // and audited per row. No matching runs; see `smsReparse.ts`.
+
+  const ReparseDryRunBody = z.object({ days: z.number().int().min(1).max(365).optional() }).strict();
+  app.post('/api/v1/admin/sms/reparse/dry-run', async (c) => {
+    if (c.get('identity').role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const body = ReparseDryRunBody.safeParse((await c.req.json().catch(() => ({}))) ?? {});
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const since = Date.now() - (body.data.days ?? 30) * 86_400_000;
+    return c.json({ ok: true, report: await dryRunReparse(c.env.DB, since) });
+  });
+
+  const ReparseApplyBody = z
+    .object({ eventIds: z.array(z.string().min(1).max(100)).min(1).max(2000), confirm: z.literal(true) })
+    .strict();
+  app.post('/api/v1/admin/sms/reparse/apply', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const body = ReparseApplyBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const result = await applyReparse(c.env.DB, body.data.eventIds);
+    for (const m of result.made) {
+      await audit(c.env.DB, ident, 'sms.reparsed', 'TRANSACTION', m.transactionId, null, m);
+    }
+    return c.json({ ok: true, ...result });
   });
 
   // --- card prefixes ------------------------------------------------------
