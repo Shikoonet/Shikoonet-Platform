@@ -31,6 +31,7 @@ interface Attention {
   unreconciledContinuity: number;
   unassignedIncome: number;
   pendingRequests: number;
+  newRequests: number;
   expiringSubscriptions7d: number;
   staleDevices: number;
   panelsWithoutSecret: number;
@@ -121,6 +122,49 @@ describe('what still needs a person', () => {
     expect(after).toBe(before + 3);
   });
 
+  /**
+   * The sidebar badge is «since you last looked», not the whole queue (#370).
+   * Measured against a stamp between two inserts, so a count that ignored the
+   * stamp would answer the total and fail.
+   */
+  it('counts only the requests that arrived after the operator last looked', async () => {
+    const older = await makeUser();
+    await baseEnv.DB.prepare(
+      `INSERT INTO reseller_requests (user_id, description, status, created_at)
+       VALUES (?1, 'قدیمی', 'PENDING', now() - interval '1 hour')`,
+    )
+      .bind(older)
+      .run();
+    const seenAt = Date.now() - 60_000;
+    const newer = await makeUser();
+    await baseEnv.DB.prepare(
+      `INSERT INTO reseller_requests (user_id, description, status, created_at)
+       VALUES (?1, 'تازه', 'PENDING', now())`,
+    )
+      .bind(newer)
+      .run();
+
+    const ask = async (query: string) => {
+      const res = await app.request(`/api/v1/admin/attention${query}`, {}, envAs(ADMIN));
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { attention: Attention }).attention;
+    };
+    const expected = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM reseller_requests
+        WHERE status = 'PENDING' AND created_at > to_timestamp(?1 / 1000.0)`,
+    )
+      .bind(seenAt)
+      .first<{ n: number }>();
+    const stamped = await ask(`?requestsSeenAt=${seenAt}`);
+    expect(stamped.newRequests).toBe(expected!.n);
+    expect(stamped.newRequests).toBeLessThan(stamped.pendingRequests);
+    // Never looked, or a stamp that is not a number: the whole queue, not a 400.
+    for (const q of ['', '?requestsSeenAt=abc', '?requestsSeenAt=1789834885148314976']) {
+      const a = await ask(q);
+      expect(a.newRequests).toBe(a.pendingRequests);
+    }
+  });
+
   it('counts services expiring inside seven days, and not the ones past that', async () => {
     const userId = await makeUser();
     for (const [days, status] of [
@@ -204,6 +248,7 @@ describe('what still needs a person', () => {
       'unreconciledContinuity',
       'unassignedIncome',
       'pendingRequests',
+      'newRequests',
       'expiringSubscriptions7d',
       'staleDevices',
       'panelsWithoutSecret',

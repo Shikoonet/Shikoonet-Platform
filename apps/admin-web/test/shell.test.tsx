@@ -270,7 +270,11 @@ describe('the sidebar counts what is waiting', () => {
       vi.stubGlobal(
         'fetch',
         withAttention({
-          pendingRequests: 3,
+          // The badge is `newRequests` — since this browser last opened the
+          // list — not the whole queue (#370). Both in the fixture so a badge
+          // that read the total would say ۴ and fail.
+          pendingRequests: 4,
+          newRequests: 3,
           openClaims: 12,
           unreviewedPayments: 40,
           staleDevices: 4,
@@ -297,10 +301,34 @@ describe('the sidebar counts what is waiting', () => {
     },
   );
 
+  it('opening «لیست درخواست‌ها» stamps the visit, and the next poll asks from there', SHELL, async () => {
+    const fetchMock = withAttention({ pendingRequests: 4, newRequests: 4, openClaims: 0 });
+    vi.stubGlobal('fetch', fetchMock);
+    await drawApp();
+    // Before the visit: never looked, so the poll carries no stamp.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/api/v1/admin/attention')),
+      ).toBe(true),
+    );
+    const before = Date.now();
+    await go('لیست درخواست‌ها');
+    const stamp = Number(localStorage.getItem('requests.seenAt'));
+    expect(stamp).toBeGreaterThanOrEqual(before);
+    // The refetch on arrival carries it, so the server counts from now on.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((c) =>
+          String(c[0]).endsWith(`/api/v1/admin/attention?requestsSeenAt=${stamp}`),
+        ),
+      ).toBe(true),
+    );
+  });
+
   it('draws no badge at all when nothing is waiting', SHELL, async () => {
     vi.stubGlobal(
       'fetch',
-      withAttention({ pendingRequests: 0, openClaims: 0, unreviewedPayments: 20 }),
+      withAttention({ pendingRequests: 4, newRequests: 0, openClaims: 0, unreviewedPayments: 20 }),
     );
     await drawApp();
     // Let the attention query settle before asserting its absence.
