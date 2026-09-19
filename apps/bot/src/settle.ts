@@ -62,6 +62,17 @@ async function recordIncident(tx: D1DatabaseSession, row: SettleRow): Promise<vo
     .run();
 }
 
+/** The trailing line of legacy's «💵 پرداخت جدید» — its `Payment_Method`. */
+const PAYMENT_METHOD_FA: Record<string, string> = {
+  CARD_TO_CARD: 'کارت به کارت',
+  CRYPTO: 'ارز دیجیتال',
+  TELEGRAM_STARS: 'استار تلگرام',
+  GATEWAY: 'درگاه',
+  WALLET: 'کیف پول',
+  ADMIN_CREDIT: 'افزایش دستی موجودی',
+  ADMIN_DEBIT: 'کاهش دستی موجودی',
+};
+
 interface SettleRow {
   payment_id: number;
   payment_public_id: string;
@@ -71,6 +82,7 @@ interface SettleRow {
   order_total_irr: number | null;
   order_user_id: number | null;
   telegram_id: number | null;
+  method: string;
 }
 
 /**
@@ -108,6 +120,7 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
       `SELECT p.id            AS payment_id,
               p.public_id     AS payment_public_id,
               p.order_id      AS order_id,
+              p.method        AS method,
               o.status        AS order_status,
               o.kind          AS order_kind,
               o.total_irr     AS order_total_irr,
@@ -259,9 +272,9 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
           'paymentreport',
           row.payment_public_id,
           menu.paymentReport({
-            payment: row.payment_public_id,
-            customer: row.telegram_id,
+            telegramId: row.telegram_id ?? 0,
             amountIrr: Number(row.order_total_irr ?? 0),
+            method: PAYMENT_METHOD_FA[row.method] ?? row.method,
           }),
         );
         return true;

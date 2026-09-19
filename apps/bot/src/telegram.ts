@@ -32,6 +32,8 @@ const log = createLogger('bot');
 const TelegramUserSchema = z.object({
   id: z.number().int(),
   username: z.string().optional(),
+  /** Read for the reports group only — «نام کاربر» on legacy's templates. */
+  first_name: z.string().optional(),
   language_code: z.string().optional(),
 });
 

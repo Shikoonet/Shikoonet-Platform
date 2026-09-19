@@ -1870,10 +1870,11 @@ export const TEXTS = {
     hint: 'به خودِ کاربر، همان لحظه‌ای که بلاک می‌شود',
   },
   SPAM_BLOCKED_REPORT: {
-    default: '🚫 کاربر با شناسهٔ عددی {telegramId} به‌دلیل اسپم در ربات بلاک شد.',
-    placeholders: ['telegramId'],
+    default:
+      'کاربر با ایدی عددی {telegramId} بدلیل اسپم در ربات بلاک گردید',
+    placeholders: ["telegramId"],
     screen: 'warnings',
-    hint: 'به کانال گزارش، با دکمهٔ باز کردن همان کاربر',
+    hint: 'به تاپیک «📌 گزارش خرید خدمات» — همان‌جا که میرزا می‌فرستد (`index.php:195`)',
   },
   // در نیمهٔ راهِ سقف، یک بار — تا کسی که تند می‌زند بفهمد قبل از اینکه مسدود شود.
   SPAM_WARNING: {
@@ -1884,72 +1885,186 @@ export const TEXTS = {
   },
 
   /*
-   * The reports, one per topic. Editable like every other text the bot sends,
-   * because an operator who wants «فروش» instead of «خرید» in their own group
-   * should not need a deploy.
+   * The reports, one per topic — mirzabot's templates, byte for byte.
    *
-   * ## No markup, and this is the second time
+   * Sam, 2026-09-19: the group has to read exactly like mirzabot's. Every
+   * default below is the `lang/fa.php` string the legacy sends to the same
+   * topic, with `%s` given a name and the HTML tags dropped — `<code>` around
+   * an id, `<a href="tg://user">` on a new customer — because this bot sends
+   * no `parse_mode` (`menu.ts:938`) and the tags would be shown as
+   * characters. Whitespace oddities are legacy's own and deliberate: a line
+   * of four spaces, a double space before «و», a colon glued to its value.
+   * `apps/bot/test/report-templates.test.ts` reads `fa.php` itself and
+   * compares, so a retyped string cannot drift from the file it came from.
    *
-   * These carried `<b>` and `<code>` and the operator read them literally.
-   * `parse_mode` is set for a message ONLY when its text contains a
-   * `<tg-emoji>` tag — `hasCustomEmoji` matches that and nothing else — so
-   * every other tag goes out as characters.
+   * Which legacy variant, where legacy has several: the card-to-card
+   * «after pay» flow (`function.php:1147`, `:1279`, `:1359`, `:1431`), because
+   * that is the flow this shop runs. Those carry no «نام کاربر» line; the
+   * trial and new-customer reports do, and read it from the update.
    *
-   * `report.ts` records the identical bug in the nightly report, fixed
-   * 2026-08-21, and `report.test.ts` pins it by driving one through
-   * `sendMessage`. That guard covers `buildDailyReport` alone; nothing was
-   * watching these five, and `report-topics.test.ts` asserts the chat and the
-   * thread without ever looking at the text.
-   *
-   * There is a second cost that is easy to miss: an admin could not put a
-   * premium emoji in any of these lines. `checkCustomEmoji` refuses an override
-   * whose remainder still holds a tag, so `<b>` made every attempt come back as
-   * MALFORMED_TAG — an error about emoji, on a line whose problem was bold.
+   * Editable like every other text, so an operator who wants «فروش» instead
+   * of «خرید» in their own group does not need a deploy.
    */
   REPORT_PURCHASE: {
     default:
-      '🛍 خرید تازه\nسفارش: {order}\nمشتری: {customer}\nسرویس: {service}\nمبلغ: {amount}',
-    placeholders: ['order', 'customer', 'service', 'amount'],
+      '📣 جزئیات ساخت اکانت در ربات بعد پرداخت ثبت شد .\n\n{first}\n▫️آیدی عددی کاربر : {telegramId}\n▫️نام کاربری کاربر :@{username}\n▫️نام کاربری کانفیگ :{config}\n▫️لوکیشن سرویس : {panel}\n▫️زمان خریداری شده :{days} روز\n▫️نام محصول خریداری شده :{plan}\n▫️حجم خریداری شده : {volume} GB\n▫️موجودی قبل خرید : {balanceBefore} تومان\n▫️موجودی بعد خرید : {balanceAfter} تومان\n▫️کد پیگیری: {tracking}\n▫️نوع کاربر : {userType}\n▫️شماره تلفن کاربر : {phone}\n▫️قیمت محصول : {price} تومان\n▫️قیمت نهایی : {finalPrice} تومان\n▫️زمان خرید : {time}',
+    placeholders: ["first", "telegramId", "username", "config", "panel", "days", "plan", "volume", "balanceBefore", "balanceAfter", "tracking", "userType", "phone", "price", "finalPrice", "time"],
     screen: 'warnings',
-    hint: 'به تاپیک «گزارش‌های خرید»، بعد از تحویل سرویس',
+    hint: 'به تاپیک «🛍 گزارش های خرید»، بعد از تحویل سرویس — قالب میرزا `accountCreatedAfterPay`',
   },
-  REPORT_SERVICE: {
+  REPORT_RENEWAL: {
     default:
-      '📌 {kind}\nسفارش: {order}\nمشتری: {customer}\nسرویس: {service}',
-    placeholders: ['kind', 'order', 'customer', 'service'],
+      '📣 جزئیات تمدید اکانت در ربات شما ثبت شد .\n    \n▫️آیدی عددی کاربر : {telegramId}\n▫️نام کاربری کاربر : @{username}\n▫️نام کاربری کانفیگ :{config}\n▫️موقعیت سرویس سرویس : {panel}\n▫️نام محصول : {plan}\n▫️حجم محصول : {volume}\n▫️زمان محصول : {days}\n▫️مبلغ تمدید : {price} تومان\n▫️موجودی قبل از خرید : {balanceBefore} تومان\n▫️زمان خرید : {time}',
+    placeholders: ["telegramId", "username", "config", "panel", "plan", "volume", "days", "price", "balanceBefore", "time"],
     screen: 'warnings',
-    hint: 'به تاپیک «گزارش خرید خدمات» — تمدید و حجم و زمان اضافه',
+    hint: 'به تاپیک «📌 گزارش خرید خدمات»، بعد از تمدید — قالب میرزا `renewedFn`',
+  },
+  REPORT_ADD_VOLUME: {
+    default:
+      '⭕️ یک کاربر حجم اضافه خریده است\n        \nاطلاعات کاربر : \n🪪 آیدی عددی : {telegramId}\n🛍 حجم خریداری شده  : {volume} گیگ\n💰 مبلغ پرداختی : {price} تومان\n👤 نام کاربری کانفیگ {config}\nموجودی کاربر قبل خرید : {balanceBefore}\n',
+    placeholders: ["telegramId", "volume", "price", "config", "balanceBefore"],
+    screen: 'warnings',
+    hint: 'به تاپیک «📌 گزارش خرید خدمات»، بعد از حجم اضافه — قالب میرزا `extraVolumeFn`',
+  },
+  REPORT_ADD_TIME: {
+    default:
+      '⭕️ یک کاربر زمان اضافه خریده است\n        \nاطلاعات کاربر : \n🪪 آیدی عددی : {telegramId}\n🛍 زمان خریداری شده  : {days} روز\n💰 مبلغ پرداختی : {price} تومان\n👤 نام کاربری کانفیگ {config}',
+    placeholders: ["telegramId", "days", "price", "config"],
+    screen: 'warnings',
+    hint: 'به تاپیک «📌 گزارش خرید خدمات»، بعد از زمان اضافه — قالب میرزا `extraTimeFn`',
   },
   REPORT_TRIAL: {
-    default: '🔑 اکانت تست\nسفارش: {order}\nمشتری: {customer}\nپنل: {panel}',
-    placeholders: ['order', 'customer', 'panel'],
+    default:
+      '📣 جزئیات ساخت اکانت تست در ربات شما ثبت شد .\n▫️آیدی عددی کاربر : {telegramId}\n▫️نام کاربری کاربر :@{username}\n▫️نام کاربری کانفیگ :{config}\n▫️نام کاربر : {name}\n▫️موقعیت سرویس : {panel}\n▫️زمان خریداری شده : {hours} ساعت\n▫️حجم خریداری شده : {mb} MB\n▫️کد پیگیری: {tracking}\n▫️نوع کاربر : {userType}\n▫️شماره تلفن کاربر : {phone}\n▫️زمان خرید : {time}',
+    placeholders: ["telegramId", "username", "config", "name", "panel", "hours", "mb", "tracking", "userType", "phone", "time"],
     screen: 'warnings',
-    hint: 'به تاپیک «گزارش اکانت تست»',
+    hint: 'به تاپیک «🔑 گزارش اکانت تست» — قالب میرزا `testAccountCreated`',
   },
   REPORT_PAYMENT: {
     default:
-      '💰 پرداخت تایید شد\nفیش: {payment}\nمشتری: {customer}\nمبلغ: {amount}',
-    placeholders: ['payment', 'customer', 'amount'],
+      '💵 پرداخت جدید\n        \nآیدی عددی کاربر : {telegramId}\nمبلغ تراکنش {amount}\nروش پرداخت :  تایید خودکار بدون بررسی\n{method}',
+    placeholders: ["telegramId", "amount", "method"],
     screen: 'warnings',
-    hint: 'به تاپیک «گزارش مالی»، وقتی پرداختی تسویه می‌شود',
+    hint: 'به تاپیک «💰 گزارش مالی»، وقتی پرداختی تسویه می‌شود — قالب میرزا `newPaymentAutoConfirm`',
   },
-  REPORT_KIND_RENEWAL: {
-    default: 'تمدید سرویس',
+  REPORT_NEW_USER: {
+    default:
+      '🎉یک کاربر جدید ربات را استارت کرد\n نام : {name}\nنام کاربری : @{username}\nآیدی عددی : {telegramId}',
+    placeholders: ["name", "username", "telegramId"],
+    screen: 'warnings',
+    hint: 'به تاپیک «⚙️ سایر گزارشات»، اولین /start هر مشتری — قالب میرزا `newUser`',
+  },
+  REPORT_DISCOUNT_USED: {
+    default:
+      '⭕️ یک کاربر با نام کاربری @{username}  و آیدی عددی {telegramId} از کد تخفیف {code} استفاده کرد.',
+    placeholders: ["username", "telegramId", "code"],
+    screen: 'warnings',
+    hint: 'به تاپیک «⚙️ سایر گزارشات»، وقتی کد تخفیفی روی سفارشی می‌نشیند — قالب میرزا `discountCodeUsedFn`',
+  },
+  REPORT_COMMISSION: {
+    default:
+      '\nمبلغ {amount} به کاربر {referrer} برای پورسانت از کاربر {buyer} واریز گردید \nتایم : {time}',
+    placeholders: ["amount", "referrer", "buyer", "time"],
+    screen: 'warnings',
+    hint: 'به تاپیک «🎁 گزارش پورسانت ها»، وقتی پورسانت معرف واریز می‌شود — قالب میرزا `commissionPaidFn`',
+  },
+  REPORT_CRON_VOLUME_TITLE: {
+    default:
+      '📌 اطلاعیه کرون حجم\n\n',
     placeholders: [],
     screen: 'warnings',
-    hint: 'عنوان گزارش تمدید',
+    hint: 'سرِ اطلاعیهٔ کرون حجم در «📝 گزارش اطلاع رسانی ها»',
   },
-  REPORT_KIND_ADD_VOLUME: {
-    default: 'حجم اضافه',
+  REPORT_CRON_TIME_TITLE: {
+    default:
+      '📌 اطلاعیه کرون زمان\n\n',
     placeholders: [],
     screen: 'warnings',
-    hint: 'عنوان گزارش حجم اضافه',
+    hint: 'سرِ اطلاعیهٔ کرون زمان در «📝 گزارش اطلاع رسانی ها»',
   },
-  REPORT_KIND_ADD_TIME: {
-    default: 'زمان اضافه',
+  REPORT_CRON_SERVICE: {
+    default:
+      'نام کاربری سرویس :‌ {config}\n',
+    placeholders: ["config"],
+    screen: 'warnings',
+    hint: 'خط نام کاربری سرویس در اطلاعیه‌های کرون',
+  },
+  REPORT_CRON_STATUS: {
+    default:
+      'وضعیت سرویس : {status}\n',
+    placeholders: ["status"],
+    screen: 'warnings',
+    hint: 'خط وضعیت سرویس در اطلاعیه‌های کرون',
+  },
+  REPORT_CRON_REMAINING_VOLUME: {
+    default:
+      'حجم باقی مانده : {volume}',
+    placeholders: ["volume"],
+    screen: 'warnings',
+    hint: 'خط حجم باقی‌مانده در اطلاعیهٔ کرون حجم',
+  },
+  REPORT_CRON_REMAINING_DAYS: {
+    default:
+      'تعداد روز باقی مانده ‌:‌{days}',
+    placeholders: ["days"],
+    screen: 'warnings',
+    hint: 'خط روز باقی‌مانده در اطلاعیهٔ کرون زمان',
+  },
+  REPORT_CRON_DELETE: {
+    default:
+      '📌 اطلاعیه کرون حذف\n\nنام کاربری سرویس :‌ {config}\nوضعیت سرویس : {status}\nتعداد روز باقی مانده ‌:‌{days}\nحجم باقی مانده : {volume}',
+    placeholders: ["config", "status", "days", "volume"],
+    screen: 'warnings',
+    hint: 'به «📝 گزارش اطلاع رسانی ها»، وقتی سرویس منقضی حذف می‌شود — قالب میرزا `deleteInfo`',
+  },
+  REPORT_CRON_DELETE_VOLUME: {
+    default:
+      '📌  اطلاعیه کرون حذف حجم \nنام کاربری سرویس : {config} \n وضعیت سرویس : {status} \nتعداد روز باقی مانده :{days} \n حجم باقی مانده : {volume}\nآخرین اتصال کاربر : {lastSeen}',
+    placeholders: ["config", "status", "days", "volume", "lastSeen"],
+    screen: 'warnings',
+    hint: 'به «📝 گزارش اطلاع رسانی ها»، وقتی سرویس حجم‌تمام‌شده حذف می‌شود — قالب میرزا `volumeDeleteInfo`',
+  },
+  REPORT_NIGHT_AGENTS_TITLE: {
+    default:
+      'لیست نمایندگانی که بیشترین خرید در امروز داشتند :\n',
     placeholders: [],
     screen: 'warnings',
-    hint: 'عنوان گزارش زمان اضافه',
+    hint: 'پیام اول گزارش شبانه — سرِ فهرست نمایندگان',
+  },
+  REPORT_NIGHT_AGENT_ROW: {
+    default:
+      '\nایدی عددی کاربر : {telegramId}\nنام کاربری کاربر : {username}\nجمع کل خرید امروز : {total}\n---------------\n',
+    placeholders: ["telegramId", "username", "total"],
+    screen: 'warnings',
+    hint: 'یک ردیف از فهرست نمایندگان گزارش شبانه',
+  },
+  REPORT_NIGHT: {
+    default:
+      '📌 گزارش روزانه کارکرد ربات :\n\n🧲 تعداد تمدید امروز : {renewals} عدد\n💰 جمع تمدید امروز : {renewalsToman} تومان\n🛍 تعداد سفارشات امروز : {orders} عدد\n🛍 جمع مبلغ سفارشات امروز : {ordersToman} تومان\n🔑 اکانت های تست امروز : {trials} عدد\n🔋 جمع حجم های فروخته شده : {volumeGb} گیگابایت\nتعداد کاربرانی که امروز به ربات پیوستند : {newUsers} نفر\n',
+    placeholders: ["renewals", "renewalsToman", "orders", "ordersToman", "trials", "volumeGb", "newUsers"],
+    screen: 'warnings',
+    hint: 'پیام دوم گزارش شبانه — قالب میرزا `dailyBot`',
+  },
+  REPORT_NIGHT_PANELS_TITLE: {
+    default:
+      'گزارش پنل ها :\n',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'پیام سوم گزارش شبانه — سرِ گزارش پنل‌ها',
+  },
+  REPORT_NIGHT_PANEL_ROW: {
+    default:
+      '\nنام پنل : {panel}\n🛍 تعداد سفارشات امروز : {orders} عدد\n🛍 جمع مبلغ سفارشات امروز : {ordersToman} تومان\n🔋 جمع حجم های فروخته شده : {volumeGb} گیگابایت\n---------------\n',
+    placeholders: ["panel", "orders", "ordersToman", "volumeGb"],
+    screen: 'warnings',
+    hint: 'یک ردیف از گزارش پنل‌های شبانه',
+  },
+  REPORT_FIRST_PURCHASE: {
+    default:
+      '📌 خرید اول کاربر',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'خط اول گزارش خرید وقتی اولین خرید مشتری است، وگرنه خالی',
   },
 
   PAGING_PREV: {

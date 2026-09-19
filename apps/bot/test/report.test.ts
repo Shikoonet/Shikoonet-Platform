@@ -14,6 +14,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tehranDayBoundsFromDate } from '@shikoo/domain';
 import { buildDailyReport, sweepDailyReport } from '../src/report.js';
+
+/**
+ * `buildDailyReport` is three messages in mirzabot's order — resellers,
+ * figures, panels — so the assertions pick the one they mean.
+ */
+async function nightly(): Promise<{ agents: string; figures: string; panels: string }> {
+  const parts = await buildDailyReport(db, DAY);
+  expect(parts).toHaveLength(3);
+  return { agents: parts[0]!, figures: parts[1]!, panels: parts[2]! };
+}
 import { db, pendingNotifications } from './helpers/env.js';
 import {
   invalidateShopSettings,
@@ -151,12 +161,14 @@ describe('the daily report', () => {
       onPanel: 'zz-report-panel',
     });
 
-    const text = await buildDailyReport(db, DAY);
+    const { figures, panels } = await nightly();
 
-    expect(text).toContain('zz-report-panel');
-    // One sale on that panel, counted the same way in both lines.
-    expect(text).toContain('فروش نو: 1');
-    expect(text).toMatch(/zz-report-panel[^\n]*\b1\b/);
+    expect(panels).toContain('نام پنل : zz-report-panel');
+    // One sale on that panel, counted the same way in both messages — and the
+    // trial is counted where legacy counts it, on its own line.
+    expect(figures).toContain('🛍 تعداد سفارشات امروز : 1 عدد');
+    expect(figures).toContain('🔑 اکانت های تست امروز : 1 عدد');
+    expect(panels).toMatch(/نام پنل : zz-report-panel\n🛍 تعداد سفارشات امروز : 1 عدد/);
   });
 
   it('counts only what happened inside the Tehran day', async () => {
@@ -172,7 +184,7 @@ describe('the daily report', () => {
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 7_000_000, atMs: start - 60_000 });
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 9_000_000, atMs: end + 60_000 });
 
-    const text = await buildDailyReport(db, DAY);
+    const { figures: text } = await nightly();
 
     // One sale, and the money is the one inside the window converted to toman.
     //
@@ -180,8 +192,8 @@ describe('the daily report', () => {
     // every other amount in the shop. It used to divide by ten and group with
     // `fa-IR` on its own, so the one message the admin reads was the only place
     // in the product spelling money in Persian digits.
-    expect(text).toContain('فروش نو: 1');
-    expect(text).toContain('100,000');
+    expect(text).toContain('🛍 تعداد سفارشات امروز : 1 عدد');
+    expect(text).toContain('🛍 جمع مبلغ سفارشات امروز : 100,000 تومان');
     // The neighbours' amounts must not appear anywhere in it.
     expect(text).not.toContain('700,000');
     expect(text).not.toContain('900,000');
@@ -194,14 +206,16 @@ describe('the daily report', () => {
     await completedOrder({ kind: 'RENEWAL', irr: 1_000_000, atMs: start + 3_600_000 });
     await completedOrder({ kind: 'WALLET_TOPUP', irr: 5_000_000, atMs: start + 3_600_000 });
 
-    const text = await buildDailyReport(db, DAY);
+    const { figures: text } = await nightly();
 
-    expect(text).toContain('فروش نو: 1');
-    expect(text).toContain('تمدید: 1');
-    expect(text).toContain('شارژ کیف پول: 1');
-    // 200,000 + 100,000 toman. A top-up is money moving into a wallet, not a
-    // sale, and adding it here would flatter every day it happened on.
-    expect(text).toContain('مجموع فروش و تمدید: 300,000 تومان');
+    // Legacy's lines, legacy's sums: orders are new purchases, renewals are
+    // renewals, and a top-up — money moving into a wallet, not a sale — is
+    // in neither and would flatter every day it happened on.
+    expect(text).toContain('🧲 تعداد تمدید امروز : 1 عدد');
+    expect(text).toContain('💰 جمع تمدید امروز : 100,000 تومان');
+    expect(text).toContain('🛍 تعداد سفارشات امروز : 1 عدد');
+    expect(text).toContain('🛍 جمع مبلغ سفارشات امروز : 200,000 تومان');
+    expect(text).not.toContain('500,000');
   });
 
   it('is queued once, however many times the loop asks', async () => {
@@ -215,11 +229,15 @@ describe('the daily report', () => {
     expect(await sweepDailyReport(db)).toEqual([]);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
-    expect(queued).toHaveLength(1);
-    expect(queued[0]?.chatId).toBe(CHANNEL);
-    // Yesterday, not today: a report on a day still in progress is a number
+    // Three messages, legacy's order, every one of them to the channel — and
+    // yesterday, not today: a report on a day still in progress is a number
     // that changes every time you look at it.
-    expect(queued[0]?.dedupeKey).toBe(`report:${DAY}`);
+    expect(queued.map((n) => n.dedupeKey)).toEqual([
+      `report:${DAY}`,
+      `report:${DAY}:2`,
+      `report:${DAY}:3`,
+    ]);
+    expect(queued.every((n) => n.chatId === CHANNEL)).toBe(true);
   });
 
   it('does nothing at all without a channel', async () => {
@@ -254,7 +272,7 @@ describe('the daily report', () => {
     // all owed, and nothing before them is.
     expect(await sweepDailyReport(db)).toEqual(['2026-08-15', '2026-08-16', '2026-08-17']);
     const queued = (await pendingNotifications())
-      .filter((n) => n.dedupeKey.startsWith('report:'))
+      .filter((n) => /^report:\d{4}-\d{2}-\d{2}$/.test(n.dedupeKey))
       .map((n) => n.dedupeKey);
     expect(queued).toEqual(['report:2026-08-15', 'report:2026-08-16', 'report:2026-08-17']);
 
@@ -321,19 +339,21 @@ describe('the daily report', () => {
     await db.prepare(`UPDATE subscriptions SET volume_gb = NULL WHERE public_id = ?1`).bind(`reps${seq}`).run();
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-mixed' });
 
-    const text = await buildDailyReport(db, DAY);
+    const { panels } = await nightly();
 
-    // sum() skips NULL and COALESCE used to fold the all-NULL case to zero, so
-    // a panel that sold two unlimited services printed «0 گیگ».
-    expect(text).toMatch(/zz-unmetered[^\n]*نامحدود/);
-    expect(text).not.toMatch(/zz-unmetered[^\n]*0 گیگ/);
-    expect(text).toMatch(/zz-mixed[^\n]*10 گیگ \+ 1 نامحدود/);
+    // Legacy's row has one number for volume and an unlimited service adds
+    // nothing to it; the order count still says how many were sold.
+    expect(panels).toMatch(
+      /نام پنل : zz-unmetered\n🛍 تعداد سفارشات امروز : 1 عدد\n[^\n]*\n🔋 جمع حجم های فروخته شده : 0 گیگابایت/,
+    );
+    expect(panels).toMatch(
+      /نام پنل : zz-mixed\n🛍 تعداد سفارشات امروز : 2 عدد\n[^\n]*\n🔋 جمع حجم های فروخته شده : 10 گیگابایت/,
+    );
   });
 
-  it('adds the panel gigabytes up with the shop’s own formatter', async () => {
+  it('adds the panel gigabytes up, per panel and for the night', async () => {
     const { start } = tehranDayBoundsFromDate(DAY);
-    // Two 10 GB services and one of 1000.5 — a sum the raw number prints as
-    // «1020.5 گیگ» and every customer screen prints as «1,020.5 گیگ».
+    // Two 10 GB services and one of 1000.5. Legacy prints the raw sum.
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-gb-panel' });
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-gb-panel' });
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000, onPanel: 'zz-gb-panel' });
@@ -342,13 +362,16 @@ describe('the daily report', () => {
       .bind(`reps${seq}`)
       .run();
 
-    const text = await buildDailyReport(db, DAY);
+    const { panels, figures } = await nightly();
 
-    expect(text).toMatch(/zz-gb-panel[^\n]*1,020\.5 گیگ/);
-    expect(text).not.toContain('1020.5');
+    expect(panels).toMatch(
+      /نام پنل : zz-gb-panel\n[^\n]*\n[^\n]*\n🔋 جمع حجم های فروخته شده : 1020.5 گیگابایت/,
+    );
+    // And the figures message sums the panels.
+    expect(figures).toContain('🔋 جمع حجم های فروخته شده : 1020.5 گیگابایت');
   });
 
-  it('names a reseller with no @username as a person, not a bare number', async () => {
+  it('lists a top reseller the way legacy does, handle or no handle', async () => {
     const { start } = tehranDayBoundsFromDate(DAY);
     const { telegramId } = await completedOrder({
       kind: 'NEW_PURCHASE',
@@ -358,9 +381,13 @@ describe('the daily report', () => {
     });
     await db.prepare(`UPDATE users SET username = NULL WHERE telegram_id = ?1`).bind(telegramId).run();
 
-    const text = await buildDailyReport(db, DAY);
+    const { agents } = await nightly();
 
-    expect(text).toContain(`• کاربر ${telegramId}: 300,000 تومان`);
+    // Legacy's row: the id and the handle on their own lines, the handle
+    // empty when there is none — never a name this bot made up.
+    expect(agents).toContain(
+      `ایدی عددی کاربر : ${telegramId}\nنام کاربری کاربر : \nجمع کل خرید امروز : 300,000`,
+    );
   });
 });
 
@@ -469,14 +496,18 @@ describe('what leaves for Telegram', () => {
     }) as unknown as typeof globalThis.fetch;
 
     const api = createTelegramApi({ token: 't', baseUrl: 'https://x.test', fetch: fetchImpl });
-    await api.sendMessage(CHANNEL, await buildDailyReport(db, DAY));
+    for (const part of await buildDailyReport(db, DAY)) await api.sendMessage(CHANNEL, part);
 
-    expect(bodies).toHaveLength(1);
+    expect(bodies).toHaveLength(3);
     // No `parse_mode`, which is the house rule (`menu.ts:938`) — so any tag in
     // the text would be shown to the reader exactly as written.
-    expect(bodies[0]!['parse_mode']).toBeUndefined();
-    expect(String(bodies[0]!['text'])).not.toContain('<');
-    // And it is still the report, not an empty string that trivially passes.
-    expect(String(bodies[0]!['text'])).toContain('گزارش روز');
+    for (const body of bodies) {
+      expect(body['parse_mode']).toBeUndefined();
+      expect(String(body['text'])).not.toContain('<');
+    }
+    // And it is still the report, in legacy's order, not empty strings.
+    expect(String(bodies[0]!['text'])).toContain('لیست نمایندگانی که بیشترین خرید در امروز داشتند :');
+    expect(String(bodies[1]!['text'])).toContain('📌 گزارش روزانه کارکرد ربات :');
+    expect(String(bodies[2]!['text'])).toContain('گزارش پنل ها :');
   });
 });

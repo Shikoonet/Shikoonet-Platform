@@ -56,6 +56,7 @@ import {
 import { loadBotContent } from './botContent.js';
 import { acceptRules, gateFor, type GateVerdict, type MembershipApi } from './gate.js';
 import * as menu from './menu.js';
+import { report } from './reports.js';
 import { matchingRenewalPlan } from './renewMatch.js';
 import { IRR_PER_TOMAN, priceForUser, toAsciiDigits } from './money.js';
 import {
@@ -454,7 +455,8 @@ export async function handleUpdate(
           telegramId: from.id,
           updateId: update.update_id,
           reportChatId: SHOP.reportChatId,
-          reportThreadId: SHOP.reportTopics.otherreport,
+          // «📌 گزارش خرید خدمات», which is where `index.php:195` puts it.
+          reportThreadId: SHOP.reportTopics.otherservice,
         });
         // Told once, at the moment it happens. Every message after this one is
         // ignored in silence, which is what the per-handler checks already do.
@@ -594,6 +596,12 @@ interface Caller {
    */
   reseller_tier: string | null;
   /**
+   * True on the /start that created the row — `xmax = 0` is Postgres's own
+   * word for «this INSERT … ON CONFLICT inserted rather than updated». It is
+   * what fires legacy's «🎉یک کاربر جدید ربات را استارت کرد» exactly once.
+   */
+  is_new: boolean;
+  /**
    * What `priceForUser` is fed — already the LEVEL's percentage when they are
    * on one. See `DISCOUNT_PERCENT`: it is not the raw column.
    */
@@ -719,20 +727,22 @@ const NOTIFY_REACHABLE = `notify_enabled = true`;
 
 async function upsertUser(
   tx: D1DatabaseSession,
-  from: { id: number; username?: string | undefined },
+  from: { id: number; username?: string | undefined; first_name?: string | undefined },
 ): Promise<Caller> {
   const user = await tx
     .prepare(
-      `INSERT INTO users (telegram_id, username, registered_at, last_seen_at)
-       VALUES (?1, ?2, now(), now())
+      `INSERT INTO users (telegram_id, username, first_name, registered_at, last_seen_at)
+       VALUES (?1, ?2, ?3, now(), now())
        ON CONFLICT (telegram_id) DO UPDATE
          SET username = EXCLUDED.username,
+             first_name = COALESCE(EXCLUDED.first_name, users.first_name),
              last_seen_at = now(),
              ${NOTIFY_REACHABLE},
              updated_at = now()
-       RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
+       RETURNING id, status, is_reseller, reseller_tier, (xmax = 0) AS is_new,
+                 ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
     )
-    .bind(from.id, from.username ?? null)
+    .bind(from.id, from.username ?? null, from.first_name ?? null)
     .first<Caller>();
   if (!user) throw new Error('user upsert returned no row');
   return user;
@@ -760,6 +770,35 @@ async function upsertUser(
  * A missing `mime_type` is refused rather than assumed. The field is optional in
  * Telegram's API, so its absence says nothing, and "unknown" is not "image".
  */
+/**
+ * «⭕️ یک کاربر … از کد تخفیف … استفاده کرد.» — `function.php:1240`, into
+ * «سایر گزارشات», keyed on the order so a re-priced tap reports once.
+ */
+async function reportDiscountUsed(
+  tx: D1DatabaseSession,
+  userId: number,
+  orderId: number,
+  code: string,
+): Promise<void> {
+  if (SHOP.reportChatId === null) return;
+  const who = await tx
+    .prepare(`SELECT telegram_id, username FROM users WHERE id = ?1`)
+    .bind(userId)
+    .first<{ telegram_id: number; username: string | null }>();
+  if (!who) return;
+  await report(
+    tx,
+    SHOP,
+    'otherreport',
+    `discount:${orderId}`,
+    menu.discountUsedReport({
+      username: who.username,
+      telegramId: who.telegram_id,
+      code,
+    }),
+  );
+}
+
 function isReceiptFile(mimeType: string | undefined): boolean {
   return mimeType !== undefined && (/^image\//i.test(mimeType) || mimeType === 'application/pdf');
 }
@@ -906,6 +945,23 @@ async function handleStart(
   // customer already has a referrer — the first link wins, always.
   const referrer = referrerFromPayload(message.text!.trim().split(/\s+/)[1]);
   const claimed = referrer === null ? false : await claimReferrer(tx, user.id, referrer);
+
+  // «🎉یک کاربر جدید ربات را استارت کرد» — `index.php:68`, into «سایر
+  // گزارشات». Once, on the /start that made the row; the dedupe key is the
+  // customer, so a retried update cannot announce them twice.
+  if (user.is_new) {
+    await report(
+      tx,
+      SHOP,
+      'otherreport',
+      `newuser:${user.id}`,
+      menu.newUserReport({
+        name: from.first_name ?? null,
+        username: from.username ?? null,
+        telegramId: from.id,
+      }),
+    );
+  }
 
   // The gate runs here rather than above the dispatch, and only for /start.
   // Everything before this line is what the customer's arrival MEANS — the
@@ -2051,7 +2107,10 @@ async function placeOrderScreen(
   // Not cleared afterwards, deliberately: the held code is what lets a
   // second tap re-price the same plan the same way and land back on the
   // order that already exists. `/start` and «برداشتن کد» clear it.
-  if (held) await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
+  if (held) {
+    await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
+    await reportDiscountUsed(tx, user.id, placed.id, held.code.code);
+  }
   const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
   if (!checkout) {
     return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
@@ -3057,7 +3116,10 @@ async function handleCallback(
       // Same rule as a purchase: the redemption is written in the transaction
       // that writes the order, and the held code stays put so a second tap
       // re-prices identically and lands on the order that already exists.
-      if (held) await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
+      if (held) {
+        await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
+        await reportDiscountUsed(tx, user.id, placed.id, held.code.code);
+      }
       const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
       if (!checkout) {
         return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
