@@ -6,10 +6,11 @@
  * screen renders a decision rather than making a second one that could disagree
  * with the answer the customer gets.
  *
- * There is no delete button. `discount_redemptions.code_id` cascades, so
- * deleting a code erases the record of everyone who used it — including the
- * rows that stop a customer using it twice. «باطل کردن» sets the expiry to now,
- * which is what the bot already treats as spent.
+ * «حذف» appears only on a code nobody has used. `discount_redemptions.code_id`
+ * cascades, so deleting a used code erases the record of everyone who spent it
+ * — including the rows that stop a customer using it twice — and the server
+ * refuses that with a 409. For those, «باطل کردن» sets the expiry to now, which
+ * is what the bot already treats as spent.
  *
  * Amounts are typed and shown in Toman; the API speaks integer Rial.
  */
@@ -127,6 +128,19 @@ export function DiscountsPage() {
     }
     try {
       await api.expireDiscount(d.id);
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    }
+  }
+
+  async function remove(d: DiscountItem) {
+    // Only offered for a code nobody spent — the server refuses the rest, since
+    // the cascade would take the redemptions with it — so the confirm is about
+    // the code itself, not about anyone's history.
+    if (!window.confirm(`کد «${d.code}» حذف شود؟ هیچ‌کس استفاده‌اش نکرده و برنمی‌گردد.`)) return;
+    try {
+      await api.deleteDiscount(d.id);
       await load();
     } catch (e) {
       setErr(message(e));
@@ -319,6 +333,19 @@ export function DiscountsPage() {
                           {...w}
                         >
                           باطل کن
+                        </button>
+                      </>
+                    )}
+                    {d.used === 0 && (
+                      <>
+                        {' '}
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-danger"
+                          onClick={() => void remove(d)}
+                          {...w}
+                        >
+                          حذف
                         </button>
                       </>
                     )}
@@ -655,13 +682,16 @@ function Redemptions({ code, onClose }: { code: DiscountItem; onClose: () => voi
             <tr>
               <th>کاربر</th>
               <th>مبلغ</th>
+              <th>خریده</th>
+              <th>دارد</th>
+              <th>فعال</th>
               <th>زمان</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td className="empty" colSpan={3}>
+                <td className="empty" colSpan={6}>
                   هنوز کسی این کد را استفاده نکرده است.
                 </td>
               </tr>
@@ -676,6 +706,9 @@ function Redemptions({ code, onClose }: { code: DiscountItem; onClose: () => voi
                   <CustomerLink customer={{ telegramId: r.telegramId, username: r.username }} />
                 </td>
                 <td>{toman(r.amountIrr)}</td>
+                <td>{count(r.services.bought)}</td>
+                <td>{count(r.services.has)}</td>
+                <td>{count(r.services.active)}</td>
                 <td>{dateTime(r.createdAt)}</td>
               </tr>
             ))}

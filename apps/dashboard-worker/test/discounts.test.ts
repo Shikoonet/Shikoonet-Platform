@@ -413,6 +413,80 @@ describe('GET /api/v1/admin/discounts/:id/redemptions', () => {
     expect(body.items[0]!.amountIrr).toBe(500_000);
     expect(body.items[0]!.telegramId).toBeGreaterThanOrEqual(TG_BASE);
   });
+
+  it('counts each customer\'s services the way the bot does (#368)', async () => {
+    const res = await create(gift(`${PREFIX}svc`));
+    const id = ((await res.json()) as { discount: { id: number } }).discount.id;
+    const userId = await makeUser();
+    await baseEnv.DB.prepare(
+      `INSERT INTO discount_redemptions (code_id, user_id, amount_irr) VALUES (?1, ?2, 500000)`,
+    )
+      .bind(id, userId)
+      .run();
+    // One of each: live, expired, over its volume, removed, never paid for.
+    const sub = (status: string, days: number, gb: number | null, used: number | null) =>
+      baseEnv.DB.prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, plan_name_at_sale, price_irr, status, purchased_at,
+            expires_at, volume_gb, used_bytes)
+         VALUES (?1, ?2, 'پلن', 1000, ?3, now(), now() + make_interval(days => ?4), ?5, ?6)`,
+      )
+        .bind(`${PREFIX}-sub-${userId}-${++seq}`, userId, status, days, gb, used)
+        .run();
+    await sub('ACTIVE', 30, null, null);
+    await sub('ACTIVE', -1, null, null);
+    await sub('ACTIVE', 30, 1, 2 * 1073741824);
+    await sub('REMOVED', 30, null, null);
+    await sub('PENDING_PAYMENT', 30, null, null);
+
+    const out = await app.request(`/api/v1/admin/discounts/${id}/redemptions`, {}, envAs(ADMIN));
+    const body = (await out.json()) as {
+      items: Array<{ services: { bought: number; has: number; active: number } }>;
+    };
+    expect(body.items[0]!.services).toEqual({ bought: 4, has: 3, active: 1 });
+  });
+});
+
+describe('DELETE /api/v1/admin/discounts/:id', () => {
+  async function del(id: number, email = ADMIN) {
+    return app.request(`/api/v1/admin/discounts/${id}`, { method: 'DELETE' }, envAs(email));
+  }
+
+  it('removes a code nobody spent, and writes it down', async () => {
+    const res = await create(gift(`${PREFIX}unused`));
+    const id = ((await res.json()) as { discount: { id: number } }).discount.id;
+
+    expect((await del(id)).status).toBe(200);
+    expect(await codeRow(id)).toBeNull();
+
+    const log = await baseEnv.DB.prepare(
+      `SELECT action, entity_id FROM audit_logs WHERE action = 'discount.deleted'`,
+    ).first<{ action: string; entity_id: string }>();
+    expect(log?.entity_id).toBe(String(id));
+  });
+
+  it('refuses a code somebody spent — the cascade would take their record', async () => {
+    const res = await create(gift(`${PREFIX}spent`));
+    const id = ((await res.json()) as { discount: { id: number } }).discount.id;
+    const userId = await makeUser();
+    await baseEnv.DB.prepare(
+      `INSERT INTO discount_redemptions (code_id, user_id, amount_irr) VALUES (?1, ?2, 500000)`,
+    )
+      .bind(id, userId)
+      .run();
+
+    const out = await del(id);
+    expect(out.status).toBe(409);
+    expect(((await out.json()) as { error: string }).error).toBe('has_redemptions');
+    expect(await codeRow(id)).not.toBeNull();
+  });
+
+  it('refuses a reviewer and a code that does not exist', async () => {
+    const res = await create(gift(`${PREFIX}rv`));
+    const id = ((await res.json()) as { discount: { id: number } }).discount.id;
+    expect((await del(id, REVIEWER)).status).toBe(403);
+    expect((await del(999_999_999)).status).toBe(404);
+  });
 });
 
 describe('the per-user ceiling and the customer a code is aimed at', () => {

@@ -1337,6 +1337,8 @@ export interface RedemptionRow {
   orderId: number | null;
   telegramId: number;
   username: string | null;
+  /** The customer's services, in the bot's words: bought ever, has now, usable now. */
+  services: { bought: number; has: number; active: number };
 }
 
 export interface CustomerRef {
@@ -2854,6 +2856,11 @@ export const api = {
 
   redemptions(id: number) {
     return req<{ ok: boolean; items: RedemptionRow[] }>(`/discounts/${id}/redemptions`);
+  },
+
+  /** Only a code nobody has redeemed; the server answers 409 otherwise. */
+  deleteDiscount(id: number) {
+    return req<{ ok: boolean }>(`/discounts/${id}`, { method: 'DELETE' });
   },
 
   orders(p: {
