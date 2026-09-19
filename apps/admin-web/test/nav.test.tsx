@@ -109,6 +109,8 @@ describe('navigation', () => {
       'books',
       'dashboard',
       'customers',
+      // «زیرمجموعه‌ها», 2026-09-19: who brings customers, and what it earns.
+      'referrals',
       // «آمار فروشگاه», 2026-08-29. The eighteen figures the PHP bot draws
       // under «آمار کلی ربات», of which the dashboard home had five and none
       // of its seven periods. Distinct from «آمار مالی» in the پول group:

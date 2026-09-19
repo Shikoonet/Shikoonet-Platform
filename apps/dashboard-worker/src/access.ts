@@ -47,6 +47,8 @@ import type { D1Database } from '@shikoo/database';
  */
 const PERSONAL_DATA_PREFIXES = [
   '/api/v1/admin/customers',
+  // A list of customers by another name: who brought whom.
+  '/api/v1/admin/referrers',
   '/api/v1/admin/orders',
   '/api/v1/admin/subscriptions',
   '/api/v1/admin/wallet-entries',

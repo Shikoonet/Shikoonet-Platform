@@ -58,6 +58,7 @@ afterAll(async () => {
 const PERSONAL = [
   '/api/v1/admin/customers',
   '/api/v1/admin/customers/41',
+  '/api/v1/admin/referrers',
   '/api/v1/admin/orders',
   '/api/v1/admin/subscriptions',
   '/api/v1/admin/wallet-entries',

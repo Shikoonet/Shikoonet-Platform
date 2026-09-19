@@ -53,6 +53,7 @@ import { BroadcastProgress } from './hub/BroadcastProgress.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { StatsPage } from './pages/StatsPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
+import { ReferralsPage } from './pages/ReferralsPage.js';
 import { BulkPage } from './pages/BulkPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
 import { CategoriesPage } from './pages/CategoriesPage.js';
@@ -118,6 +119,8 @@ function Body({
       return <StatsPage />;
     case 'customers':
       return <CustomersPage />;
+    case 'referrals':
+      return <ReferralsPage />;
     case 'bulk':
       return <BulkPage />;
     case 'catalog':

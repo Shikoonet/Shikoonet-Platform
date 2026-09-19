@@ -842,4 +842,126 @@ describe('a customer’s referrals on their own page', () => {
     expect(child.referral.invited).toBe(0);
     expect(child.referral.referrals).toEqual([]);
   });
+
+  /**
+   * «زیرمجموعه‌ها» as a screen: every referrer in one list, with the sums the
+   * card shows per person. The fixture is three referrers of different shapes
+   * so each filter and each sort has something to separate.
+   */
+  it('lists every referrer with their sums, and the filters narrow the same set the totals count', async () => {
+    const big = await makeCustomer('rf_big'); // 3 referrals, 2 of them buyers
+    const one = await makeCustomer('rf_one'); // 1 referral, a buyer, 2 bonuses
+    const idle = await makeCustomer('rf_idle'); // 2 referrals, nobody bought
+    const nobody = await makeCustomer('rf_nobody'); // no referrals: not a row
+    const kids: Record<string, { id: number; telegramId: number }> = {};
+    for (const [parent, names] of [
+      [big, ['b1', 'b2', 'b3']],
+      [one, ['o1']],
+      [idle, ['i1', 'i2']],
+    ] as const) {
+      for (const n of names) {
+        kids[n] = await makeCustomer(`rf_${n}`);
+        await baseEnv.DB.prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`)
+          .bind(parent.id, kids[n].id)
+          .run();
+      }
+    }
+    // One referral joined «last month» so `since` has something to exclude.
+    await baseEnv.DB.prepare(
+      `UPDATE users SET registered_at = now() - interval '40 days' WHERE id = ?1`,
+    )
+      .bind(kids.b3!.id)
+      .run();
+
+    const b1first = await order(kids.b1!.id, 'NEW_PURCHASE', 1_000_000);
+    await order(kids.b1!.id, 'RENEWAL', 500_000, 'PAID');
+    await order(kids.b2!.id, 'NEW_PURCHASE', 300_000);
+    await order(kids.b2!.id, 'WALLET_TOPUP', 9_000_000); // not a purchase
+    await order(kids.b3!.id, 'TRIAL', 0); // not a purchase
+    const o1first = await order(kids.o1!.id, 'NEW_PURCHASE', 2_000_000);
+    const o1second = await order(kids.o1!.id, 'RENEWAL', 2_000_000);
+    for (const [uid, oid, amt] of [
+      [big.id, b1first, 100_000],
+      [one.id, o1first, 200_000],
+      [one.id, o1second, 200_000],
+    ] as const) {
+      await baseEnv.DB.prepare(
+        `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, idempotency_key)
+         VALUES (?1, ?2, 'REFERRAL_BONUS', ?3, ?4)`,
+      )
+        .bind(uid, amt, oid, `referral:${oid}`)
+        .run();
+    }
+
+    type Row = {
+      id: number;
+      telegramId: number;
+      username: string | null;
+      invited: number;
+      buyers: number;
+      boughtIrr: number;
+      commissionIrr: number;
+      lastJoinedAt: string;
+    };
+    type Body = {
+      total: number;
+      totals: { referrers: number; invited: number; buyers: number; boughtIrr: number; commissionIrr: number };
+      items: Row[];
+    };
+    // `q` scopes every call to this suite's handles: the database this runs on
+    // may hold other suites' referrers, and the assertion is about ours.
+    async function list(qs: string): Promise<Body> {
+      const res = await app.request(`/api/v1/admin/referrers?q=${HANDLE}rf_&${qs}`, {}, envAs(ADMIN));
+      expect(res.status).toBe(200);
+      return (await res.json()) as Body;
+    }
+    const byId = (b: Body) => new Map(b.items.map((r) => [r.id, r]));
+
+    // Default: every referrer, most referrals first. The one with none is absent.
+    const all = await list('');
+    expect(all.items.map((r) => r.id)).toEqual([big.id, idle.id, one.id]);
+    expect(all.items.map((r) => r.id)).not.toContain(nobody.id);
+    expect(byId(all).get(big.id)).toMatchObject({
+      invited: 3,
+      buyers: 2,
+      boughtIrr: 1_800_000,
+      commissionIrr: 100_000,
+      username: `${HANDLE}rf_big`,
+    });
+    expect(byId(all).get(one.id)).toMatchObject({ invited: 1, buyers: 1, boughtIrr: 4_000_000, commissionIrr: 400_000 });
+    expect(byId(all).get(idle.id)).toMatchObject({ invited: 2, buyers: 0, boughtIrr: 0, commissionIrr: 0 });
+    expect(all.total).toBe(3);
+    expect(all.totals).toEqual({ referrers: 3, invited: 6, buyers: 3, boughtIrr: 5_800_000, commissionIrr: 500_000 });
+
+    // Sorts: by what they earned, by what their people spent, by who joined last.
+    expect((await list('sort=commission')).items.map((r) => r.id)).toEqual([one.id, big.id, idle.id]);
+    expect((await list('sort=bought')).items.map((r) => r.id)).toEqual([one.id, big.id, idle.id]);
+    expect((await list('sort=buyers')).items.map((r) => r.id)).toEqual([big.id, one.id, idle.id]);
+
+    // Filters narrow the rows AND the totals.
+    const buyersOnly = await list('buyers=yes');
+    expect(buyersOnly.items.map((r) => r.id).sort()).toEqual([big.id, one.id].sort());
+    expect(buyersOnly.totals).toMatchObject({ referrers: 2, invited: 4 });
+    expect((await list('buyers=no')).items.map((r) => r.id)).toEqual([idle.id]);
+    expect((await list('min=2')).items.map((r) => r.id)).toEqual([big.id, idle.id]);
+
+    // `since` drops b3 (joined 40 days ago) and re-counts big's row: 2 of 2 bought.
+    const since = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+    const recent = await list(`since=${since}`);
+    expect(byId(recent).get(big.id)).toMatchObject({ invited: 2, buyers: 2 });
+    expect(recent.totals.invited).toBe(5);
+
+    // Search by telegram id finds exactly that referrer.
+    const res = await app.request(`/api/v1/admin/referrers?q=${one.telegramId}`, {}, envAs(ADMIN));
+    expect(((await res.json()) as Body).items.map((r) => r.id)).toEqual([one.id]);
+
+    // Pagination is over referrers, not referrals.
+    const p2 = await list('pageSize=2&page=2');
+    expect(p2.items).toHaveLength(1);
+    expect(p2.total).toBe(3);
+
+    // Nonsense is refused, not guessed.
+    expect((await app.request('/api/v1/admin/referrers?sort=balance', {}, envAs(ADMIN))).status).toBe(400);
+    expect((await app.request('/api/v1/admin/referrers?since=yesterday', {}, envAs(ADMIN))).status).toBe(400);
+  });
 });
