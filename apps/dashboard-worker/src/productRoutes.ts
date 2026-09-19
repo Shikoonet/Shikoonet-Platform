@@ -321,6 +321,12 @@ const PRODUCT_FIELDS = {
   /** The tier button's own badge and colour (0061) — the plan's rules, verbatim. */
   badge: BADGE,
   buttonStyle: BUTTON_STYLE,
+  /**
+   * Extra volume every config of this service delivers, as a percent (0081).
+   * The code's range (0062): 0 ≤ p ≤ 100, and two decimals is what the column
+   * holds. Zero is «no bonus», which is what a new service starts at.
+   */
+  bonusPercent: z.number().min(0).max(100).multipleOf(0.01),
 };
 
 const ProductCreate = z
@@ -358,6 +364,7 @@ const ProductPatch = z
     deliveryNote: PRODUCT_FIELDS.deliveryNote.optional(),
     badge: PRODUCT_FIELDS.badge.optional(),
     buttonStyle: PRODUCT_FIELDS.buttonStyle.optional(),
+    bonusPercent: PRODUCT_FIELDS.bonusPercent.optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -585,6 +592,7 @@ interface ServiceRow {
   delivery_note: string | null;
   badge: string | null;
   button_style: 'primary' | 'success' | 'danger' | null;
+  bonus_percent: number;
   row_index: number | null;
   provider_id: number | null;
   provider_name: string | null;
@@ -668,6 +676,8 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
     groupIds: r.group_ids,
     badge: r.badge,
     buttonStyle: r.button_style,
+    // numeric(5,2) arrives as a number through the adapter, like `volumeGb` above.
+    bonusPercent: Number(r.bonus_percent ?? 0),
     // Which row of the TIER screen this service sits on — `category:<id>`
     // layout, not the config layout inside it.
     rowIndex: r.row_index,
@@ -1189,7 +1199,7 @@ export function registerProductRoutes(
       `SELECT p.id, p.code, p.name, p.kind, p.status, p.description, p.sort_order,
               p.category_id, p.resellers_only, p.once_per_user,
               p.attrs->'group_ids' AS group_ids, p.attrs->>'delivery_note' AS delivery_note,
-              p.row_index, p.badge, p.button_style,
+              p.row_index, p.badge, p.button_style, p.bonus_percent,
               pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
               pr.status AS provider_status, pr.sort_order AS provider_sort_order,
               pr.kind AS provider_kind,
@@ -1870,7 +1880,7 @@ export function registerProductRoutes(
     if (patchProblem) return c.json({ ok: false, error: 'invalid_body', detail: patchProblem }, 400);
 
     const SELECT_PRODUCT = `SELECT id, code, name, kind, provider_id, category_id, description,
-                                   badge, button_style,
+                                   badge, button_style, bonus_percent,
                                    resellers_only, once_per_user, sort_order, status,
                                    attrs->'group_ids' AS group_ids,
                                    attrs->>'delivery_note' AS delivery_note
@@ -1897,6 +1907,7 @@ export function registerProductRoutes(
     if (patch.status !== undefined) put('status', patch.status);
     if (patch.badge !== undefined) put('badge', patch.badge);
     if (patch.buttonStyle !== undefined) put('button_style', patch.buttonStyle);
+    if (patch.bonusPercent !== undefined) put('bonus_percent', patch.bonusPercent);
     // Both of these live in `attrs`, so they must produce ONE assignment
     // between them — see `attrsSql`. Not `put()`: these write a CASE over the
     // column rather than a value into it, and each reads its parameter twice.

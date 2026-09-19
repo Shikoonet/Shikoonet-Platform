@@ -905,6 +905,52 @@ describe('a code that gives volume instead of money', () => {
   });
 });
 
+describe('a service that gives volume on its own (0081)', () => {
+  /*
+   * Sam, 2026-09-19 (#373): «یه سری سرویس‌ها رو درصد حجم اضافه بهشون بدم».
+   * The same pipe as a BONUS_PERCENT code, with the percent on the SERVICE and
+   * nothing for the customer to type. The fixture plan is 50 GB.
+   */
+  async function setServiceBonus(percent: number) {
+    await db
+      .prepare(
+        `UPDATE products SET bonus_percent = ?1
+          WHERE id = (SELECT product_id FROM product_plans WHERE id = ?2)`,
+      )
+      .bind(percent, VIP_PLAN)
+      .run();
+  }
+  afterEach(() => setServiceBonus(0));
+
+  it('is said on the plan screen and lands on the order, price untouched', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await setServiceBonus(20);
+
+    const detail = await handleUpdate(db, press(updateId, telegramId, `plan:${VIP_PLAN}`));
+    expect(detail.replies[0]?.text).toContain('+20٪ حجم — جمعاً 60 گیگ');
+    await handleUpdate(db, press(updateId + 1, telegramId, `order:${VIP_PLAN}`));
+
+    expect(await lastOrder(userId)).toMatchObject({
+      discount_irr: 0,
+      total_irr: VIP_PRICE,
+      bonus_volume_gb: 10,
+    });
+  });
+
+  it('adds to a volume code rather than replacing it', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await setServiceBonus(20);
+    await makeCode('svc30', { kind: 'BONUS_GB', percent: null, bonusGb: 30 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'svc30');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+
+    expect(await lastOrder(userId)).toMatchObject({ total_irr: VIP_PRICE, bonus_volume_gb: 40 });
+  });
+});
+
 describe('a gift code', () => {
   it('credits the wallet once, whatever the customer types after', async () => {
     const { updateId, telegramId } = ids();

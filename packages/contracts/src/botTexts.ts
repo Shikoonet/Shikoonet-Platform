@@ -341,6 +341,12 @@ export const TEXTS = {
     screen: 'planDetail',
     hint: 'به‌جای خط بالا، وقتی پلن حجم نامحدود دارد',
   },
+  PLAN_SERVICE_BONUS: {
+    default: '🎁 حجم هدیهٔ این سرویس: {bonus}',
+    placeholders: ['bonus'],
+    screen: 'planDetail',
+    hint: 'فقط وقتی سرویس درصد حجم هدیه دارد — {bonus} مثل «+20٪ حجم — جمعاً 72 گیگ»',
+  },
   PLAN_DURATION: {
     default: '⏳ مدت: {days} روز',
     placeholders: ['days'],

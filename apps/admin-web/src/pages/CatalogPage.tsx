@@ -766,6 +766,11 @@ function ServiceCard({
             {service.name}
             <span className="badge badge-info svc-card__kind">{kindFa(service.kind)}</span>
             {service.resellersOnly && <span className="badge">فقط نماینده</span>}
+            {/* The service's own volume bonus (0081), where it can be seen
+                without opening the editor — Sam: «بیرون توی سرویس‌ها». */}
+            {service.bonusPercent > 0 && (
+              <span className="badge badge-active">+{service.bonusPercent}٪ حجم</span>
+            )}
           </h3>
           <div className="page-head__sub ltr">{service.code}</div>
         </div>
@@ -2346,6 +2351,9 @@ function ServiceDrawer({
   const [deliveryNote, setDeliveryNote] = useState(service.deliveryNote ?? '');
   const [badge, setBadge] = useState(service.badge ?? '');
   const [buttonStyle, setButtonStyle] = useState<ButtonStyle | null>(service.buttonStyle);
+  const [bonusPercent, setBonusPercent] = useState(
+    service.bonusPercent > 0 ? String(service.bonusPercent) : '',
+  );
   const [err, setErr] = useState<string | null>(null);
   const [refused, setRefused] = useState<Refused>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -2380,6 +2388,8 @@ function ServiceDrawer({
         deliveryNote: deliveryNote.trim() === '' ? null : deliveryNote.trim(),
         badge: badgeValue(badge),
         buttonStyle,
+        // An empty box is «no bonus», not a refused request.
+        bonusPercent: bonusPercent.trim() === '' ? 0 : Number(bonusPercent),
       });
       setDone('سرویس ذخیره شد.');
       onChanged();
@@ -2540,6 +2550,27 @@ function ServiceDrawer({
             onStyleChange={setButtonStyle}
             preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || service.name}`}
           />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="sv-bonus">
+            حجم هدیه (٪)
+          </label>
+          <input
+            id="sv-bonus"
+            className="form-control ltr"
+            type="number"
+            inputMode="decimal"
+            min={0}
+            max={100}
+            step={0.01}
+            value={bonusPercent}
+            onChange={(e) => setBonusPercent(e.target.value)}
+            placeholder="۰"
+          />
+          <p className="muted" style={{ marginBlockStart: 4 }}>
+            روی حجم هر کانفیگ این سرویس اضافه می‌شود؛ مثلاً ۲۰ یعنی ۶۰ گیگ → ۷۲ گیگ. قیمت عوض
+            نمی‌شود.
+          </p>
         </div>
       </div>
 

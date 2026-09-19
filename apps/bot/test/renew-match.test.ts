@@ -28,6 +28,7 @@ function plan(over: Partial<CatalogPlan> & { planId: number }): CatalogPlan {
     tiers: 1,
     usernameMode: 'GENERATED',
     shelfAvailable: null,
+    bonusPercent: 0,
     badge: null,
     buttonStyle: null,
     rowIndex: null,
