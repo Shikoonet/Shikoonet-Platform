@@ -27,6 +27,7 @@ import type { ParseResult } from '@shikoo/contracts';
 import { compilePatterns, normalizeText, parseSms, type FallbackParser } from '@shikoo/sms-parser';
 import { loadBankSmsPatterns } from './bankSmsPatterns.js';
 import { persistTransaction } from './persistTransaction.js';
+import { REDELIVERY_WINDOW_MS, findRedelivery } from './redelivery.js';
 import { shouldCreateTransaction } from './transactionCreate.js';
 
 export interface ReparseCandidate {
@@ -43,6 +44,12 @@ export interface ReparseCandidate {
     balanceIrr: number | null;
     accountHint: string | null;
   };
+  /**
+   * The same text, same phone, same sender, within six hours of an earlier
+   * one — a bank's re-send. Ingest would have set `duplicate_of` and made no
+   * row; apply does the same. Listed so the operator sees it is not lost.
+   */
+  redeliveryOf: string | null;
 }
 
 export interface ReparseDryRun {
@@ -54,7 +61,7 @@ export interface ReparseDryRun {
   stillUnread: number;
 }
 
-const FILTERED = `r.classification IN ('OTP','PROMOTIONAL','IGNORED')`;
+const FILTERED = `(r.classification IN ('OTP','PROMOTIONAL','IGNORED') OR r.normalized_body LIKE '%[otp-redacted]%')`;
 
 /** The one place the two halves agree on what a text parses to — with the operator's DB patterns, as ingest runs. */
 function parseAgain(body: string, sender: string, smsTimestamp: number, fallbacks: readonly FallbackParser[]): ParseResult {
@@ -80,7 +87,7 @@ function readable(r: ParseResult): r is ParseResult & { direction: 'CREDIT' | 'D
 export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<ReparseDryRun> {
   const rows = await db
     .prepare(
-      `SELECT r.id, r.sender, r.normalized_body, r.sms_timestamp, r.received_at, r.parser_id, r.classification
+      `SELECT r.id, r.device_id, r.sender, r.normalized_body, r.sms_timestamp, r.received_at, r.parser_id, r.classification
          FROM raw_sms_events r
         WHERE r.received_at >= ?1
           AND r.normalized_body IS NOT NULL
@@ -92,6 +99,7 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
     .bind(sinceMs)
     .all<{
       id: string;
+      device_id: string;
       sender: string;
       normalized_body: string;
       sms_timestamp: string | number;
@@ -101,6 +109,9 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
     }>();
   const fallbacks = await fallbacksOf(db);
   const candidates: ReparseCandidate[] = [];
+  // Earlier candidates in this very list, by phone+sender+body: two unread
+  // copies of one text have no row yet for `findRedelivery` to find.
+  const seen = new Map<string, { id: string; at: number }>();
   let stillUnread = 0;
   for (const r of rows.results ?? []) {
     const p = parseAgain(r.normalized_body, r.sender, Number(r.sms_timestamp), fallbacks);
@@ -108,7 +119,17 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
       stillUnread += 1;
       continue;
     }
+    const smsTs = Number(r.sms_timestamp);
+    let redeliveryOf: string | null = null;
+    if (p.balanceIrr !== null) {
+      const key = [r.device_id, r.sender, r.normalized_body].join('\u0000');
+      const earlier = seen.get(key);
+      if (earlier && smsTs >= earlier.at && smsTs - earlier.at <= REDELIVERY_WINDOW_MS) redeliveryOf = earlier.id;
+      else redeliveryOf = (await findRedelivery(db, r.device_id, r.sender, r.normalized_body, r.id, smsTs))?.id ?? null;
+      if (!redeliveryOf) seen.set(key, { id: r.id, at: smsTs });
+    }
     candidates.push({
+      redeliveryOf,
       eventId: r.id,
       sender: r.sender,
       receivedAt: Number(r.received_at),
@@ -128,7 +149,9 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
 export interface ReparseApplied {
   made: { eventId: string; transactionId: string; parserId: string; direction: 'CREDIT' | 'DEBIT' }[];
   /** Listed in the dry-run but no longer eligible — a row appeared meanwhile, or the text now parses differently. */
-  skipped: { eventId: string; why: 'already_has_row' | 'no_longer_readable' | 'not_found' }[];
+  skipped: { eventId: string; why: 'already_has_row' | 'no_longer_readable' | 'not_found' | 'redelivery' }[];
+  /** A row this call could not make. The others were still made, and are all in `made`. */
+  failed: { eventId: string; error: string }[];
 }
 
 /**
@@ -141,37 +164,66 @@ export async function applyReparse(db: D1Database, eventIds: string[]): Promise<
   const fallbacks = await fallbacksOf(db);
   const made: ReparseApplied['made'] = [];
   const skipped: ReparseApplied['skipped'] = [];
+  const failed: ReparseApplied['failed'] = [];
   for (const eventId of eventIds) {
+    try {
+      await applyOne(db, eventId, fallbacks, made, skipped);
+    } catch (e) {
+      // One text's failure is one text's failure: the rows already made stay
+      // made, and the caller audits every one of them.
+      failed.push({ eventId, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { made, skipped, failed };
+}
+
+async function applyOne(
+  db: D1Database,
+  eventId: string,
+  fallbacks: readonly FallbackParser[],
+  made: ReparseApplied['made'],
+  skipped: ReparseApplied['skipped'],
+): Promise<void> {
     const r = await db
       .prepare(
-        `SELECT r.id, r.sender, r.normalized_body, r.sms_timestamp, r.parser_id,
+        `SELECT r.id, r.device_id, r.sender, r.normalized_body, r.sms_timestamp, r.parser_id,
                 EXISTS (SELECT 1 FROM transaction_candidates t WHERE t.raw_sms_event_id = r.id) AS has_row
-           FROM raw_sms_events r WHERE r.id = ?1 AND r.normalized_body IS NOT NULL`,
+           FROM raw_sms_events r WHERE r.id = ?1 AND r.normalized_body IS NOT NULL AND r.duplicate_of IS NULL`,
       )
       .bind(eventId)
-      .first<{ id: string; sender: string; normalized_body: string; sms_timestamp: string | number; parser_id: string | null; has_row: boolean }>();
+      .first<{ id: string; device_id: string; sender: string; normalized_body: string; sms_timestamp: string | number; parser_id: string | null; has_row: boolean }>();
     if (!r) {
       skipped.push({ eventId, why: 'not_found' });
-      continue;
+      return;
     }
     if (r.has_row) {
       skipped.push({ eventId, why: 'already_has_row' });
-      continue;
+      return;
     }
     const p = parseAgain(r.normalized_body, r.sender, Number(r.sms_timestamp), fallbacks);
     if (!readable(p)) {
       skipped.push({ eventId, why: 'no_longer_readable' });
-      continue;
+      return;
+    }
+    const smsTs = Number(r.sms_timestamp);
+    // The bank's re-send, exactly as ingest treats it: the earlier copy — made
+    // a row a moment ago in this same batch, or long ago — owns the movement.
+    if (p.balanceIrr !== null) {
+      const first = await findRedelivery(db, r.device_id, r.sender, r.normalized_body, r.id, smsTs);
+      if (first) {
+        await db.prepare(`UPDATE raw_sms_events SET duplicate_of = ?1 WHERE id = ?2`).bind(first.id, r.id).run();
+        skipped.push({ eventId, why: 'redelivery' });
+        return;
+      }
     }
     // The bank's own clock from the text, as ingest stores it — with the same
     // two-day fence, so a parser that read a wrong year cannot move the row.
-    const smsTs = Number(r.sms_timestamp);
     const fromText = p.evidence['bankTimestamp'];
     const bankTs = typeof fromText === 'number' && Math.abs(fromText - smsTs) <= 2 * 86_400_000 ? fromText : smsTs;
     const tx = await persistTransaction(db, r.id, bankTs, p, r.normalized_body);
     if (!tx) {
       skipped.push({ eventId, why: 'no_longer_readable' });
-      continue;
+      return;
     }
     // The raw row now says what read it, so the coverage view stops listing it.
     await db
@@ -181,6 +233,4 @@ export async function applyReparse(db: D1Database, eventIds: string[]): Promise<
       .bind(r.id, p.classification, p.parserId, p.parserVersion ?? '0.0.0')
       .run();
     made.push({ eventId: r.id, transactionId: tx.id, parserId: p.parserId, direction: p.direction });
-  }
-  return { made, skipped };
 }

@@ -127,6 +127,7 @@ interface ReparseCandidate {
   receivedAt: number;
   was: { parserId: string | null; classification: string };
   now: { parserId: string; direction: 'CREDIT' | 'DEBIT'; amountIrr: number; balanceIrr: number | null; accountHint: string | null };
+  redeliveryOf?: string | null;
 }
 
 function UnparsedSmsPanel() {
@@ -196,9 +197,12 @@ function UnparsedSmsPanel() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ eventIds: reparse.candidates.map((c) => c.eventId), confirm: true }),
       });
-      const j = await readJson<{ made: unknown[]; skipped: unknown[] }>(r);
+      const j = await readJson<{ made: unknown[]; skipped: unknown[]; failed?: unknown[] }>(r);
       if (!r.ok) throw new Error(j.error ?? `${r.status}`);
-      setApplied(`${count(j.made.length)} ردیف ساخته شد${j.skipped.length ? `؛ ${count(j.skipped.length)} رد شد` : ''}.`);
+      const failed = j.failed?.length ?? 0;
+      setApplied(
+        `${count(j.made.length)} ردیف ساخته شد${j.skipped.length ? `؛ ${count(j.skipped.length)} رد شد` : ''}${failed ? `؛ ${count(failed)} خطا داد` : ''}.`,
+      );
       setReparse(null);
       setReload((n) => n + 1);
     } catch (e) {
@@ -285,7 +289,10 @@ function UnparsedSmsPanel() {
                       <td dir="ltr" style={{ textAlign: 'end' }}>{c.sender}</td>
                       <td className="muted" dir="ltr" style={{ textAlign: 'end' }}>{c.was.parserId ?? '—'}</td>
                       <td dir="ltr" style={{ textAlign: 'end' }}>{c.now.parserId}</td>
-                      <td>{c.now.direction === 'CREDIT' ? 'واریز' : 'برداشت'}</td>
+                      <td>
+                        {c.now.direction === 'CREDIT' ? 'واریز' : 'برداشت'}
+                        {c.redeliveryOf && <span className="badge badge-warning" title="بانک همین متن را دو بار فرستاده؛ ردیف نمی‌سازد">تکراری</span>}
+                      </td>
                       <td className="tabular-nums">{count(c.now.amountIrr)}</td>
                       <td className="tabular-nums">{count(c.now.balanceIrr)}</td>
                       <td dir="ltr" style={{ textAlign: 'end' }}>{c.now.accountHint ?? '—'}</td>
