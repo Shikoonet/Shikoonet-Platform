@@ -319,6 +319,31 @@ function saveCollapsedGroups(groups: ReadonlySet<string>): void {
   }
 }
 
+/**
+ * When this browser last opened «لیست درخواست‌ها» — what the sidebar badge
+ * counts new requests from (#370). Guarded like the groups above: with no
+ * storage the badge falls back to the whole pending queue, which is what it
+ * showed before.
+ */
+const REQUESTS_SEEN_KEY = 'requests.seenAt';
+
+function loadRequestsSeenAt(): number | null {
+  try {
+    const n = Number(localStorage.getItem(REQUESTS_SEEN_KEY));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function markRequestsSeen(): void {
+  try {
+    localStorage.setItem(REQUESTS_SEEN_KEY, String(Date.now()));
+  } catch {
+    /* Nothing to do and nothing worth telling the operator. */
+  }
+}
+
 function Shell({
   page,
   go,
@@ -361,15 +386,28 @@ function Shell({
   // dashboard strip adds up — Sam, 2026-09-18: twenty unclaimed bank credits
   // are not twenty things a customer is waiting behind; a receipt nobody
   // has decided about is.
+  //
+  // «لیست درخواست‌ها» counts what arrived since this browser last opened it,
+  // not the whole pending queue — Sam, 2026-09-19 (#370): «۴» beside the
+  // entry for a week is a number nobody reads. Opening the page stamps the
+  // time (and leaving it stamps again, for a request that landed while the
+  // list was open) and the next fetch, invalidated below, asks from there.
+  // ponytail: per browser, in localStorage — a second device shows the badge
+  // again. Move the stamp to access_users if that ever matters.
   const attention = cache.useQuery<{ attention: Attention }>(QK.attention, {
-    fetcher: () => api.attention(),
+    fetcher: () => api.attention(loadRequestsSeenAt()),
   }).data?.attention;
+  useEffect(() => {
+    if (page !== 'requests') return;
+    markRequestsSeen();
+    return markRequestsSeen;
+  }, [page]);
   useEffect(() => cache.invalidate(QK.attention), [cache, page]);
   const waiting = (id: PageId): number =>
     id === 'payments'
       ? (attention?.openClaims ?? 0)
       : id === 'requests'
-        ? (attention?.pendingRequests ?? 0)
+        ? (attention?.newRequests ?? 0)
         : 0;
 
   // One poll for the whole panel. The button is the normal state and the strip

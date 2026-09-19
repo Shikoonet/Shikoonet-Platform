@@ -1726,6 +1726,8 @@ export interface Attention {
   unreconciledContinuity: number;
   unassignedIncome: number;
   pendingRequests: number;
+  /** Of those, the ones that arrived after `requestsSeenAt` — the sidebar badge (#370). */
+  newRequests: number;
   expiringSubscriptions7d: number;
   staleDevices: number;
   panelsWithoutSecret: number;
@@ -3150,8 +3152,10 @@ export const api = {
   },
 
   /** The `attention` block of `overview()` alone — what the sidebar badges poll (#334). */
-  attention() {
-    return req<{ ok: boolean; attention: Attention }>('/attention');
+  attention(requestsSeenAt: number | null = null) {
+    return req<{ ok: boolean; attention: Attention }>(
+      requestsSeenAt === null ? '/attention' : `/attention?requestsSeenAt=${requestsSeenAt}`,
+    );
   },
 
   overview() {

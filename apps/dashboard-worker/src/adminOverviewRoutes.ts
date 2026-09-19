@@ -39,7 +39,16 @@ const RECENT = 8;
  * route of their own rather than the sidebar paying for the dashboard every
  * thirty seconds. Same numbers, by construction: there is one query.
  */
-export async function loadAttention(db: D1Database, now: number) {
+export async function loadAttention(
+  db: D1Database,
+  now: number,
+  /**
+   * When this operator last opened «لیست درخواست‌ها», epoch ms — what
+   * `newRequests` counts from. Absent means never, and then it is the whole
+   * pending queue (#370).
+   */
+  requestsSeenAt: number | null = null,
+) {
   // `openClaims` is READ from the payments surface rather than counted here,
   // and that is deliberate: a badge and its list disagreeing is the oldest
   // bug on that surface, and it was fixed by making them one number. A third
@@ -51,6 +60,13 @@ export async function loadAttention(db: D1Database, now: number) {
     .prepare(
       `SELECT
          (SELECT count(*) FROM reseller_requests WHERE status = 'PENDING') AS pending_requests,
+         -- The sidebar badge (#370). «۴» beside the entry for a week is a
+         -- number nobody reads; what an operator wants beside it is «since
+         -- you last looked». The page and the dashboard strip keep the whole
+         -- queue.
+         (SELECT count(*) FROM reseller_requests
+           WHERE status = 'PENDING'
+             AND (?2::bigint IS NULL OR created_at > to_timestamp(?2 / 1000.0))) AS new_requests,
          -- ACTIVE only: a REMOVED service is not expiring, it is gone. And
          -- bounded below by now(), so an expiry that already passed is not
          -- counted as something to act on today — that is a different queue.
@@ -68,9 +84,10 @@ export async function loadAttention(db: D1Database, now: number) {
          (SELECT count(*) FROM provisioning_providers
            WHERE status = 'ACTIVE' AND secret_ref IS NULL) AS panels_without_secret`,
     )
-    .bind(now - 24 * 60 * 60 * 1000)
+    .bind(now - 24 * 60 * 60 * 1000, requestsSeenAt)
     .first<{
       pending_requests: number;
+      new_requests: number;
       expiring_7d: number;
       stale_devices: number;
       panels_without_secret: number;
@@ -98,6 +115,7 @@ export async function loadAttention(db: D1Database, now: number) {
       unreviewed.openClaims + unreviewed.unreconciledContinuity + unreviewed.unassignedIncome,
     ...unreviewed,
     pendingRequests: Number(waiting?.pending_requests ?? 0),
+    newRequests: Number(waiting?.new_requests ?? 0),
     expiringSubscriptions7d: Number(waiting?.expiring_7d ?? 0),
     staleDevices: Number(waiting?.stale_devices ?? 0),
     panelsWithoutSecret: Number(waiting?.panels_without_secret ?? 0),
@@ -108,7 +126,16 @@ export function registerAdminOverviewRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   app.get('/api/v1/admin/attention', async (c) => {
-    return c.json({ ok: true, attention: await loadAttention(c.env.DB, Date.now()) });
+    // A bad or absent value is «never looked», never a 400: a badge is a hint.
+    const seen = Number(c.req.query('requestsSeenAt'));
+    return c.json({
+      ok: true,
+      attention: await loadAttention(
+        c.env.DB,
+        Date.now(),
+        Number.isFinite(seen) && seen > 0 ? seen : null,
+      ),
+    });
   });
 
   app.get('/api/v1/admin/overview', async (c) => {
