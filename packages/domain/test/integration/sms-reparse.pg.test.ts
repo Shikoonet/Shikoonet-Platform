@@ -44,14 +44,17 @@ async function genericRow(eventId: string, account: string, direction: 'CREDIT' 
 }
 
 async function purge(): Promise<void> {
+  await db.prepare(`DELETE FROM account_opening_balances WHERE financial_account_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM reconciliation_matches WHERE id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM payment_claims WHERE id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM transaction_candidates WHERE id LIKE ?1 OR raw_sms_event_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM raw_sms_events WHERE id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM financial_accounts WHERE id LIKE ?1`).bind(`${P}%`).run();
   // Other suites leave accounts on this database; the hints below must resolve
-  // to ours, and the active-hint index must have room for them.
-  await db.prepare(`UPDATE financial_accounts SET active = 0 WHERE account_hint IN ('06006', '4006') AND id NOT LIKE ?1`).bind(`${P}%`).run();
+  // to ours, and the active-hint index must have room for them. The resolver
+  // reads `status`, not `active`: a stranger left ACTIVE makes the hint
+  // ambiguous and the row lands on no account.
+  await db.prepare(`UPDATE financial_accounts SET active = 0, status = 'DECLINED' WHERE account_hint IN ('06006', '4006') AND id NOT LIKE ?1`).bind(`${P}%`).run();
 }
 
 beforeEach(async () => {
@@ -224,6 +227,28 @@ describe('applyReparse', () => {
       .bind(tx)
       .first<Record<string, unknown>>();
     expect(after).toMatchObject({ parser_id: 'keshavarzi-v1', balance_irr: 2_854_098, amount_irr: 1_000_000, financial_account_id: MOM, match_status: 'CONFIRMED', payment_claim_id: claim });
+  });
+
+  it('moves the books\' opening with the row it was read from — balance and clock, so the ledger does not count the money twice', async () => {
+    // Production, 2026-09-19: the fresh start had copied the guessed row's
+    // arrival as its anchor; the upgrade moved the row 9 s onto the bank's
+    // clock, and the statement counted 4,000,000 IRR as a movement after the
+    // opening. The anchor follows the row.
+    const arrival = Date.UTC(2026, 8, 18, 2, 34, 51);
+    const guessed = await raw('KESHAVARZI', KESHAVARZI, 'generic-credit', 'BANK_CREDIT', arrival);
+    const tx = await genericRow(guessed, MOM, 'CREDIT', 1_000_000, 4006, arrival);
+    await db
+      .prepare(`INSERT INTO account_opening_balances (financial_account_id, balance_irr, as_of, transaction_candidate_id, created_by, created_at) VALUES (?1, 4006, ?2, ?3, 'test', ?4)`)
+      .bind(MOM, arrival, tx, NOW)
+      .run();
+    const a = await applyReparse(db, [guessed]);
+    expect(a.upgraded).toHaveLength(1);
+    const opening = await db
+      .prepare(`SELECT balance_irr, as_of FROM account_opening_balances WHERE financial_account_id = ?1`)
+      .bind(MOM)
+      .first<{ balance_irr: string | number; as_of: string | number }>();
+    expect(Number(opening!.balance_irr)).toBe(2_854_098);
+    expect(Number(opening!.as_of)).toBe(Date.UTC(2026, 8, 18, 2, 35));
   });
 
   it('will not rewrite a guessed row into a different movement', async () => {
