@@ -16,6 +16,17 @@ const PENDING_CLAIM = `c.status IN ('PENDING','MATCH_SUGGESTED')`;
  */
 export const NO_TRANSFER_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
 
+/**
+ * The unread badge on «در انتظار بررسی», and what «خواندن همه» there clears.
+ *
+ * Same rows as the list under it, by construction: `mirzabotRoutes.ts` keeps
+ * this exact exclusion for `tab === 'open'`. A parked claim (#320), one the
+ * operator has written to, or one whose receipt has not arrived (#307) each
+ * left the list for its own tab — and until 2026-09-19 stayed in this count,
+ * so the tab said «+۲» over «هیچ پرداختی منتظر تصمیم نیست».
+ */
+const NEEDS_REVIEW_UNREAD = `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${NO_TRANSFER_REASONS} AND c.parked_at IS NULL AND c.messaged_at IS NULL AND c.receipt_url_or_r2_key IS NOT NULL`;
+
 const SETTLED_MATCH = `
   SELECT m2.id FROM reconciliation_matches m2
    WHERE m2.payment_claim_id = c.id AND m2.status IN ('AUTO_VERIFIED','CONFIRMED')
@@ -55,9 +66,7 @@ export async function getPaymentEventUnreadCounts(
 ): Promise<PaymentEventUnreadCounts> {
   const needsReview = await db
     .prepare(
-      unreadClaimSql(
-        `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${NO_TRANSFER_REASONS}`,
-      ),
+      unreadClaimSql(NEEDS_REVIEW_UNREAD),
     )
     .bind(actorEmail)
     .first<{ c: number }>();
@@ -160,7 +169,7 @@ export async function markPaymentEventsReadAll(
   } else {
     let stateWhere = '';
     if (tab === 'needs_review') {
-      stateWhere = `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${NO_TRANSFER_REASONS}`;
+      stateWhere = NEEDS_REVIEW_UNREAD;
     } else if (tab === 'suspected_fake') {
       stateWhere = `${PENDING_CLAIM} AND c.suspect_reason IN ${NO_TRANSFER_REASONS}`;
     } else {

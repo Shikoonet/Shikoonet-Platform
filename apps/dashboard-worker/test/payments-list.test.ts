@@ -714,6 +714,46 @@ describe('the open review queue', () => {
     expect(body.counts['open']).toBe(5);
   });
 
+  it('the unread badge counts what the list shows, and «خواندن همه» clears only that', async () => {
+    // Sam, 2026-09-19: «در انتظار بررسی» read «+۲» over «هیچ پرداختی منتظر
+    // تصمیم نیست». The count badge and the list had been made one population
+    // (above); the unread badge was still the old `needs_review` predicate and
+    // kept counting claims that #307 and #320 had moved to their own tabs.
+    await seedClaim('u-open', { suspectReason: 'AMBIGUOUS_CLAIMS' });
+    await seedClaim('u-parked', { suspectReason: 'AMBIGUOUS_CLAIMS' });
+    await seedClaim('u-messaged', { suspectReason: 'AMBIGUOUS_CLAIMS' });
+    await seedClaim('u-noreceipt', { suspectReason: 'RECEIPT_MISSING', receipt: false });
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET parked_at = ?1 WHERE id = 'u-parked'`)
+      .bind(Date.now())
+      .run();
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET messaged_at = ?1 WHERE id = 'u-messaged'`)
+      .bind(Date.now())
+      .run();
+
+    const before = await get('tab=open');
+    expect(before.items.map((i) => i.id)).toEqual(['u-open']);
+    expect(before.counts['open']).toBe(1);
+    expect(before.counts['needsReviewUnread']).toBe(1);
+
+    await app.fetch(
+      new Request('https://example.com/api/v1/payments/tabs/read-all', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tab: 'needs_review' }),
+      }),
+      envAs(),
+    );
+    expect((await get('tab=open')).counts['needsReviewUnread']).toBe(0);
+
+    // The parked one was never on this tab, so it was never read: when it
+    // comes back it is new again, not silently seen.
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET parked_at = NULL WHERE id = 'u-parked'`).run();
+    const back = await get('tab=open');
+    expect(back.items.map((i) => i.id).sort()).toEqual(['u-open', 'u-parked']);
+    expect(back.counts['needsReviewUnread']).toBe(1);
+    expect(back.items.find((i) => i.id === 'u-parked')?.isNew).toBe(true);
+  });
+
   it('one search box finds a claim by order, Telegram id, username or tracking number (#321)', async () => {
     const base = Date.now();
     await seedClaim('q-one', { status: 'VERIFIED', customerReference: '5550001' });
