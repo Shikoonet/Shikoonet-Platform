@@ -9,6 +9,7 @@
  */
 
 import { createPostgresD1 } from '@shikoo/db';
+import { resetPace } from '../../src/pace.js';
 
 const { db, pool } = createPostgresD1();
 
@@ -81,4 +82,8 @@ export async function assertSchema(): Promise<void> {
 
 export async function resetBot(): Promise<void> {
   await db.prepare(`TRUNCATE ${BOT_TABLES.join(', ')} RESTART IDENTITY CASCADE`).run();
+  // The senders' shared clock is module state (`pace.ts`): a thirty-second
+  // pause one test asked for must not be the next test's wait.
+  resetPace();
+  await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'telegram_pause_until'`).run();
 }

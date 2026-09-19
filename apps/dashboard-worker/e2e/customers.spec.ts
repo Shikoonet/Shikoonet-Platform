@@ -40,11 +40,10 @@ async function withDb<T>(fn: (d: ReturnType<typeof createPostgresD1>['db']) => P
  * Cleaned in dependency order, and the tables are the ones the code actually
  * writes rather than the ones the names suggest.
  *
- * A message to one customer does not go to `bot_notifications` at all: the
- * route calls `queueDirectMessage`, which writes a one-recipient `broadcasts`
- * row and lets the same delivery path a bulk send uses carry it. Guessing
- * otherwise is what the first version of this file did, and Postgres answered
- * with «column "user_id" does not exist».
+ * A message to one customer goes to `bot_notifications`, the bot's outbox,
+ * keyed by chat — since #364. Until then `queueDirectMessage` wrote a
+ * one-recipient `broadcasts` row, which the bulk sweep took in queue order,
+ * nine hours behind a running announcement.
  *
  * `wallet_entries` is never touched here — `trg_wallet_entries_append_only`
  * refuses DELETE, so a wallet fixture would be permanent.
@@ -52,19 +51,7 @@ async function withDb<T>(fn: (d: ReturnType<typeof createPostgresD1>['db']) => P
 const wipe = () =>
   withDb(async (d) => {
     await d
-      .prepare(
-        `DELETE FROM broadcasts WHERE id IN (
-           SELECT br.broadcast_id FROM broadcast_recipients br
-             JOIN users u ON u.id = br.user_id
-            WHERE u.telegram_id = ?1)`,
-      )
-      .bind(TELEGRAM_ID)
-      .run();
-    await d
-      .prepare(
-        `DELETE FROM broadcast_recipients
-          WHERE user_id IN (SELECT id FROM users WHERE telegram_id = ?1)`,
-      )
+      .prepare(`DELETE FROM bot_notifications WHERE chat_id = ?1 AND dedupe_key LIKE 'direct:%'`)
       .bind(TELEGRAM_ID)
       .run();
     await d.prepare(`DELETE FROM users WHERE telegram_id = ?1`).bind(TELEGRAM_ID).run();
@@ -226,23 +213,20 @@ test('a message to a customer says it was queued, not that it was sent', async (
   await expect(page.locator('#main-content .alert-info')).toContainText('در صف');
   await expect(page.locator('#main-content .alert-info')).not.toContainText('فرستاده شد');
 
-  // One recipient, carrying the Telegram id it will be delivered to. The
-  // recipient row is what fixes who gets this message from the moment it is
-  // written — the bot reads the list, not the customer table, so a customer
-  // blocked a second later still has exactly this one row and no more.
+  // One outbox row, addressed to the chat it will be delivered to. The row
+  // is what fixes who gets this message from the moment it is written — the
+  // bot reads the outbox, not the customer table, so a customer blocked a
+  // second later still has exactly this one row and no more.
   const queued = await withDb((d) =>
     d
       .prepare(
-        `SELECT count(*)::int AS n, min(br.telegram_id)::bigint AS tg
-           FROM broadcast_recipients br
-           JOIN users u ON u.id = br.user_id
-          WHERE u.telegram_id = ?1`,
+        `SELECT count(*)::int AS n FROM bot_notifications
+          WHERE chat_id = ?1 AND dedupe_key LIKE 'direct:%'`,
       )
       .bind(TELEGRAM_ID)
-      .first<{ n: number; tg: number }>(),
+      .first<{ n: number }>(),
   );
   expect(queued?.n).toBe(1);
-  expect(Number(queued?.tg)).toBe(TELEGRAM_ID);
 });
 
 /*

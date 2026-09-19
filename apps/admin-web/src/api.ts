@@ -1118,9 +1118,30 @@ export interface BulkSend {
     total: number;
     sent: number;
     failed: number;
+    /** Not yet taken, and due now. */
+    pending: number;
+    /** Telegram said come back later (a 429); `waitingUntil` is the latest deadline, epoch ms. */
+    waiting: number;
+    waitingUntil: number | null;
+    /** In a worker's hands this moment. */
+    sending: number;
+    /** SENDING for over ten minutes: the sweep that took it is gone. */
+    stranded: number;
+    /** The pace as it is: rows that went in the last sixty seconds. */
+    sentLastMinute: number;
     /** When the last row moved, epoch ms; null while nothing has. */
     lastAt: number | null;
   } | null;
+}
+
+/** One customer a broadcast did not reach, and the bot's reason (#364). */
+export interface BroadcastFailure {
+  userId: number;
+  username: string | null;
+  /** blocked · deactivated · chat_not_found · rate_limited · other */
+  kind: string;
+  reason: string;
+  attempts: number;
 }
 
 /** What «تست ارتباط» answers. Never the panel's response body — see panelRoutes.ts. */
@@ -2424,6 +2445,12 @@ export const api = {
   bulkRecent() {
     return req<{ ok: boolean; credit: BulkSend | null; broadcast: BulkSend | null }>(
       '/bulk/recent',
+    );
+  },
+
+  broadcastFailures(broadcastId: string) {
+    return req<{ ok: boolean; items: BroadcastFailure[]; byKind: Record<string, number> }>(
+      `/bulk/broadcast/${encodeURIComponent(broadcastId)}/failures`,
     );
   },
 

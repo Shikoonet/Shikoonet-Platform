@@ -41,6 +41,7 @@ import {
 } from './broadcast.js';
 import { sweepDailyReport } from './report.js';
 import { rateLimitedForMs } from './telegram.js';
+import { heldFor, loadPause, pauseFor, reserveSlot } from './pace.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 import { qrPng } from './qr.js';
 import { createLogger, pruneAppEvents } from '@shikoo/domain';
@@ -583,21 +584,15 @@ export async function sweepBroadcasts(
   // a slice would make one slow recipient hold up its whole share while other
   // workers sat idle, which is the shape of the problem this replaces.
   let next = 0;
-  let nextSendAt = 0;
-  /**
-   * Until when nobody may send, because Telegram said so.
-   *
-   * Separate from `nextSendAt` and NOT merged into it, which was the first
-   * attempt and did not work: a worker reserves its slot from `nextSendAt`
-   * before the send, so pushing that forward only reaches workers who have not
-   * reserved yet. With a batch no larger than the pool that is nobody, and the
-   * pool sailed straight through a rate limit. The test measured a 41ms gap
-   * where a second was owed.
-   *
-   * Checked AFTER the pace and immediately before the call, so a worker that
-   * was already waiting still stops.
+  /*
+   * The slot clock and the pause live in `pace.ts` since #364, shared with
+   * the outbox — Telegram limits the bot, not this loop. Two things, still
+   * kept apart there: a worker reserves its slot from the pace BEFORE the
+   * send, so pushing the pace forward on a 429 only reached workers who had
+   * not reserved yet, and the pool sailed through a rate limit (a 41ms gap
+   * where a second was owed). The pause is checked AFTER the pace and
+   * immediately before the call, so a worker already waiting still stops.
    */
-  let pauseUntil = 0;
   // Once per sweep, so an operator's change lands on the next batch.
   const gapMs = sendGapMs();
   // Rows a worker took and then never offered to Telegram because the signal
@@ -618,16 +613,24 @@ export async function sweepBroadcasts(
       // workers each sleeping 40ms between their own sends would be twelve
       // times the rate Telegram allows; this makes the gap a property of the
       // BROADCAST, which is the thing being limited.
-      const wait = nextSendAt - Date.now();
-      nextSendAt = Math.max(nextSendAt, Date.now()) + gapMs;
-      if (wait > 0) await sleep(wait, signal);
-
-      // A pause that appeared while this worker was waiting for its slot. A
-      // loop rather than one sleep: a second 429 may land from another worker
-      // while this one is serving the first.
-      while (pauseUntil > Date.now()) {
+      //
+      // Reserved AGAIN after every hold, not once. A 429 pause outlives every
+      // slot the pool had reserved before it, and twelve workers whose slots
+      // are all in the past leave the pause on one deadline and call Telegram
+      // together — the burst the next 429 answers. Going round the loop hands
+      // each of them a fresh slot a gap apart (CodeRabbit on #372).
+      for (;;) {
+        const wait = reserveSlot(gapMs);
+        if (wait > 0) await sleep(wait, signal);
         if (signal?.aborted) break;
-        await sleep(pauseUntil - Date.now(), signal);
+        // A pause that appeared while this worker was waiting for its slot — a
+        // 429, or an outbox message that just took the slot (#364). Checked
+        // after the pace and immediately before the call, so a worker already
+        // waiting still stops; a second 429 from another worker is caught on
+        // the next turn.
+        const held = heldFor();
+        if (held <= 0) break;
+        await sleep(held, signal);
       }
       if (signal?.aborted) {
         unsent.push(message);
@@ -681,15 +684,16 @@ export async function sweepBroadcasts(
         // applies is on the BOT, and eleven others carrying on would earn the
         // next 429 immediately. Sends already in flight cannot be recalled —
         // what this stops is everyone who has not called yet.
-        pauseUntil = Math.max(pauseUntil, Date.now() + waitMs);
+        await pauseFor(db, waitMs);
         const ended = await markBroadcastRetryable(
           db,
           message.broadcastId,
           message.userId,
           String(err),
-          // The same wait, written onto the row. `pauseUntil` above holds the
-          // workers that are already mid-batch; this holds the next sweep,
-          // which starts twenty-five seconds later remembering nothing.
+          // The same wait, written onto the row. The pause above holds every
+          // sender in this process and, through `settings`, the next
+          // container; this holds the ROW, so it is not offered to anyone
+          // before its own deadline whatever else is forgotten.
           Math.ceil(waitMs / 1000),
         ).catch((e: unknown) => {
           log.error('broadcast.retry_unrecorded', { ref: message.broadcastId }, e);
@@ -776,6 +780,8 @@ export async function drainBroadcasts(
   options: { idleMs?: number; limit?: number } = {},
 ): Promise<void> {
   const idleMs = options.idleMs ?? BROADCAST_IDLE_MS;
+  // A container that comes back mid-ban must not send at once (#364).
+  await loadPause(db);
   while (!signal?.aborted) {
     let sent = 0;
     try {
@@ -818,6 +824,7 @@ export async function drainNotifications(
   options: { idleMs?: number; limit?: number } = {},
 ): Promise<void> {
   const idleMs = options.idleMs ?? BROADCAST_IDLE_MS;
+  await loadPause(db);
   while (!signal?.aborted) {
     let handled = 0;
     try {

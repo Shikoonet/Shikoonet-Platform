@@ -20,6 +20,7 @@ import { enqueue, flush, LEASE_MS, MAX_ATTEMPTS, nextAttemptDelayMs } from '../s
 import { MAX_COPY_TEXT_LENGTH, TelegramRejection, type TelegramApi } from '../src/telegram.js';
 import * as menu from '../src/menu.js';
 import { db } from './helpers/env.js';
+import { resetPace } from '../src/pace.js';
 
 const NOW = 1_786_000_000_000;
 const CHAT = 55_500_001;
@@ -61,6 +62,8 @@ async function put(key: string, text = 'hello'): Promise<void> {
 
 beforeEach(async () => {
   await db.prepare(`DELETE FROM bot_notifications`).run();
+  // The 429 test below pauses every sender in the process (`pace.ts`).
+  resetPace();
   vi.restoreAllMocks();
 });
 

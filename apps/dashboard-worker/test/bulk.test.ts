@@ -83,6 +83,13 @@ async function recipientCount(broadcastId: string): Promise<number> {
 
 const uuid = () => crypto.randomUUID();
 
+/** The outbox row a direct message becomes (#364): `direct:<messageId>`. */
+async function outboxRow(messageId: string): Promise<{ body: string } | null> {
+  return baseEnv.DB.prepare(`SELECT body FROM bot_notifications WHERE dedupe_key = ?1`)
+    .bind(`direct:${messageId}`)
+    .first<{ body: string }>();
+}
+
 beforeAll(async () => {
   await applySchema();
   const now = Date.now();
@@ -101,6 +108,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await baseEnv.DB.prepare(`TRUNCATE broadcast_recipients, broadcasts CASCADE`).run();
+  await baseEnv.DB.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'direct:%'`).run();
   await baseEnv.DB.prepare(`TRUNCATE wallet_entries, wallets RESTART IDENTITY CASCADE`).run();
   await deleteFixtureUsers(TG_BASE);
 });
@@ -368,14 +376,16 @@ describe('one customer', () => {
       envAs(ADMIN),
     );
     expect(res.status).toBe(200);
-    expect(await recipientCount(messageId)).toBe(1);
+    // The outbox, not a one-recipient broadcast: the bulk sweep takes rows in
+    // queue order, and a reply to one customer sat nine hours behind a running
+    // announcement (#364).
+    expect(await recipientCount(messageId)).toBe(0);
+    const row = await outboxRow(messageId);
+    expect(row).not.toBeNull();
 
     // Not the bare body: an unattributed message from a bot somebody bought a
     // subscription from reads as a scam. The prefix is the editable text the
     // bot renders, so this asserts the body is *inside* something longer.
-    const row = await baseEnv.DB.prepare(`SELECT body FROM broadcasts WHERE id = ?1`)
-      .bind(messageId)
-      .first<{ body: string }>();
     expect(row?.body).toContain('سرویس شما تمدید شد');
     expect(row?.body.length).toBeGreaterThan('سرویس شما تمدید شد'.length);
   });
@@ -411,7 +421,12 @@ describe('one customer', () => {
     // The second attempt inserts no recipient, so the route reports it as
     // nothing queued rather than silently promising a second delivery.
     expect((await send()).status).toBe(409);
-    expect(await recipientCount(messageId)).toBe(1);
+    const rows = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM bot_notifications WHERE dedupe_key = ?1`,
+    )
+      .bind(`direct:${messageId}`)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
   });
 });
 
