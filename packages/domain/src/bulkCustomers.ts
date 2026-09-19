@@ -252,44 +252,38 @@ export async function creditEveryone(
 }
 
 /**
- * One message to one customer, through the same two tables.
+ * One message to one customer — into the outbox, ahead of any broadcast.
  *
- * The bot sends this one inline, because it is already holding a Telegram
+ * The bot sends its version inline, because it is already holding a Telegram
  * connection and the admin is standing in the conversation. The web panel is
- * not, so it writes the message down and the bot's poll loop delivers it — the
- * same at-most-once path a broadcast takes, and the same thing that survives
- * the process restarting mid-send.
+ * not, so it writes the message down and the bot delivers it.
  *
- * A `broadcasts` row with one recipient rather than a second table: the drain
- * loop, the claim statement and the failure record already exist and already
- * work, and a parallel «direct_messages» would be a second thing to keep
- * correct for no behaviour anyone can see.
+ * Until #364 this was a `broadcasts` row with one recipient, on the argument
+ * that the drain loop and the failure record already existed. They did — and
+ * `claimBroadcastBatch` takes rows in `broadcasts.created_at` order, so an
+ * operator answering a customer during a 16k send at one message every two
+ * seconds was queued nine hours behind the announcement. Sam, 2026-09-19.
+ * `bot_notifications` is the queue the bot drains beside the broadcast, at
+ * once, and the one the panel's templated messages already use.
  *
- * Returns 0 when the customer is not active — a blocked customer is not sent
- * shop announcements, and that stays true when the message is addressed.
+ * `dedupe_key` is the page's message id, which is what makes a resubmit
+ * free. Returns 0 when the customer is not active — a blocked customer is
+ * not sent shop messages, and that stays true when the message is addressed.
  */
 export async function queueDirectMessage(
   db: Db,
   messageId: string,
   body: string,
   userId: number,
-  createdBy: number,
 ): Promise<number> {
-  await db
-    .prepare(
-      `INSERT INTO broadcasts (id, body, created_by) VALUES (?1, ?2, ?3)
-              ON CONFLICT (id) DO NOTHING`,
-    )
-    .bind(messageId, body, createdBy)
-    .run();
   const done = await db
     .prepare(
-      `INSERT INTO broadcast_recipients (broadcast_id, user_id, telegram_id)
-       SELECT ?1, u.id, u.telegram_id FROM users u
-        WHERE u.id = ?2 AND u.status = 'ACTIVE'
-       ON CONFLICT (broadcast_id, user_id) DO NOTHING`,
+      `INSERT INTO bot_notifications (dedupe_key, chat_id, body)
+       SELECT 'direct:' || ?1, u.telegram_id, ?2 FROM users u
+        WHERE u.id = ?3 AND u.status = 'ACTIVE'
+       ON CONFLICT (dedupe_key) DO NOTHING`,
     )
-    .bind(messageId, userId)
+    .bind(messageId, body, userId)
     .run();
   return done.meta.changes;
 }

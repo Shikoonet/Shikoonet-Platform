@@ -63,7 +63,18 @@ async function recent(as = ADMIN) {
         at: number;
         count: number;
         amountIrr: number | null;
-        progress: { total: number; sent: number; failed: number; lastAt: number | null } | null;
+        progress: {
+          total: number;
+          sent: number;
+          failed: number;
+          pending: number;
+          waiting: number;
+          waitingUntil: number | null;
+          sending: number;
+          stranded: number;
+          sentLastMinute: number;
+          lastAt: number | null;
+        } | null;
       } | null;
     },
   };
@@ -202,7 +213,18 @@ describe('the last send, so nobody repeats it by hand', () => {
     expect(body.broadcast?.id).toBe(broadcastId);
     const total = body.broadcast?.progress?.total ?? 0;
     expect(total).toBeGreaterThanOrEqual(3);
-    expect(body.broadcast?.progress).toEqual({ total, sent: 0, failed: 0, lastAt: null });
+    expect(body.broadcast?.progress).toEqual({
+      total,
+      sent: 0,
+      failed: 0,
+      pending: total,
+      waiting: 0,
+      waitingUntil: null,
+      sending: 0,
+      stranded: 0,
+      sentLastMinute: 0,
+      lastAt: null,
+    });
 
     // The sweep's three outcomes, one row each. SENDING is still «to come».
     await baseEnv.DB.prepare(
@@ -228,10 +250,100 @@ describe('the last send, so nobody repeats it by hand', () => {
       total,
       sent: 1,
       failed: 1,
+      pending: total - 3,
+      waiting: 0,
+      waitingUntil: null,
+      sending: 1,
+      stranded: 0,
+      sentLastMinute: 1,
       // The SENT row's clock, as a number the browser can subtract from now.
       lastAt: expect.any(Number),
     });
     expect(Math.abs(Date.now() - (body.broadcast?.progress?.lastAt ?? 0))).toBeLessThan(60_000);
+  });
+
+  it('tells a ban and a dead sweep apart from rows nobody has taken (#364)', async () => {
+    // The bar sat on 12% for fifty minutes on 2026-09-17. It was a 429 with
+    // retry_after ≈ 3,000s, and «مانده» counted the row Telegram had asked us
+    // to hold exactly like one the bot had not reached yet.
+    await makeCustomer();
+    await makeCustomer();
+    const broadcastId = uuid();
+    await app.fetch(
+      new Request('https://example.com/api/v1/admin/bulk/broadcast', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://example.com' },
+        body: JSON.stringify({ body: 'سلام', broadcastId }),
+      }),
+      envAs(ADMIN),
+    );
+    await baseEnv.DB.prepare(
+      `UPDATE broadcast_recipients SET next_attempt_at = now() + interval '50 minutes'
+        WHERE broadcast_id = ?1 AND telegram_id = ?2`,
+    )
+      .bind(broadcastId, TG_BASE + seq)
+      .run();
+    await baseEnv.DB.prepare(
+      `UPDATE broadcast_recipients SET status = 'SENDING', claimed_at = now() - interval '11 minutes'
+        WHERE broadcast_id = ?1 AND telegram_id = ?2`,
+    )
+      .bind(broadcastId, TG_BASE + seq - 1)
+      .run();
+
+    const { body } = await recent();
+    const p = body.broadcast?.progress;
+    expect(p?.waiting).toBe(1);
+    expect((p?.waitingUntil ?? 0) - Date.now()).toBeGreaterThan(45 * 60_000);
+    expect(p?.sending).toBe(1);
+    expect(p?.stranded).toBe(1);
+    expect(p?.pending).toBe((p?.total ?? 0) - 2);
+  });
+
+  it('names who was missed and why, without a chat id in it (#364)', async () => {
+    await makeCustomer();
+    await makeCustomer();
+    const broadcastId = uuid();
+    await app.fetch(
+      new Request('https://example.com/api/v1/admin/bulk/broadcast', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://example.com' },
+        body: JSON.stringify({ body: 'سلام', broadcastId }),
+      }),
+      envAs(ADMIN),
+    );
+    await baseEnv.DB.prepare(
+      `UPDATE broadcast_recipients SET status = 'FAILED',
+              error = 'TelegramRejection: telegram sendMessage rejected: Forbidden: bot was blocked by the user'
+        WHERE broadcast_id = ?1 AND telegram_id = ?2`,
+    )
+      .bind(broadcastId, TG_BASE + seq)
+      .run();
+    await baseEnv.DB.prepare(
+      `UPDATE broadcast_recipients SET status = 'FAILED', attempts = 5,
+              error = 'after 5 attempts: telegram sendMessage rejected: Too Many Requests: retry after 3000 for chat ${TG_BASE + seq - 1}'
+        WHERE broadcast_id = ?1 AND telegram_id = ?2`,
+    )
+      .bind(broadcastId, TG_BASE + seq - 1)
+      .run();
+
+    const res = await app.fetch(
+      new Request(`https://example.com/api/v1/admin/bulk/broadcast/${broadcastId}/failures`),
+      envAs(READER),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      items: { userId: number; username: string | null; kind: string; reason: string; attempts: number }[];
+      byKind: Record<string, number>;
+    };
+    expect(body.byKind).toEqual({ blocked: 1, rate_limited: 1 });
+    const blocked = body.items.find((i) => i.kind === 'blocked');
+    expect(blocked?.username).toBe(`recent-${seq}`);
+    expect(blocked?.reason).toBe('Forbidden: bot was blocked by the user');
+    const limited = body.items.find((i) => i.kind === 'rate_limited');
+    expect(limited?.attempts).toBe(5);
+    // The reason is shown; the chat id in it is not.
+    expect(limited?.reason).not.toContain(String(TG_BASE + seq - 1));
+    expect(limited?.reason).toContain('Too Many Requests');
   });
 
   it('is readable by an operator who cannot send', async () => {

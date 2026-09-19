@@ -29,6 +29,7 @@ import {
   api,
   ApiError,
   type BroadcastAudience,
+  type BroadcastFailure,
   type BulkPriceChange,
   type BulkPricePreview,
   type BulkSend,
@@ -69,6 +70,92 @@ function LastSend({ send, verb }: { send: BulkSend | null; verb: string }) {
           }`
         : ''}
     </p>
+  );
+}
+
+/** The buckets `failureReason` sorts a refusal into, in the operator's words. */
+const FAILURE_KINDS: Record<string, string> = {
+  blocked: 'ربات را بلاک کرده',
+  deactivated: 'حساب تلگرامش حذف شده',
+  chat_not_found: 'چت پیدا نشد',
+  rate_limited: 'تلگرام محدود کرد و ربات تسلیم شد',
+  other: 'سایر',
+};
+
+/**
+ * Who the last broadcast did not reach, and why (#364).
+ *
+ * Under the tally, and only when the tally says somebody was missed. Grouped
+ * first — «۷۸۰ نفر بلاک کرده‌اند» is the sentence an operator needs — and
+ * then the list, because the next question is «کدام‌ها». Loaded when opened,
+ * not with the page: it is up to 500 rows, and the header bar already polls
+ * the counts.
+ */
+function BroadcastFailures({ send }: { send: BulkSend | null }) {
+  const [rows, setRows] = useState<{
+    items: BroadcastFailure[];
+    byKind: Record<string, number>;
+  } | null>(null);
+  // A ref, not the state: two toggle events can land before the first
+  // setState is visible, and the list must be asked for once.
+  const asked = useRef(false);
+  const failed = send?.progress?.failed ?? 0;
+  if (send === null || failed === 0) return null;
+  const load = async () => {
+    if (asked.current) return;
+    asked.current = true;
+    try {
+      const r = await api.broadcastFailures(send.id);
+      setRows({ items: r.items, byKind: r.byKind });
+    } catch {
+      setRows({ items: [], byKind: {} });
+    }
+  };
+  return (
+    <details onToggle={(e) => e.currentTarget.open && void load()}>
+      <summary style={{ cursor: 'pointer', color: 'var(--accent)' }}>
+        {count(failed)} نرسید — کی و چرا
+      </summary>
+      {rows === null ? (
+        <p className="muted">در حال خواندن…</p>
+      ) : (
+        <>
+          <p className="muted">
+            {Object.entries(rows.byKind)
+              .sort((a, b) => b[1] - a[1])
+              .map(([kind, n]) => `${count(n)} ${FAILURE_KINDS[kind] ?? kind}`)
+              .join(' · ')}
+          </p>
+          <div className="table-wrap">
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th>مشتری</th>
+                  <th>علت</th>
+                  <th>جزئیات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.items.map((f) => (
+                  <tr key={f.userId}>
+                    <td>{f.username ? `@${f.username}` : `#${f.userId}`}</td>
+                    <td>{FAILURE_KINDS[f.kind] ?? f.kind}</td>
+                    <td className="muted" dir="ltr">
+                      {f.reason}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {failed > rows.items.length ? (
+            <p className="muted">
+              {count(rows.items.length)} ردیف اول از {count(failed)}.
+            </p>
+          ) : null}
+        </>
+      )}
+    </details>
   );
 }
 
@@ -567,6 +654,7 @@ export function BulkPage() {
           ادامه
         </button>
         <LastSend send={recent?.broadcast ?? null} verb="پیام به" />
+        <BroadcastFailures send={recent?.broadcast ?? null} />
       </div>
 
       <div className="card" style={{ marginBlockStart: 16 }}>

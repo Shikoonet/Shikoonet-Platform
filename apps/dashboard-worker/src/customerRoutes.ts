@@ -993,10 +993,11 @@ export function registerCustomerRoutes(
    * Queued, not sent.
    *
    * The bot sends its version inline because it is already holding a Telegram
-   * connection; this process is not, so the message goes into the same two
-   * tables a broadcast uses and the bot's poll loop delivers it. At most once,
-   * never twice — a customer who receives a support message twice has been
-   * spammed by a shop they trust with their money.
+   * connection; this process is not, so the message goes into the bot's
+   * outbox (`bot_notifications`) and the loop that drains it delivers it at
+   * once — ahead of any broadcast in flight, which is the whole point (#364).
+   * At most once, never twice — a customer who receives a support message
+   * twice has been spammed by a shop they trust with their money.
    *
    * The shop's name goes in front of the body, through the same editable text
    * the bot renders. An unattributed message from a bot somebody bought a
@@ -1025,9 +1026,8 @@ export function registerCustomerRoutes(
       return c.json({ ok: false, error: 'message_too_long' }, 400);
     }
 
-    // `created_by` is a Telegram id on the bot's path and this operator has
-    // none. The audit row carries the email, which is who actually did it.
-    const queued = await queueDirectMessage(c.env.DB, messageId, text, id, 0);
+    // The audit row carries the email, which is who actually did it.
+    const queued = await queueDirectMessage(c.env.DB, messageId, text, id);
     if (queued === 0) return c.json({ ok: false, error: 'not_active' }, 409);
 
     await audit(

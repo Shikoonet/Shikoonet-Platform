@@ -265,6 +265,31 @@ async function rehearseForward(
   return { ok: true };
 }
 
+/**
+ * A failure reason as an operator reads it.
+ *
+ * `kind` is the bucket the panel groups by; `text` is what Telegram said,
+ * with the method prefix and anything that looks like an id taken out.
+ */
+export function failureReason(error: string | null): { kind: string; text: string } {
+  const raw = (error ?? '').replace(/^after \d+ attempts: /, '');
+  const text = raw
+    .replace(/^TelegramRejection: /, '')
+    .replace(/^telegram \w+ (rejected|failed): /, '')
+    .replace(/\d{6,}/g, '…')
+    .slice(0, 160);
+  const kind = /blocked by the user/i.test(raw)
+    ? 'blocked'
+    : /user is deactivated/i.test(raw)
+      ? 'deactivated'
+      : /chat not found/i.test(raw)
+        ? 'chat_not_found'
+        : /Too Many Requests|\b429\b/i.test(raw)
+          ? 'rate_limited'
+          : 'other';
+  return { kind, text };
+}
+
 export function registerBulkRoutes(
   app: Hono<{
     // Wider than `{ DB }` since 0055: forwarding a channel post means calling
@@ -385,6 +410,12 @@ export function registerBulkRoutes(
     // everything else (PENDING, SENDING, a 429 waiting its turn) is still to
     // come. Counted from the rows rather than kept in `broadcasts` so it
     // cannot drift from what the sweep actually did.
+    //
+    // What is «to come» is three different things to an operator watching
+    // the bar (#364): rows nobody has taken yet, rows in a worker's hands
+    // right now, and rows Telegram has told us to come back to — a 429 with
+    // its deadline. The bar sat on 12% for fifty minutes on 2026-09-17 and
+    // nothing on the screen said which of the three it was.
     const progress =
       last === null
         ? null
@@ -392,6 +423,24 @@ export function registerBulkRoutes(
             `SELECT count(*)::int                                   AS total,
                     count(*) FILTER (WHERE status = 'SENT')::int   AS sent,
                     count(*) FILTER (WHERE status = 'FAILED')::int AS failed,
+                    count(*) FILTER (WHERE status = 'PENDING'
+                                       AND (next_attempt_at IS NULL OR next_attempt_at <= now()))::int
+                      AS pending,
+                    count(*) FILTER (WHERE status = 'PENDING' AND next_attempt_at > now())::int
+                      AS waiting,
+                    (extract(epoch FROM max(next_attempt_at) FILTER (WHERE status = 'PENDING')) * 1000)::bigint
+                      AS waiting_until,
+                    count(*) FILTER (WHERE status = 'SENDING')::int AS sending,
+                    -- Claimed ten minutes ago and never finished: the sweep
+                    -- that took it is gone. Same window as the bot's own
+                    -- strandedSendingCount, which only ever reached the log.
+                    count(*) FILTER (WHERE status = 'SENDING'
+                                       AND claimed_at < now() - interval '10 minutes')::int
+                      AS stranded,
+                    -- The pace as it actually is, not as configured: what
+                    -- went in the last minute.
+                    count(*) FILTER (WHERE sent_at > now() - interval '60 seconds')::int
+                      AS sent_last_minute,
                     -- When the last row moved: what «finished ten minutes
                     -- ago» is measured from. Queue time is the wrong clock
                     -- for that — a 16k broadcast is still going ten minutes
@@ -402,8 +451,18 @@ export function registerBulkRoutes(
               WHERE broadcast_id = ?1`,
           )
             .bind(last.id)
-            .first<{ total: number; sent: number; failed: number; last_at: number | null }>()) ??
-          null);
+            .first<{
+              total: number;
+              sent: number;
+              failed: number;
+              pending: number;
+              waiting: number;
+              waiting_until: number | null;
+              sending: number;
+              stranded: number;
+              sent_last_minute: number;
+              last_at: number | null;
+            }>()) ?? null);
 
     return c.json({
       ok: true,
@@ -420,10 +479,66 @@ export function registerBulkRoutes(
                       total: progress.total,
                       sent: progress.sent,
                       failed: progress.failed,
+                      pending: progress.pending,
+                      waiting: progress.waiting,
+                      waitingUntil:
+                        progress.waiting_until === null ? null : Number(progress.waiting_until),
+                      sending: progress.sending,
+                      stranded: progress.stranded,
+                      sentLastMinute: progress.sent_last_minute,
                       lastAt: progress.last_at === null ? null : Number(progress.last_at),
                     },
             },
     });
+  });
+
+  /**
+   * Who did not get the broadcast, and why — grouped, then listed (#364).
+   *
+   * Every FAILED row carries the reason the bot wrote (`markBroadcastFailed`,
+   * `markBroadcastRetryable`), and until now no screen read it: the bar said
+   * «۸۰۰ نرسید» and the operator could not tell blocked customers from a rate
+   * limit the bot gave up on. Grouped first because a list of 800 rows is not
+   * readable; listed second because «which customers» is the next question.
+   *
+   * The customer is named by the shop's own handle for them, never the chat
+   * id, and the reason is cut down to what it says: the bot already redacts
+   * the token at the source (`telegram.ts`), and any long digit run is
+   * dropped here too so nothing that could be a chat id reaches the page.
+   */
+  app.get('/api/v1/admin/bulk/broadcast/:id/failures', async (c) => {
+    const id = c.req.param('id');
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const { results } = await c.env.DB.prepare(
+      `SELECT r.user_id, u.username, r.error, r.attempts
+         FROM broadcast_recipients r
+         JOIN users u ON u.id = r.user_id
+        WHERE r.broadcast_id = ?1 AND r.status = 'FAILED'
+        ORDER BY r.user_id
+        LIMIT 500`,
+    )
+      .bind(id)
+      .all<{
+        user_id: number;
+        username: string | null;
+        error: string | null;
+        attempts: number;
+      }>();
+
+    const items = (results ?? []).map((r) => {
+      const reason = failureReason(r.error);
+      return {
+        userId: Number(r.user_id),
+        username: r.username,
+        kind: reason.kind,
+        reason: reason.text,
+        attempts: Number(r.attempts),
+      };
+    });
+    const byKind: Record<string, number> = {};
+    for (const it of items) byKind[it.kind] = (byKind[it.kind] ?? 0) + 1;
+    return c.json({ ok: true, items, byKind });
   });
 
   app.post('/api/v1/admin/bulk/credit', async (c) => {

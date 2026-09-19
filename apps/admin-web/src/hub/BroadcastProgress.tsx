@@ -75,7 +75,28 @@ export function BroadcastProgress() {
         {left > 0 ? `${count(left)} مانده` : 'تمام شد'}
         {remaining !== null ? ` (${remaining})` : ''}
         {p.failed > 0 ? `، ${count(p.failed)} نرسید` : ''}
+        {left > 0 ? ` — ${whatIsHappening(p, now)}` : ''}
       </span>
     </span>
   );
+}
+
+/**
+ * Why the bar is moving, or why it is not (#364).
+ *
+ * «مانده» used to be one number for three states, and on 2026-09-17 the bar
+ * sat on 12% for fifty minutes with nothing on the screen saying Telegram
+ * had asked for exactly that. The order is the order of what an operator
+ * should know first: a ban, then a bot that has gone quiet, then the pace.
+ */
+function whatIsHappening(p: NonNullable<BulkSend['progress']>, now: number): string {
+  if (p.pending === 0 && p.sending === 0 && p.waiting > 0 && p.waitingUntil !== null) {
+    const min = Math.max(1, Math.ceil((p.waitingUntil - now) / 60_000));
+    return `تلگرام گفته صبر کنید — تا حدود ${count(min)} دقیقهٔ دیگر`;
+  }
+  if (p.stranded > 0) return `${count(p.stranded)} ردیف نیمه‌کاره مانده — ربات وسط ارسال ری‌استارت شده`;
+  if (p.lastAt !== null && now - p.lastAt > 60_000 && p.sentLastMinute === 0) {
+    return `ارسالی نمی‌رود — آخرین ارسال ${count(Math.round((now - p.lastAt) / 1000))} ثانیه پیش`;
+  }
+  return `${count(p.sentLastMinute)} در دقیقه`;
 }

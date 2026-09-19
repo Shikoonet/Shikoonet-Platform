@@ -34,12 +34,15 @@
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import {
   isPermanentRejection,
+  rateLimitedForMs,
   TelegramRejection,
   type InlineKeyboard,
   type TelegramApi,
 } from './telegram.js';
 import { copyLinkMenu } from './menu.js';
 import { qrPng } from './qr.js';
+import { sendGapMs } from './broadcast.js';
+import { consumeSlot, pauseFor, pausedFor } from './pace.js';
 import { createLogger } from '@shikoo/domain';
 
 const log = createLogger('bot');
@@ -259,6 +262,14 @@ export async function flush(
   const limit = opts.limit ?? 50;
   const result: FlushResult = { sent: 0, failed: 0, dead: 0 };
 
+  // Telegram has said wait, to the other loop or to this one: sending a
+  // receipt into a ban does not deliver it and lengthens the ban for the
+  // broadcast (#364). Nothing is claimed, so nothing burns an attempt; the
+  // rows are simply still due when the pause lifts. Against the wall clock,
+  // not `opts.now`: the ban is Telegram's, and `now` is this queue's own
+  // bookkeeping clock, which the tests pin to a date.
+  if (pausedFor() > 0) return result;
+
   let rows: DueRow[];
   try {
     const { results } = await db
@@ -332,10 +343,18 @@ export async function flush(
         }
       }
       await deliver(db, api, row);
+      // This message took the broadcast's next slot. The outbox is not paced
+      // — a customer's receipt does not wait two seconds behind an
+      // announcement — but it is COUNTED, so the bot's rate stays the rate
+      // whichever queue a message came from (#364).
+      consumeSlot(sendGapMs());
       await settle(db, row.id, 'SENT', null, null);
       result.sent += 1;
       continue;
     } catch (err) {
+      // A 429 holds both loops, not just this row (#364).
+      const waitMs = rateLimitedForMs(err);
+      if (waitMs !== null) pauseFor(db, waitMs);
       // A customer who blocked the bot is not reachable by trying harder, and
       // eight attempts at one of those is eight attempts not spent on somebody
       // who can still be told.
