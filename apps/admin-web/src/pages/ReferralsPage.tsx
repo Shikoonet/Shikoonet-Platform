@@ -14,7 +14,7 @@
  * every handle is a `CustomerLink` to the card.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   api,
   ApiError,
@@ -57,8 +57,12 @@ export function ReferralsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
+  // A sort change and a page change can be in flight together; only the last
+  // one asked for may draw, or the older answer lands on the newer controls.
+  const seq = useRef(0);
 
   async function load(toPage = page) {
+    const mine = ++seq.current;
     setLoading(true);
     setErr(null);
     try {
@@ -73,13 +77,15 @@ export function ReferralsPage() {
         ...(Number.isInteger(minN) && minN > 1 ? { min: minN } : {}),
         ...(sinceIso ? { since: sinceIso } : {}),
       });
+      if (mine !== seq.current) return;
       setRows(d.items);
       setTotals(d.totals);
       setTotal(d.total);
     } catch (e) {
+      if (mine !== seq.current) return;
       setErr(message(e));
     } finally {
-      setLoading(false);
+      if (mine === seq.current) setLoading(false);
     }
   }
 

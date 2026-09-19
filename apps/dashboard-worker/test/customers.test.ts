@@ -866,10 +866,9 @@ describe('a customer’s referrals on their own page', () => {
           .run();
       }
     }
-    // One referral joined «last month» so `since` has something to exclude.
-    await baseEnv.DB.prepare(
-      `UPDATE users SET registered_at = now() - interval '40 days' WHERE id = ?1`,
-    )
+    // One referral joined years ago so `since` has something to exclude —
+    // a fixed date, not an offset from the clock, so the boundary never moves.
+    await baseEnv.DB.prepare(`UPDATE users SET registered_at = '2020-06-01' WHERE id = ?1`)
       .bind(kids.b3!.id)
       .run();
 
@@ -878,10 +877,12 @@ describe('a customer’s referrals on their own page', () => {
     await order(kids.b2!.id, 'NEW_PURCHASE', 300_000);
     await order(kids.b2!.id, 'WALLET_TOPUP', 9_000_000); // not a purchase
     await order(kids.b3!.id, 'TRIAL', 0); // not a purchase
+    const b3first = await order(kids.b3!.id, 'NEW_PURCHASE', 700_000);
     const o1first = await order(kids.o1!.id, 'NEW_PURCHASE', 2_000_000);
     const o1second = await order(kids.o1!.id, 'RENEWAL', 2_000_000);
     for (const [uid, oid, amt] of [
       [big.id, b1first, 100_000],
+      [big.id, b3first, 70_000],
       [one.id, o1first, 200_000],
       [one.id, o1second, 200_000],
     ] as const) {
@@ -923,15 +924,15 @@ describe('a customer’s referrals on their own page', () => {
     expect(all.items.map((r) => r.id)).not.toContain(nobody.id);
     expect(byId(all).get(big.id)).toMatchObject({
       invited: 3,
-      buyers: 2,
-      boughtIrr: 1_800_000,
-      commissionIrr: 100_000,
+      buyers: 3,
+      boughtIrr: 2_500_000,
+      commissionIrr: 170_000,
       username: `${HANDLE}rf_big`,
     });
     expect(byId(all).get(one.id)).toMatchObject({ invited: 1, buyers: 1, boughtIrr: 4_000_000, commissionIrr: 400_000 });
     expect(byId(all).get(idle.id)).toMatchObject({ invited: 2, buyers: 0, boughtIrr: 0, commissionIrr: 0 });
     expect(all.total).toBe(3);
-    expect(all.totals).toEqual({ referrers: 3, invited: 6, buyers: 3, boughtIrr: 5_800_000, commissionIrr: 500_000 });
+    expect(all.totals).toEqual({ referrers: 3, invited: 6, buyers: 4, boughtIrr: 6_500_000, commissionIrr: 570_000 });
 
     // Sorts: by what they earned, by what their people spent, by who joined last.
     expect((await list('sort=commission')).items.map((r) => r.id)).toEqual([one.id, big.id, idle.id]);
@@ -945,11 +946,16 @@ describe('a customer’s referrals on their own page', () => {
     expect((await list('buyers=no')).items.map((r) => r.id)).toEqual([idle.id]);
     expect((await list('min=2')).items.map((r) => r.id)).toEqual([big.id, idle.id]);
 
-    // `since` drops b3 (joined 40 days ago) and re-counts big's row: 2 of 2 bought.
-    const since = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
-    const recent = await list(`since=${since}`);
-    expect(byId(recent).get(big.id)).toMatchObject({ invited: 2, buyers: 2 });
-    expect(recent.totals.invited).toBe(5);
+    // `since` drops b3 (joined 2020) and re-counts big's row — the people, the
+    // purchases AND the commission, so the header stays one question.
+    const recent = await list('since=2021-01-01');
+    expect(byId(recent).get(big.id)).toMatchObject({
+      invited: 2,
+      buyers: 2,
+      boughtIrr: 1_800_000,
+      commissionIrr: 100_000,
+    });
+    expect(recent.totals).toMatchObject({ invited: 5, buyers: 3, commissionIrr: 500_000 });
 
     // Search by telegram id finds exactly that referrer.
     const res = await app.request(`/api/v1/admin/referrers?q=${one.telegramId}`, {}, envAs(ADMIN));
@@ -963,5 +969,6 @@ describe('a customer’s referrals on their own page', () => {
     // Nonsense is refused, not guessed.
     expect((await app.request('/api/v1/admin/referrers?sort=balance', {}, envAs(ADMIN))).status).toBe(400);
     expect((await app.request('/api/v1/admin/referrers?since=yesterday', {}, envAs(ADMIN))).status).toBe(400);
+    expect((await app.request('/api/v1/admin/referrers?since=2026-02-30', {}, envAs(ADMIN))).status).toBe(400);
   });
 });

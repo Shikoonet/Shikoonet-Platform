@@ -126,8 +126,16 @@ const ReferrersQuery = z.object({
   buyers: z.enum(['yes', 'no']).optional(),
   /** At least this many referrals. */
   min: z.coerce.number().int().min(1).optional(),
-  /** Referrals who joined on or after this day (ISO date). */
-  since: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  /** Referrals who joined on or after this day (ISO date). A real one: the
+   * `::date` cast would turn `2026-02-30` into a 500 instead of a 400. */
+  since: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((d) => {
+      const t = Date.parse(`${d}T00:00:00Z`);
+      return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === d;
+    })
+    .optional(),
   sort: z.enum(['invited', 'buyers', 'bought', 'commission', 'recent']).default('invited'),
 });
 
@@ -360,9 +368,12 @@ export function registerCustomerRoutes(
 
     const params: unknown[] = [];
     const refWhere: string[] = ['r.referred_by IS NOT NULL'];
+    // `since` is bound FIRST, as ?1, because the commission join below names
+    // it by that number too — the same cohort, or the header would say
+    // «this month's referrals» over a lifetime commission.
     if (since) {
       params.push(since);
-      refWhere.push(`r.registered_at >= ?${params.length}::date`);
+      refWhere.push(`r.registered_at >= ?1::date`);
     }
     const having: string[] = [];
     if (min) {
@@ -416,7 +427,9 @@ export function registerCustomerRoutes(
       LEFT JOIN LATERAL (
         SELECT coalesce(sum(e.amount_irr), 0)::bigint AS irr
           FROM wallet_entries e
+          ${since ? `JOIN orders o ON o.id = e.order_id JOIN users r ON r.id = o.user_id` : ''}
          WHERE e.user_id = u.id AND e.kind = 'REFERRAL_BONUS'
+           ${since ? `AND r.referred_by = u.id AND r.registered_at >= ?1::date` : ''}
       ) comm ON true
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
 
