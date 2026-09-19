@@ -28,6 +28,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { count } from '../format.js';
 import type { DeviceListItem } from './api.js';
+import { DELETE_WORD, typedDeleteWord } from './confirmWord.js';
 import { api } from './api.js';
 
 interface PreviewResponse {
@@ -135,11 +136,7 @@ export function DeleteDeviceModal({
       'این دستگاه سابقهٔ پیامک، حساب مالی یا تراکنش دارد. این‌ها هیچ‌وقت حذف نمی‌شوند — برای برداشتن دستگاه باید اول سابقه‌اش به یک دستگاه دیگر منتقل شود.',
   };
 
-  // Either the name or the code, so a phone with a long Persian display name
-  // still has a short thing to type.
-  const matchesTyped =
-    typed.trim() === preview?.device.displayName.trim() ||
-    typed.trim() === preview?.device.deviceCode;
+  const matchesTyped = typedDeleteWord(typed);
 
   // Two routes to the same end, and each has its own precondition.
   const plainDeleteReady = !!preview && preview.canDelete;
@@ -266,8 +263,7 @@ export function DeleteDeviceModal({
           <div className="form">
             <label>
               <span>
-                برای تایید <code>{preview!.device.displayName}</code> یا{' '}
-                <code>{preview!.device.deviceCode}</code> را بنویس:
+                برای تایید <code>{DELETE_WORD}</code> را بنویس:
               </span>
               <input
                 type="text"
@@ -296,7 +292,7 @@ export function DeleteDeviceModal({
                 : inUse && !moveDeleteReady
                   ? 'یک دستگاه مقصد برای انتقال سابقه انتخاب کن.'
                   : !matchesTyped
-                    ? 'برای تایید، نام یا کد دستگاه را دقیقاً بنویس.'
+                    ? `برای تایید، ${DELETE_WORD} را بنویس.`
                     : 'این دستگاه برای همیشه حذف شود'
             }
           >

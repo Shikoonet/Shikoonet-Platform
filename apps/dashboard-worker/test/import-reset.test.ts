@@ -84,7 +84,7 @@ describe('who may empty a shop', () => {
     await customer(991_100_001);
     const before = await count('users');
 
-    const res = await post({ confirm: ENV_NAME }, envAs(REVIEWER));
+    const res = await post({ confirm: 'Delete' }, envAs(REVIEWER));
 
     expect(res.status).toBe(403);
     // The status is the claim; this is the check. A 403 that truncated anyway
@@ -100,11 +100,11 @@ describe('who may empty a shop', () => {
 });
 
 describe('the typed confirmation', () => {
-  it('refuses a phrase that is not this environment name', async () => {
+  it('refuses a phrase that is not the word', async () => {
     await customer(991_100_002);
     const before = await count('users');
 
-    const res = await post({ confirm: 'production' }, envAs(ADMIN));
+    const res = await post({ confirm: ENV_NAME }, envAs(ADMIN));
 
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe('wrong_confirmation');
@@ -121,34 +121,27 @@ describe('the typed confirmation', () => {
     // `.strict()`, on the one route where being quietly ignored would matter
     // most: a `force: true` that the server drops without saying so reads to
     // the caller like a `force: true` that worked.
-    const res = await post({ confirm: ENV_NAME, force: true }, envAs(ADMIN));
+    const res = await post({ confirm: 'Delete', force: true }, envAs(ADMIN));
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe('invalid_body');
   });
 
-  it('compares against the server, not against the browser', async () => {
+  it('takes the word in any case, and checks it on the server', async () => {
     /**
-     * The point of the whole confirmation, and the one thing a test can say
-     * about it that reading the code cannot.
-     *
-     * The phrase is checked against `ENV_NAME` as this worker was booted with
-     * — `server.ts` reads it once through `parseEnvName`. Here the boot says
-     * `local`, the caller types the `test` the rest of this file uses, and it
-     * is refused. Which is the lesson CLAUDE.md records: a uuid in a notes
-     * file said «dashboard» and was production.
-     *
-     * `local` rather than `production` for the mismatch, and the reason is
-     * itself a guard: `TEST_ACCESS_USER` is refused outside a relaxed
-     * environment, so booting this as production would have answered 403 and
-     * proved the login bypass rather than the confirmation.
+     * Until 2026-09-19 this test proved the phrase was the environment's name
+     * as the SERVER was booted with it. Sam then asked for one word across
+     * every delete («اونم delete کن»), so what is left to prove is the half
+     * that still matters: the route itself refuses without the word — a screen
+     * that forgot to ask could not empty the shop — and the word is not a
+     * spelling test, so ` delete ` is as good as `Delete`.
      */
     await customer(991_100_003);
-    const before = await count('users');
+    expect(await count('users')).toBeGreaterThan(0);
 
-    const res = await post({ confirm: 'test' }, envAs(ADMIN, { ENV_NAME: 'local' }));
+    const res = await post({ confirm: ' delete ' }, envAs(ADMIN, { ENV_NAME: 'local' }));
 
-    expect(res.status).toBe(400);
-    expect(await count('users')).toBe(before);
+    expect(res.status).toBe(200);
+    expect(await count('users')).toBe(0);
   });
 });
 
@@ -163,7 +156,7 @@ describe('while an import is running', () => {
       .bind(crypto.randomUUID(), ADMIN)
       .run();
 
-    const res = await post({ confirm: ENV_NAME }, envAs(ADMIN));
+    const res = await post({ confirm: 'Delete' }, envAs(ADMIN));
 
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toBe('import_already_running');
@@ -204,7 +197,7 @@ describe('the reset itself', () => {
     expect(await count('users')).toBeGreaterThan(0);
     const operators = await count('access_users');
 
-    const res = await post({ confirm: ENV_NAME }, envAs(ADMIN));
+    const res = await post({ confirm: 'Delete' }, envAs(ADMIN));
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {

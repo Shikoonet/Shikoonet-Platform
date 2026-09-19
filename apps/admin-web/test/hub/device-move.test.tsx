@@ -116,10 +116,10 @@ describe('deleting a device that carries history', () => {
     await screen.findByTestId('device-move-summary');
 
     const button = screen.getByRole('button', { name: 'انتقال سابقه و حذف همیشگی' });
-    // Still gated on typing the name: picking a target is not consent.
+    // Still gated on typing the word: picking a target is not consent.
     expect((button as HTMLButtonElement).disabled).toBe(true);
 
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'phone-old' } });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Delete' } });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(button);
 
@@ -225,7 +225,7 @@ describe('deleting a device that carries history', () => {
       />,
     );
 
-    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'phone-old' } });
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'Delete' } });
     fireEvent.click(screen.getByRole('button', { name: 'حذف همیشگی' }));
 
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith('d-old'));

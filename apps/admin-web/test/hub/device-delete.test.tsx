@@ -180,12 +180,14 @@ describe('DevicesView Delete permanently — desktop path', () => {
     fireEvent.change(input, { target: { value: 'wrong' } });
     expect(confirm.disabled).toBe(true);
 
-    // Type display name → enabled.
+    // The device's own name is no longer the word.
     fireEvent.change(input, { target: { value: INACTIVE_DEVICE.display_name } });
-    expect(confirm.disabled).toBe(false);
+    expect(confirm.disabled).toBe(true);
 
-    // Replace with device code → also enabled.
-    fireEvent.change(input, { target: { value: INACTIVE_DEVICE.device_code } });
+    // «Delete» is, in any case.
+    fireEvent.change(input, { target: { value: 'Delete' } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.change(input, { target: { value: ' delete ' } });
     expect(confirm.disabled).toBe(false);
   });
 
@@ -211,7 +213,7 @@ describe('DevicesView Delete permanently — desktop path', () => {
     await waitFor(() => screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' }));
     const dialog = screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' });
     const input = dialog.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.change(input, { target: { value: INACTIVE_DEVICE.display_name } });
+    fireEvent.change(input, { target: { value: 'Delete' } });
     fireEvent.click(dialog.querySelector('button.danger') as HTMLButtonElement);
 
     // Modal closes.
@@ -254,7 +256,7 @@ describe('DevicesView Delete permanently — regression: polling does not reopen
     await waitFor(() => screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' }));
     const dialog = screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' });
     const input = dialog.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.change(input, { target: { value: INACTIVE_DEVICE.display_name } });
+    fireEvent.change(input, { target: { value: 'Delete' } });
 
     // Simulate a background refetch by waiting a tick.
     await act(async () => {
@@ -265,7 +267,7 @@ describe('DevicesView Delete permanently — regression: polling does not reopen
     const dialogAfter = screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' });
     expect(dialogAfter).toBeTruthy();
     expect((dialogAfter.querySelector('input[type="text"]') as HTMLInputElement).value).toBe(
-      INACTIVE_DEVICE.display_name,
+      'Delete',
     );
   });
 });
