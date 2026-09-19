@@ -310,3 +310,47 @@ test('the card lists this customer’s own orders and services', async ({ page }
   expect(asked.every((u) => u.includes(`customerId=${row!.id}`))).toBe(true);
   expect(asked.length).toBeGreaterThan(0);
 });
+
+/**
+ * «زیرمجموعه‌هاش کیا هستن، کی اومدن، چقدر خریدن» — Sam, 2026-09-19. The
+ * card lists who this customer brought, and each row is a door to that
+ * customer's own card, where «معرف» points back.
+ */
+test('the card lists the customers this one brought, and each one names them back', async ({
+  page,
+}) => {
+  const CHILD_TG = TELEGRAM_ID + 1;
+  const CHILD = 'e2e_referred';
+  const parent = await withDb((d) =>
+    d.prepare(`SELECT id FROM users WHERE telegram_id = ?1`).bind(TELEGRAM_ID).first<{ id: number }>(),
+  );
+  await withDb(async (d) => {
+    await d.prepare(`DELETE FROM users WHERE telegram_id = ?1`).bind(CHILD_TG).run();
+    await d
+      .prepare(
+        `INSERT INTO users (telegram_id, username, status, referred_by, registered_at)
+         VALUES (?1, ?2, 'ACTIVE', ?3, now())`,
+      )
+      .bind(CHILD_TG, CHILD, parent!.id)
+      .run();
+  });
+  try {
+    await page.goto(`/admin/customers?id=${parent!.id}`);
+    const table = page.locator('h4:has-text("زیرمجموعه‌ها") + .table-wrap');
+    await expect(table.locator('tbody tr')).toHaveCount(1);
+    await expect(table.locator('tbody tr').first()).toContainText(`@${CHILD}`);
+    await expect(table.locator('tbody tr').first()).toContainText(String(CHILD_TG));
+    // The parent was brought by nobody.
+    await expect(page.getByText('معرف این کاربر')).toHaveCount(0);
+
+    // Through the row into the child's card, where the parent is named.
+    await table.getByRole('link', { name: `@${CHILD}` }).click();
+    await expect(page.locator('.card__title')).toContainText(`@${CHILD}`);
+    await expect(page.getByText('معرف این کاربر')).toContainText(`@${HANDLE}`);
+    await expect(page.locator('h4:has-text("زیرمجموعه‌ها") + .table-wrap')).toContainText(
+      'کسی با لینک این کاربر وارد ربات نشده است',
+    );
+  } finally {
+    await withDb((d) => d.prepare(`DELETE FROM users WHERE telegram_id = ?1`).bind(CHILD_TG).run());
+  }
+});
