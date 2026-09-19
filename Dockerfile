@@ -161,6 +161,18 @@ COPY migrations migrations
 
 COPY --from=build /app/apps/admin-web/dist apps/admin-web/dist
 
+# `pg_dump`, for the three-hourly backup the bot posts into its reports group
+# (`apps/bot/src/backup.ts`). From PostgreSQL's own apt repository rather than
+# Debian's, because bookworm ships client 15 and a `pg_dump` older than the
+# server it dumps refuses to run — the sim, CI and the host all run 16. About
+# 5 MB. `postgresql-common` brings the script that adds the repository and its
+# key; the lists are removed in the same layer so they are not shipped.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-common ca-certificates \
+ && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
+ && apt-get install -y --no-install-recommends postgresql-client-16 \
+ && rm -rf /var/lib/apt/lists/*
+
 # Absolute, because the default in `server.ts` is relative to the working
 # directory and would resolve outside /app.
 ENV ADMIN_DIST=/app/apps/admin-web/dist

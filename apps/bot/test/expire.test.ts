@@ -328,6 +328,7 @@ describe('a sweep that runs on a bot nobody is talking to', () => {
       sendPhoto: async () => undefined,
       sendPhotoBytes: async () => undefined,
       sendDocument: async () => undefined,
+      sendDocumentBytes: async () => undefined,
       getChatMember: async () => 'member',
       editMessageText: async () => undefined,
       answerCallbackQuery: async () => undefined,

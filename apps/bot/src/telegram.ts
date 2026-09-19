@@ -398,6 +398,20 @@ export interface TelegramApi {
    */
   sendDocument(chatId: number, fileId: string, caption?: string): Promise<void>;
   /**
+   * Uploads a file we produced ourselves — the database dump.
+   *
+   * `sendPhotoBytes` with a filename and a topic, and without the keyboard: a
+   * backup goes into «🤖 بکاپ ربات» and nobody presses anything on it. The
+   * timeout is long because the body is the whole database.
+   */
+  sendDocumentBytes(
+    chatId: number,
+    bytes: Uint8Array,
+    filename: string,
+    caption?: string,
+    threadId?: number | null,
+  ): Promise<void>;
+  /**
    * Removes a message from the chat.
    *
    * In a private chat a bot may delete both its OWN messages and the ones the
@@ -983,6 +997,20 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
         form.set('reply_markup', JSON.stringify({ inline_keyboard: keyboardFor(keyboard, false) }));
       }
       await callForm('sendPhoto', form, 30_000);
+    },
+
+    async sendDocumentBytes(chatId, bytes, filename, caption, threadId) {
+      const form = new FormData();
+      form.set('chat_id', String(chatId));
+      // Same copy as `sendPhotoBytes`, for the same reason: a `Buffer` is a
+      // view onto a shared pool.
+      const own = new Uint8Array(bytes.byteLength);
+      own.set(bytes);
+      form.set('document', new Blob([own], { type: 'application/octet-stream' }), filename);
+      if (caption !== undefined) form.set('caption', clampCaption(caption));
+      const thread = topic(threadId)['message_thread_id'];
+      if (thread !== undefined) form.set('message_thread_id', String(thread));
+      await callForm('sendDocument', form, 120_000);
     },
 
     async sendDocument(chatId, fileId, caption) {

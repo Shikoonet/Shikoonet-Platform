@@ -40,6 +40,7 @@ import {
   type BroadcastMessage,
 } from './broadcast.js';
 import { sweepDailyReport } from './report.js';
+import { sweepBackup } from './backup.js';
 import { rateLimitedForMs } from './telegram.js';
 import { heldFor, loadPause, pauseFor, reserveSlot } from './pace.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
@@ -1083,6 +1084,10 @@ export async function run(
         if (queued.length > 0) log.info('report.queued', { nights: queued.join(',') });
         return queued.length;
       });
+      // «🤖 بکاپ ربات», every three hours. Cheap when not due — one index read
+      // on `app_events` — and the `sweep.acted` row this helper writes when it
+      // returns 1 is what the next cycle measures three hours from.
+      await sweep('backing up the database', () => sweepBackup(db, api), 'backup');
       // Neither the outbox nor the broadcast is sent here. Each has its own
       // loop beside this one (`drainNotifications`, `drainBroadcasts`), started
       // above: a sweep that runs once per cycle sends once per 25-second wait,

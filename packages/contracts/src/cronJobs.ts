@@ -40,7 +40,8 @@ export type CronJobKey =
   | 'expire_orders'
   | 'remove_expired'
   | 'remove_volume'
-  | 'nudge_never_bought';
+  | 'nudge_never_bought'
+  | 'backup';
 
 /**
  * A setting an operator may type a number into.
@@ -246,6 +247,19 @@ export const CRON_JOBS: readonly CronJob[] = [
     texts: ['NUDGE_NEVER_BOUGHT'],
     // Sends a message to somebody who has never paid us anything. It takes
     // nothing away, so it is not in the same class as the two above it.
+    destructive: false,
+  },
+  {
+    key: 'backup',
+    name: 'بکاپ ربات',
+    what: 'هر سه ساعت یک خروجی کامل از دیتابیس می‌گیرد و در تاپیک «🤖 بکاپ ربات» گروه گزارش‌ها می‌فرستد. بدون گروه گزارش، هیچ‌کاری نمی‌کند.',
+    // No switch and no number: the group is the switch (legacy's rule too —
+    // `backupbot.php` returns when `Channel_Report` is empty), and three hours
+    // is what Sam asked for on 2026-09-19. A knob nobody asked for is a knob
+    // somebody sets to 720 and forgets.
+    toggle: null,
+    numbers: [],
+    texts: [],
     destructive: false,
   },
 ];
