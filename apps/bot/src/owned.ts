@@ -262,7 +262,18 @@ const RENEWABLE = `
    OR (s.status = 'DISABLED'
        AND COALESCE(s.legacy_status, '') NOT IN ('disabled', 'disabledn', 'disablebyadmin')))
   AND s.remote_username IS NOT NULL
-  AND pv.status = 'ACTIVE'
+  -- «A panel that is still there» is an ACTIVE row at the service's address,
+  -- not necessarily its own: since #271 the rows sharing an address are tiers
+  -- of one panel, and renewalPanelsFor already offers every ACTIVE sibling.
+  -- The list used to ask the service's OWN row to be ACTIVE, so an account on
+  -- a tier the admin had retired from sale read «سرویسی برای تمدید ندارید»
+  -- while the panel next to it could have renewed it. The PHP list asked the
+  -- panel nothing at all (index.php:6355).
+  AND EXISTS (
+        SELECT 1 FROM provisioning_providers x
+         WHERE x.status = 'ACTIVE'
+           AND (x.id = pv.id OR NULLIF(x.base_url, '') = NULLIF(pv.base_url, ''))
+      )
   -- An account from the shelf is bought, not extended: there is no panel to
   -- add days to, and «renewing» it used to take the money and put the order
   -- in a queue nobody could see. Sam, 2026-09-15: «اکانتها یک بار مصرف هستن و
