@@ -29,6 +29,7 @@ import {
   type CustomerDetail,
   type CustomerListItem,
   type CustomerPayments,
+  type CustomerReferral,
   type WalletEntryRow,
   type CustomerHistoryRow,
   type OrderRow,
@@ -386,6 +387,7 @@ function CustomerDrawer({
   const [entries, setEntries] = useState<WalletEntryRow[]>([]);
   const [history, setHistory] = useState<CustomerHistoryRow[]>([]);
   const [payments, setPayments] = useState<CustomerPayments | null>(null);
+  const [referral, setReferral] = useState<CustomerReferral | null>(null);
   /**
    * What this customer bought, on this card.
    *
@@ -436,6 +438,7 @@ function CustomerDrawer({
       setCustomer(d.customer);
       setEntries(d.entries);
       setPayments(d.payments);
+      setReferral(d.referral);
       // The field starts at what the customer already has, so «ذخیره» without
       // typing is a no-op rather than a silent reset to zero.
       setDiscount(String(d.customer.discountPercent));
@@ -776,7 +779,18 @@ function CustomerDrawer({
             />
             <Fact label="عضویت" value={dateTime(customer.registeredAt)} />
             <Fact label="آخرین بازدید" value={dateTime(customer.lastSeenAt)} />
+            {/* The bot's «زیرمجموعه‌گیری» screen shows the customer these same
+                two numbers, from the same two queries. */}
+            <Fact
+              label="زیرمجموعه‌ها"
+              value={referral ? `${count(referral.invited)} · ${toman(referral.earnedIrr)}` : '—'}
+            />
           </div>
+          {referral?.referredBy && (
+            <p className="muted" style={{ marginBlockStart: 8 }}>
+              معرف این کاربر: <CustomerLink customer={referral.referredBy} />
+            </p>
+          )}
 
           <h4>اصلاح کیف پول</h4>
           <p className="muted" style={{ marginBlockStart: 0 }}>
@@ -1048,6 +1062,44 @@ function CustomerDrawer({
                     <td>{count(c.payments)}</td>
                     <td>{toman(c.amountIrr)}</td>
                     <td>{c.lastPaidAt ? dateTime(c.lastPaidAt) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* «زیرمجموعه‌هاش کیا هستن، کی اومدن، چقدر خریدن» — Sam, 2026-09-19.
+              Each row is a door to that customer's own card, where the
+              «معرف» line above points back here. */}
+          <h4>زیرمجموعه‌ها{referral && referral.invited > 0 ? ` (${count(referral.invited)})` : ''}</h4>
+          <div className="table-wrap">
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th>کاربر</th>
+                  <th>آیدی</th>
+                  <th>عضویت</th>
+                  <th>خریدها</th>
+                  <th>پورسانت به این کاربر</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(referral?.referrals.length ?? 0) === 0 && (
+                  <tr>
+                    <td className="empty" colSpan={5}>
+                      کسی با لینک این کاربر وارد ربات نشده است.
+                    </td>
+                  </tr>
+                )}
+                {referral?.referrals.map((r) => (
+                  <tr key={r.id}>
+                    <td>
+                      <CustomerLink customer={r} />
+                    </td>
+                    <td className="ltr">{r.telegramId}</td>
+                    <td>{dateTime(r.joinedAt)}</td>
+                    <td>{`${count(r.purchases)} · ${toman(r.boughtIrr)}`}</td>
+                    <td>{toman(r.commissionIrr)}</td>
                   </tr>
                 ))}
               </tbody>

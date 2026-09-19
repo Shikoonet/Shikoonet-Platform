@@ -300,9 +300,11 @@ export function registerCustomerRoutes(
     const row = await c.env.DB.prepare(
       `SELECT u.id, u.telegram_id, u.username, u.phone, u.phone_verified, u.status,
               u.blocked_reason, u.is_reseller, u.discount_percent, ${TIER_COLUMNS},
-              u.referral_code, u.registered_at, u.last_seen_at, w.balance_irr
+              u.referral_code, u.registered_at, u.last_seen_at, w.balance_irr,
+              u.referred_by, p.telegram_id AS parent_telegram_id, p.username AS parent_username
          FROM users u
          LEFT JOIN wallets w ON w.user_id = u.id
+         LEFT JOIN users p ON p.id = u.referred_by
          ${TIER_JOIN}
         WHERE u.id = ?1`,
     )
@@ -311,9 +313,61 @@ export function registerCustomerRoutes(
         CustomerRow & {
           phone_verified: boolean;
           referral_code: string | null;
+          referred_by: number | null;
+          parent_telegram_id: number | null;
+          parent_username: string | null;
         }
       >();
     if (!row) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    /**
+     * «زیرمجموعه‌هاش کیا هستن، کی اومدن، چقدر خریدن» — Sam, 2026-09-19. The
+     * bot's own screen says two numbers and this page said nothing; the answer
+     * lived in SQL on the server.
+     *
+     * A «purchase» is counted the way `apps/bot/src/referral.ts` counts one
+     * before paying commission — PAID or later, not a top-up, not a trial — so
+     * the number beside a referral is the number the commission rule saw, not
+     * a third definition of «bought» (rule 6). `commission_irr` is the
+     * REFERRAL_BONUS entry that referral's order wrote for THIS customer; the
+     * `idempotency_key` guarantees there is at most one per order.
+     *
+     * `joined_at` is when they registered, which for a link arrival is the
+     * same moment: `claimReferrer` writes no timestamp of its own.
+     */
+    const referrals = await c.env.DB.prepare(
+      `SELECT r.id, r.telegram_id, r.username, r.registered_at,
+              (SELECT count(*)::int FROM orders o
+                WHERE o.user_id = r.id
+                  AND o.kind NOT IN ('WALLET_TOPUP', 'TRIAL')
+                  AND o.status IN ('PAID', 'PROVISIONING', 'COMPLETED')) AS purchases,
+              (SELECT coalesce(sum(o.total_irr), 0)::bigint FROM orders o
+                WHERE o.user_id = r.id
+                  AND o.kind NOT IN ('WALLET_TOPUP', 'TRIAL')
+                  AND o.status IN ('PAID', 'PROVISIONING', 'COMPLETED')) AS bought_irr,
+              (SELECT coalesce(sum(e.amount_irr), 0)::bigint
+                 FROM wallet_entries e JOIN orders o ON o.id = e.order_id
+                WHERE e.user_id = ?1 AND e.kind = 'REFERRAL_BONUS' AND o.user_id = r.id) AS commission_irr
+         FROM users r
+        WHERE r.referred_by = ?1
+        ORDER BY r.registered_at ASC, r.id ASC`,
+    )
+      .bind(id)
+      .all<{
+        id: number;
+        telegram_id: number;
+        username: string | null;
+        registered_at: string;
+        purchases: number;
+        bought_irr: number;
+        commission_irr: number;
+      }>();
+    const earned = await c.env.DB.prepare(
+      `SELECT coalesce(sum(amount_irr), 0)::bigint AS n FROM wallet_entries
+        WHERE user_id = ?1 AND kind = 'REFERRAL_BONUS'`,
+    )
+      .bind(id)
+      .first<{ n: number }>();
 
     const entries = await c.env.DB.prepare(
       `SELECT amount_irr, kind, actor, note, created_at
@@ -424,6 +478,27 @@ export function registerCustomerRoutes(
         note: e.note,
         createdAt: e.created_at,
       })),
+      referral: {
+        referredBy:
+          row.referred_by === null
+            ? null
+            : {
+                id: row.referred_by,
+                telegramId: row.parent_telegram_id,
+                username: row.parent_username,
+              },
+        invited: referrals.results?.length ?? 0,
+        earnedIrr: Number(earned?.n ?? 0),
+        referrals: (referrals.results ?? []).map((r) => ({
+          id: r.id,
+          telegramId: r.telegram_id,
+          username: r.username,
+          joinedAt: r.registered_at,
+          purchases: Number(r.purchases),
+          boughtIrr: Number(r.bought_irr),
+          commissionIrr: Number(r.commission_irr),
+        })),
+      },
     });
   });
 

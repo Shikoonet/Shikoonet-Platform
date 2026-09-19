@@ -739,3 +739,107 @@ describe('the money on a customer’s own page', () => {
     expect(body.payments.byCard).toEqual([]);
   });
 });
+
+/**
+ * «زیرمجموعه‌هاش کیا هستن، کی اومدن، چقدر خریدن» — Sam, 2026-09-19.
+ *
+ * The bot's own screen says two numbers (how many, how much earned) and the
+ * dashboard said nothing at all: `referred_by` was not even in the API. The
+ * only way to answer was SQL on the server.
+ *
+ * A «purchase» here is what `apps/bot/src/referral.ts` pays commission on —
+ * PAID or later, not a top-up, not a trial — so the count beside a referral
+ * is the count the commission rule saw, not a third definition of «bought».
+ */
+describe('a customer’s referrals on their own page', () => {
+  async function order(userId: number, kind: string, totalIrr: number, status = 'COMPLETED') {
+    // `orders_trial_is_free` wants a provider on a trial; nothing else does.
+    const provider =
+      kind === 'TRIAL'
+        ? await baseEnv.DB.prepare(
+            `INSERT INTO provisioning_providers (code, name, kind, status)
+             VALUES ('zzref-panel', 'zzref-panel', 'manual', 'ACTIVE')
+             ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+          ).first<{ id: number }>()
+        : null;
+    const row = await baseEnv.DB.prepare(
+      `INSERT INTO orders (public_id, user_id, kind, provider_id, unit_price_irr, total_irr, status, completed_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, now()) RETURNING id`,
+    )
+      .bind(`zzref-${userId}-${++seq}`, userId, kind, provider?.id ?? null, totalIrr, status)
+      .first<{ id: number }>();
+    return Number(row!.id);
+  }
+
+  async function detail(id: number) {
+    const res = await app.request(`/api/v1/admin/customers/${id}`, {}, envAs(ADMIN));
+    expect(res.status).toBe(200);
+    return (await res.json()) as {
+      referral: {
+        referredBy: { id: number; telegramId: number; username: string | null } | null;
+        invited: number;
+        earnedIrr: number;
+        referrals: {
+          id: number;
+          telegramId: number;
+          username: string | null;
+          joinedAt: string;
+          purchases: number;
+          boughtIrr: number;
+          commissionIrr: number;
+        }[];
+      };
+    };
+  }
+
+  it('lists who this customer brought, what each bought, and what each paid them', async () => {
+    const referrer = await makeCustomer('ref_parent');
+    const buyer = await makeCustomer('ref_buyer');
+    const idle = await makeCustomer('ref_idle');
+    await baseEnv.DB.prepare(`UPDATE users SET referred_by = ?1 WHERE id IN (?2, ?3)`)
+      .bind(referrer.id, buyer.id, idle.id)
+      .run();
+
+    // Two real purchases, a top-up and a trial: only the two count.
+    const first = await order(buyer.id, 'NEW_PURCHASE', 1_000_000);
+    await order(buyer.id, 'RENEWAL', 500_000, 'PAID');
+    await order(buyer.id, 'WALLET_TOPUP', 2_000_000);
+    await order(buyer.id, 'TRIAL', 0);
+    await order(buyer.id, 'NEW_PURCHASE', 9_000_000, 'AWAITING_PAYMENT');
+    await baseEnv.DB.prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, idempotency_key)
+       VALUES (?1, 100000, 'REFERRAL_BONUS', ?2, ?3)`,
+    )
+      .bind(referrer.id, first, `referral:${first}`)
+      .run();
+
+    const parent = await detail(referrer.id);
+    expect(parent.referral.referredBy).toBeNull();
+    expect(parent.referral.invited).toBe(2);
+    expect(parent.referral.earnedIrr).toBe(100_000);
+    expect(parent.referral.referrals).toHaveLength(2);
+    expect(parent.referral.referrals.map((r) => r.id)).toEqual([buyer.id, idle.id]);
+    expect(parent.referral.referrals[0]).toMatchObject({
+      telegramId: buyer.telegramId,
+      purchases: 2,
+      boughtIrr: 1_500_000,
+      commissionIrr: 100_000,
+    });
+    expect(parent.referral.referrals[1]).toMatchObject({
+      telegramId: idle.telegramId,
+      purchases: 0,
+      boughtIrr: 0,
+      commissionIrr: 0,
+    });
+    expect(typeof parent.referral.referrals[0]!.joinedAt).toBe('string');
+
+    // The child's page names the parent, and has no referrals of its own.
+    const child = await detail(buyer.id);
+    expect(child.referral.referredBy).toMatchObject({
+      id: referrer.id,
+      telegramId: referrer.telegramId,
+    });
+    expect(child.referral.invited).toBe(0);
+    expect(child.referral.referrals).toEqual([]);
+  });
+});

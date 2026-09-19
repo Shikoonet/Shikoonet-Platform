@@ -140,6 +140,28 @@ export interface CustomerPayments {
   byCard: CustomerCardPayments[];
 }
 
+/** One customer this one brought to the bot, and what that was worth. */
+export interface CustomerReferralRow {
+  id: number;
+  telegramId: number;
+  username: string | null;
+  /** Their registration — a link arrival is claimed in the same moment. */
+  joinedAt: string;
+  /** Counted as `referral.ts` counts a purchase before paying commission. */
+  purchases: number;
+  boughtIrr: number;
+  /** What their first purchase paid THIS customer. */
+  commissionIrr: number;
+}
+
+/** «زیرمجموعه‌هاش کیا هستن، کی اومدن، چقدر خریدن». */
+export interface CustomerReferral {
+  referredBy: { id: number; telegramId: number; username: string | null } | null;
+  invited: number;
+  earnedIrr: number;
+  referrals: CustomerReferralRow[];
+}
+
 export interface CustomerDetail {
   id: number;
   telegramId: number;
@@ -1793,6 +1815,7 @@ export const api = {
       customer: CustomerDetail;
       payments: CustomerPayments;
       entries: WalletEntryRow[];
+      referral: CustomerReferral;
     }>(`/customers/${id}`);
   },
 
