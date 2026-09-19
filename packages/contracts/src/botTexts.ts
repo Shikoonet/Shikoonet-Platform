@@ -1894,8 +1894,10 @@ export const TEXTS = {
    * no `parse_mode` (`menu.ts:938`) and the tags would be shown as
    * characters. Whitespace oddities are legacy's own and deliberate: a line
    * of four spaces, a double space before «و», a colon glued to its value.
-   * `apps/bot/test/report-templates.test.ts` reads `fa.php` itself and
-   * compares, so a retyped string cannot drift from the file it came from.
+   * `apps/bot/test/report-templates.test.ts` reads the tracked
+   * `legacy/mirzabot-php/lang/fa.php` itself and compares, so a retyped
+   * string cannot drift from the file it came from. (The `src/` clone beside
+   * it has the same strings under newer key names and is not in git.)
    *
    * Which legacy variant, where legacy has several: the card-to-card
    * «after pay» flow (`function.php:1147`, `:1279`, `:1359`, `:1431`), because
