@@ -13,8 +13,8 @@
  * later, and it stops at the server.
  */
 
-import { useEffect, useState } from 'react';
-import { count } from '../format.js';
+import { Fragment, useEffect, useState } from 'react';
+import { count, dateTime } from '../format.js';
 import { useWriteProps } from '../role.js';
 import { directionLabel } from './format.js';
 
@@ -85,9 +85,227 @@ async function readJson<T>(r: Response): Promise<T & { error?: string; problems?
 export function BanksView() {
   return (
     <div className="banks-view">
+      <UnparsedSmsPanel />
       <CardPrefixesPanel />
       <SmsPatternsPanel />
     </div>
+  );
+}
+
+interface SenderCoverage {
+  sender: string;
+  total: number;
+  filtered: number;
+  named: number;
+  generic: number;
+  unread: number;
+  lastAt: number;
+  parsers: { parserId: string; n: number }[];
+}
+
+interface UnparsedShape {
+  sender: string;
+  shape: string;
+  count: number;
+  lastAt: number;
+  parserId: string | null;
+  classification: string;
+  reason: 'unread' | 'generic';
+  sampleEventId: string;
+  sampleBody: string;
+}
+
+/**
+ * Which texts the parsers read, and which they did not — by sender, and then
+ * by the shape of each text nobody read. Every text the phone relays is
+ * already kept; this is the first place it can be seen. The CSV is what gets
+ * handed to whoever writes the next parser.
+ */
+function UnparsedSmsPanel() {
+  const [days, setDays] = useState(14);
+  const [coverage, setCoverage] = useState<SenderCoverage[]>([]);
+  const [shapes, setShapes] = useState<UnparsedShape[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [tests, setTests] = useState<Record<string, SmsTestResult | undefined>>({});
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const [c, u] = await Promise.all([
+        fetch(`/api/v1/admin/sms/coverage?days=${days}`),
+        fetch(`/api/v1/admin/sms/unparsed?days=${days}`),
+      ]);
+      if (!c.ok || !u.ok) {
+        if (alive) setErr(`بارگذاری ناموفق بود (${c.ok ? u.status : c.status})`);
+        return;
+      }
+      const cj = await readJson<{ items: SenderCoverage[] }>(c);
+      const uj = await readJson<{ items: UnparsedShape[] }>(u);
+      if (alive) {
+        setCoverage(cj.items ?? []);
+        setShapes(uj.items ?? []);
+        setErr(null);
+      }
+    })().catch((e: unknown) => alive && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, [days]);
+
+  async function tryParse(key: string, body: string) {
+    const r = await fetch('/api/v1/banks/test-sms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: body }),
+    });
+    const j = await readJson<SmsTestResult>(r);
+    if (!r.ok) {
+      setErr(j.error ?? `${r.status}`);
+      return;
+    }
+    setTests((t) => ({ ...t, [key]: j }));
+  }
+
+  const unread = shapes.filter((s) => s.reason === 'unread').reduce((a, s) => a + s.count, 0);
+  const generic = shapes.filter((s) => s.reason === 'generic').reduce((a, s) => a + s.count, 0);
+  const light = (c: SenderCoverage) => (c.unread ? 'badge-block' : c.generic ? 'badge-warning' : 'badge-active');
+
+  return (
+    <section className="banks-panel" data-testid="unparsed-sms">
+      <h3>پیامک‌های بی‌پارسر</h3>
+      <p className="muted">
+        هر پیامکی که به گوشی می‌رسد نگه داشته می‌شود. این‌جا می‌بینی کدام فرستنده را یک تحلیل‌گر
+        نام‌دار خوانده، کدام را یک تحلیل‌گر عمومی <em>حدس</em> زده (خطرناک: می‌تواند مانده را غلط
+        بخواند)، و کدام هیچ ردیفی نساخته — معمولاً شکل برداشتی که بانک تازه فرستاده. پایین، هر شکل
+        ناخوانده یک بار با شمارنده و یک نمونه. خروجی CSV را بده تا تحلیل‌گرش نوشته شود.
+      </p>
+      {err && <div className="error">{err}</div>}
+      <div className="row toolbar" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
+        <select value={days} onChange={(e) => setDays(Number(e.target.value))} aria-label="بازه" style={{ maxWidth: 140 }}>
+          <option value={7}>۷ روز اخیر</option>
+          <option value={14}>۱۴ روز اخیر</option>
+          <option value={30}>۳۰ روز اخیر</option>
+          <option value={90}>۹۰ روز اخیر</option>
+        </select>
+        <span className="muted" style={{ flex: 1, minWidth: 200 }} data-testid="unparsed-summary">
+          {unread ? `${count(unread)} پیامک بی‌ردیف` : 'هیچ پیامکی بی‌ردیف نیست'}
+          {generic ? ` · ${count(generic)} با تحلیل‌گر عمومی` : ''}
+        </span>
+        <a className="btn btn-sm" href={`/api/v1/admin/sms/unparsed.csv?days=${days}`}>
+          خروجی CSV
+        </a>
+      </div>
+
+      <div className="table-wrap">
+        <table className="banks-table" data-testid="sms-coverage">
+          <thead>
+            <tr>
+              <th scope="col">فرستنده</th>
+              <th scope="col">همه</th>
+              <th scope="col">نام‌دار</th>
+              <th scope="col">عمومی</th>
+              <th scope="col">بی‌ردیف</th>
+              <th scope="col">تحلیل‌گرها</th>
+              <th scope="col">آخرین</th>
+            </tr>
+          </thead>
+          <tbody>
+            {coverage.length === 0 && (
+              <tr>
+                <td colSpan={7} className="muted">
+                  در این بازه پیامکی نرسیده.
+                </td>
+              </tr>
+            )}
+            {coverage.map((c) => (
+              <tr key={c.sender}>
+                <td dir="ltr" style={{ textAlign: 'end' }}>
+                  <span className={`badge ${light(c)}`} style={{ marginInlineEnd: 6 }}>
+                    {c.unread ? 'ناخوانده' : c.generic ? 'حدسی' : 'خوانده'}
+                  </span>
+                  {c.sender}
+                </td>
+                <td className="tabular-nums">{count(c.total)}</td>
+                <td className="tabular-nums">{count(c.named)}</td>
+                <td className="tabular-nums">{c.generic ? count(c.generic) : '—'}</td>
+                <td className="tabular-nums">{c.unread ? count(c.unread) : '—'}</td>
+                <td className="muted" dir="ltr" style={{ textAlign: 'end' }}>
+                  {c.parsers.map((p) => `${p.parserId} ×${p.n}`).join(' · ')}
+                </td>
+                <td className="tabular-nums" style={{ whiteSpace: 'nowrap' }}>{dateTime(c.lastAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {shapes.length > 0 && (
+        <div className="table-wrap" style={{ marginBlockStart: 12 }}>
+          <table className="banks-table" data-testid="sms-shapes">
+            <thead>
+              <tr>
+                <th scope="col">چرا</th>
+                <th scope="col">فرستنده</th>
+                <th scope="col">تعداد</th>
+                <th scope="col">شکل (ارقام → ۹)</th>
+                <th scope="col">آخرین</th>
+                <th scope="col" />
+              </tr>
+            </thead>
+            <tbody>
+              {shapes.map((s) => {
+                const key = `${s.sender}\u0000${s.shape}`;
+                const t = tests[key];
+                return (
+                  <Fragment key={key}>
+                    <tr>
+                      <td>
+                        <span className={`badge ${s.reason === 'unread' ? 'badge-block' : 'badge-warning'}`}>
+                          {s.reason === 'unread' ? 'ردیف نساخت' : 'حدسی'}
+                        </span>
+                        <div className="muted" dir="ltr" style={{ textAlign: 'end', fontSize: 11 }}>
+                          {s.parserId ?? '—'} · {s.classification}
+                        </div>
+                      </td>
+                      <td dir="ltr" style={{ textAlign: 'end' }}>{s.sender}</td>
+                      <td className="tabular-nums">{count(s.count)}</td>
+                      <td style={{ fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap' }}>{s.shape}</td>
+                      <td className="tabular-nums" style={{ whiteSpace: 'nowrap' }}>{dateTime(s.lastAt)}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <button type="button" className="btn-sm" onClick={() => setOpen(open === key ? null : key)}>
+                          {open === key ? 'بستن' : 'نمونه'}
+                        </button>{' '}
+                        <button type="button" className="btn-sm" onClick={() => void tryParse(key, s.sampleBody)}>
+                          آزمایش
+                        </button>
+                      </td>
+                    </tr>
+                    {(open === key || t) && (
+                      <tr>
+                        <td colSpan={6}>
+                          {open === key && (
+                            <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}>{s.sampleBody}</pre>
+                          )}
+                          {t && (
+                            <div className="muted" style={{ marginBlockStart: 6 }}>
+                              با تحلیل‌گرهای فعلی: {t.parserId ?? '—'} · {t.classification} ·{' '}
+                              {t.direction === 'CREDIT' ? 'واریز' : t.direction === 'DEBIT' ? 'برداشت' : 'بی‌جهت'} · مبلغ {count(t.amountIrr)} ·
+                              مانده {count(t.balanceIrr)} · حساب {t.accountHint ?? '—'}
+                              {t.warnings.length ? ` · ${t.warnings.join('، ')}` : ''}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 

@@ -27,8 +27,11 @@ import {
   luhnOk,
   normalizeCardDigits,
   formatCardDigitsForDisplay,
+  senderCoverage,
+  unparsedShapes,
   type BankPrefix,
 } from '@shikoo/domain';
+import { csvCell } from './revenueRoutes.js';
 import {
   compilePatterns,
   compilePatternSource,
@@ -177,6 +180,55 @@ const PatternBody = z
 export function registerBankRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
+  // --- which texts the parsers read, and which they did not ---------------
+  //
+  // Three reads over `raw_sms_events` (see `smsCoverage.ts` in the domain):
+  //   GET /admin/sms/coverage?days=      one line per sender
+  //   GET /admin/sms/unparsed?days=      every shape a named parser did not read
+  //   GET /admin/sms/unparsed.csv?days=  the same, to hand to whoever writes the parser
+  // ADMIN and REVIEWER, like the transactions they describe. Nothing here writes.
+
+  const mayRead = (role: string) => role === 'ADMIN' || role === 'REVIEWER';
+  const sinceOf = (c: { req: { query: (k: string) => string | undefined } }) => {
+    const days = Number.parseInt(c.req.query('days') ?? '14', 10);
+    const bounded = Number.isFinite(days) && days >= 1 && days <= 365 ? days : 14;
+    return Date.now() - bounded * 86_400_000;
+  };
+
+  app.get('/api/v1/admin/sms/coverage', async (c) => {
+    if (!mayRead(c.get('identity').role)) return c.json({ ok: false, error: 'forbidden' }, 403);
+    return c.json({ ok: true, items: await senderCoverage(c.env.DB, sinceOf(c)) });
+  });
+
+  app.get('/api/v1/admin/sms/unparsed', async (c) => {
+    if (!mayRead(c.get('identity').role)) return c.json({ ok: false, error: 'forbidden' }, 403);
+    return c.json({ ok: true, items: await unparsedShapes(c.env.DB, sinceOf(c)) });
+  });
+
+  app.get('/api/v1/admin/sms/unparsed.csv', async (c) => {
+    if (!mayRead(c.get('identity').role)) return c.json({ ok: false, error: 'forbidden' }, 403);
+    const items = await unparsedShapes(c.env.DB, sinceOf(c));
+    const header = ['فرستنده', 'چرا', 'پارسر', 'classification', 'تعداد', 'آخرین', 'شکل', 'نمونه'];
+    const rows = items.map((s) =>
+      [
+        s.sender,
+        s.reason === 'unread' ? 'ردیف نساخت' : 'پارسر عمومی',
+        s.parserId ?? '',
+        s.classification,
+        s.count,
+        new Date(s.lastAt).toISOString(),
+        s.shape,
+        s.sampleBody.replace(/\n/g, ' | '),
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+    return c.body(`\ufeff${[header.map(csvCell).join(','), ...rows].join('\r\n')}\r\n`, 200, {
+      'content-type': 'text/csv; charset=utf-8',
+      'content-disposition': `attachment; filename="unparsed-sms.csv"`,
+    });
+  });
+
   // --- card prefixes ------------------------------------------------------
 
   app.get('/api/v1/banks/prefixes', async (c) => {

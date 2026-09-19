@@ -45,3 +45,4 @@ export * from './continuityMode.js';
 export * from './fulfilWithoutPayment.js';
 export * from './retryProvisioning.js';
 export * from './books.js';
+export * from './smsCoverage.js';

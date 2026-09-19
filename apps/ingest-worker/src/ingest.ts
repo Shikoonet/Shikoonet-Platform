@@ -336,6 +336,27 @@ export async function ingest(
     await markIngested(db, device.id, credential.id);
   }
 
+  // A text no named parser read: a generic parser guessed at it, or nothing
+  // made a row of what is not an OTP or an advert. Counted, never quoted — the
+  // body stays in `raw_sms_events`, where «بانک‌ها › پیامک‌های بی‌پارسر» lists it
+  // by shape. This line is what makes a new bank, or a new withdrawal shape
+  // from an old one, visible the day it arrives instead of from the ledger a
+  // week later (Keshavarzi, 2026-09-19).
+  if (!wasDuplicate && !isRedactable) {
+    const parserId = result.parserId ?? null;
+    const generic = parserId !== null && parserId.startsWith('generic-');
+    const madeRow = shouldCreateTransaction(result);
+    if (generic || !madeRow) {
+      log.warn('sms.needs_parser', {
+        ref: finalEventId,
+        sender: raw.sender,
+        parserId,
+        classification,
+        madeRow,
+      });
+    }
+  }
+
   await recordAudit(db, {
     actorEmail: null,
     actorRole: 'SYSTEM',
