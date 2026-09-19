@@ -14,7 +14,7 @@
  * `transaction_candidates.bank_timestamp` ("Bank transaction time") is
  * a third, separate field used in the transaction detail modal only.
  */
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -174,8 +174,9 @@ describe('GET /api/v1/matches/unmatched — dual timestamp contract', () => {
   it('names the number the bank text carried, not the account hint', async () => {
     // The Pol deposit of 2026-09-18: «to 47045299», landed on کشاورزی-مامان
     // whose own hint is 4006. The row must say 47045299.
+    const now = Date.UTC(2026, 8, 18, 9, 34);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
     const seeded = await seedTransactionWithDistinctTimestamps();
-    const now = Date.now();
     await baseEnv.DB.prepare(
       `INSERT INTO financial_accounts (id, bank_name, display_name, account_type, account_hint, active, status, parser_configuration, created_at, updated_at)
        VALUES ('acct-mom', 'Keshavarzi', 'کشاورزی-مامان', 'ACCOUNT', '4006', 1, 'ACTIVE', '{}', ?1, ?1)`,
@@ -194,6 +195,7 @@ describe('GET /api/v1/matches/unmatched — dual timestamp contract', () => {
     const tx = body.items.find((i) => i.id === seeded.txId)!;
     expect(tx.account_display).toBe('کشاورزی-مامان');
     expect(tx.account_hint).toBe('47045299');
+    vi.restoreAllMocks();
   });
 });
 

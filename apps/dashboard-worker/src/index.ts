@@ -1824,7 +1824,8 @@ app.get('/api/v1/matches/unmatched', async (c) => {
          -- the account's own hint — the account cell already says that.
          LEFT JOIN LATERAL (
            SELECT x.normalized_value FROM transaction_detected_identifiers x
-            WHERE x.transaction_candidate_id = t.id ORDER BY x.created_at LIMIT 1
+            WHERE x.transaction_candidate_id = t.id AND x.identifier_type IN ('ACCOUNT_HINT', 'ACCOUNT_NUMBER')
+            ORDER BY CASE x.identifier_type WHEN 'ACCOUNT_HINT' THEN 0 ELSE 1 END, x.created_at LIMIT 1
          ) di ON TRUE
          LEFT JOIN devices d ON d.id = r.device_id
          LEFT JOIN dashboard_notification_state dns ON dns.actor_email = ?3

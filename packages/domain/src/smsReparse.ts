@@ -271,19 +271,20 @@ async function applyOne(
       }
       const fromText = p.evidence['bankTimestamp'];
       const bankTs = typeof fromText === 'number' && Math.abs(fromText - smsTs) <= 2 * 86_400_000 ? fromText : smsTs;
-      await db
-        .prepare(
-          `UPDATE transaction_candidates
-              SET parser_id = ?2, parser_version = ?3, balance_irr = ?4, bank_timestamp = ?5,
-                  parser_evidence_json = ?6, updated_at = ?7
-            WHERE id = ?1`,
-        )
-        .bind(r.generic_tx_id, p.parserId, p.parserVersion ?? '0.0.0', p.balanceIrr, bankTs, JSON.stringify(p.evidence), Date.now())
-        .run();
-      await db
-        .prepare(`UPDATE raw_sms_events SET classification = ?2, parser_status = 'OK', parser_id = ?3, parser_version = ?4 WHERE id = ?1`)
-        .bind(r.id, p.classification, p.parserId, p.parserVersion ?? '0.0.0')
-        .run();
+      // One transaction: the row and its text change together or not at all.
+      await db.batch([
+        db
+          .prepare(
+            `UPDATE transaction_candidates
+                SET parser_id = ?2, parser_version = ?3, balance_irr = ?4, bank_timestamp = ?5,
+                    parser_evidence_json = ?6, updated_at = ?7
+              WHERE id = ?1`,
+          )
+          .bind(r.generic_tx_id, p.parserId, p.parserVersion ?? '0.0.0', p.balanceIrr, bankTs, JSON.stringify(p.evidence), Date.now()),
+        db
+          .prepare(`UPDATE raw_sms_events SET classification = ?2, parser_status = 'OK', parser_id = ?3, parser_version = ?4 WHERE id = ?1`)
+          .bind(r.id, p.classification, p.parserId, p.parserVersion ?? '0.0.0'),
+      ]);
       upgraded.push({ eventId: r.id, transactionId: r.generic_tx_id, parserId: p.parserId, direction: p.direction });
       return;
     }

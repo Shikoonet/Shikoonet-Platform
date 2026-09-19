@@ -268,7 +268,7 @@ function UnparsedSmsPanel() {
           <p style={{ margin: '0 0 8px' }}>
             {reparse.candidates.length
               ? `${count(reparse.candidates.length)} پیامک از ${count(reparse.scanned)} پیامک بی‌ردیف یا حدسی را تحلیل‌گرهای امروز می‌خوانند و می‌شود برایشان ردیف ساخت یا ردیف حدسی‌شان را ارتقا داد.`
-              : `از ${count(reparse.scanned)} پیامک بی‌ردیف، هیچ‌کدام را تحلیل‌گرهای امروز نمی‌خوانند.`}
+              : `از ${count(reparse.scanned)} پیامک بی‌ردیف یا حدسی، هیچ‌کدام را تحلیل‌گرهای امروز بهتر نمی‌خوانند.`}
             {reparse.stillUnread ? ` ${count(reparse.stillUnread)} تا هنوز ناخوانده می‌مانند.` : ''}
             {' '}هیچ پرداختی تطبیق داده نمی‌شود؛ واریز‌ها به «پرداخت‌ها» می‌روند و خودت تصمیم می‌گیری.
           </p>
@@ -311,7 +311,7 @@ function UnparsedSmsPanel() {
           <div className="row toolbar" style={{ marginBlockStart: 8 }}>
             {reparse.candidates.length > 0 && (
               <button type="button" className="primary" disabled={busy} onClick={() => void reparseApply()} {...w} data-testid="reparse-apply">
-                بله، {count(reparse.candidates.length)} ردیف بساز
+                بله، {count(reparse.candidates.length)} ردیف بساز یا ارتقا بده
               </button>
             )}
             <button type="button" className="btn-sm" onClick={() => setReparse(null)}>

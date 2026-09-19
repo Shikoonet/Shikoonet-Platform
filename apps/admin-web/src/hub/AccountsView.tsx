@@ -521,7 +521,8 @@ export function AccountsView({ cache }: AccountsViewProps) {
                   <div className="card-row" data-testid="first-seen">
                     <span className="label">دیده شد</span>
                     <span>
-                      {a.first_seen_direction === 'CREDIT' ? 'واریز' : 'برداشت'} {formatTomanFromIrr(a.first_seen_amount_irr)}
+                      {a.first_seen_direction === 'CREDIT' ? 'واریز' : a.first_seen_direction === 'DEBIT' ? 'برداشت' : 'نامشخص'}{' '}
+                      {formatTomanFromIrr(a.first_seen_amount_irr)}
                       {typeof a.first_seen_balance_irr === 'number' && <> · مانده {formatTomanFromIrr(a.first_seen_balance_irr)}</>}
                       {typeof a.first_seen_at === 'number' && <> · {formatTime(a.first_seen_at)}</>}
                     </span>
