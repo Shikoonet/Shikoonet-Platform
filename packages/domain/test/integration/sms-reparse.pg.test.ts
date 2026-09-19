@@ -44,9 +44,14 @@ async function genericRow(eventId: string, account: string, direction: 'CREDIT' 
 }
 
 async function purge(): Promise<void> {
+  await db.prepare(`DELETE FROM reconciliation_matches WHERE id LIKE ?1`).bind(`${P}%`).run();
+  await db.prepare(`DELETE FROM payment_claims WHERE id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM transaction_candidates WHERE id LIKE ?1 OR raw_sms_event_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM raw_sms_events WHERE id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM financial_accounts WHERE id LIKE ?1`).bind(`${P}%`).run();
+  // Other suites leave accounts on this database; the hints below must resolve
+  // to ours, and the active-hint index must have room for them.
+  await db.prepare(`UPDATE financial_accounts SET active = 0 WHERE account_hint IN ('06006', '4006') AND id NOT LIKE ?1`).bind(`${P}%`).run();
 }
 
 beforeEach(async () => {
@@ -186,6 +191,39 @@ describe('applyReparse', () => {
     const again = await applyReparse(db, [guessed]);
     expect(again.upgraded).toEqual([]);
     expect(again.skipped).toEqual([{ eventId: guessed, why: 'already_has_row' }]);
+  });
+
+  it('upgrades a guessed row that already paid a claim — the match rests on amount and account, and neither changes', async () => {
+    // Seven of the eight Keshavarzi rows on production: customer payments,
+    // matched by amount, read by generic-credit. The claim must stay paid.
+    const arrival = Date.UTC(2026, 8, 18, 12, 5);
+    const guessed = await raw('KESHAVARZI', KESHAVARZI, 'generic-credit', 'BANK_CREDIT', arrival);
+    const tx = await genericRow(guessed, MOM, 'CREDIT', 1_000_000, 4006, arrival);
+    const claim = `${P}claim`;
+    await db
+      .prepare(
+        `INSERT INTO payment_claims (id, external_order_id, expected_amount_irr, target_financial_account_id, submitted_at, source_system, status, metadata_json, suspect_metadata_json, created_at, updated_at)
+         VALUES (?1, ?2, 1000000, ?3, ?4, 'test', 'VERIFIED', '{}', '{}', ?4, ?4)`,
+      )
+      .bind(claim, `test:${claim}`, MOM, arrival)
+      .run();
+    await db
+      .prepare(`INSERT INTO reconciliation_matches (id, transaction_candidate_id, payment_claim_id, score, status, created_at, updated_at) VALUES (?1, ?2, ?3, 1.0, 'CONFIRMED', ?4, ?4)`)
+      .bind(`${P}match`, tx, claim, arrival)
+      .run();
+
+    const dr = await dryRunReparse(db, SINCE);
+    expect(dr.candidates.find((c) => c.eventId === guessed)?.upgrades?.transactionId).toBe(tx);
+    const a = await applyReparse(db, [guessed]);
+    expect(a.upgraded.map((u) => u.transactionId)).toEqual([tx]);
+    const after = await db
+      .prepare(
+        `SELECT t.parser_id, t.balance_irr, t.amount_irr, t.financial_account_id, m.status AS match_status, m.payment_claim_id
+           FROM transaction_candidates t JOIN reconciliation_matches m ON m.transaction_candidate_id = t.id WHERE t.id = ?1`,
+      )
+      .bind(tx)
+      .first<Record<string, unknown>>();
+    expect(after).toMatchObject({ parser_id: 'keshavarzi-v1', balance_irr: 2_854_098, amount_irr: 1_000_000, financial_account_id: MOM, match_status: 'CONFIRMED', payment_claim_id: claim });
   });
 
   it('will not rewrite a guessed row into a different movement', async () => {

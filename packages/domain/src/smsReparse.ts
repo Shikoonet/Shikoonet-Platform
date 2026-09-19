@@ -55,6 +55,10 @@ export interface ReparseCandidate {
    * number as balance, arrival as time). Today's named parser reads the same
    * movement — same direction, same amount — so apply upgrades that row in
    * place: parser, balance, the bank's clock. No new row, nothing matched.
+   * A row that already paid a claim is upgraded too: the match rests on the
+   * amount and the account, and neither changes. (Seven of the eight
+   * Keshavarzi rows on production were matched; the first cut left them
+   * «حدسی» for good.)
    */
   upgrades: { transactionId: string; balanceIrr: number | null; bankTimestamp: number } | null;
 }
@@ -100,7 +104,6 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
          FROM raw_sms_events r
          LEFT JOIN transaction_candidates g
            ON g.raw_sms_event_id = r.id AND g.parser_id LIKE 'generic-%'
-          AND NOT EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.transaction_candidate_id = g.id)
         WHERE r.received_at >= ?1
           AND r.normalized_body IS NOT NULL
           AND r.duplicate_of IS NULL
@@ -231,7 +234,6 @@ async function applyOne(
            FROM raw_sms_events r
            LEFT JOIN transaction_candidates g
              ON g.raw_sms_event_id = r.id AND g.parser_id LIKE 'generic-%'
-            AND NOT EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.transaction_candidate_id = g.id)
           WHERE r.id = ?1 AND r.normalized_body IS NOT NULL AND r.duplicate_of IS NULL`,
       )
       .bind(eventId)
