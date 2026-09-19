@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { BanksView } from '../../src/hub/BanksView.js';
 
 const coverage = [
@@ -19,6 +19,9 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (url: string) => {
       const u = String(url);
+      if (u.includes('/sms/reparse/dry-run')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, report: { days: 30, scanned: 0, candidates: [], stillUnread: 0 } }) } as Response;
+      }
       const items = u.includes('/sms/coverage') ? coverage : [];
       return { ok: true, status: 200, json: async () => ({ ok: true, items }) } as Response;
     }),
@@ -43,5 +46,14 @@ describe('the coverage table', () => {
     const pasargad = rows.find((r) => r.textContent?.includes('B.Pasargad'))!;
     expect(pasargad.textContent).toContain('فیلترشده');
     expect(pasargad.textContent).not.toContain('خوانده');
+  });
+
+  it('a dry run over a full tab says there is nothing to read again, not «از ۰ پیامک، هیچ‌کدام»', async () => {
+    render(<BanksView />);
+    await screen.findByTestId('sms-coverage');
+    fireEvent.click(screen.getByTestId('reparse-dry-run'));
+    const report = await screen.findByTestId('reparse-report');
+    expect(report.textContent).toContain('چیزی برای بازخوانی نیست');
+    expect(report.textContent).not.toContain('۰ پیامک');
   });
 });

@@ -266,11 +266,19 @@ function UnparsedSmsPanel() {
       {reparse && (
         <div className="card" style={{ marginBlockEnd: 12, padding: 12 }} data-testid="reparse-report">
           <p style={{ margin: '0 0 8px' }}>
-            {reparse.candidates.length
-              ? `${count(reparse.candidates.length)} پیامک از ${count(reparse.scanned)} پیامک بی‌ردیف یا حدسی را تحلیل‌گرهای امروز می‌خوانند و می‌شود برایشان ردیف ساخت یا ردیف حدسی‌شان را ارتقا داد.`
-              : `از ${count(reparse.scanned)} پیامک بی‌ردیف یا حدسی، هیچ‌کدام را تحلیل‌گرهای امروز بهتر نمی‌خوانند.`}
-            {reparse.stillUnread ? ` ${count(reparse.stillUnread)} تا هنوز ناخوانده می‌مانند.` : ''}
-            {' '}هیچ پرداختی تطبیق داده نمی‌شود؛ واریز‌ها به «پرداخت‌ها» می‌روند و خودت تصمیم می‌گیری.
+            {reparse.scanned === 0 ? (
+              // Nothing to read again: «از ۰ پیامک، هیچ‌کدام…» is what a full
+              // tab said on production, and it read like a fault.
+              'چیزی برای بازخوانی نیست — هر پیامک این بازه یا ردیف خودش را دارد یا فیلتر شده.'
+            ) : (
+              <>
+                {reparse.candidates.length
+                  ? `${count(reparse.candidates.length)} پیامک از ${count(reparse.scanned)} پیامک بی‌ردیف یا حدسی را تحلیل‌گرهای امروز می‌خوانند و می‌شود برایشان ردیف ساخت یا ردیف حدسی‌شان را ارتقا داد.`
+                  : `از ${count(reparse.scanned)} پیامک بی‌ردیف یا حدسی، هیچ‌کدام را تحلیل‌گرهای امروز بهتر نمی‌خوانند.`}
+                {reparse.stillUnread ? ` ${count(reparse.stillUnread)} تا هنوز ناخوانده می‌مانند.` : ''}
+                {' '}هیچ پرداختی تطبیق داده نمی‌شود؛ واریز‌ها به «پرداخت‌ها» می‌روند و خودت تصمیم می‌گیری.
+              </>
+            )}
           </p>
           {reparse.candidates.length > 0 && (
             <div className="table-wrap">
