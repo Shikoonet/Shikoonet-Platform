@@ -63,7 +63,10 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   // sidebar item fewer, for the reason a number should move.
   // 30 -> 31 on 2026-09-17: «دفتر بانک» — the statement per account and
   // month, what is off the books, and the fresh start (PR #289).
-  expect(labels.length).toBe(31);
+  // 31 -> 32 on 2026-09-19: «زیرمجموعه‌ها» — every referrer in one screen,
+  // with who they brought and what it earned. A new section, so the number
+  // moved for the reason a number should. Counted off `nav.ts`.
+  expect(labels.length).toBe(32);
 
   for (const label of labels) {
     const name = label.trim();
