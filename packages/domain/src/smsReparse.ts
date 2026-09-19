@@ -50,6 +50,13 @@ export interface ReparseCandidate {
    * row; apply does the same. Listed so the operator sees it is not lost.
    */
   redeliveryOf: string | null;
+  /**
+   * The text already has a row, made by a generic parser (a guess: last
+   * number as balance, arrival as time). Today's named parser reads the same
+   * movement — same direction, same amount — so apply upgrades that row in
+   * place: parser, balance, the bank's clock. No new row, nothing matched.
+   */
+  upgrades: { transactionId: string; balanceIrr: number | null; bankTimestamp: number } | null;
 }
 
 export interface ReparseDryRun {
@@ -87,13 +94,18 @@ function readable(r: ParseResult): r is ParseResult & { direction: 'CREDIT' | 'D
 export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<ReparseDryRun> {
   const rows = await db
     .prepare(
-      `SELECT r.id, r.device_id, r.sender, r.normalized_body, r.sms_timestamp, r.received_at, r.parser_id, r.classification
+      `SELECT r.id, r.device_id, r.sender, r.normalized_body, r.sms_timestamp, r.received_at, r.parser_id, r.classification,
+              g.id AS generic_tx_id, g.direction AS generic_direction, g.amount_irr AS generic_amount_irr,
+              g.balance_irr AS generic_balance_irr, g.bank_timestamp AS generic_bank_timestamp
          FROM raw_sms_events r
+         LEFT JOIN transaction_candidates g
+           ON g.raw_sms_event_id = r.id AND g.parser_id LIKE 'generic-%'
+          AND NOT EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.transaction_candidate_id = g.id)
         WHERE r.received_at >= ?1
           AND r.normalized_body IS NOT NULL
           AND r.duplicate_of IS NULL
           AND NOT ${FILTERED}
-          AND NOT EXISTS (SELECT 1 FROM transaction_candidates t WHERE t.raw_sms_event_id = r.id)
+          AND (g.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM transaction_candidates t WHERE t.raw_sms_event_id = r.id))
         ORDER BY r.received_at`,
     )
     .bind(sinceMs)
@@ -106,6 +118,11 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
       received_at: string | number;
       parser_id: string | null;
       classification: string;
+      generic_tx_id: string | null;
+      generic_direction: 'CREDIT' | 'DEBIT' | null;
+      generic_amount_irr: string | number | null;
+      generic_balance_irr: string | number | null;
+      generic_bank_timestamp: string | number | null;
     }>();
   const fallbacks = await fallbacksOf(db);
   const candidates: ReparseCandidate[] = [];
@@ -120,6 +137,23 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
       continue;
     }
     const smsTs = Number(r.sms_timestamp);
+    if (r.generic_tx_id) {
+      // A row exists; only an upgrade of the same movement is on offer.
+      if (p.direction !== r.generic_direction || p.amountIrr !== Number(r.generic_amount_irr)) {
+        stillUnread += 1;
+        continue;
+      }
+      candidates.push({
+        redeliveryOf: null,
+        upgrades: { transactionId: r.generic_tx_id, balanceIrr: r.generic_balance_irr === null ? null : Number(r.generic_balance_irr), bankTimestamp: Number(r.generic_bank_timestamp) },
+        eventId: r.id,
+        sender: r.sender,
+        receivedAt: Number(r.received_at),
+        was: { parserId: r.parser_id, classification: r.classification },
+        now: { parserId: p.parserId, direction: p.direction, amountIrr: p.amountIrr, balanceIrr: p.balanceIrr, accountHint: p.accountHint },
+      });
+      continue;
+    }
     let redeliveryOf: string | null = null;
     if (p.balanceIrr !== null) {
       const key = [r.device_id, r.sender, r.normalized_body].join('\u0000');
@@ -130,6 +164,7 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
     }
     candidates.push({
       redeliveryOf,
+      upgrades: null,
       eventId: r.id,
       sender: r.sender,
       receivedAt: Number(r.received_at),
@@ -148,6 +183,8 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
 
 export interface ReparseApplied {
   made: { eventId: string; transactionId: string; parserId: string; direction: 'CREDIT' | 'DEBIT' }[];
+  /** Rows a generic parser had made, now carrying the named parser's balance and clock. */
+  upgraded: { eventId: string; transactionId: string; parserId: string; direction: 'CREDIT' | 'DEBIT' }[];
   /** Listed in the dry-run but no longer eligible — a row appeared meanwhile, or the text now parses differently. */
   skipped: { eventId: string; why: 'already_has_row' | 'no_longer_readable' | 'not_found' | 'redelivery' }[];
   /** A row this call could not make. The others were still made, and are all in `made`. */
@@ -163,18 +200,19 @@ export interface ReparseApplied {
 export async function applyReparse(db: D1Database, eventIds: string[]): Promise<ReparseApplied> {
   const fallbacks = await fallbacksOf(db);
   const made: ReparseApplied['made'] = [];
+  const upgraded: ReparseApplied['upgraded'] = [];
   const skipped: ReparseApplied['skipped'] = [];
   const failed: ReparseApplied['failed'] = [];
   for (const eventId of eventIds) {
     try {
-      await applyOne(db, eventId, fallbacks, made, skipped);
+      await applyOne(db, eventId, fallbacks, made, upgraded, skipped);
     } catch (e) {
       // One text's failure is one text's failure: the rows already made stay
       // made, and the caller audits every one of them.
       failed.push({ eventId, error: e instanceof Error ? e.message : String(e) });
     }
   }
-  return { made, skipped, failed };
+  return { made, upgraded, skipped, failed };
 }
 
 async function applyOne(
@@ -182,21 +220,38 @@ async function applyOne(
   eventId: string,
   fallbacks: readonly FallbackParser[],
   made: ReparseApplied['made'],
+  upgraded: ReparseApplied['upgraded'],
   skipped: ReparseApplied['skipped'],
 ): Promise<void> {
     const r = await db
       .prepare(
         `SELECT r.id, r.device_id, r.sender, r.normalized_body, r.sms_timestamp, r.parser_id,
-                EXISTS (SELECT 1 FROM transaction_candidates t WHERE t.raw_sms_event_id = r.id) AS has_row
-           FROM raw_sms_events r WHERE r.id = ?1 AND r.normalized_body IS NOT NULL AND r.duplicate_of IS NULL`,
+                EXISTS (SELECT 1 FROM transaction_candidates t WHERE t.raw_sms_event_id = r.id) AS has_row,
+                g.id AS generic_tx_id, g.direction AS generic_direction, g.amount_irr AS generic_amount_irr
+           FROM raw_sms_events r
+           LEFT JOIN transaction_candidates g
+             ON g.raw_sms_event_id = r.id AND g.parser_id LIKE 'generic-%'
+            AND NOT EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.transaction_candidate_id = g.id)
+          WHERE r.id = ?1 AND r.normalized_body IS NOT NULL AND r.duplicate_of IS NULL`,
       )
       .bind(eventId)
-      .first<{ id: string; device_id: string; sender: string; normalized_body: string; sms_timestamp: string | number; parser_id: string | null; has_row: boolean }>();
+      .first<{
+        id: string;
+        device_id: string;
+        sender: string;
+        normalized_body: string;
+        sms_timestamp: string | number;
+        parser_id: string | null;
+        has_row: boolean;
+        generic_tx_id: string | null;
+        generic_direction: 'CREDIT' | 'DEBIT' | null;
+        generic_amount_irr: string | number | null;
+      }>();
     if (!r) {
       skipped.push({ eventId, why: 'not_found' });
       return;
     }
-    if (r.has_row) {
+    if (r.has_row && !r.generic_tx_id) {
       skipped.push({ eventId, why: 'already_has_row' });
       return;
     }
@@ -206,6 +261,32 @@ async function applyOne(
       return;
     }
     const smsTs = Number(r.sms_timestamp);
+    if (r.generic_tx_id) {
+      // Upgrade in place. Same movement or nothing: a named parser that reads a
+      // different amount is a different question, and a row is never rewritten
+      // into another movement.
+      if (p.direction !== r.generic_direction || p.amountIrr !== Number(r.generic_amount_irr)) {
+        skipped.push({ eventId, why: 'no_longer_readable' });
+        return;
+      }
+      const fromText = p.evidence['bankTimestamp'];
+      const bankTs = typeof fromText === 'number' && Math.abs(fromText - smsTs) <= 2 * 86_400_000 ? fromText : smsTs;
+      await db
+        .prepare(
+          `UPDATE transaction_candidates
+              SET parser_id = ?2, parser_version = ?3, balance_irr = ?4, bank_timestamp = ?5,
+                  parser_evidence_json = ?6, updated_at = ?7
+            WHERE id = ?1`,
+        )
+        .bind(r.generic_tx_id, p.parserId, p.parserVersion ?? '0.0.0', p.balanceIrr, bankTs, JSON.stringify(p.evidence), Date.now())
+        .run();
+      await db
+        .prepare(`UPDATE raw_sms_events SET classification = ?2, parser_status = 'OK', parser_id = ?3, parser_version = ?4 WHERE id = ?1`)
+        .bind(r.id, p.classification, p.parserId, p.parserVersion ?? '0.0.0')
+        .run();
+      upgraded.push({ eventId: r.id, transactionId: r.generic_tx_id, parserId: p.parserId, direction: p.direction });
+      return;
+    }
     // The bank's re-send, exactly as ingest treats it: the earlier copy — made
     // a row a moment ago in this same batch, or long ago — owns the movement.
     if (p.balanceIrr !== null) {

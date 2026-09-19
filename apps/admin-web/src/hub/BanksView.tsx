@@ -128,6 +128,7 @@ interface ReparseCandidate {
   was: { parserId: string | null; classification: string };
   now: { parserId: string; direction: 'CREDIT' | 'DEBIT'; amountIrr: number; balanceIrr: number | null; accountHint: string | null };
   redeliveryOf?: string | null;
+  upgrades?: { transactionId: string; balanceIrr: number | null; bankTimestamp: number } | null;
 }
 
 function UnparsedSmsPanel() {
@@ -197,11 +198,12 @@ function UnparsedSmsPanel() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ eventIds: reparse.candidates.map((c) => c.eventId), confirm: true }),
       });
-      const j = await readJson<{ made: unknown[]; skipped: unknown[]; failed?: unknown[] }>(r);
+      const j = await readJson<{ made: unknown[]; upgraded?: unknown[]; skipped: unknown[]; failed?: unknown[] }>(r);
       if (!r.ok) throw new Error(j.error ?? `${r.status}`);
       const failed = j.failed?.length ?? 0;
+      const upgraded = j.upgraded?.length ?? 0;
       setApplied(
-        `${count(j.made.length)} ردیف ساخته شد${j.skipped.length ? `؛ ${count(j.skipped.length)} رد شد` : ''}${failed ? `؛ ${count(failed)} خطا داد` : ''}.`,
+        `${count(j.made.length)} ردیف ساخته شد${upgraded ? `؛ ${count(upgraded)} ردیف حدسی ارتقا یافت` : ''}${j.skipped.length ? `؛ ${count(j.skipped.length)} رد شد` : ''}${failed ? `؛ ${count(failed)} خطا داد` : ''}.`,
       );
       setReparse(null);
       setReload((n) => n + 1);
@@ -228,7 +230,9 @@ function UnparsedSmsPanel() {
 
   const unread = shapes.filter((s) => s.reason === 'unread').reduce((a, s) => a + s.count, 0);
   const generic = shapes.filter((s) => s.reason === 'generic').reduce((a, s) => a + s.count, 0);
-  const light = (c: SenderCoverage) => (c.unread ? 'badge-block' : c.generic ? 'badge-warning' : 'badge-active');
+  const light = (c: SenderCoverage) => (c.unread ? 'badge-block' : c.generic ? 'badge-warning' : c.named ? 'badge-active' : 'badge-info');
+  // A sender whose every text was filtered (OTP, promo) was never «read» for money.
+  const word = (c: SenderCoverage) => (c.unread ? 'ناخوانده' : c.generic ? 'حدسی' : c.named ? 'خوانده' : 'فیلترشده');
 
   return (
     <section className="banks-panel" data-testid="unparsed-sms">
@@ -263,7 +267,7 @@ function UnparsedSmsPanel() {
         <div className="card" style={{ marginBlockEnd: 12, padding: 12 }} data-testid="reparse-report">
           <p style={{ margin: '0 0 8px' }}>
             {reparse.candidates.length
-              ? `${count(reparse.candidates.length)} پیامک از ${count(reparse.scanned)} پیامک بی‌ردیف را تحلیل‌گرهای امروز می‌خوانند و می‌شود برایشان ردیف ساخت.`
+              ? `${count(reparse.candidates.length)} پیامک از ${count(reparse.scanned)} پیامک بی‌ردیف یا حدسی را تحلیل‌گرهای امروز می‌خوانند و می‌شود برایشان ردیف ساخت یا ردیف حدسی‌شان را ارتقا داد.`
               : `از ${count(reparse.scanned)} پیامک بی‌ردیف، هیچ‌کدام را تحلیل‌گرهای امروز نمی‌خوانند.`}
             {reparse.stillUnread ? ` ${count(reparse.stillUnread)} تا هنوز ناخوانده می‌مانند.` : ''}
             {' '}هیچ پرداختی تطبیق داده نمی‌شود؛ واریز‌ها به «پرداخت‌ها» می‌روند و خودت تصمیم می‌گیری.
@@ -292,6 +296,7 @@ function UnparsedSmsPanel() {
                       <td>
                         {c.now.direction === 'CREDIT' ? 'واریز' : 'برداشت'}
                         {c.redeliveryOf && <span className="badge badge-warning" title="بانک همین متن را دو بار فرستاده؛ ردیف نمی‌سازد">تکراری</span>}
+                        {c.upgrades && <span className="badge badge-info" title="ردیفی که تحلیل‌گر عمومی ساخته بود در جا ارتقا می‌یابد: مانده و ساعت بانک از تحلیل‌گر نام‌دار">ارتقا</span>}
                       </td>
                       <td className="tabular-nums">{count(c.now.amountIrr)}</td>
                       <td className="tabular-nums">{count(c.now.balanceIrr)}</td>
@@ -325,6 +330,7 @@ function UnparsedSmsPanel() {
               <th scope="col">نام‌دار</th>
               <th scope="col">عمومی</th>
               <th scope="col">بی‌ردیف</th>
+              <th scope="col">فیلترشده</th>
               <th scope="col">تحلیل‌گرها</th>
               <th scope="col">آخرین</th>
             </tr>
@@ -332,7 +338,7 @@ function UnparsedSmsPanel() {
           <tbody>
             {coverage.length === 0 && (
               <tr>
-                <td colSpan={7} className="muted">
+                <td colSpan={8} className="muted">
                   در این بازه پیامکی نرسیده.
                 </td>
               </tr>
@@ -341,7 +347,7 @@ function UnparsedSmsPanel() {
               <tr key={c.sender}>
                 <td dir="ltr" style={{ textAlign: 'end' }}>
                   <span className={`badge ${light(c)}`} style={{ marginInlineEnd: 6 }}>
-                    {c.unread ? 'ناخوانده' : c.generic ? 'حدسی' : 'خوانده'}
+                    {word(c)}
                   </span>
                   {c.sender}
                 </td>
@@ -349,6 +355,9 @@ function UnparsedSmsPanel() {
                 <td className="tabular-nums">{count(c.named)}</td>
                 <td className="tabular-nums">{c.generic ? count(c.generic) : '—'}</td>
                 <td className="tabular-nums">{c.unread ? count(c.unread) : '—'}</td>
+                <td className="tabular-nums muted" title="OTP، تبلیغ، تکراری یا purge‌شده — عمداً ردیف ندارد">
+                  {c.filtered ? count(c.filtered) : '—'}
+                </td>
                 <td className="muted" dir="ltr" style={{ textAlign: 'end' }}>
                   {c.parsers.map((p) => `${p.parserId} ×${p.n}`).join(' · ')}
                 </td>

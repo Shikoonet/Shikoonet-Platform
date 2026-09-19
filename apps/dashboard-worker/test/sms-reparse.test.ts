@@ -4,7 +4,7 @@
  * makes the DEBIT row through ingest's own path, and a second apply makes
  * nothing. A text still nobody reads stays out. ADMIN-only.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -33,6 +33,8 @@ const BILL = `${P}melli-bill`;
 const NOBODY = `${P}nobody`;
 const FIRST = `${P}melli-first`;
 const RESENT = `${P}melli-resent`;
+const GUESSED = `${P}keshavarzi-guessed`;
+const GUESSED_TX = `${P}tx-guessed`;
 
 beforeAll(async () => {
   await applySchema();
@@ -156,5 +158,56 @@ describe('POST /api/v1/admin/sms/reparse', () => {
     expect(rows?.n).toBe(1);
     const dup = await baseEnv.DB.prepare(`SELECT duplicate_of FROM raw_sms_events WHERE id = ?1`).bind(RESENT).first<{ duplicate_of: string | null }>();
     expect(dup?.duplicate_of).toBe(FIRST);
+  });
+
+  it('a row a generic parser guessed is upgraded in place — balance and bank clock from the named parser, no second row', async () => {
+    // The Keshavarzi text as production stored it before keshavarzi-v1: read by
+    // generic-credit, balance = the card's digits, stamped with its arrival.
+    // Pinned: the bank-clock fence is two days wide and the window is `days`
+    // wide; a real clock would walk this text out of both.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 8, 19, 11, 0));
+    const arrival = Date.UTC(2026, 8, 18, 12, 5);
+    await raw(GUESSED, 'KESHAVARZI', 'واریز1,000,000\nمانده2,854,098\n050627-06:05\nکارت4006*\nbki. ir', 'BANK_CREDIT', 'generic-credit', arrival);
+    await baseEnv.DB.prepare(
+      `INSERT INTO transaction_candidates
+         (id, raw_sms_event_id, financial_account_id, direction, amount_irr, balance_irr, status, bank_timestamp, confidence, parser_id, parser_version, parser_evidence_json, processing_disposition, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'CREDIT', 1000000, 4006, 'APPROVED', ?4, 0.85, 'generic-credit', '1.0.0', '{}', 'ACTIONABLE', ?4, ?4)`,
+    )
+      .bind(GUESSED_TX, GUESSED, ACCT, arrival)
+      .run();
+
+    const dr = (await (await post('/api/v1/admin/sms/reparse/dry-run', { days: 7 })).json()) as {
+      report: { candidates: { eventId: string; upgrades: { transactionId: string; balanceIrr: number | null } | null; now: { parserId: string; balanceIrr: number | null } }[] };
+    };
+    const c = dr.report.candidates.find((x) => x.eventId === GUESSED)!;
+    expect(c.upgrades).toEqual({ transactionId: GUESSED_TX, balanceIrr: 4006, bankTimestamp: arrival });
+    expect(c.now).toMatchObject({ parserId: 'keshavarzi-v1', balanceIrr: 2_854_098 });
+
+    const ap = (await (await post('/api/v1/admin/sms/reparse/apply', { eventIds: [GUESSED], confirm: true })).json()) as {
+      made: unknown[];
+      upgraded: { eventId: string; transactionId: string; parserId: string }[];
+    };
+    expect(ap.made).toEqual([]);
+    expect(ap.upgraded).toEqual([{ eventId: GUESSED, transactionId: GUESSED_TX, parserId: 'keshavarzi-v1', direction: 'CREDIT' }]);
+
+    const rows = await baseEnv.DB.prepare(
+      `SELECT t.id, t.parser_id, t.balance_irr, t.bank_timestamp, t.amount_irr, t.status, t.financial_account_id, r.parser_id AS raw_parser
+         FROM transaction_candidates t JOIN raw_sms_events r ON r.id = t.raw_sms_event_id WHERE t.raw_sms_event_id = ?1`,
+    )
+      .bind(GUESSED)
+      .all<{ id: string; parser_id: string; balance_irr: number; bank_timestamp: number; amount_irr: number; status: string; financial_account_id: string; raw_parser: string }>();
+    expect(rows.results).toHaveLength(1);
+    // Same row, same money, same account, same review — only what the guess got wrong.
+    expect(rows.results[0]).toMatchObject({ id: GUESSED_TX, parser_id: 'keshavarzi-v1', balance_irr: 2_854_098, amount_irr: 1_000_000, status: 'APPROVED', financial_account_id: ACCT, raw_parser: 'keshavarzi-v1' });
+    // 1405/06/27 06:05 Tehran = 2026-09-18 02:35 UTC, the bank's clock, not the arrival.
+    expect(Number(rows.results[0]!.bank_timestamp)).toBe(Date.UTC(2026, 8, 18, 2, 35));
+
+    const audits = await baseEnv.DB.prepare(`SELECT after_json FROM audit_logs WHERE action = 'sms.reparsed' AND entity_id = ?1`).bind(GUESSED_TX).first<{ after_json: string }>();
+    expect(JSON.parse(audits!.after_json)).toMatchObject({ upgraded: true });
+
+    const again = (await (await post('/api/v1/admin/sms/reparse/apply', { eventIds: [GUESSED], confirm: true })).json()) as { made: unknown[]; upgraded: unknown[]; skipped: { why: string }[] };
+    expect(again.upgraded).toEqual([]);
+    expect(again.skipped).toEqual([{ eventId: GUESSED, why: 'already_has_row' }]);
+    vi.restoreAllMocks();
   });
 });

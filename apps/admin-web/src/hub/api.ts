@@ -112,6 +112,11 @@ export interface AccountListItem {
   suggested_owner_id?: string | null;
   suggested_owner_name?: string | null;
   suggested_reason?: string | null;
+  /** The account's first text: what the review queue shows. */
+  first_seen_direction?: 'CREDIT' | 'DEBIT' | null;
+  first_seen_amount_irr?: number | null;
+  first_seen_balance_irr?: number | null;
+  first_seen_at?: number | null;
   additional_identifiers: Array<{ id: string; kind: string; value: string; label: string | null }>;
   /** Mirzabot destination cards mapped to this account (masked). */
   payment_cards?: Array<{

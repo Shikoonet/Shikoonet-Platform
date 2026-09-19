@@ -1801,7 +1801,7 @@ app.get('/api/v1/matches/unmatched', async (c) => {
               t.parser_evidence_json,
               t.financial_account_id,
               fa.display_name AS account_display,
-              fa.account_hint AS account_hint,
+              COALESCE(di.normalized_value, fa.account_hint) AS account_hint,
               fa.bank_name AS account_bank,
               r.device_id AS device_id,
               r.sms_timestamp,
@@ -1820,6 +1820,12 @@ app.get('/api/v1/matches/unmatched', async (c) => {
          FROM transaction_candidates t
          LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
          LEFT JOIN raw_sms_events r ON r.id = t.raw_sms_event_id
+         -- The number the bank's text named (a Pol deposit «to 47045299»), not
+         -- the account's own hint — the account cell already says that.
+         LEFT JOIN LATERAL (
+           SELECT x.normalized_value FROM transaction_detected_identifiers x
+            WHERE x.transaction_candidate_id = t.id ORDER BY x.created_at LIMIT 1
+         ) di ON TRUE
          LEFT JOIN devices d ON d.id = r.device_id
          LEFT JOIN dashboard_notification_state dns ON dns.actor_email = ?3
          LEFT JOIN dashboard_transaction_reads dtr
@@ -2001,10 +2007,19 @@ const ACCOUNT_BASE_SELECT = `
          fa.created_at, fa.updated_at,
          d.display_name AS device_display_name,
          fa.suggested_owner_id, fa.suggested_reason,
-         so.display_name AS suggested_owner_name
+         so.display_name AS suggested_owner_name,
+         ft.direction AS first_seen_direction, ft.amount_irr AS first_seen_amount_irr,
+         ft.balance_irr AS first_seen_balance_irr, ft.bank_timestamp AS first_seen_at
     FROM financial_accounts fa
     LEFT JOIN devices d ON d.id = fa.device_id
     LEFT JOIN financial_accounts so ON so.id = fa.suggested_owner_id AND so.active = 1
+    -- The text that made this account known: what the review queue shows so a
+    -- person can accept or decline a number without opening the database.
+    LEFT JOIN LATERAL (
+      SELECT t.direction, t.amount_irr, t.balance_irr, t.bank_timestamp
+        FROM transaction_candidates t WHERE t.financial_account_id = fa.id
+       ORDER BY t.bank_timestamp, t.created_at LIMIT 1
+    ) ft ON TRUE
 `;
 
 app.get('/api/v1/accounts', async (c) => {
