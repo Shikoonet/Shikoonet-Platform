@@ -9,8 +9,8 @@
  * reporting exactly where it was.
  *
  * Telegram is stubbed per method rather than with one blanket answer, because
- * «getChat says yes and createForumTopic says no» is precisely the case the
- * ordering has to survive.
+ * «the test message went through and createForumTopic says no» is precisely
+ * the case the ordering has to survive.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,6 +43,7 @@ function json(body: unknown, status = 200): Response {
  */
 function telegram(opts: { isForum?: boolean; topics?: (number | 'fail')[] } = {}) {
   const madeFor: string[] = [];
+  const posted: string[] = [];
   let next = 100;
   const queue = [...(opts.topics ?? [])];
   // `Parameters<typeof fetch>[0]`, not `RequestInfo`: this package's lib does
@@ -54,8 +55,14 @@ function telegram(opts: { isForum?: boolean; topics?: (number | 'fail')[] } = {}
         json({ ok: true, result: { id: 7712345678, is_bot: true, username: 'b' } }),
       );
     }
-    if (url.endsWith('/getChat')) {
-      return Promise.resolve(json({ ok: true, result: { is_forum: opts.isForum ?? true } }));
+    if (url.endsWith('/sendMessage')) {
+      // Legacy's «تست  اتصال گروه» — the group's own reply says whether it is
+      // a forum, which is where the route reads it from.
+      const body = JSON.parse(String(init?.body)) as { text: string };
+      posted.push(body.text);
+      return Promise.resolve(
+        json({ ok: true, result: { chat: { is_forum: opts.isForum ?? true } } }),
+      );
     }
     if (url.endsWith('/createForumTopic')) {
       const body = JSON.parse(String(init?.body)) as { name: string };
@@ -66,7 +73,7 @@ function telegram(opts: { isForum?: boolean; topics?: (number | 'fail')[] } = {}
     }
     return Promise.resolve(json({ ok: true, result: {} }));
   });
-  return { madeFor };
+  return { madeFor, posted };
 }
 
 async function setup(chatId: number, email = ADMIN) {
@@ -155,7 +162,21 @@ describe('pointing the bot at a reports group', () => {
     const res = await setup(GROUP);
 
     expect(res.status).toBe(200);
-    expect(tg.madeFor).toHaveLength(REPORT_KINDS.length);
+    // What the group sees, in legacy's words and legacy's order: the test
+    // message first, then the ten topics as `lang/fa.php` spells them.
+    expect(tg.posted).toEqual(['تست  اتصال گروه']);
+    expect(tg.madeFor).toEqual([
+      '🛍 گزارش های خرید',
+      '📌 گزارش خرید خدمات',
+      '🔑 گزارش اکانت تست',
+      '⚙️ سایر گزارشات',
+      '❌ گزارش خطا ها',
+      '💰 گزارش مالی',
+      '🎁 گزارش پورسانت ها',
+      '🌙 گزارش شبانه',
+      '📝 گزارش اطلاع رسانی ها',
+      '🤖 بکاپ ربات',
+    ]);
     for (const kind of REPORT_KINDS) {
       expect(Number(await settingOf(`topic_${kind}`))).toBeGreaterThan(0);
     }

@@ -22,30 +22,35 @@
  * Sam also asked for media, support-question and fraud reports. Neither legacy
  * bot has the first two — there is no eleventh key in either codebase — and
  * support tickets are a feature Sam himself decided on 2026-08-22 not to build.
- * `backupfile` exists here because the key exists, and stays empty because this
- * platform has no backup job to report on. Fraud goes to `otherreport`, which
- * is where legacy puts everything that has no topic of its own.
+ * Fraud goes to `otherreport`, which is where legacy puts everything that has
+ * no topic of its own.
+ *
+ * ## The order is legacy's too
+ *
+ * `admin.php:2371-2513` creates the topics in this sequence, and a forum group
+ * lists its topics in creation order — so this is the order an operator sees
+ * in the group. Sam, 2026-09-19: the group has to look exactly like mirzabot's.
  */
 export const REPORT_KINDS = [
   /** A completed new purchase. Legacy: `function.php:1023`. */
   'buyreport',
   /** Renewals and add-ons on a service that already exists. */
   'otherservice',
-  /** Money in, whatever the gateway. Legacy sends one per payment method. */
-  'paymentreport',
-  /** Everything without a topic of its own — new customers, blocks, fraud. */
-  'otherreport',
   /** A free trial account handed out. */
   'reporttest',
+  /** Everything without a topic of its own — new customers, blocks, fraud. */
+  'otherreport',
   /** Failures. Ours are `alert()`'s, which is already a reports channel. */
   'errorreport',
+  /** Money in, whatever the gateway. Legacy sends one per payment method. */
+  'paymentreport',
   /** Referral commission paid. */
   'porsantreport',
   /** The nightly figures. */
   'reportnight',
   /** Expiry and low-volume notices actually delivered to customers. */
   'reportcron',
-  /** Legacy's database dump. We have no backup job; the topic stays empty. */
+  /** The database dump `apps/bot/src/backup.ts` posts every three hours. */
   'backupfile',
 ] as const;
 
@@ -59,18 +64,20 @@ export function reportTopicKey(kind: ReportKind): string {
 /**
  * The Persian titles the topics are created with.
  *
- * Taken from `lang/fa.php` so a shop that already has these topics sees the
- * same words it is used to. Faoxima hardcodes the same strings inline.
+ * `lang/fa.php` verbatim — spaces where legacy has spaces, not the ZWNJ a
+ * careful writer would use. A shop moving from mirzabot must see the same
+ * words in the same group. Sam, 2026-09-19. Faoxima hardcodes the same
+ * strings inline.
  */
 export const REPORT_TOPIC_TITLES: Record<ReportKind, string> = {
-  buyreport: '🛍 گزارش‌های خرید',
+  buyreport: '🛍 گزارش های خرید',
   otherservice: '📌 گزارش خرید خدمات',
-  paymentreport: '💰 گزارش مالی',
-  otherreport: '⚙️ سایر گزارشات',
   reporttest: '🔑 گزارش اکانت تست',
-  errorreport: '❌ گزارش خطاها',
-  porsantreport: '🎁 گزارش پورسانت‌ها',
+  otherreport: '⚙️ سایر گزارشات',
+  errorreport: '❌ گزارش خطا ها',
+  paymentreport: '💰 گزارش مالی',
+  porsantreport: '🎁 گزارش پورسانت ها',
   reportnight: '🌙 گزارش شبانه',
-  reportcron: '📝 گزارش اطلاع‌رسانی‌ها',
+  reportcron: '📝 گزارش اطلاع رسانی ها',
   backupfile: '🤖 بکاپ ربات',
 };

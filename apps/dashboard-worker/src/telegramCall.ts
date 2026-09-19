@@ -61,7 +61,7 @@ export interface BotCallEnv {
 export interface TelegramReply {
   ok?: boolean;
   description?: string;
-  result?: { is_forum?: boolean; message_thread_id?: number };
+  result?: { is_forum?: boolean; message_thread_id?: number; chat?: { is_forum?: boolean } };
 }
 
 export type TelegramCall = (method: string, payload: unknown) => Promise<TelegramReply>;
