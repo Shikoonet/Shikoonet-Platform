@@ -74,7 +74,7 @@ import { pipeline } from 'node:stream/promises';
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
-import type { EnvName } from '@shikoo/contracts';
+import { DELETE_WORD, isDeleteWord, type EnvName } from '@shikoo/contracts';
 import {
   captureReport,
   configFrom,
@@ -1010,19 +1010,18 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
    * imports, works for a month, and wants a clean page for a new dump. That is
    * `TRUNCATE … CASCADE`, which no key can refuse.
    *
-   * ## The confirmation is the environment's own name, as the SERVER reads it
+   * ## The confirmation is «Delete», checked here and not only on the screen
    *
-   * The first write route on this panel to take a typed phrase, and the phrase
-   * is not «DELETE» or the shop's name — it is `ENV_NAME`, compared against
-   * `c.env.ENV_NAME`, which `server.ts` built at boot with `parseEnvName` from
-   * the process environment. Nothing the browser sends can move it, and this
-   * route never tells the caller what it is.
+   * Until 2026-09-19 the phrase was `ENV_NAME` as the server was booted with
+   * it — a confirmation that could not be satisfied without first finding out
+   * which box you were standing on (CLAUDE.md, «روی سرور، اول بپرس این کدام
+   * محیط است»). Sam then asked for one word across every delete on the panel
+   * («اونم delete کن»), so it is `DELETE_WORD` from contracts now, the same
+   * string the two hub modals ask for, and the route still refuses without
+   * it: a screen that forgets to ask cannot empty the shop on its own.
    *
-   * Sam's decision, and it is the same lesson CLAUDE.md records under «روی
-   * سرور، اول بپرس این کدام محیط است»: a `uuid` in a notes file read as
-   * «dashboard» and turned out to be production. The only confirmation worth
-   * anything here is one that cannot be satisfied without first finding out
-   * which box you are standing on.
+   * `ENV_NAME` is still required to be set — a box that cannot say which box
+   * it is has no business running this — it just is not the phrase any more.
    *
    * ## The audit row is written after the commit, and that is not an oversight
    *
@@ -1061,12 +1060,12 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
       // source before this. This still catches both at run time.
       return c.json({ ok: false, error: 'import_not_configured' }, 503);
     }
-    if (parsed.data.confirm.trim() !== envName) {
+    if (!isDeleteWord(parsed.data.confirm)) {
       return c.json(
         {
           ok: false,
           error: 'wrong_confirmation',
-          detail: 'عبارت تایید با نام این محیط یکی نیست.',
+          detail: `برای تایید باید ${DELETE_WORD} نوشته شود.`,
         },
         400,
       );

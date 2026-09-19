@@ -7,6 +7,7 @@
  */
 
 export * from './brand.js';
+export * from './confirmWord.js';
 export * from './env.js';
 export * from './device-auth.js';
 export * from './money.js';

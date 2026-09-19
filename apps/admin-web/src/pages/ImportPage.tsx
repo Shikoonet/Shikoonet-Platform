@@ -32,6 +32,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { DELETE_WORD, isDeleteWord } from '@shikoo/contracts';
 import {
   api,
   ApiError,
@@ -297,11 +298,12 @@ function Samples({ run }: { run: ImportRun }) {
  * Neither `window.confirm` nor the in-place twin button `«بازگرداندن»` uses is
  * enough for a statement with no inverse.
  *
- * And the phrase is the ENVIRONMENT's name, which this screen never shows.
- * That is Sam's decision and it is the point: the only confirmation worth
- * anything here is one you cannot satisfy without first finding out which box
- * you are standing on. The panel prints it in its own header — CLAUDE.md's
- * «روی سرور، اول بپرس این کدام محیط است», moved from the shell to the browser.
+ * The phrase was the ENVIRONMENT's name until 2026-09-19 — a confirmation you
+ * could not satisfy without first finding out which box you were standing
+ * on. Sam asked for one word across every delete on the panel («اونم delete
+ * کن»), so it is «Delete» now, the same as the account and device modals,
+ * checked by the server against `DELETE_WORD` from contracts. The header
+ * still prints the environment's name; reading it is on the operator.
  */
 function ResetCard({
   onDone,
@@ -408,7 +410,7 @@ function ResetCard({
 
           <label className="form-label" style={{ display: 'block', marginTop: 12 }}>
             <span>
-              برای تایید، <strong>نام همین محیط</strong> را بنویس — همانی که بالای پنل نوشته شده:
+              برای تایید <code>{DELETE_WORD}</code> را بنویس:
             </span>
             <input
               type="text"
@@ -424,10 +426,10 @@ function ResetCard({
             className="btn danger"
             style={{ marginTop: 10 }}
             onClick={() => void run()}
-            disabled={busy || disabled || typed.trim() === ''}
+            disabled={busy || disabled || !isDeleteWord(typed)}
             title={
-              typed.trim() === ''
-                ? 'اول نام این محیط را بنویس.'
+              !isDeleteWord(typed)
+                ? `برای تایید، ${DELETE_WORD} را بنویس.`
                 : 'دیتای فروشگاه برای همیشه پاک شود'
             }
             {...w}
