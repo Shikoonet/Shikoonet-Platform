@@ -84,6 +84,16 @@ describe('the generic parsers no longer guess a balance', () => {
     expect(r.balanceIrr).toBe(12_054_098);
   });
 
+  it('keeps a labelled balance that equals the amount — the first deposit into an empty account', () => {
+    const r = parseSms(n('واریز 500,000 ریال\nمانده 500,000 ریال', 'SOMEBANK'));
+    expect(r.parserId).toBe('generic-credit');
+    expect(r.amountIrr).toBe(500_000);
+    expect(r.balanceIrr).toBe(500_000);
+    const d = parseSms(n('برداشت 500,000 ریال\nمانده 500,000 ریال', 'SOMEBANK'));
+    expect(d.parserId).toBe('generic-debit');
+    expect(d.balanceIrr).toBe(500_000);
+  });
+
   it('a bare balance notice without a label is BALANCE with no number, and says so', () => {
     const r = parseSms(n('موجودی حساب شما\n4006', 'SOMEBANK'));
     expect(r.parserId).toBe('generic-balance');

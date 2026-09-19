@@ -57,7 +57,7 @@ export const debitParser: SmsParser = {
       classification: 'BANK_DEBIT',
       direction: 'DEBIT',
       amountIrr: primary.value,
-      balanceIrr: balance && balance !== primary ? balance.value : null,
+      balanceIrr: balance?.value ?? null,
       accountHint: extractAccountHint(input.text),
       transactionReference: extractRef(input.text),
       confidence: primary.currency === 'NONE' ? 0.5 : 0.8,

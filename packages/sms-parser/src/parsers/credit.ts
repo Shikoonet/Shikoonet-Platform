@@ -63,7 +63,7 @@ export const creditParser: SmsParser = {
       classification: 'BANK_CREDIT',
       direction: 'CREDIT',
       amountIrr: primary.value,
-      balanceIrr: balance && balance !== primary ? balance.value : null,
+      balanceIrr: balance?.value ?? null,
       accountHint: extractAccountHint(input.text),
       transactionReference: extractRef(input.text),
       confidence,
