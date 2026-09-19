@@ -81,6 +81,7 @@ function service(
     rowIndex: null,
     badge: null,
     buttonStyle: null,
+    bonusPercent: 0,
     panel,
     configs: [
       {

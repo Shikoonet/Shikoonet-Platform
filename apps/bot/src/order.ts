@@ -18,7 +18,7 @@
 import { randomBytes } from 'node:crypto';
 import type { D1DatabaseSession } from '@shikoo/database';
 import { CARD_HOLD_MINUTES_SQL, isAutomated } from '@shikoo/domain';
-import type { CatalogPlan } from './catalog.js';
+import { totalBonusGb, type CatalogPlan } from './catalog.js';
 import { priceForUser, type Price } from './money.js';
 
 export interface PlacedOrder {
@@ -89,7 +89,11 @@ export async function placeOrder(
    * than discovering it from a customer whose service was renamed mid-month.
    */
   usernameText: string | null = null,
-  /** Gigabytes a volume code adds, frozen on the order — see 0062. */
+  /**
+   * Gigabytes a volume code adds, frozen on the order — see 0062. The
+   * service's own bonus (0081) is added here, on top, for every customer: the
+   * two are the same kind of thing and the order holds one number.
+   */
   bonusVolumeGb = 0,
 ): Promise<PlaceOrResult> {
   return place(
@@ -101,7 +105,7 @@ export async function placeOrder(
     null,
     1,
     usernameText,
-    bonusVolumeGb,
+    totalBonusGb(bonusVolumeGb, plan),
   );
 }
 
@@ -145,7 +149,7 @@ export async function placeRenewalOrder(
     subscriptionId,
     1,
     null,
-    bonusVolumeGb,
+    totalBonusGb(bonusVolumeGb, plan),
   ));
 }
 

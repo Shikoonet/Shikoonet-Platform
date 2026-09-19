@@ -298,6 +298,19 @@ INSERT INTO product_categories (name) VALUES ('__inv-category');
 INSERT INTO products (code, name, kind, category_id)
      VALUES ('__inv-product', 'invariant fixture', 'vpn',
              (SELECT id FROM product_categories WHERE name = '__inv-category'));
+-- A service's own volume bonus (0081) keeps the code's range: 0 ≤ p ≤ 100.
+-- Here, after the category exists, so the refusal is the CHECK's and not a
+-- foreign key's — `assert_rejects` cannot tell the two apart.
+SELECT assert_rejects($$
+  INSERT INTO products (code, name, kind, category_id, bonus_percent)
+       VALUES ('__inv-bonus-101', 'x', 'vpn',
+               (SELECT id FROM product_categories WHERE name = '__inv-category'), 101)
+$$, 'a service cannot give more than +100% volume');
+SELECT assert_rejects($$
+  INSERT INTO products (code, name, kind, category_id, bonus_percent)
+       VALUES ('__inv-bonus-neg', 'x', 'vpn',
+               (SELECT id FROM product_categories WHERE name = '__inv-category'), -1)
+$$, 'a service cannot give negative volume');
 INSERT INTO product_plans (product_id, name, price_irr)
      VALUES ((SELECT id FROM products WHERE code = '__inv-product'), '__inv-plan', 1800000);
 INSERT INTO provisioning_providers (code, name, kind)

@@ -45,6 +45,7 @@ const PLAN: CatalogPlan = {
   tiers: 1,
   usernameMode: null,
   shelfAvailable: null,
+  bonusPercent: 0,
 };
 
 describe('the price list', () => {
