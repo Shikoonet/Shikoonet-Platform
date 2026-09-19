@@ -49,6 +49,7 @@ export type PageId =
   | 'dashboard'
   | 'stats'
   | 'customers'
+  | 'referrals'
   | 'bulk'
   | 'orders'
   | 'catalog'
@@ -103,6 +104,12 @@ export const NAV: NavGroup[] = [
     label: 'مشتری و فروش',
     items: [
       { id: 'customers', label: 'کاربران', icon: 'users' },
+      // Right under «کاربران», because it is a view of them: the customers who
+      // brought other customers, and what that was worth. It is a screen and
+      // not a filter on «کاربران» because its columns are different — how
+      // many, how many bought, what it earned — and a filter cannot add
+      // columns. (Sam, 2026-09-19: the per-card table could not FIND anyone.)
+      { id: 'referrals', label: 'زیرمجموعه‌ها', icon: 'send' },
       { id: 'orders', label: 'سفارشات', icon: 'receipt' },
       { id: 'subscriptions', label: 'اشتراک‌های مشتری', icon: 'package' },
       { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list' },

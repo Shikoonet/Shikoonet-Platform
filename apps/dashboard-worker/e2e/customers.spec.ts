@@ -354,3 +354,56 @@ test('the card lists the customers this one brought, and each one names them bac
     await withDb((d) => d.prepare(`DELETE FROM users WHERE telegram_id = ?1`).bind(CHILD_TG).run());
   }
 });
+
+/**
+ * «زیرمجموعه‌ها» in the sidebar: the referrer is a row, the row opens to show
+ * who they brought, and the handle is a link to the card. The sidebar entry
+ * and the row are asserted separately because each can go missing on its own.
+ */
+test('the referrals screen finds the referrer, opens their people, and links to the card', async ({
+  page,
+}) => {
+  const CHILD_TG = TELEGRAM_ID + 2;
+  const CHILD = 'e2e_referred2';
+  const parent = await withDb((d) =>
+    d.prepare(`SELECT id FROM users WHERE telegram_id = ?1`).bind(TELEGRAM_ID).first<{ id: number }>(),
+  );
+  await withDb(async (d) => {
+    await d.prepare(`DELETE FROM users WHERE telegram_id = ?1`).bind(CHILD_TG).run();
+    await d
+      .prepare(
+        `INSERT INTO users (telegram_id, username, status, referred_by, registered_at)
+         VALUES (?1, ?2, 'ACTIVE', ?3, now())`,
+      )
+      .bind(CHILD_TG, CHILD, parent!.id)
+      .run();
+  });
+  try {
+    await page.goto('/admin/customers');
+    await page.getByRole('button', { name: 'زیرمجموعه‌ها' }).click();
+    await expect(page).toHaveURL(/\/admin\/referrals$/);
+    await expect(page.locator('.page-head__title')).toHaveText('زیرمجموعه‌ها');
+
+    // Search narrows to the one referrer; the row carries the sums.
+    await page.getByLabel('معرف').fill(String(TELEGRAM_ID));
+    await page.getByRole('button', { name: 'جست‌وجو' }).click();
+    const rows = page.locator('.app-table > tbody > tr');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText(`@${HANDLE}`);
+    await expect(rows.first()).toContainText(String(TELEGRAM_ID));
+
+    // Opened in place: the child is there, with their id.
+    await rows.first().getByRole('button', { name: 'زیرمجموعه‌ها' }).click();
+    const inner = page.getByTestId('referrals-of');
+    await expect(inner.locator('tbody tr')).toHaveCount(1);
+    await expect(inner).toContainText(`@${CHILD}`);
+    await expect(inner).toContainText(String(CHILD_TG));
+
+    // The handle is the way to the card.
+    await inner.getByRole('link', { name: `@${CHILD}` }).click();
+    await expect(page).toHaveURL(/\/admin\/customers\?id=\d+$/);
+    await expect(page.locator('.card__title')).toContainText(`@${CHILD}`);
+  } finally {
+    await withDb((d) => d.prepare(`DELETE FROM users WHERE telegram_id = ?1`).bind(CHILD_TG).run());
+  }
+});

@@ -162,6 +162,31 @@ export interface CustomerReferral {
   referrals: CustomerReferralRow[];
 }
 
+/** One row of «زیرمجموعه‌ها»: a customer who brought others, and the sums. */
+export interface ReferrerRow {
+  id: number;
+  telegramId: number;
+  username: string | null;
+  status: string;
+  registeredAt: string;
+  balanceIrr: number;
+  invited: number;
+  buyers: number;
+  boughtIrr: number;
+  commissionIrr: number;
+  lastJoinedAt: string;
+}
+
+export interface ReferrerTotals {
+  referrers: number;
+  invited: number;
+  buyers: number;
+  boughtIrr: number;
+  commissionIrr: number;
+}
+
+export type ReferrerSort = 'invited' | 'buyers' | 'bought' | 'commission' | 'recent';
+
 export interface CustomerDetail {
   id: number;
   telegramId: number;
@@ -1807,6 +1832,34 @@ export const api = {
     if (params.sort && params.sort !== 'recent') qs.set('sort', params.sort);
     if (params.reseller) qs.set('reseller', params.reseller);
     return req<CustomerListPage>(`/customers?${qs.toString()}`);
+  },
+
+  referrers(params: {
+    q?: string;
+    page: number;
+    pageSize: number;
+    sort?: ReferrerSort;
+    buyers?: 'yes' | 'no';
+    min?: number;
+    since?: string;
+  }) {
+    const qs = new URLSearchParams({
+      page: String(params.page),
+      pageSize: String(params.pageSize),
+    });
+    if (params.q) qs.set('q', params.q);
+    if (params.sort && params.sort !== 'invited') qs.set('sort', params.sort);
+    if (params.buyers) qs.set('buyers', params.buyers);
+    if (params.min) qs.set('min', String(params.min));
+    if (params.since) qs.set('since', params.since);
+    return req<{
+      ok: boolean;
+      total: number;
+      page: number;
+      pageSize: number;
+      totals: ReferrerTotals;
+      items: ReferrerRow[];
+    }>(`/referrers?${qs.toString()}`);
   },
 
   customer(id: number) {

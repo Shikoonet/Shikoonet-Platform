@@ -104,6 +104,49 @@ const ListQuery = z.object({
   reseller: z.enum(['yes', 'no']).optional(),
 });
 
+/**
+ * What «a purchase» is, for everything referral. One definition, the one
+ * `apps/bot/src/referral.ts` pays commission on: PAID or later, not a top-up,
+ * not a trial. Both the customer card and «زیرمجموعه‌ها» count with this, so
+ * the two screens can never disagree with the commission rule (rule 6).
+ */
+const REFERRAL_PURCHASE = `o.kind NOT IN ('WALLET_TOPUP', 'TRIAL')
+                  AND o.status IN ('PAID', 'PROVISIONING', 'COMPLETED')`;
+
+/**
+ * «بتونم به تفصیل کاربرانی که زیرمجموعه دارن رو ببینم، فیلتر کنم» — Sam,
+ * 2026-09-19, after the per-card table turned out to be no way to FIND a
+ * referrer among 17k customers. Same shape as `ListQuery`, same reasons.
+ */
+const ReferrersQuery = z.object({
+  q: z.string().trim().max(64).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(25),
+  /** Only referrers at least one of whose referrals has actually bought. */
+  buyers: z.enum(['yes', 'no']).optional(),
+  /** At least this many referrals. */
+  min: z.coerce.number().int().min(1).optional(),
+  /** Referrals who joined on or after this day (ISO date). A real one: the
+   * `::date` cast would turn `2026-02-30` into a 500 instead of a 400. */
+  since: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((d) => {
+      const t = Date.parse(`${d}T00:00:00Z`);
+      return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === d;
+    })
+    .optional(),
+  sort: z.enum(['invited', 'buyers', 'bought', 'commission', 'recent']).default('invited'),
+});
+
+const REFERRERS_ORDER_BY: Record<z.infer<typeof ReferrersQuery>['sort'], string> = {
+  invited: 'invited DESC, last_joined DESC, u.id DESC',
+  buyers: 'buyers DESC, invited DESC, u.id DESC',
+  bought: 'bought_irr DESC, invited DESC, u.id DESC',
+  commission: 'commission_irr DESC, invited DESC, u.id DESC',
+  recent: 'last_joined DESC, u.id DESC',
+};
+
 const ORDER_BY: Record<'recent' | 'balance' | 'debt', string> = {
   recent: 'u.id DESC',
   // NULLS LAST, because a customer with no wallet row has a zero balance and
@@ -291,6 +334,178 @@ export function registerCustomerRoutes(
     });
   });
 
+  // --- referrers ----------------------------------------------------------
+
+  /**
+   * Every customer who has brought at least one other, with how many, how many
+   * of those bought, what they bought in total, and what it earned the
+   * referrer. The per-customer card answers «who did THIS one bring»; this
+   * list answers «who brings people at all», which is the question a shop
+   * with 178 referrers in 17k customers cannot answer one card at a time.
+   *
+   * Aggregated in SQL over `users.referred_by`, the one column the bot writes
+   * (`claimReferrer`). `commission_irr` is the customer's REFERRAL_BONUS total
+   * — the same number the card's «زیرمجموعه‌ها» fact shows — and is not
+   * derived from `bought_irr`, because the rule pays on the FIRST purchase
+   * only and a screen that multiplied would disagree with the wallet.
+   *
+   * `since` filters the REFERRALS by join date and re-counts, so «who brought
+   * someone this month» is a question this answers rather than one it
+   * approximates with the referrer's own dates.
+   */
+  app.get('/api/v1/admin/referrers', async (c) => {
+    const parsed = ReferrersQuery.safeParse({
+      q: c.req.query('q') || undefined,
+      page: c.req.query('page') ?? undefined,
+      pageSize: c.req.query('pageSize') ?? undefined,
+      buyers: c.req.query('buyers') || undefined,
+      min: c.req.query('min') || undefined,
+      since: c.req.query('since') || undefined,
+      sort: c.req.query('sort') || undefined,
+    });
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
+    const { q, page, pageSize, buyers, min, since, sort } = parsed.data;
+
+    const params: unknown[] = [];
+    const refWhere: string[] = ['r.referred_by IS NOT NULL'];
+    // `since` is bound FIRST, as ?1, because the commission join below names
+    // it by that number too — the same cohort, or the header would say
+    // «this month's referrals» over a lifetime commission.
+    if (since) {
+      params.push(since);
+      refWhere.push(`r.registered_at >= ?1::date`);
+    }
+    const having: string[] = [];
+    if (min) {
+      params.push(min);
+      having.push(`count(*) >= ?${params.length}`);
+    }
+    if (buyers) {
+      having.push(
+        buyers === 'yes'
+          ? `count(*) FILTER (WHERE p.n > 0) > 0`
+          : `count(*) FILTER (WHERE p.n > 0) = 0`,
+      );
+    }
+    const where: string[] = [];
+    if (q) {
+      const handle = q.replace(/^@/, '');
+      params.push(`%${handle}%`);
+      const nameParam = params.length;
+      const asId = /^[0-9]{1,19}$/.test(handle) ? handle : null;
+      if (asId) {
+        params.push(asId);
+        where.push(`(u.username ILIKE ?${nameParam} OR u.telegram_id = ?${params.length})`);
+      } else {
+        where.push(`u.username ILIKE ?${nameParam}`);
+      }
+    }
+
+    // One row per referrer with the referral-side sums; the referrer's own
+    // columns join on afterwards. The LATERAL is per REFERRAL, and there are a
+    // few hundred of those in a database of 17k — the whole thing is one scan
+    // of `users` plus an index probe on `orders(user_id)` per referred row.
+    const base = `
+      FROM (
+        SELECT r.referred_by AS parent_id,
+               count(*)::int AS invited,
+               count(*) FILTER (WHERE p.n > 0)::int AS buyers,
+               coalesce(sum(p.irr), 0)::bigint AS bought_irr,
+               max(r.registered_at) AS last_joined
+          FROM users r
+          LEFT JOIN LATERAL (
+            SELECT count(*)::int AS n, coalesce(sum(o.total_irr), 0)::bigint AS irr
+              FROM orders o
+             WHERE o.user_id = r.id AND ${REFERRAL_PURCHASE}
+          ) p ON true
+         WHERE ${refWhere.join(' AND ')}
+         GROUP BY r.referred_by
+         ${having.length ? `HAVING ${having.join(' AND ')}` : ''}
+      ) ref
+      JOIN users u ON u.id = ref.parent_id
+      LEFT JOIN wallets w ON w.user_id = u.id
+      LEFT JOIN LATERAL (
+        SELECT coalesce(sum(e.amount_irr), 0)::bigint AS irr
+          FROM wallet_entries e
+          ${since ? `JOIN orders o ON o.id = e.order_id JOIN users r ON r.id = o.user_id` : ''}
+         WHERE e.user_id = u.id AND e.kind = 'REFERRAL_BONUS'
+           ${since ? `AND r.referred_by = u.id AND r.registered_at >= ?1::date` : ''}
+      ) comm ON true
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
+
+    // Totals over the FILTERED set, so the header answers the same question the
+    // table does: filter to this month and the numbers above it are this month's.
+    const totals = await c.env.DB.prepare(
+      `SELECT count(*)::int AS referrers,
+              coalesce(sum(ref.invited), 0)::int AS invited,
+              coalesce(sum(ref.buyers), 0)::int AS buyers,
+              coalesce(sum(ref.bought_irr), 0)::bigint AS bought_irr,
+              coalesce(sum(comm.irr), 0)::bigint AS commission_irr
+       ${base}`,
+    )
+      .bind(...params)
+      .first<{
+        referrers: number;
+        invited: number;
+        buyers: number;
+        bought_irr: number;
+        commission_irr: number;
+      }>();
+
+    params.push(pageSize);
+    const limitParam = params.length;
+    params.push((page - 1) * pageSize);
+    const rows = await c.env.DB.prepare(
+      `SELECT u.id, u.telegram_id, u.username, u.status, u.registered_at, w.balance_irr,
+              ref.invited, ref.buyers, ref.bought_irr, ref.last_joined,
+              comm.irr AS commission_irr
+       ${base}
+       ORDER BY ${REFERRERS_ORDER_BY[sort]}
+       LIMIT ?${limitParam} OFFSET ?${params.length}`,
+    )
+      .bind(...params)
+      .all<{
+        id: number;
+        telegram_id: number;
+        username: string | null;
+        status: string;
+        registered_at: string;
+        balance_irr: number | null;
+        invited: number;
+        buyers: number;
+        bought_irr: number;
+        last_joined: string;
+        commission_irr: number;
+      }>();
+
+    return c.json({
+      ok: true,
+      page,
+      pageSize,
+      total: Number(totals?.referrers ?? 0),
+      totals: {
+        referrers: Number(totals?.referrers ?? 0),
+        invited: Number(totals?.invited ?? 0),
+        buyers: Number(totals?.buyers ?? 0),
+        boughtIrr: Number(totals?.bought_irr ?? 0),
+        commissionIrr: Number(totals?.commission_irr ?? 0),
+      },
+      items: (rows.results ?? []).map((r) => ({
+        id: r.id,
+        telegramId: r.telegram_id,
+        username: r.username,
+        status: r.status,
+        registeredAt: r.registered_at,
+        balanceIrr: r.balance_irr ?? 0,
+        invited: Number(r.invited),
+        buyers: Number(r.buyers),
+        boughtIrr: Number(r.bought_irr),
+        commissionIrr: Number(r.commission_irr),
+        lastJoinedAt: r.last_joined,
+      })),
+    });
+  });
+
   // --- one customer -------------------------------------------------------
 
   app.get('/api/v1/admin/customers/:id', async (c) => {
@@ -338,13 +553,9 @@ export function registerCustomerRoutes(
     const referrals = await c.env.DB.prepare(
       `SELECT r.id, r.telegram_id, r.username, r.registered_at,
               (SELECT count(*)::int FROM orders o
-                WHERE o.user_id = r.id
-                  AND o.kind NOT IN ('WALLET_TOPUP', 'TRIAL')
-                  AND o.status IN ('PAID', 'PROVISIONING', 'COMPLETED')) AS purchases,
+                WHERE o.user_id = r.id AND ${REFERRAL_PURCHASE}) AS purchases,
               (SELECT coalesce(sum(o.total_irr), 0)::bigint FROM orders o
-                WHERE o.user_id = r.id
-                  AND o.kind NOT IN ('WALLET_TOPUP', 'TRIAL')
-                  AND o.status IN ('PAID', 'PROVISIONING', 'COMPLETED')) AS bought_irr,
+                WHERE o.user_id = r.id AND ${REFERRAL_PURCHASE}) AS bought_irr,
               (SELECT coalesce(sum(e.amount_irr), 0)::bigint
                  FROM wallet_entries e JOIN orders o ON o.id = e.order_id
                 WHERE e.user_id = ?1 AND e.kind = 'REFERRAL_BONUS' AND o.user_id = r.id) AS commission_irr
