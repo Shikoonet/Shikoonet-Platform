@@ -127,13 +127,16 @@ export function registerAdminOverviewRoutes(
 ) {
   app.get('/api/v1/admin/attention', async (c) => {
     // A bad or absent value is «never looked», never a 400: a badge is a hint.
+    // Bounded by now as well: a stamp from the future says nothing, and one
+    // large enough overflows to_timestamp — seen with a 19-digit value.
+    const now = Date.now();
     const seen = Number(c.req.query('requestsSeenAt'));
     return c.json({
       ok: true,
       attention: await loadAttention(
         c.env.DB,
-        Date.now(),
-        Number.isFinite(seen) && seen > 0 ? seen : null,
+        now,
+        Number.isFinite(seen) && seen > 0 && seen <= now ? seen : null,
       ),
     });
   });

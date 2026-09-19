@@ -159,7 +159,7 @@ describe('what still needs a person', () => {
     expect(stamped.newRequests).toBe(expected!.n);
     expect(stamped.newRequests).toBeLessThan(stamped.pendingRequests);
     // Never looked, or a stamp that is not a number: the whole queue, not a 400.
-    for (const q of ['', '?requestsSeenAt=abc']) {
+    for (const q of ['', '?requestsSeenAt=abc', '?requestsSeenAt=1789834885148314976']) {
       const a = await ask(q);
       expect(a.newRequests).toBe(a.pendingRequests);
     }
