@@ -28,10 +28,13 @@
  * check that guards a value has to be at least as strict as the code that reads
  * it, so creation is refused on a case-insensitive collision.
  *
- * **No delete.** `discount_redemptions.code_id` is ON DELETE CASCADE, so
- * removing a code erases the record of everyone who spent it — including the
- * rows that stop a customer redeeming twice. Retiring a code sets its expiry to
- * now, which is exactly what the bot already treats as spent.
+ * **Delete only what nobody spent.** `discount_redemptions.code_id` is ON
+ * DELETE CASCADE, so removing a used code erases the record of everyone who
+ * spent it — including the rows that stop a customer redeeming twice. A code
+ * with even one redemption row is therefore refused (409) and retired instead:
+ * expiring sets `expires_at` to now, which is exactly what the bot already
+ * treats as spent. A typo or a test code that nobody ever typed has no record
+ * to lose, and that one may go (#368).
  */
 
 import type { Hono } from 'hono';
@@ -290,11 +293,29 @@ export function registerDiscountRoutes(
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
+    // The three counts are the bot's own words for a customer's services
+    // (`apps/bot/src/owned.ts`): «bought» is what `countSubscriptionsForUser`
+    // counts, «active» is `USABLE` — ACTIVE, not past its date, not over its
+    // volume — and «has» is what is neither gone nor never paid for. Spelled
+    // here rather than imported because the bot binds its clock as a
+    // parameter and this route, like `state()` above, reads the server's; the
+    // predicates are the same and if one moves the other must.
     const rows = await c.env.DB.prepare(
       `SELECT r.id, r.amount_irr, r.created_at, r.order_id,
-              u.telegram_id, u.username
+              u.telegram_id, u.username,
+              sv.bought, sv.has, sv.active
          FROM discount_redemptions r
          JOIN users u ON u.id = r.user_id
+         CROSS JOIN LATERAL (
+           SELECT COUNT(*) FILTER (WHERE s.status <> 'PENDING_PAYMENT') AS bought,
+                  COUNT(*) FILTER (WHERE s.status NOT IN ('PENDING_PAYMENT', 'REMOVED', 'FAILED')) AS has,
+                  COUNT(*) FILTER (WHERE s.status = 'ACTIVE'
+                                     AND (s.expires_at IS NULL OR s.expires_at > now())
+                                     AND (s.volume_gb IS NULL OR s.volume_gb <= 0 OR s.used_bytes IS NULL
+                                          OR s.used_bytes < s.volume_gb * 1073741824)) AS active
+             FROM subscriptions s
+            WHERE s.user_id = r.user_id
+         ) sv
         WHERE r.code_id = ?1
         ORDER BY r.created_at DESC, r.id DESC
         LIMIT 100`,
@@ -307,6 +328,9 @@ export function registerDiscountRoutes(
         order_id: number | null;
         telegram_id: number;
         username: string | null;
+        bought: number;
+        has: number;
+        active: number;
       }>();
 
     return c.json({
@@ -318,6 +342,7 @@ export function registerDiscountRoutes(
         orderId: r.order_id,
         telegramId: r.telegram_id,
         username: r.username,
+        services: { bought: Number(r.bought), has: Number(r.has), active: Number(r.active) },
       })),
     });
   });
@@ -522,5 +547,47 @@ export function registerDiscountRoutes(
     );
 
     return c.json({ ok: true, changed: true, discount: shape(after!, Date.now()) });
+  });
+
+  // --- delete — only a code nobody spent ----------------------------------
+
+  app.delete('/api/v1/admin/discounts/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const before = await c.env.DB.prepare(`${SELECT_CODE} WHERE dc.id = ?1`)
+      .bind(id)
+      .first<CodeRow>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    // Every redemption row, not `used`: a use the bot gave back when the order
+    // died is still the record that the customer typed this code, and the
+    // cascade would take it with the code. See the file header.
+    const spent = await c.env.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM discount_redemptions WHERE code_id = ?1`,
+    )
+      .bind(id)
+      .first<{ n: number }>();
+    if ((spent?.n ?? 0) > 0) {
+      return c.json({ ok: false, error: 'has_redemptions', detail: spent!.n }, 409);
+    }
+
+    await c.env.DB.prepare(`DELETE FROM discount_codes WHERE id = ?1`).bind(id).run();
+
+    await audit(
+      c.env.DB,
+      ident,
+      'discount.deleted',
+      'DISCOUNT_CODE',
+      String(id),
+      { code: before.code, kind: before.kind, status: before.status, expires_at: before.expires_at },
+      null,
+      null,
+    );
+
+    return c.json({ ok: true });
   });
 }

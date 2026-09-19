@@ -513,6 +513,12 @@ describe('every write route, asked directly', () => {
     // they arrived; `…/apply` makes those rows through ingest's own path —
     // no matching, no auto-verify. It creates transaction rows, so ADMIN-only
     // and audited per row; `sms-reparse.test.ts` pins both.
-    expect(writeRoutes().length).toBe(173);
+    //
+    // 174, 2026-09-19: `DELETE /admin/discounts/:id` (#368). The one delete
+    // «کدهای تخفیف» has, and only for a code with no redemption row — the
+    // cascade would take the customers' record with a used one, so those get
+    // a 409 and «باطل کن». ADMIN-only like every other write on that screen,
+    // audited; `discounts.test.ts` pins the refusal and the audit row.
+    expect(writeRoutes().length).toBe(174);
   });
 });
