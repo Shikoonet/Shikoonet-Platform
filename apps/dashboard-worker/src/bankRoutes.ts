@@ -27,8 +27,13 @@ import {
   luhnOk,
   normalizeCardDigits,
   formatCardDigitsForDisplay,
+  senderCoverage,
+  unparsedShapes,
+  dryRunReparse,
+  applyReparse,
   type BankPrefix,
 } from '@shikoo/domain';
+import { csvCell } from './revenueRoutes.js';
 import {
   compilePatterns,
   compilePatternSource,
@@ -177,6 +182,88 @@ const PatternBody = z
 export function registerBankRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
+  // --- which texts the parsers read, and which they did not ---------------
+  //
+  // Three reads over `raw_sms_events` (see `smsCoverage.ts` in the domain):
+  //   GET /admin/sms/coverage?days=      one line per sender
+  //   GET /admin/sms/unparsed?days=      every shape a named parser did not read
+  //   GET /admin/sms/unparsed.csv?days=  the same, to hand to whoever writes the parser
+  // ADMIN and REVIEWER, like the transactions they describe. Nothing here writes.
+
+  const mayRead = (role: string) => role === 'ADMIN' || role === 'REVIEWER';
+  const sinceOf = (c: { req: { query: (k: string) => string | undefined } }) => {
+    const days = Number.parseInt(c.req.query('days') ?? '14', 10);
+    const bounded = Number.isFinite(days) && days >= 1 && days <= 365 ? days : 14;
+    return Date.now() - bounded * 86_400_000;
+  };
+
+  app.get('/api/v1/admin/sms/coverage', async (c) => {
+    if (!mayRead(c.get('identity').role)) return c.json({ ok: false, error: 'forbidden' }, 403);
+    return c.json({ ok: true, items: await senderCoverage(c.env.DB, sinceOf(c)) });
+  });
+
+  app.get('/api/v1/admin/sms/unparsed', async (c) => {
+    if (!mayRead(c.get('identity').role)) return c.json({ ok: false, error: 'forbidden' }, 403);
+    return c.json({ ok: true, items: await unparsedShapes(c.env.DB, sinceOf(c)) });
+  });
+
+  app.get('/api/v1/admin/sms/unparsed.csv', async (c) => {
+    if (!mayRead(c.get('identity').role)) return c.json({ ok: false, error: 'forbidden' }, 403);
+    const items = await unparsedShapes(c.env.DB, sinceOf(c));
+    const header = ['فرستنده', 'چرا', 'پارسر', 'classification', 'تعداد', 'آخرین', 'شکل', 'نمونه'];
+    const rows = items.map((s) =>
+      [
+        s.sender,
+        s.reason === 'unread' ? 'ردیف نساخت' : 'پارسر عمومی',
+        s.parserId ?? '',
+        s.classification,
+        s.count,
+        new Date(s.lastAt).toISOString(),
+        s.shape,
+        s.sampleBody.replace(/\n/g, ' | '),
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+    return c.body(`\ufeff${[header.map(csvCell).join(','), ...rows].join('\r\n')}\r\n`, 200, {
+      'content-type': 'text/csv; charset=utf-8',
+      'content-disposition': `attachment; filename="unparsed-sms.csv"`,
+    });
+  });
+
+  // --- «بازخوانی»: read the unread again with today's parsers --------------
+  //
+  //   POST /admin/sms/reparse/dry-run {days}        what today's named parsers can now read
+  //   POST /admin/sms/reparse/apply {eventIds}      make those rows, and only those
+  //
+  // Two steps on purpose (the `cleanup-debits` contract): the operator sees
+  // the list, then confirms it. ADMIN-only — it creates transaction rows —
+  // and audited per row. No matching runs; see `smsReparse.ts`.
+
+  const ReparseDryRunBody = z.object({ days: z.number().int().min(1).max(365).optional() }).strict();
+  app.post('/api/v1/admin/sms/reparse/dry-run', async (c) => {
+    if (c.get('identity').role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const body = ReparseDryRunBody.safeParse((await c.req.json().catch(() => ({}))) ?? {});
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const since = Date.now() - (body.data.days ?? 30) * 86_400_000;
+    return c.json({ ok: true, report: await dryRunReparse(c.env.DB, since) });
+  });
+
+  const ReparseApplyBody = z
+    .object({ eventIds: z.array(z.string().min(1).max(100)).min(1).max(2000), confirm: z.literal(true) })
+    .strict();
+  app.post('/api/v1/admin/sms/reparse/apply', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const body = ReparseApplyBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const result = await applyReparse(c.env.DB, body.data.eventIds);
+    for (const m of result.made) {
+      await audit(c.env.DB, ident, 'sms.reparsed', 'TRANSACTION', m.transactionId, null, m);
+    }
+    return c.json({ ok: true, ...result });
+  });
+
   // --- card prefixes ------------------------------------------------------
 
   app.get('/api/v1/banks/prefixes', async (c) => {

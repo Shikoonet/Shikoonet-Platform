@@ -507,6 +507,12 @@ describe('every write route, asked directly', () => {
     // `PATCH /admin/books/off-books/:id` re-labels a tag in place. All three
     // are ADMIN-only like the fresh start — the owner's word in the monthly
     // statement — and audited; `books.test.ts` pins each.
-    expect(writeRoutes().length).toBe(171);
+    //
+    // 172–173, 2026-09-19: «بازخوانی». `POST /admin/sms/reparse/dry-run`
+    // lists the texts today's named parsers can read that made no row when
+    // they arrived; `…/apply` makes those rows through ingest's own path —
+    // no matching, no auto-verify. It creates transaction rows, so ADMIN-only
+    // and audited per row; `sms-reparse.test.ts` pins both.
+    expect(writeRoutes().length).toBe(173);
   });
 });

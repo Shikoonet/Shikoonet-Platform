@@ -1999,9 +1999,12 @@ const ACCOUNT_BASE_SELECT = `
          fa.account_hint, fa.card_last_four, fa.account_last_four, fa.iban,
          fa.device_id, fa.active, fa.status, fa.parser_configuration,
          fa.created_at, fa.updated_at,
-         d.display_name AS device_display_name
+         d.display_name AS device_display_name,
+         fa.suggested_owner_id, fa.suggested_reason,
+         so.display_name AS suggested_owner_name
     FROM financial_accounts fa
     LEFT JOIN devices d ON d.id = fa.device_id
+    LEFT JOIN financial_accounts so ON so.id = fa.suggested_owner_id AND so.active = 1
 `;
 
 app.get('/api/v1/accounts', async (c) => {

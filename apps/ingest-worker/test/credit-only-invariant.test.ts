@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { processingDispositionFor, shouldCreateTransaction } from '../src/transaction-create.js';
+import { processingDispositionFor, shouldCreateTransaction } from '@shikoo/domain';
 
 const baseTx = {
   matched: true,

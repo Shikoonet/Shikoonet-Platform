@@ -2,11 +2,12 @@
  * Shared transaction-candidate creation logic.
  *
  * Used by:
- *   - ingest worker (`ingest.ts`) — runs against the live D1 binding.
- *   - reparse-bank-sms CLI       — runs the same SQL via `wrangler d1
- *                                  execute` so the same idempotency,
- *                                  account-lookup, and warning semantics
- *                                  are preserved.
+ *   - the ingest worker (`ingest.ts`) — the live path, one text at a time.
+ *   - the dashboard's «بازخوانی» (`smsReparse.ts`) — the same path over texts
+ *     an older parser could not read, so a row made later is made the same.
+ *
+ * Lived in `apps/ingest-worker/src/transaction-create.ts` until 2026-09-19;
+ * moved here unchanged so both apps reach one copy.
  *
  * Every function here returns plain SQL + bind parameters so the caller
  * can either:

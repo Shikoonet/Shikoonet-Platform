@@ -108,6 +108,10 @@ export interface AccountListItem {
   created_at: number;
   updated_at: number;
   device_display_name: string | null;
+  /** 0080: the live account whose balance chains onto this PENDING one's first text — a suggestion, never a merge. */
+  suggested_owner_id?: string | null;
+  suggested_owner_name?: string | null;
+  suggested_reason?: string | null;
   additional_identifiers: Array<{ id: string; kind: string; value: string; label: string | null }>;
   /** Mirzabot destination cards mapped to this account (masked). */
   payment_cards?: Array<{

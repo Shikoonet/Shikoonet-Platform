@@ -331,6 +331,32 @@ export function AccountsView({ cache }: AccountsViewProps) {
    * with a 409; we surface the typed error so the user sees a clear
    * "this transition is not allowed" message instead of a generic.
    */
+  /**
+   * One click on the 0080 suggestion: the existing merge, with every option
+   * on — the new number joins the known account, its rows move there, and
+   * the placeholder is deleted. The next text naming this number lands
+   * straight on the account.
+   */
+  async function mergeIntoSuggested(a: AccountListItem) {
+    if (!a.suggested_owner_id || !a.suggested_owner_name) return;
+    if (!window.confirm(`«${a.display_name}» در «${a.suggested_owner_name}» ادغام شود؟ شماره‌اش به آن حساب می‌چسبد و این ردیف حذف می‌شود.`)) return;
+    setBusy(a.id);
+    setError(null);
+    try {
+      await api.moveReferences(a.id, {
+        targetAccountId: a.suggested_owner_id,
+        options: { reassignTransactions: true, reassignClaims: true, moveIdentifiers: true, deleteSource: true },
+        reason: 'balance_chain',
+      });
+      cache.invalidate(QK.accounts, QK.accountsPending, QK.unmatched, QK.today, QK.suggested);
+      setSuccess(`در «${a.suggested_owner_name}» ادغام شد.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function runStatusTransition(
     id: string,
     action: 'accept' | 'mute' | 'unmute' | 'decline' | 'restore',
@@ -489,7 +515,31 @@ export function AccountsView({ cache }: AccountsViewProps) {
                   <span className="label">شناسایی‌شده</span>
                   <span>{formatTime(a.created_at)}</span>
                 </div>
+                {a.status === 'PENDING' && a.suggested_owner_id && a.suggested_owner_name && (
+                  // 0080: the bank's balance on this account's first text chains
+                  // from exactly one live account — the number is most likely a
+                  // second identifier of that account, not a new account. Offered,
+                  // never done on its own.
+                  <div className="card-row" data-testid="suggested-owner">
+                    <span className="label">احتمالاً</span>
+                    <span>
+                      همان <strong>{a.suggested_owner_name}</strong> است — موجودی بانک زنجیره می‌شود.
+                    </span>
+                  </div>
+                )}
                 <div className="card-actions">
+                  {a.status === 'PENDING' && a.suggested_owner_id && a.suggested_owner_name && (
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={busy === a.id}
+                      onClick={() => void mergeIntoSuggested(a)}
+                      {...w}
+                      data-testid="merge-into-suggested"
+                    >
+                      ادغام در {a.suggested_owner_name}
+                    </button>
+                  )}
                   {a.status === 'PENDING' && (
                     <>
                       <button
