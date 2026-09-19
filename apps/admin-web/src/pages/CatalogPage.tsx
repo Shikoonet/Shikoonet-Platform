@@ -64,7 +64,7 @@ import {
 } from '../api.js';
 import { count, irrToToman, STATUS_FA, toman } from '../format.js';
 import { LayoutEditor } from './LayoutEditor.js';
-import { BadgeField, badgeValue } from './BadgeField.js';
+import { BadgeField, badgeValue, STYLES } from './BadgeField.js';
 import { anyHosted, GroupForm, InboundCount, InboundPicker } from '../groups.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -745,6 +745,7 @@ function ServiceCard({
   const w = useAdminWriteProps();
   const [editing, setEditing] = useState<ConfigRow | null>(null);
   const [adding, setAdding] = useState(false);
+  const [gifting, setGifting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const kind = kindOf(service);
 
@@ -766,11 +767,6 @@ function ServiceCard({
             {service.name}
             <span className="badge badge-info svc-card__kind">{kindFa(service.kind)}</span>
             {service.resellersOnly && <span className="badge">فقط نماینده</span>}
-            {/* The service's own volume bonus (0081), where it can be seen
-                without opening the editor — Sam: «بیرون توی سرویس‌ها». */}
-            {service.bonusPercent > 0 && (
-              <span className="badge badge-active">+{service.bonusPercent}٪ حجم</span>
-            )}
           </h3>
           <div className="page-head__sub ltr">{service.code}</div>
         </div>
@@ -843,6 +839,11 @@ function ServiceCard({
           >
             <span className="svc-chip__name">{cf.name}</span>
             <b className="svc-chip__price">{toman(cf.priceIrr)}</b>
+            {/* The gift (0082), on the chip it belongs to — seen without
+                opening anything, the way the bot's button shows it. */}
+            {cf.bonusPercent > 0 && (
+              <span className="badge badge-active">+{cf.bonusPercent}٪ حجم هدیه</span>
+            )}
           </button>
         ))}
         <button
@@ -901,9 +902,26 @@ function ServiceCard({
         >
           {arranging ? 'بستن چیدمان' : 'چیدمان'}
         </button>
+        {/* Sam, 2026-09-19: pick the configs, type the percent, paint them —
+            «ستاشون رو انتخاب می‌کنم … ۲۰٪ حجم اضافه، رنگشونم قرمز». */}
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={!service.configs.some((cf) => cf.volumeGb !== null)}
+          title={
+            service.configs.some((cf) => cf.volumeGb !== null)
+              ? 'حجم هدیه روی کانفیگ‌های این سرویس'
+              : 'هیچ کانفیگی حجم ندارد که هدیه رویش بنشیند'
+          }
+          onClick={() => setGifting(!gifting)}
+          {...w}
+        >
+          {gifting ? 'بستن حجم هدیه' : 'حجم هدیه'}
+        </button>
       </footer>
       {editor}
       {arranging && <ArrangeService service={service} onSaved={onChanged} />}
+      {gifting && <GiftPanel service={service} onSaved={onChanged} />}
     </article>
   );
 }
@@ -2351,9 +2369,6 @@ function ServiceDrawer({
   const [deliveryNote, setDeliveryNote] = useState(service.deliveryNote ?? '');
   const [badge, setBadge] = useState(service.badge ?? '');
   const [buttonStyle, setButtonStyle] = useState<ButtonStyle | null>(service.buttonStyle);
-  const [bonusPercent, setBonusPercent] = useState(
-    service.bonusPercent > 0 ? String(service.bonusPercent) : '',
-  );
   const [err, setErr] = useState<string | null>(null);
   const [refused, setRefused] = useState<Refused>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -2388,8 +2403,6 @@ function ServiceDrawer({
         deliveryNote: deliveryNote.trim() === '' ? null : deliveryNote.trim(),
         badge: badgeValue(badge),
         buttonStyle,
-        // An empty box is «no bonus», not a refused request.
-        bonusPercent: bonusPercent.trim() === '' ? 0 : Number(bonusPercent),
       });
       setDone('سرویس ذخیره شد.');
       onChanged();
@@ -2550,27 +2563,6 @@ function ServiceDrawer({
             onStyleChange={setButtonStyle}
             preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || service.name}`}
           />
-        </div>
-        <div>
-          <label className="form-label" htmlFor="sv-bonus">
-            حجم هدیه (٪)
-          </label>
-          <input
-            id="sv-bonus"
-            className="form-control ltr"
-            type="number"
-            inputMode="decimal"
-            min={0}
-            max={100}
-            step={0.01}
-            value={bonusPercent}
-            onChange={(e) => setBonusPercent(e.target.value)}
-            placeholder="۰"
-          />
-          <p className="muted" style={{ marginBlockStart: 4 }}>
-            روی حجم هر کانفیگ این سرویس اضافه می‌شود؛ مثلاً ۲۰ یعنی ۶۰ گیگ → ۷۲ گیگ. قیمت عوض
-            نمی‌شود.
-          </p>
         </div>
       </div>
 
@@ -2907,6 +2899,176 @@ function Flags({
  * what lets the editor open on the CURRENT arrangement instead of offering to
  * replace it with one button per row.
  */
+/**
+ * «حجم هدیه» — the configs of one service, ticked, given one percent and one
+ * colour in a single press.
+ *
+ * Writes nothing this page cannot already write: each ticked config gets the
+ * same `updatePlan` the drawer sends, with `bonusPercent` and — only when a
+ * colour was picked — `buttonStyle`. The bot draws «+20٪ حجم هدیه» after the
+ * name and delivers the plan's volume plus the share (0082).
+ *
+ * Only a config with a volume can be ticked: the gift is a share of it, and
+ * `planBonusGb` would freeze 0 for an unmetered one. The row is still drawn,
+ * greyed, so the operator sees why it is not offered.
+ */
+function GiftPanel({ service, onSaved }: { service: ServiceRow; onSaved: () => void }) {
+  const w = useAdminWriteProps();
+  const gifted = service.configs.filter((cf) => cf.bonusPercent > 0);
+  const [picked, setPicked] = useState<Set<number>>(new Set(gifted.map((cf) => cf.id)));
+  const [percent, setPercent] = useState(gifted[0] ? String(gifted[0].bonusPercent) : '');
+  // null is «no colour», undefined is «leave each one as it is».
+  const [style, setStyle] = useState<ButtonStyle | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const pct = Number(percent);
+  const valid = percent.trim() !== '' && Number.isFinite(pct) && pct >= 0 && pct <= 100;
+
+  function toggle(id: number) {
+    const next = new Set(picked);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setPicked(next);
+  }
+
+  async function apply(bonusPercent: number) {
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await Promise.all(
+        [...picked].map((id) =>
+          api.updatePlan(id, {
+            bonusPercent,
+            ...(style === undefined ? {} : { buttonStyle: style }),
+          }),
+        ),
+      );
+      setDone(
+        bonusPercent > 0
+          ? `${count(picked.size)} کانفیگ +${bonusPercent}٪ حجم هدیه گرفت.`
+          : `حجم هدیهٔ ${count(picked.size)} کانفیگ برداشته شد.`,
+      );
+      onSaved();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 12 }} aria-label={`حجم هدیهٔ «${service.name}»`}>
+      <div className="card__head">
+        <span className="card__title">حجم هدیه روی کانفیگ‌های «{service.name}»</span>
+      </div>
+      {err && <div className="alert alert-error">{err}</div>}
+      {done && <div className="alert alert-info">{done}</div>}
+      <div className="svc-card__configs" style={{ marginBlockEnd: 12 }}>
+        {service.configs.map((cf) => (
+          <label
+            key={cf.id}
+            className={`svc-chip${cf.volumeGb === null ? ' svc-chip--off' : ''}${
+              picked.has(cf.id) ? ' svc-chip--open' : ''
+            }`}
+            title={cf.volumeGb === null ? 'حجم ندارد — هدیه روی چیزی نمی‌نشیند' : undefined}
+          >
+            <input
+              type="checkbox"
+              disabled={cf.volumeGb === null}
+              checked={picked.has(cf.id)}
+              onChange={() => toggle(cf.id)}
+            />
+            <span className="svc-chip__name">{cf.name}</span>
+            {cf.bonusPercent > 0 && <span className="badge badge-active">+{cf.bonusPercent}٪</span>}
+          </label>
+        ))}
+      </div>
+      <div className="toolbar" style={{ borderBlockEnd: 'none', paddingBlockEnd: 0 }}>
+        <div>
+          <label className="form-label" htmlFor={`gift-${service.id}`}>
+            درصد حجم هدیه
+          </label>
+          <input
+            id={`gift-${service.id}`}
+            className="form-control ltr"
+            type="number"
+            inputMode="decimal"
+            min={0}
+            max={100}
+            step={0.01}
+            value={percent}
+            onChange={(e) => setPercent(e.target.value)}
+            placeholder="20"
+          />
+        </div>
+        <div>
+          <span className="form-label">رنگ دکمه</span>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {STYLES.map((s) => (
+              <button
+                key={s.value}
+                type="button"
+                className="btn btn-sm"
+                aria-pressed={style === s.value}
+                style={
+                  style === s.value
+                    ? { background: s.token, borderColor: s.token, color: '#fff' }
+                    : { borderColor: s.token, color: s.token }
+                }
+                onClick={() => setStyle(style === s.value ? undefined : s.value)}
+                {...w}
+              >
+                {s.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="btn btn-sm"
+              aria-pressed={style === null}
+              title="رنگ دکمه برداشته شود"
+              onClick={() => setStyle(style === null ? undefined : null)}
+              {...w}
+            >
+              بی‌رنگ
+            </button>
+          </div>
+          <p className="muted" style={{ marginBlockStart: 4 }}>
+            رنگی انتخاب نشود، رنگ هر دکمه همان می‌ماند که هست.
+          </p>
+        </div>
+      </div>
+      <p className="muted">
+        روی حجم هر کانفیگ تیک‌خورده اضافه می‌شود؛ ۲۰ یعنی ۶۰ گیگ → ۷۲ گیگ، و روی دکمهٔ ربات
+        «+20٪ حجم هدیه» می‌نشیند. قیمت عوض نمی‌شود.
+      </p>
+      <div className="row-actions">
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={busy || picked.size === 0 || !valid || pct === 0}
+          onClick={() => void apply(pct)}
+          {...w}
+        >
+          اعمال روی {count(picked.size)} کانفیگ
+        </button>
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy || picked.size === 0}
+          title="حجم هدیهٔ کانفیگ‌های تیک‌خورده صفر شود"
+          onClick={() => void apply(0)}
+          {...w}
+        >
+          برداشتن هدیه
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ArrangeService({ service, onSaved }: { service: ServiceRow; onSaved: () => void }) {
   return (
     <LayoutEditor

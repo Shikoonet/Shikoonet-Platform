@@ -450,8 +450,8 @@ export interface CatalogPlan {
   volumeGb: number | null;
   userLimit: number | null;
   /**
-   * The service's own volume bonus (0081), as a percent of `volumeGb`. Zero
-   * for most; `serviceBonusGb` turns it into the gigabytes the order freezes.
+   * This config's own volume gift (0082), as a percent of `volumeGb`. Zero
+   * for most; `planBonusGb` turns it into the gigabytes the order freezes.
    */
   bonusPercent: number;
   providerId: number;
@@ -542,7 +542,7 @@ const PLAN_COLUMNS = `
   pl.duration_days AS duration_days,
   pl.volume_gb    AS volume_gb,
   pl.user_limit   AS user_limit,
-  p.bonus_percent AS bonus_percent,
+  pl.bonus_percent AS bonus_percent,
   pr.id           AS provider_id,
   pr.name         AS provider_name,
   -- Read here rather than in a second query because every plan lookup already
@@ -604,20 +604,20 @@ function toPlan(row: PlanRow): CatalogPlan {
 }
 
 /**
- * The gigabytes a service's own bonus (0081) adds to this plan.
+ * The gigabytes this plan's own gift (0082) adds to it.
  *
  * The same arithmetic and the same three decimals as a BONUS_PERCENT code
  * (`bonusGbFor` in discount.ts), so the order, the panel and the screen
  * agree; zero for a plan with no volume to add to, and for the ordinary
- * service that gives none.
+ * plan that gives none.
  */
-export function serviceBonusGb(plan: Pick<CatalogPlan, 'volumeGb' | 'bonusPercent'>): number {
+export function planBonusGb(plan: Pick<CatalogPlan, 'volumeGb' | 'bonusPercent'>): number {
   if (plan.volumeGb === null || plan.bonusPercent <= 0) return 0;
   return Math.round(((plan.volumeGb * plan.bonusPercent) / 100) * 1000) / 1000;
 }
 
 /**
- * The code's gigabytes plus the service's, as one number the order can hold.
+ * The code's gigabytes plus the plan's own, as one number the order can hold.
  * Rounded once more: two three-decimal floats add up to `0.30000000000000004`,
  * and `place()` looks the open order up by this exact value.
  */
@@ -625,7 +625,7 @@ export function totalBonusGb(
   codeBonusGb: number,
   plan: Pick<CatalogPlan, 'volumeGb' | 'bonusPercent'>,
 ): number {
-  return Math.round((codeBonusGb + serviceBonusGb(plan)) * 1000) / 1000;
+  return Math.round((codeBonusGb + planBonusGb(plan)) * 1000) / 1000;
 }
 
 /**

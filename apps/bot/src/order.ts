@@ -90,9 +90,9 @@ export async function placeOrder(
    */
   usernameText: string | null = null,
   /**
-   * Gigabytes a volume code adds, frozen on the order — see 0062. The
-   * service's own bonus (0081) is added here, on top, for every customer: the
-   * two are the same kind of thing and the order holds one number.
+   * Gigabytes a volume code adds, frozen on the order — see 0062. The plan's
+   * own gift (0082) is added here, on top, for every customer: the two are
+   * the same kind of thing and the order holds one number.
    */
   bonusVolumeGb = 0,
 ): Promise<PlaceOrResult> {

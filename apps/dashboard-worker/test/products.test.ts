@@ -769,39 +769,30 @@ describe('creating a product and its plans', () => {
     expect([item?.badge, item?.buttonStyle]).toEqual(['💎 الماس', 'success']);
   });
 
-  it('stores a volume bonus on the service and keeps the code’s range (0081)', async () => {
-    const cat = await post('product-categories', { name: `${PREFIX}دستهٔ هدیه`, sortOrder: 5 });
-    const categoryId = ((await cat.json()) as { category: { id: number } }).category.id;
-    const res = await post('products', {
-      code: `${PREFIX}bonus`,
-      name: 'پلاتینیوم',
-      kind: 'vpn',
-      categoryId,
+  it('stores a volume bonus on the config and keeps the code’s range (0082)', async () => {
+    const { productId } = await makeCatalog('bonus');
+    const res = await post(`products/${productId}/plans`, {
+      name: 'الماس ۶۰ گیگ',
+      priceIrr: 2_000_000,
+      volumeGb: 60,
     });
-    const productId = ((await res.json()) as { productId: number }).productId;
+    expect(res.status).toBe(201);
+    const planId = ((await res.json()) as { plan: { id: number; bonusPercent: number } }).plan;
+    // A new config gives nothing until told to.
+    expect(planId.bonusPercent).toBe(0);
 
-    // A new service gives nothing until told to.
-    const before = await baseEnv.DB.prepare(`SELECT bonus_percent FROM products WHERE id = ?1`)
-      .bind(productId)
-      .first<{ bonus_percent: number }>();
-    expect(Number(before!.bonus_percent)).toBe(0);
-
-    expect((await post(`products/${productId}`, { bonusPercent: 20.5 })).status).toBe(200);
-    const list = await app.request(
-      `/api/v1/admin/catalog?categoryId=${categoryId}`,
-      {},
-      envAs(ADMIN),
-    );
-    const item = (
-      (await list.json()) as { items: { id: number; bonusPercent: number }[] }
-    ).items.find((s) => s.id === productId);
+    expect((await post(`products/plans/${planId.id}`, { bonusPercent: 20.5 })).status).toBe(200);
+    const list = await app.request(`/api/v1/admin/catalog`, {}, envAs(ADMIN));
+    const item = ((await list.json()) as { items: { id: number; configs: { id: number; bonusPercent: number }[] }[] })
+      .items.find((s) => s.id === productId)
+      ?.configs.find((cf) => cf.id === planId.id);
     expect(item?.bonusPercent).toBe(20.5);
 
     // More than +100% is not a bonus, and a negative one is a theft; the DB
     // refuses both too (verify_invariants), this is the request-side refusal.
-    expect((await post(`products/${productId}`, { bonusPercent: 101 })).status).toBe(400);
-    expect((await post(`products/${productId}`, { bonusPercent: -1 })).status).toBe(400);
-    expect((await post(`products/${productId}`, { bonusPercent: 0 })).status).toBe(200);
+    expect((await post(`products/plans/${planId.id}`, { bonusPercent: 101 })).status).toBe(400);
+    expect((await post(`products/plans/${planId.id}`, { bonusPercent: -1 })).status).toBe(400);
+    expect((await post(`products/plans/${planId.id}`, { bonusPercent: 0 })).status).toBe(200);
   });
 
   it('refuses a badge that draws longer than a button', async () => {
