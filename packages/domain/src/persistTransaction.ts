@@ -18,6 +18,7 @@ import { autoCreatePendingAccount } from './autoCreateAccount.js';
 import { assignAccountForTx } from './assignments.js';
 import { persistDetectedIdentifiers, resolveDetectedIdentifiers, type DetectedIdentifierInput } from './identifiers.js';
 import { resolveAccountByHint } from './resolution.js';
+import { recordOwnerSuggestion, suggestOwnerByBalance } from './suggestOwnerByBalance.js';
 import {
   INSERT_TRANSACTION_SQL,
   UPDATE_TRANSACTION_STATUS_SQL,
@@ -110,6 +111,7 @@ export async function persistTransaction(
           now: Date.now(),
         });
         accountId = created.accountId;
+        if (created.created) await suggestOwner(db, created.accountId, r, bankTimestamp);
       }
     }
   } else if (r.accountHint) {
@@ -131,6 +133,7 @@ export async function persistTransaction(
         now: Date.now(),
       });
       accountId = created.accountId;
+      if (created.created) await suggestOwner(db, created.accountId, r, bankTimestamp);
     }
   }
 
@@ -207,4 +210,21 @@ export async function persistTransaction(
     transaction_reference: r.transactionReference,
     bank_timestamp: bankTimestamp,
   };
+}
+
+/**
+ * A number nobody knew just got a PENDING account. If the bank's balance on
+ * this very text chains from exactly one live account, say so on the row —
+ * a suggestion for the review queue, never a merge. See `suggestOwnerByBalance`.
+ */
+async function suggestOwner(db: D1Database, pendingId: string, r: ParseResult, at: number): Promise<void> {
+  if (r.balanceIrr === null || r.amountIrr === null || (r.direction !== 'CREDIT' && r.direction !== 'DEBIT')) return;
+  const owner = await suggestOwnerByBalance(db, {
+    direction: r.direction,
+    amountIrr: r.amountIrr,
+    balanceIrr: r.balanceIrr,
+    at,
+    excludeAccountId: pendingId,
+  });
+  if (owner) await recordOwnerSuggestion(db, pendingId, owner);
 }

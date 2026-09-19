@@ -49,3 +49,4 @@ export * from './smsCoverage.js';
 export * from './transactionCreate.js';
 export * from './persistTransaction.js';
 export * from './smsReparse.js';
+export * from './suggestOwnerByBalance.js';
