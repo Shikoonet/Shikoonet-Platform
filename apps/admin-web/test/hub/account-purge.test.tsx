@@ -7,7 +7,7 @@
  *
  * So, in order:
  *   1. an account with transactions is blocked, and offers «حذف کامل»
- *   2. saying yes shows the count and the sum in Toman, and asks for the name
+ *   2. saying yes shows the count and the sum in Toman, and asks for «Delete»
  *   3. the confirm sends purgeTransactions: true and nothing before that
  *   4. an account whose transactions are pinned does not get the offer
  */
@@ -95,8 +95,8 @@ describe('DeleteAccountModal purge', () => {
     const confirm = screen.getByRole('button', { name: /بله، همه‌چیز را پاک کن/ });
     expect((confirm as HTMLButtonElement).disabled).toBe(true);
 
-    // 3. the name, then the one request that deletes
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Auto: ****04.1' } });
+    // 3. the word, then the one request that deletes
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Delete' } });
     expect((confirm as HTMLButtonElement).disabled).toBe(false);
     expect(calls.filter((c) => c.key.startsWith('DELETE'))).toHaveLength(0);
     fireEvent.click(confirm);

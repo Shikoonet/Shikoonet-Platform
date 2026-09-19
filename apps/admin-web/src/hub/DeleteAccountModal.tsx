@@ -3,8 +3,8 @@
  *
  * Two-step gate:
  *   1. Fetch the delete-preview; show reference counts + blocking reasons.
- *   2. User must type the account display name exactly to enable the
- *      destructive Confirm button.
+ *   2. User must type «Delete» (`confirmWord.ts`) to enable the destructive
+ *      Confirm button.
  *
  * And a third door, since 2026-09-19, for an account that is blocked only by
  * its own transactions: «حذف کامل با تراکنش‌ها». Sam: «ازم سوال کنه: میخوای
@@ -21,6 +21,7 @@ import { useEffect, useState } from 'react';
 import { count, toman } from '../format.js';
 import type { AccountListItem } from './api.js';
 import { api } from './api.js';
+import { DELETE_WORD, typedDeleteWord } from './confirmWord.js';
 
 interface PreviewResponse {
   ok: boolean;
@@ -86,7 +87,7 @@ export function DeleteAccountModal({
     account_must_be_inactive: 'حساب هنوز فعال است — اول غیرفعالش کن.',
     account_in_use: 'این حساب تراکنش یا ادعای پرداخت مرتبط دارد.',
   };
-  const matchesTyped = typed.trim() === preview?.account.displayName.trim();
+  const matchesTyped = typedDeleteWord(typed);
   const canSubmit = !!preview && (preview.canDelete || purging) && matchesTyped && !busy;
   const purge = preview?.purge;
   // Only the account's own transactions stand in the way — a claim aimed at
@@ -199,7 +200,7 @@ export function DeleteAccountModal({
           <div className="form">
             <label>
               <span>
-                برای تایید <code>{preview.account.displayName}</code> را بنویس:
+                برای تایید <code>{DELETE_WORD}</code> را بنویس:
               </span>
               <input
                 type="text"
@@ -226,7 +227,7 @@ export function DeleteAccountModal({
               blocked && !purging
                 ? 'حساب در وضعیت فعلی‌اش حذف‌شدنی نیست.'
                 : !matchesTyped
-                  ? 'برای تایید، نام نمایشی حساب را دقیقاً بنویس.'
+                  ? `برای تایید، ${DELETE_WORD} را بنویس.`
                   : purging
                     ? 'حساب و همهٔ تراکنش‌هایش برای همیشه حذف شوند'
                     : 'این حساب برای همیشه حذف شود'
