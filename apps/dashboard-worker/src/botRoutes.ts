@@ -336,9 +336,16 @@ export function registerBotRoutes(
     }
     const call = bot.call;
 
+    // Legacy's connectivity check, verbatim (`admin.php:2362`, `lang/fa.php`
+    // `testChannel` — double space included): a message INTO the group, not a
+    // `getChat`. Sam, 2026-09-19: the group has to see exactly what mirzabot
+    // posts. It is also the stronger check — `getChat` answers for a group the
+    // bot can see but may not post in, and this fails there instead of ten
+    // topics later. The reply carries the chat, which is where `is_forum` is
+    // read from, exactly as legacy reads it.
     let chat: TelegramReply;
     try {
-      chat = await call('getChat', { chat_id: chatId });
+      chat = await call('sendMessage', { chat_id: chatId, text: 'تست  اتصال گروه' });
     } catch {
       return c.json({ ok: false, error: 'telegram_unreachable' }, 502);
     }
@@ -352,7 +359,7 @@ export function registerBotRoutes(
         422,
       );
     }
-    if (chat.result?.is_forum !== true) {
+    if (chat.result?.chat?.is_forum !== true) {
       // Legacy's own sentence, because an operator who has seen it before
       // should not have to learn a second wording for the same problem.
       return c.json(

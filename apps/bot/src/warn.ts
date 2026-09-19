@@ -40,6 +40,7 @@ import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
 import { loadShopSettings, settingText } from './settings.js';
 import { enqueue } from './notify.js';
+import { report } from './reports.js';
 import { createLogger } from '@shikoo/domain';
 
 const log = createLogger('bot');
@@ -81,6 +82,8 @@ interface DueRow {
   volume_gb: number | null;
   used_bytes: number | null;
   purchased_at: string;
+  remote_username: string | null;
+  panel_status: string | null;
   reason: 'time' | 'volume' | 'unused';
 }
 
@@ -104,7 +107,7 @@ const LIMIT = '\n\n         LIMIT ?5';
  * key is absent on every row that has never been warned.
  */
 const TIME_BRANCH = `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
-              s.volume_gb, s.used_bytes, s.purchased_at, 'time' AS reason
+              s.volume_gb, s.used_bytes, s.purchased_at, s.remote_username, s.panel_status, 'time' AS reason
          FROM subscriptions s
          JOIN users u ON u.id = s.user_id
         -- u.status is deliberately not consulted. Blocked or not, this
@@ -123,7 +126,7 @@ const TIME_BRANCH = `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_
           AND s.expires_at <= to_timestamp(?1 / 1000.0) + make_interval(days => ?2)`;
 
 const VOLUME_BRANCH = `        SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
-               s.volume_gb, s.used_bytes, s.purchased_at, 'volume' AS reason
+               s.volume_gb, s.used_bytes, s.purchased_at, s.remote_username, s.panel_status, 'volume' AS reason
           FROM subscriptions s
           JOIN users u ON u.id = s.user_id
          WHERE s.status = 'ACTIVE'
@@ -160,7 +163,7 @@ const UNUSED_BRANCH = `        -- Bought and never connected.
         -- location-change flow, so there is nothing to skip -- if one lands,
         -- its exclusion belongs here.
         SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
-               s.volume_gb, s.used_bytes, s.purchased_at, 'unused' AS reason
+               s.volume_gb, s.used_bytes, s.purchased_at, s.remote_username, s.panel_status, 'unused' AS reason
           FROM subscriptions s
           JOIN users u ON u.id = s.user_id
          WHERE s.status = 'ACTIVE'
@@ -188,7 +191,8 @@ export async function warnExpiringServices(
 ): Promise<number> {
   // Read once per sweep, like the commission in `settle.ts`: it is shop-wide,
   // it is cached, and a sweep of fifty services should not ask fifty times.
-  const { warnDays, warnVolumeGb, onHoldDays, cron } = await loadShopSettings(db);
+  const shop = await loadShopSettings(db);
+  const { warnDays, warnVolumeGb, onHoldDays, cron } = shop;
 
   // Only the branches the shop has switched on.
   //
@@ -278,6 +282,13 @@ export async function warnExpiringServices(
       if (!queued) {
         log.error('warn.claimed_not_queued', { ref: String(row.id), reason: row.reason });
       }
+      // «📝 گزارش اطلاع رسانی ها» — `NoticationsService.php` tells the group
+      // about every notice it sends a customer. Legacy has no notice for
+      // «never used», so neither does the group.
+      const notice = cronNoticeFor(row, now);
+      if (notice !== null) {
+        await report(tx, shop, 'reportcron', `warn:${row.id}:${row.reason}:${cycle}`, notice);
+      }
       return queued;
     });
     if (claimed) {
@@ -325,6 +336,24 @@ function messageFor(row: DueRow, now: number, supportHandle: string | null): str
  * ago being told it was five is the kind of small wrongness that costs a
  * support message.
  */
+function cronNoticeFor(row: DueRow, now: number): string | null {
+  const config = row.remote_username ?? '';
+  // The raw panel word, as legacy prints it on a warning (`serviceStatus`).
+  const status = row.panel_status ?? 'active';
+  switch (row.reason) {
+    case 'time':
+      return menu.cronTimeNotice({ config, status, days: daysLeft(row.expires_at, now) });
+    case 'volume':
+      return menu.cronVolumeNotice({
+        config,
+        status,
+        remaining: menu.bytesText((row.volume_gb ?? 0) * 1024 ** 3 - (row.used_bytes ?? 0)),
+      });
+    case 'unused':
+      return null;
+  }
+}
+
 function daysSince(purchasedAt: string, now: number): number {
   return Math.floor((now - Date.parse(purchasedAt)) / 86_400_000);
 }

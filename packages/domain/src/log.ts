@@ -170,6 +170,12 @@ export const PERSISTED_INFO_EVENTS: ReadonlySet<string> = new Set([
   'provision.delivered',
   'wallet.credited',
   'match.auto_verified',
+  // «آخرین اجرا» on the cron panel is a `DISTINCT ON` over this event, and it
+  // was never here — so the panel said null for every job since the day it
+  // shipped. Found 2026-09-19 when the backup job needed the same row to know
+  // when it last ran. Written only when a sweep ACTED, so the volume is a
+  // handful of rows a day, not one per cycle.
+  'sweep.acted',
 ]);
 
 function writeLine(record: LogRecord): void {

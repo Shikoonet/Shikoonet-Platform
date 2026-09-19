@@ -52,6 +52,7 @@ import type { D1Database } from '@shikoo/database';
 import { adapterFor, createLogger, type ProviderContext } from '@shikoo/domain';
 import { credentialsFor } from './provision.js';
 import { enqueue } from './notify.js';
+import { report } from './reports.js';
 import * as menu from './menu.js';
 import { loadShopSettings } from './settings.js';
 
@@ -90,6 +91,8 @@ interface DueRow {
   expires_at: string | null;
   panel_status: string;
   panel_online_at: string | null;
+  volume_gb: number | null;
+  used_bytes: number | null;
   days: number;
 }
 
@@ -178,6 +181,7 @@ const EXPIRED_DUE = `
   )
   SELECT s.id, s.public_id, u.telegram_id, s.plan_name_at_sale, s.remote_username,
          s.provider_id, s.expires_at::text AS expires_at, s.panel_status,
+         s.volume_gb, s.used_bytes,
          s.panel_online_at::text AS panel_online_at,
          FLOOR(EXTRACT(EPOCH FROM (to_timestamp(?1 / 1000.0) - s.expires_at)) / 86400)::int AS days
     FROM subscriptions s
@@ -208,6 +212,7 @@ const VOLUME_DUE = `
   )
   SELECT s.id, s.public_id, u.telegram_id, s.plan_name_at_sale, s.remote_username,
          s.provider_id, s.expires_at::text AS expires_at, s.panel_status,
+         s.volume_gb, s.used_bytes,
          s.panel_online_at::text AS panel_online_at,
          FLOOR(EXTRACT(EPOCH FROM (to_timestamp(?1 / 1000.0) - s.panel_online_at)) / 86400)::int AS days
     FROM subscriptions s
@@ -311,6 +316,35 @@ export async function removeFinishedServices(
             ? menu.serviceRemovedExpired(row.plan_name_at_sale, row.days)
             : menu.serviceRemovedVolume(row.plan_name_at_sale, row.days),
       });
+      // «📌 اطلاعیه کرون حذف» / «حذف حجم» into «📝 گزارش اطلاع رسانی ها» —
+      // `NoticationsService.php:149` and `:192`, with legacy's status labels.
+      const remaining = menu.bytesText((row.volume_gb ?? 0) * 1024 ** 3 - (row.used_bytes ?? 0));
+      const status = menu.panelStatusLabel(row.panel_status);
+      const daysRemaining =
+        row.expires_at === null ? 0 : Math.ceil((Date.parse(row.expires_at) - now) / 86_400_000);
+      await report(
+        tx,
+        settings,
+        'reportcron',
+        `remove:${row.id}:${reason}`,
+        reason === 'expired'
+          ? menu.cronDeleteNotice({
+              config: row.remote_username,
+              status,
+              days: daysRemaining,
+              remaining,
+            })
+          : menu.cronDeleteVolumeNotice({
+              config: row.remote_username,
+              status,
+              days: daysRemaining,
+              remaining,
+              lastSeen:
+                row.panel_online_at === null
+                  ? ''
+                  : menu.jalaliStamp(Date.parse(row.panel_online_at)),
+            }),
+      );
       return { claimed: true, told: queued };
     });
 

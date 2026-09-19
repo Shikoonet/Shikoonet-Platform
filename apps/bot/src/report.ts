@@ -31,8 +31,7 @@ import type { D1Database } from '@shikoo/database';
 import { tehranAdjacentDay, tehranDateStringFromMs, tehranDayBoundsFromDate } from '@shikoo/domain';
 import { enqueue } from './notify.js';
 import { loadShopSettings } from './settings.js';
-import { volumeText } from './menu.js';
-import { formatToman } from './money.js';
+import * as menu from './menu.js';
 
 /** How many resellers the ranking names, matching the legacy's `LIMIT 3`. */
 const TOP_RESELLERS = 3;
@@ -63,6 +62,7 @@ interface DayTotals {
   renewalsIrr: number;
   topups: number;
   topupsIrr: number;
+  trials: number;
   newCustomers: number;
 }
 
@@ -83,7 +83,8 @@ async function totals(db: D1Database, start: number, end: number): Promise<DayTo
          count(*) FILTER (WHERE kind = 'RENEWAL')::int                   AS renewals,
          COALESCE(sum(total_irr) FILTER (WHERE kind = 'RENEWAL'), 0)      AS renewals_irr,
          count(*) FILTER (WHERE kind = 'WALLET_TOPUP')::int              AS topups,
-         COALESCE(sum(total_irr) FILTER (WHERE kind = 'WALLET_TOPUP'), 0) AS topups_irr
+         COALESCE(sum(total_irr) FILTER (WHERE kind = 'WALLET_TOPUP'), 0) AS topups_irr,
+         count(*) FILTER (WHERE kind = 'TRIAL')::int                     AS trials
        FROM orders
        WHERE status = 'COMPLETED'
          AND completed_at >= to_timestamp(?1 / 1000.0)
@@ -97,6 +98,7 @@ async function totals(db: D1Database, start: number, end: number): Promise<DayTo
       renewals_irr: number;
       topups: number;
       topups_irr: number;
+      trials: number;
     }>();
 
   const joined = await db
@@ -115,6 +117,7 @@ async function totals(db: D1Database, start: number, end: number): Promise<DayTo
     renewalsIrr: Number(row?.renewals_irr ?? 0),
     topups: row?.topups ?? 0,
     topupsIrr: Number(row?.topups_irr ?? 0),
+    trials: row?.trials ?? 0,
     newCustomers: joined?.n ?? 0,
   };
 }
@@ -198,92 +201,43 @@ async function topResellers(
 }
 
 /**
- * The shop's one money formatter, without its «تومان» suffix.
+ * The nightly report — mirzabot's `statusday.php`, three messages in its order:
+ * the top resellers, the day's figures, the panels. Sam, 2026-09-19: the
+ * group has to read exactly like mirzabot's, so the sums are what legacy
+ * sums. «سفارشات» is new purchases; «تمدید» is renewals; a wallet top-up is
+ * in neither, as in legacy. The per-panel block counts new services on
+ * `purchased_at`, which is legacy's meaning too (`marzban_panel` rows against
+ * `invoice`).
  *
- * This file used to divide by ten itself and group with `fa-IR`, which put
- * Persian digits — «۱۹۵٬۰۰۰» — in the one message the admin reads, while every
- * number on every customer screen is Latin because `formatToman` says so and
- * explains why. Two spellings of the same amount in one shop, and only the
- * nightly report used the ad-hoc one.
+ * No markup, because nothing downstream renders it — `telegram.ts` only sends
+ * `parse_mode` for a message containing a custom emoji, and `report.test.ts`
+ * drives one of these through `sendMessage` to keep it that way.
  */
-function toman(irr: number): string {
-  return formatToman(irr).replace(' تومان', '');
-}
-
-/** The message itself, built from a day that is already over. */
-export async function buildDailyReport(db: D1Database, dateStr: string): Promise<string> {
+export async function buildDailyReport(db: D1Database, dateStr: string): Promise<string[]> {
   const { start, end } = tehranDayBoundsFromDate(dateStr);
   const [day, panels, resellers] = await Promise.all([
     totals(db, start, end),
     perPanel(db, start, end),
     topResellers(db, start, end),
   ]);
-
-  // No markup, because nothing downstream renders it.
-  //
-  // This built `<b>…</b>` until 2026-08-21 and every one of those tags was
-  // shown to the admin literally. `telegram.ts` only sends `parse_mode` for a
-  // message containing a custom emoji — `hasCustomEmoji` matches `<tg-emoji>`
-  // and nothing else — and the house rule is stated outright at `menu.ts:938`:
-  // "No parse_mode anywhere in this bot, so emphasis is quotation marks."
-  //
-  // The tests could not see it because they all asserted the string this
-  // function builds. Nothing drove a report through `sendMessage`, which is
-  // where the decision is made; one does now.
-  const lines = [
-    `📊 گزارش روز ${dateStr}`,
-    '',
-    `🛒 فروش نو: ${day.sales} — ${toman(day.salesIrr)} تومان`,
-    `🔄 تمدید: ${day.renewals} — ${toman(day.renewalsIrr)} تومان`,
-    `👛 شارژ کیف پول: ${day.topups} — ${toman(day.topupsIrr)} تومان`,
-    `👤 مشتری جدید: ${day.newCustomers}`,
-    '',
-    `💰 مجموع فروش و تمدید: ${toman(day.salesIrr + day.renewalsIrr)} تومان`,
+  const volumeGb = panels.reduce((sum, p) => sum + (p.gb ?? 0), 0);
+  return [
+    menu.nightlyAgentsReport(
+      resellers.map((r) => ({ telegramId: r.telegramId, username: r.username, totalIrr: r.irr })),
+    ),
+    menu.nightlyReport({
+      renewals: day.renewals,
+      renewalsIrr: day.renewalsIrr,
+      orders: day.sales,
+      ordersIrr: day.salesIrr,
+      trials: day.trials,
+      volumeGb,
+      newUsers: day.newCustomers,
+    }),
+    menu.nightlyPanelsReport(
+      panels.map((p) => ({ name: p.name, orders: p.count, ordersIrr: p.irr, volumeGb: p.gb ?? 0 })),
+    ),
   ];
-
-  if (panels.length > 0) {
-    // «فروش نو», not «فروش», and the word is the whole fix.
-    //
-    // The block counts SUBSCRIPTIONS on `purchased_at`, which is written once
-    // when a service is first delivered and never again — the renewal UPDATE in
-    // `provision.ts` touches neither `purchased_at` nor `price_irr`. The total
-    // directly above it counts ORDERS and includes renewals. So on a shop whose
-    // revenue is mostly renewals the two disagreed by most of the day's
-    // takings, with nothing on screen saying why, and an admin reading down the
-    // message had every reason to think the panel lines should sum to the line
-    // above them.
-    //
-    // Naming what it counts closes that without changing what it counts, and
-    // keeps the legacy meaning: the PHP report is per-panel NEW services too.
-    // If the shop would rather see sales and renewals together per panel, that
-    // is a different query — build it from `orders` joined to the subscription
-    // it targets, so both halves answer from the same table — and a different
-    // decision, because it also has to say what a TRIAL counts as.
-    lines.push('', '🖥 فروش نو به تفکیک لوکیشن');
-    for (const p of panels) {
-      // `volumeText`, not the raw sum: three panels' worth of numeric(12,3)
-      // adds up to «1500.5», and the one formatter every customer screen uses
-      // is the one the admin's screen should use too. Its «نامحدود» is the
-      // all-unmetered panel; a mixed one says how many the sum leaves out.
-      const mixed = p.gb !== null && p.unmetered > 0 ? ` + ${p.unmetered} نامحدود` : '';
-      lines.push(
-        `• ${p.name}: ${p.count} سرویس — ${toman(p.irr)} تومان — ${volumeText(p.gb)}${mixed}`,
-      );
-    }
-  }
-
-  if (resellers.length > 0) {
-    lines.push('', '🏅 نمایندگان برتر امروز');
-    for (const r of resellers) {
-      // A reseller with no @username is named as a person, not as a bare
-      // number in a leaderboard — «7462913» beside «@shop_ali» reads as a row
-      // that lost its name.
-      const who = r.username ? '@' + r.username : `کاربر ${r.telegramId}`;
-      lines.push(`• ${who}: ${toman(r.irr)} تومان`);
-    }
-  }
-
-  return lines.join('\n');
 }
 
 /**
@@ -337,17 +291,24 @@ export async function sweepDailyReport(db: D1Database, now: number = Date.now())
   const missing = window.filter((d) => !sent.has(`report:${d}`));
 
   for (const dateStr of missing) {
-    const text = await buildDailyReport(db, dateStr);
+    const parts = await buildDailyReport(db, dateStr);
     // «🌙 گزارش شبانه». Null until somebody makes the topics, and null is a
     // message in the group's General topic — exactly where it goes today.
-    await db.withSession((tx) =>
-      enqueue(tx, {
-        dedupeKey: `report:${dateStr}`,
-        chatId,
-        text,
-        threadId: reportTopics.reportnight,
-      }),
-    );
+    //
+    // Three rows, one transaction, keyed `report:<date>`, `:2`, `:3`: the
+    // first key is the one the catch-up above asks about, so a night is
+    // either wholly queued or not at all, and the outbox sends them in id
+    // order — legacy's order.
+    await db.withSession(async (tx) => {
+      for (const [i, text] of parts.entries()) {
+        await enqueue(tx, {
+          dedupeKey: i === 0 ? `report:${dateStr}` : `report:${dateStr}:${i + 1}`,
+          chatId,
+          text,
+          threadId: reportTopics.reportnight,
+        });
+      }
+    });
   }
   return missing;
 }

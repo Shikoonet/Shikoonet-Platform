@@ -63,6 +63,7 @@ import {
   DEFAULT_TEXTS,
   groupIntoRows,
   renderPlanLabel,
+  toJalali,
   type TextKey,
   type Texts,
   stripCustomEmoji,
@@ -3040,77 +3041,375 @@ export function serviceRemovedVolume(serviceName: string, days: number): string 
 }
 
 /**
- * What the shop's channel is told when the flood guard fires.
- *
- * The numeric id rather than the @handle: a customer who was blocked for
- * flooding is exactly the sort who has no username, and the id is what the
- * button underneath resolves anyway.
+ * What the reports group is told when the flood guard fires — legacy's own
+ * sentence (`users.spam.spamedReport`), and into legacy's own topic, which is
+ * «📌 گزارش خرید خدمات» (`index.php:195`), not «سایر». The numeric id rather
+ * than the @handle: a customer blocked for flooding is exactly the sort who
+ * has no username.
  */
 export function spamBlockedReport(telegramId: number): string {
   return TEXTS_NOW.render('SPAM_BLOCKED_REPORT', { telegramId: String(telegramId) });
 }
 
-/** «🛍 خرید تازه» — one delivered purchase, for the reports group. */
+/*
+ * The reports — mirzabot's templates, filled the way mirzabot fills them.
+ *
+ * Conventions shared by every renderer below, each one legacy's:
+ *   - a missing username is printed as an empty handle («@»), because that is
+ *     what `sprintf('@%s', null)` produced and what the operator is used to;
+ *   - the phone is «none» — the legacy column's default, printed as-is, for
+ *     every customer who never gave one, which here is every customer;
+ *   - «نوع کاربر» is the agent code: `f` for an ordinary customer, the tier
+ *     code for a reseller;
+ *   - amounts are toman, grouped, WITHOUT the word — the templates carry it;
+ *   - the timestamp is Jalali `Y/m/d H:i:s`, Tehran, as `jdate()` wrote it.
+ */
+
+/** `jdate("Y/m/d H:i:s")` — «1405/06/28 15:04:09», Tehran wall clock. */
+export function jalaliStamp(atMs: number): string {
+  const d = toJalali(atMs);
+  const t = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Tehran',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(atMs));
+  return `${d.year}/${String(d.month).padStart(2, '0')}/${String(d.day).padStart(2, '0')} ${t}`;
+}
+
+/** Toman, grouped, with no «تومان» after it — the templates say the word. */
+function tomanDigits(irr: number): string {
+  return formatToman(irr).replace(' تومان', '');
+}
+
+const handle = (username: string | null): string => username ?? '';
+const agentCode = (tier: string | null): string => tier ?? 'f';
+
+/** «📣 جزئیات ساخت اکانت در ربات بعد پرداخت ثبت شد .» — a delivered purchase. */
 export function purchaseReport(f: {
-  order: string;
-  customer: number | null;
-  service: string;
-  totalIrr: number;
+  firstPurchase: boolean;
+  telegramId: number;
+  username: string | null;
+  config: string;
+  panel: string;
+  days: number | null;
+  plan: string;
+  volumeGb: number | null;
+  balanceBeforeIrr: number;
+  balanceAfterIrr: number;
+  tracking: string;
+  tier: string | null;
+  priceIrr: number;
+  finalPriceIrr: number;
+  atMs: number;
 }): string {
   return TEXTS_NOW.render('REPORT_PURCHASE', {
-    order: f.order,
-    customer: f.customer === null ? '—' : String(f.customer),
-    service: f.service,
-    amount: formatToman(f.totalIrr),
+    first: f.firstPurchase ? TEXTS_NOW.raw('REPORT_FIRST_PURCHASE') : '',
+    telegramId: f.telegramId,
+    username: handle(f.username),
+    config: f.config,
+    panel: f.panel,
+    days: f.days ?? 0,
+    plan: f.plan,
+    volume: f.volumeGb ?? 0,
+    balanceBefore: tomanDigits(f.balanceBeforeIrr),
+    balanceAfter: tomanDigits(f.balanceAfterIrr),
+    tracking: f.tracking,
+    userType: agentCode(f.tier),
+    phone: 'none',
+    price: tomanDigits(f.priceIrr),
+    finalPrice: tomanDigits(f.finalPriceIrr),
+    time: jalaliStamp(f.atMs),
   });
 }
 
-/** «📌 گزارش خرید خدمات» — a renewal or an add-on on a service already sold. */
-export function serviceReport(f: {
-  kind: 'RENEWAL' | 'ADD_VOLUME' | 'ADD_TIME';
-  order: string;
-  customer: number | null;
-  service: string;
-}): string {
-  const t = TEXTS_NOW;
-  const kind =
-    f.kind === 'RENEWAL'
-      ? t.raw('REPORT_KIND_RENEWAL')
-      : f.kind === 'ADD_VOLUME'
-        ? t.raw('REPORT_KIND_ADD_VOLUME')
-        : t.raw('REPORT_KIND_ADD_TIME');
-  return t.render('REPORT_SERVICE', {
-    kind,
-    order: f.order,
-    customer: f.customer === null ? '—' : String(f.customer),
-    service: f.service,
-  });
-}
-
-/** «🔑 گزارش اکانت تست» — a free account handed out. */
-export function trialReport(f: {
-  order: string;
-  customer: number | null;
+/** «📣 جزئیات تمدید اکانت در ربات شما ثبت شد .» */
+export function renewalReport(f: {
+  telegramId: number;
+  username: string | null;
+  config: string;
   panel: string;
+  plan: string;
+  volumeGb: number | null;
+  days: number | null;
+  priceIrr: number;
+  balanceBeforeIrr: number;
+  atMs: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_RENEWAL', {
+    telegramId: f.telegramId,
+    username: handle(f.username),
+    config: f.config,
+    panel: f.panel,
+    plan: f.plan,
+    volume: f.volumeGb ?? 0,
+    days: f.days ?? 0,
+    price: tomanDigits(f.priceIrr),
+    balanceBefore: tomanDigits(f.balanceBeforeIrr),
+    time: jalaliStamp(f.atMs),
+  });
+}
+
+/** «⭕️ یک کاربر حجم اضافه خریده است» */
+export function addVolumeReport(f: {
+  telegramId: number;
+  volumeGb: number;
+  priceIrr: number;
+  config: string;
+  balanceBeforeIrr: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_ADD_VOLUME', {
+    telegramId: f.telegramId,
+    volume: f.volumeGb,
+    price: tomanDigits(f.priceIrr),
+    config: f.config,
+    balanceBefore: tomanDigits(f.balanceBeforeIrr),
+  });
+}
+
+/** «⭕️ یک کاربر زمان اضافه خریده است» */
+export function addTimeReport(f: {
+  telegramId: number;
+  days: number;
+  priceIrr: number;
+  config: string;
+}): string {
+  return TEXTS_NOW.render('REPORT_ADD_TIME', {
+    telegramId: f.telegramId,
+    days: f.days,
+    price: tomanDigits(f.priceIrr),
+    config: f.config,
+  });
+}
+
+/**
+ * «📣 جزئیات ساخت اکانت تست در ربات شما ثبت شد .»
+ *
+ * Legacy measures a trial in hours and megabytes; ours is stored in days and
+ * gigabytes, so the numbers are converted rather than the words changed.
+ */
+export function trialReport(f: {
+  telegramId: number;
+  username: string | null;
+  config: string;
+  name: string | null;
+  panel: string;
+  days: number | null;
+  volumeGb: number | null;
+  tracking: string;
+  tier: string | null;
+  atMs: number;
 }): string {
   return TEXTS_NOW.render('REPORT_TRIAL', {
-    order: f.order,
-    customer: f.customer === null ? '—' : String(f.customer),
+    telegramId: f.telegramId,
+    username: handle(f.username),
+    config: f.config,
+    name: f.name ?? '',
     panel: f.panel,
+    hours: (f.days ?? 0) * 24,
+    mb: Math.round((f.volumeGb ?? 0) * 1024),
+    tracking: f.tracking,
+    userType: agentCode(f.tier),
+    phone: 'none',
+    time: jalaliStamp(f.atMs),
   });
 }
 
-/** «💰 گزارش مالی» — money in, at the moment it is settled. */
-export function paymentReport(f: {
-  payment: string;
-  customer: number | null;
-  amountIrr: number;
-}): string {
+/** «💵 پرداخت جدید» — legacy's card auto-confirm report (`croncard.php:62`). */
+export function paymentReport(f: { telegramId: number; amountIrr: number; method: string }): string {
   return TEXTS_NOW.render('REPORT_PAYMENT', {
-    payment: f.payment,
-    customer: f.customer === null ? '—' : String(f.customer),
-    amount: formatToman(f.amountIrr),
+    telegramId: f.telegramId,
+    amount: tomanDigits(f.amountIrr),
+    method: f.method,
   });
+}
+
+/** «🎉یک کاربر جدید ربات را استارت کرد» — the first /start. */
+export function newUserReport(f: {
+  name: string | null;
+  username: string | null;
+  telegramId: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_NEW_USER', {
+    name: f.name ?? '',
+    username: handle(f.username),
+    telegramId: f.telegramId,
+  });
+}
+
+/** «⭕️ یک کاربر … از کد تخفیف … استفاده کرد.» */
+export function discountUsedReport(f: {
+  username: string | null;
+  telegramId: number;
+  code: string;
+}): string {
+  return TEXTS_NOW.render('REPORT_DISCOUNT_USED', {
+    username: handle(f.username),
+    telegramId: f.telegramId,
+    code: f.code,
+  });
+}
+
+/** «مبلغ … به کاربر … برای پورسانت از کاربر … واریز گردید» */
+export function commissionReport(f: {
+  amountIrr: number;
+  referrerTelegramId: number;
+  buyerTelegramId: number;
+  atMs: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_COMMISSION', {
+    amount: tomanDigits(f.amountIrr),
+    referrer: f.referrerTelegramId,
+    buyer: f.buyerTelegramId,
+    time: jalaliStamp(f.atMs),
+  });
+}
+
+/**
+ * The cron notices — `NoticationsService.php` glues four fragments, so this
+ * does too, in the same order, rather than owning a fifth sentence.
+ */
+export function cronVolumeNotice(f: { config: string; status: string; remaining: string }): string {
+  const t = TEXTS_NOW;
+  return (
+    t.raw('REPORT_CRON_VOLUME_TITLE') +
+    t.render('REPORT_CRON_SERVICE', { config: f.config }) +
+    t.render('REPORT_CRON_STATUS', { status: f.status }) +
+    t.render('REPORT_CRON_REMAINING_VOLUME', { volume: f.remaining })
+  );
+}
+
+export function cronTimeNotice(f: { config: string; status: string; days: number }): string {
+  const t = TEXTS_NOW;
+  return (
+    t.raw('REPORT_CRON_TIME_TITLE') +
+    t.render('REPORT_CRON_SERVICE', { config: f.config }) +
+    t.render('REPORT_CRON_STATUS', { status: f.status }) +
+    t.render('REPORT_CRON_REMAINING_DAYS', { days: f.days })
+  );
+}
+
+export function cronDeleteNotice(f: {
+  config: string;
+  status: string;
+  days: number;
+  remaining: string;
+}): string {
+  return TEXTS_NOW.render('REPORT_CRON_DELETE', {
+    config: f.config,
+    status: f.status,
+    days: f.days,
+    volume: f.remaining,
+  });
+}
+
+export function cronDeleteVolumeNotice(f: {
+  config: string;
+  status: string;
+  days: number;
+  remaining: string;
+  lastSeen: string;
+}): string {
+  return TEXTS_NOW.render('REPORT_CRON_DELETE_VOLUME', {
+    config: f.config,
+    status: f.status,
+    days: f.days,
+    volume: f.remaining,
+    lastSeen: f.lastSeen,
+  });
+}
+
+/**
+ * Legacy's `users.status.*` — the panel status as the operator reads it in
+ * the deletion notices. The warning notices print the raw word instead, and
+ * so do ours; that asymmetry is legacy's.
+ */
+export function panelStatusLabel(status: string | null): string {
+  switch (status) {
+    case 'active':
+      return '✅ فعال';
+    case 'limited':
+      return '🚫 پایان حجم';
+    case 'disabled':
+      return '❌ غیرفعال';
+    case 'expired':
+      return '🔚 پایان زمان سرویس';
+    case 'on_hold':
+      return '❌ متصل نشده';
+    default:
+      return '❌ نامشخص';
+  }
+}
+
+/** `formatBytes()` as legacy prints a remaining volume — «2.5 GB», «800 MB». */
+export function bytesText(bytes: number): string {
+  const b = Math.max(0, bytes);
+  if (b >= 1024 ** 3) return `${Number((b / 1024 ** 3).toFixed(2))} GB`;
+  if (b >= 1024 ** 2) return `${Number((b / 1024 ** 2).toFixed(2))} MB`;
+  if (b >= 1024) return `${Number((b / 1024).toFixed(2))} KB`;
+  return `${b} B`;
+}
+
+/**
+ * The nightly report — THREE messages, in `statusday.php`'s order: the top
+ * resellers, the day's figures, then the panels. Each returns one message.
+ */
+export function nightlyAgentsReport(
+  rows: { telegramId: number; username: string | null; totalIrr: number }[],
+): string {
+  const t = TEXTS_NOW;
+  return (
+    t.raw('REPORT_NIGHT_AGENTS_TITLE') +
+    rows
+      .map((r) =>
+        t.render('REPORT_NIGHT_AGENT_ROW', {
+          telegramId: r.telegramId,
+          username: handle(r.username),
+          total: tomanDigits(r.totalIrr),
+        }),
+      )
+      .join('')
+  );
+}
+
+export function nightlyReport(f: {
+  renewals: number;
+  renewalsIrr: number;
+  orders: number;
+  ordersIrr: number;
+  trials: number;
+  volumeGb: number;
+  newUsers: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_NIGHT', {
+    renewals: f.renewals,
+    renewalsToman: tomanDigits(f.renewalsIrr),
+    orders: f.orders,
+    ordersToman: tomanDigits(f.ordersIrr),
+    trials: f.trials,
+    volumeGb: f.volumeGb,
+    newUsers: f.newUsers,
+  });
+}
+
+export function nightlyPanelsReport(
+  rows: { name: string; orders: number; ordersIrr: number; volumeGb: number }[],
+): string {
+  const t = TEXTS_NOW;
+  return (
+    t.raw('REPORT_NIGHT_PANELS_TITLE') +
+    rows
+      .map((r) =>
+        t.render('REPORT_NIGHT_PANEL_ROW', {
+          panel: r.name,
+          orders: r.orders,
+          ordersToman: tomanDigits(r.ordersIrr),
+          volumeGb: r.volumeGb,
+        }),
+      )
+      .join('')
+  );
 }
 
 /**

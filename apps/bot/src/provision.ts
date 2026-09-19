@@ -24,6 +24,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import type { ReportKind } from '@shikoo/contracts';
 import { randomUUID } from 'node:crypto';
 import {
   adapterFor,
@@ -49,7 +50,7 @@ import { enqueue } from './notify.js';
 import { subscriptionOnPanelForUser } from './owned.js';
 import { actionsFor, tierFor } from './serviceActions.js';
 import { deliverFromStock, failingSinceMs, STOCK_GRACE_MS, type StockDelivery } from './stock.js';
-import { creditRenewalCashback, refundOrder } from './wallet.js';
+import { balanceFor, creditRenewalCashback, refundOrder, walletPaidOnOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
 import { payReferralCommission } from './referral.js';
 import { report } from './reports.js';
@@ -97,6 +98,7 @@ interface PendingOrder {
   /** What a volume code added, frozen on the order at placement (0062). */
   bonus_volume_gb: string | number;
   total_irr: number;
+  unit_price_irr: number;
   product_name: string | null;
   provider_id: number | null;
   provider_code: string | null;
@@ -503,6 +505,7 @@ export async function provisionPaidOrders(
               u.reseller_tier AS reseller_tier,
               o.plan_id       AS plan_id,
               o.total_irr     AS total_irr,
+              o.unit_price_irr AS unit_price_irr,
               o.target_subscription_id AS target_subscription_id,
               s.remote_username AS target_username,
               s.plan_name_at_sale AS target_name,
@@ -669,36 +672,10 @@ export async function provisionPaidOrders(
        * that runs twice produces one message.
        */
       const shop = await loadShopSettings(db);
-      const [kind, text] =
-        row.order_kind === 'TRIAL'
-          ? ([
-              'reporttest' as const,
-              menu.trialReport({
-                order: row.order_public_id,
-                customer: row.telegram_id,
-                panel: row.provider_name ?? String(row.provider_id ?? '—'),
-              }),
-            ] as const)
-          : row.order_kind === 'NEW_PURCHASE'
-            ? ([
-                'buyreport' as const,
-                menu.purchaseReport({
-                  order: row.order_public_id,
-                  customer: row.telegram_id,
-                  service: row.plan_name ?? row.product_name ?? '—',
-                  totalIrr: Number(row.total_irr),
-                }),
-              ] as const)
-            : ([
-                'otherservice' as const,
-                menu.serviceReport({
-                  kind: row.order_kind as 'RENEWAL' | 'ADD_VOLUME' | 'ADD_TIME',
-                  order: row.order_public_id,
-                  customer: row.telegram_id,
-                  service: row.target_name ?? row.plan_name ?? row.product_name ?? '—',
-                }),
-              ] as const);
-      await db.withSession((tx) => report(tx, shop, kind, row.order_public_id, text));
+      if (shop.reportChatId !== null && row.telegram_id !== null) {
+        const [kind, text] = await reportFor(db, row, now);
+        await db.withSession((tx) => report(tx, shop, kind, row.order_public_id, text));
+      }
     }
 
     if (note !== null && row.telegram_id !== null) {
@@ -1711,6 +1688,132 @@ class LostTheClaim extends Error {
  * Every route to COMPLETED passes through here, so it is paid once, on a
  * delivered order, whatever the customer paid with.
  */
+/**
+ * The group's report for a delivered order — mirzabot's template for that
+ * kind, filled with what mirzabot fills it with.
+ *
+ * Read AFTER delivery and outside its transactions, like the send that
+ * follows: the config username is the row `deliver` wrote, the balances are
+ * the customer's wallet now and what this order took from it, and a report
+ * that cannot be built must not roll a delivered service back.
+ */
+async function reportFor(
+  db: D1Database,
+  row: PendingOrder,
+  now: number,
+): Promise<readonly [ReportKind, string]> {
+  const telegramId = row.telegram_id as number;
+  const delivered = await db
+    .prepare(
+      `SELECT remote_username, volume_gb, duration_days
+         FROM subscriptions WHERE order_id = ?1 ORDER BY id DESC LIMIT 1`,
+    )
+    .bind(row.order_id)
+    .first<{ remote_username: string | null; volume_gb: number | null; duration_days: number | null }>();
+  const config = delivered?.remote_username ?? row.target_username ?? '';
+  const panel = row.provider_name ?? '';
+  const balanceAfter = await balanceFor(db, row.user_id);
+  const balanceBefore = balanceAfter + (await walletPaidOnOrder(db, row.order_id));
+  const totalIrr = Number(row.total_irr);
+
+  switch (row.order_kind) {
+    case 'TRIAL': {
+      const who = await db
+        .prepare(`SELECT first_name FROM users WHERE id = ?1`)
+        .bind(row.user_id)
+        .first<{ first_name: string | null }>();
+      return [
+        'reporttest',
+        menu.trialReport({
+          telegramId,
+          username: row.telegram_username,
+          config,
+          name: who?.first_name ?? null,
+          panel,
+          days: delivered?.duration_days ?? row.duration_days,
+          volumeGb: numberOrNull(delivered?.volume_gb ?? row.volume_gb),
+          tracking: row.order_public_id,
+          tier: row.reseller_tier,
+          atMs: now,
+        }),
+      ];
+    }
+    case 'NEW_PURCHASE': {
+      // «📌 خرید اول کاربر» when no earlier paid order exists for them —
+      // legacy's `$countinvoice <= 1`.
+      const earlier = await db
+        .prepare(
+          `SELECT count(*)::int AS n FROM orders
+            WHERE user_id = ?1 AND id <> ?2 AND kind NOT IN ('WALLET_TOPUP', 'TRIAL')
+              AND status IN ('PAID', 'PROVISIONING', 'COMPLETED')`,
+        )
+        .bind(row.user_id, row.order_id)
+        .first<{ n: number }>();
+      return [
+        'buyreport',
+        menu.purchaseReport({
+          firstPurchase: (earlier?.n ?? 0) === 0,
+          telegramId,
+          username: row.telegram_username,
+          config,
+          panel,
+          days: delivered?.duration_days ?? row.duration_days,
+          plan: row.plan_name ?? row.product_name ?? '',
+          volumeGb: numberOrNull(delivered?.volume_gb ?? row.volume_gb),
+          balanceBeforeIrr: balanceBefore,
+          balanceAfterIrr: balanceAfter,
+          tracking: row.order_public_id,
+          tier: row.reseller_tier,
+          priceIrr: Number(row.unit_price_irr) * Number(row.quantity ?? 1),
+          finalPriceIrr: totalIrr,
+          atMs: now,
+        }),
+      ];
+    }
+    case 'ADD_VOLUME':
+      return [
+        'otherservice',
+        menu.addVolumeReport({
+          telegramId,
+          volumeGb: numberOrNull(row.volume_gb) ?? 0,
+          priceIrr: totalIrr,
+          config,
+          balanceBeforeIrr: balanceBefore,
+        }),
+      ];
+    case 'ADD_TIME':
+      return [
+        'otherservice',
+        menu.addTimeReport({
+          telegramId,
+          days: row.duration_days ?? 0,
+          priceIrr: totalIrr,
+          config,
+        }),
+      ];
+    default:
+      return [
+        'otherservice',
+        menu.renewalReport({
+          telegramId,
+          username: row.telegram_username,
+          config,
+          panel,
+          plan: row.plan_name ?? row.target_name ?? row.product_name ?? '',
+          volumeGb: numberOrNull(row.volume_gb),
+          days: row.duration_days,
+          priceIrr: totalIrr,
+          balanceBeforeIrr: balanceBefore,
+          atMs: now,
+        }),
+      ];
+  }
+}
+
+function numberOrNull(v: string | number | null | undefined): number | null {
+  return v === null || v === undefined ? null : Number(v);
+}
+
 async function complete(
   tx: D1Database | D1DatabaseSession,
   orderId: number,
@@ -1724,7 +1827,33 @@ async function complete(
     .bind(orderId)
     .run();
   if (done.meta.changes !== 1) throw new LostTheClaim(orderId);
-  await payReferralCommission(tx as D1DatabaseSession, orderId, commissionPercent);
+  const paid = await payReferralCommission(tx as D1DatabaseSession, orderId, commissionPercent);
+  if (paid === null) return;
+  // «🎁 گزارش پورسانت ها» — `function.php:1083`, the two Telegram ids and
+  // the clock, in the transaction that paid it.
+  const ids = await tx
+    .prepare(
+      `SELECT b.telegram_id AS buyer, r.telegram_id AS referrer
+         FROM orders o
+         JOIN users b ON b.id = o.user_id
+         JOIN users r ON r.id = b.referred_by
+        WHERE o.id = ?1`,
+    )
+    .bind(orderId)
+    .first<{ buyer: number | null; referrer: number | null }>();
+  if (!ids || ids.buyer === null || ids.referrer === null) return;
+  await report(
+    tx as D1DatabaseSession,
+    await loadShopSettings(tx),
+    'porsantreport',
+    `commission:${orderId}`,
+    menu.commissionReport({
+      amountIrr: paid,
+      referrerTelegramId: ids.referrer,
+      buyerTelegramId: ids.buyer,
+      atMs: Date.now(),
+    }),
+  );
 }
 
 /**
