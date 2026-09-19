@@ -2296,7 +2296,13 @@ export function serviceDetail(service: ServiceView, now: number): string {
     // Provisioned by a person, or a row migrated from the old bot that the sync
     // has not reached yet. Saying so beats an empty space where a link goes.
     lines.push('', t.raw('SERVICE_DETAIL_NO_LINK'));
-  } else if (state === 'EXPIRED' || state === 'EXHAUSTED') {
+  } else if (
+    state === 'EXPIRED' ||
+    state === 'EXHAUSTED' ||
+    // Switched off by the customer AND run out underneath (#366): the switch
+    // alone will not bring it back, the renewal will.
+    (state === 'DISABLED' && serviceState({ ...service, status: 'ACTIVE' }, now) !== 'ACTIVE')
+  ) {
     // Seen on the real screen: a dead service showed its status, withheld its
     // link, and then said nothing at all — leaving the customer on a screen
     // with no way forward. This is the one thing they can do about it.

@@ -244,9 +244,18 @@ export interface RenewableSubscription {
  * the PHP, which lists it for renewal beside `active`, `index.php:6355`). The
  * import brought 707 of them, and until 2026-09-17 every one was on «سرویس‌های
  * من» and missing from «تمدید سرویس».
+ *
+ * And DISABLED (#366). The PHP never wrote that word for a customer's own
+ * switch-off — `confirmaccountdisable_` (`index.php:1458`) touches the panel
+ * and leaves `invoice.Status` at `active`, so the service stayed renewable.
+ * `actions.ts` records the same tap as DISABLED, and this list then lost it.
+ * The renewal sends `status: active` back to the panel (`marzban.ts`, `renew`),
+ * so paying does switch it on. A row the import marked DISABLED because the
+ * panel no longer had the account (`disabledn`) is listed too, and fails at
+ * the panel's 404 with a refund — nothing here can tell the two apart.
  */
 const RENEWABLE = `
-  s.status IN ('ACTIVE', 'ON_HOLD')
+  s.status IN ('ACTIVE', 'ON_HOLD', 'DISABLED')
   AND s.remote_username IS NOT NULL
   AND pv.status = 'ACTIVE'
   -- An account from the shelf is bought, not extended: there is no panel to

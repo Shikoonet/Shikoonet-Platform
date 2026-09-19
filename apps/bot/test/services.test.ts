@@ -394,6 +394,25 @@ describe('one service', () => {
     expect(text).toContain('تمدید سرویس');
   });
 
+  it('points a switched-off service that has also run out at the renewal (#366)', async () => {
+    // The switch alone will not bring this one back — the date is gone
+    // underneath it — so the screen has to say which button will.
+    const { updateId, telegramId } = ids();
+    const userId = await customer(telegramId);
+    const subId = await makeService(userId, {
+      publicId: `svc-${telegramId}-offold`,
+      url: 'https://panel.test/sub/OFF_AND_OLD',
+      expiresInDays: -1,
+      status: 'DISABLED',
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `sub:${subId}`));
+    const text = out.replies[0]?.text ?? '';
+
+    expect(text).not.toContain('OFF_AND_OLD');
+    expect(text).toContain('تمدید سرویس');
+  });
+
   it('withholds the link once the volume is gone', async () => {
     const { updateId, telegramId } = ids();
     const userId = await customer(telegramId);

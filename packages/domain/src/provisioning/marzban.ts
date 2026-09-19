@@ -868,9 +868,13 @@ export const marzbanAdapter: ProvisioningAdapter = {
            */
           body: JSON.stringify({
             data_limit: dataLimit,
+            // `status: active` is sent, not assumed. A new date wakes an
+            // `expired` or `limited` account on its own, but not a `disabled`
+            // one — the customer's own switch-off (#366) — and without it a
+            // paid renewal left the account exactly as dark as before.
             ...(heldSeconds !== null && heldSeconds > 0
               ? { expire: 0, status: 'on_hold', on_hold_expire_duration: Math.round(heldSeconds) }
-              : { expire }),
+              : { expire, status: 'active' }),
             note: request.note,
             ...(Array.isArray(request.groupIds) && request.groupIds.length > 0
               ? { group_ids: request.groupIds }

@@ -1511,6 +1511,10 @@ async function renew(
           `UPDATE subscriptions
               SET volume_gb      = COALESCE(?2, volume_gb),
                   expires_at     = GREATEST(?3::timestamptz, expires_at),
+                  -- The adapter just sent «status: active» to the panel, so a
+                  -- row the customer had switched off follows it (#366).
+                  -- ON_HOLD stays: the panel kept that one held.
+                  status         = CASE WHEN status = 'DISABLED' THEN 'ACTIVE' ELSE status END,
                   notify         = '{}'::jsonb,
                   last_synced_at = NULL,
                   updated_at     = now()

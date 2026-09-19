@@ -175,7 +175,7 @@ async function makeService(
     planId?: number | null;
     durationDays?: number | null;
     planNameAtSale?: string;
-    status?: 'ACTIVE' | 'ON_HOLD';
+    status?: 'ACTIVE' | 'ON_HOLD' | 'DISABLED';
   },
 ): Promise<number> {
   const row = await db
@@ -335,6 +335,26 @@ describe('choosing what to renew', () => {
       username: `u_${telegramId}`,
       expiresInDays: null,
       status: 'ON_HOLD',
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'renew'));
+
+    const buttons = out.replies[0]?.keyboard?.flat() ?? [];
+    expect(buttons.map((b) => b.callback_data)).toContain(`rnw:${subId}`);
+  });
+
+  it('lists a service the customer switched off — the PHP left it `active` (#366)', async () => {
+    // `confirmaccountdisable_` (`index.php:1458`) flips the panel account and
+    // never touches `invoice.Status`, so on the PHP a service you turned off
+    // was still yours to renew. Ours writes DISABLED for that tap and used to
+    // drop it here — the only way back was support.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-off`,
+      username: `u_${telegramId}`,
+      expiresInDays: -3,
+      status: 'DISABLED',
     });
 
     const out = await handleUpdate(db, press(updateId, telegramId, 'renew'));
@@ -906,7 +926,7 @@ describe('applying it', () => {
     options: {
       expiresInDays?: number | null;
       volumeGb?: number | null;
-      status?: 'ACTIVE' | 'ON_HOLD';
+      status?: 'ACTIVE' | 'ON_HOLD' | 'DISABLED';
     } = {},
   ) {
     const { updateId, telegramId } = ids();
@@ -976,6 +996,22 @@ describe('applying it', () => {
 
     await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
 
+    expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
+    expect((await subscriptionRow(target.subId))?.status).toBe('ACTIVE');
+  });
+
+  it('switches a disabled account back on, on the panel and on the row (#366)', async () => {
+    // A new date wakes an `expired` or `limited` account by itself; a
+    // `disabled` one stays dark until somebody says `active`. Without this the
+    // renewal took the money and left the account exactly as it was.
+    const target = await paidRenewal({ status: 'DISABLED', expiresInDays: -3 });
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS - 3 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts[0]?.body['status']).toBe('active');
     expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
     expect((await subscriptionRow(target.subId))?.status).toBe('ACTIVE');
   });
