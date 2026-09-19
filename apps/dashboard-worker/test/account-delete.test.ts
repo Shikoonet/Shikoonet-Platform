@@ -423,8 +423,11 @@ describe('DELETE /api/v1/accounts/:id with purgeTransactions', () => {
     expect(await countOf('financial_account_identifiers')).toBe(0);
     expect(await countOf('transaction_candidates')).toBe(0);
     expect(await countOf('transaction_detected_identifiers')).toBe(0);
-    // The bank's own words stay: evidence of what arrived, owned by nobody.
+    // The bank's own words stay: evidence of what arrived, owned by nobody —
+    // labelled IGNORED, so «بازخوانی» never makes these rows back.
     expect(await countOf('raw_sms_events')).toBe(2);
+    const labels = await baseEnv.DB.prepare(`SELECT classification FROM raw_sms_events`).all<{ classification: string }>();
+    expect(labels.results.map((r) => r.classification)).toEqual(['IGNORED', 'IGNORED']);
 
     const audit = await baseEnv.DB.prepare(
       `SELECT entity_id, before_json, reason FROM audit_logs WHERE action = 'account.purged'`,

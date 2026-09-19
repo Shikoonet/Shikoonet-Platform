@@ -2980,7 +2980,14 @@ async function purgeAccount(
          gone AS (
            DELETE FROM transaction_candidates
             WHERE financial_account_id = ?1 AND EXISTS (SELECT 1 FROM ok)
-            RETURNING amount_irr),
+            RETURNING amount_irr, raw_sms_event_id),
+         -- The texts stay (audit), but labelled IGNORED: «بازخوانی» must not
+         -- read them again and make back the rows a person just purged, and
+         -- «پیامک‌های بی‌پارسر» must not list them as unread.
+         texts AS (
+           UPDATE raw_sms_events SET classification = 'IGNORED'
+            WHERE id IN (SELECT raw_sms_event_id FROM gone WHERE raw_sms_event_id IS NOT NULL)
+            RETURNING 1),
          acct AS (
            DELETE FROM financial_accounts
             WHERE id = ?1 AND EXISTS (SELECT 1 FROM ok)

@@ -72,18 +72,23 @@ afterAll(async () => {
 
 describe('senderCoverage', () => {
   it('buckets each sender: named, generic, unread, filtered — and says which parsers it saw', async () => {
-    await raw({ sender: 'Bank Mellat', body: 'حساب1\nواریز1,000\nمانده5,000\n05/06/26-10:00', classification: 'BANK_TRANSACTION', parserId: 'mellat-credit-v1', row: { direction: 'CREDIT', balanceIrr: 5000 } });
+    const first = await raw({ sender: 'Bank Mellat', body: 'حساب1\nواریز1,000\nمانده5,000\n05/06/26-10:00', classification: 'BANK_TRANSACTION', parserId: 'mellat-credit-v1', row: { direction: 'CREDIT', balanceIrr: 5000 } });
     await raw({ sender: 'Bank Mellat', body: 'حساب1\nبرداشت1,000\nمانده4,000\n05/06/26-11:00', classification: 'BANK_DEBIT', parserId: 'generic-debit' });
+    // The bank's re-send: ingest read it and, on purpose, made no row. Read, not unread.
+    const resent = await raw({ sender: 'Bank Mellat', body: 'حساب1\nواریز1,000\nمانده5,000\n05/06/26-10:00', classification: 'BANK_TRANSACTION', parserId: 'mellat-credit-v1' });
+    await db.prepare(`UPDATE raw_sms_events SET duplicate_of = ?1 WHERE id = ?2`).bind(first, resent).run();
     await raw({ sender: 'KESHAVARZI', body: 'واریز1,000\nمانده5,000\n050627-10:00\nکارت4006*\nbki. ir', classification: 'BANK_CREDIT', parserId: 'generic-credit', row: { direction: 'CREDIT', balanceIrr: 4006 } });
     await raw({ sender: 'B.QMEHRIRAN', body: null, classification: 'OTP', parserId: 'generic-otp' });
+    // A transfer request whose code the scrub of 09-18 redacted, labelled UNKNOWN before #342: an OTP text all the same.
+    await raw({ sender: 'B.QMEHRIRAN', body: 'انتقال وجه آنی\nاز: 300433163497\nبه: IR710570077700001508137801\nمبلغ 70,000,000 ریال\nرمز [otp-redacted]', classification: 'UNKNOWN', parserId: 'fallback-unknown' });
     await raw({ sender: 'old', body: 'x', classification: 'UNKNOWN', parserId: 'fallback-unknown', at: SINCE - 86_400_000 });
 
     const items = await senderCoverage(db, SINCE);
     const by = new Map(items.map((i) => [i.sender, i]));
-    expect(by.get('Bank Mellat')).toMatchObject({ total: 2, named: 1, generic: 0, unread: 1, filtered: 0 });
-    expect(by.get('Bank Mellat')!.parsers).toEqual(expect.arrayContaining([{ parserId: 'mellat-credit-v1', n: 1 }, { parserId: 'generic-debit', n: 1 }]));
+    expect(by.get('Bank Mellat')).toMatchObject({ total: 3, named: 2, generic: 0, unread: 1, filtered: 0 });
+    expect(by.get('Bank Mellat')!.parsers).toEqual(expect.arrayContaining([{ parserId: 'mellat-credit-v1', n: 2 }, { parserId: 'generic-debit', n: 1 }]));
     expect(by.get('KESHAVARZI')).toMatchObject({ total: 1, named: 0, generic: 1, unread: 0 });
-    expect(by.get('B.QMEHRIRAN')).toMatchObject({ total: 1, filtered: 1, unread: 0 });
+    expect(by.get('B.QMEHRIRAN')).toMatchObject({ total: 2, filtered: 2, unread: 0 });
     expect(by.has('old')).toBe(false);
     // The sender with something to look at comes first.
     expect(items[0]!.sender).toBe('Bank Mellat');
@@ -97,6 +102,10 @@ describe('unparsedShapes', () => {
     await raw({ sender: 'KESHAVARZI', body: 'واریز1,000\nمانده5,000\n050627-10:00\nکارت4006*\nbki. ir', classification: 'BANK_CREDIT', parserId: 'generic-credit', row: { direction: 'CREDIT', balanceIrr: 4006 } });
     await raw({ sender: 'Bank Mellat', body: 'حساب1\nواریز1,000\nمانده5,000\n05/06/26-10:00', classification: 'BANK_TRANSACTION', parserId: 'mellat-credit-v1', row: { direction: 'CREDIT', balanceIrr: 5000 } });
     await raw({ sender: 'B.QMEHRIRAN', body: null, classification: 'OTP', parserId: 'generic-otp' });
+    await raw({ sender: 'B.QMEHRIRAN', body: 'انتقال وجه آنی\nمبلغ 70,000,000 ریال\nرمز [otp-redacted]', classification: 'UNKNOWN', parserId: 'fallback-unknown' });
+    const first = await raw({ sender: 'Bank Mellat', body: 'حساب1\nواریز2,000\nمانده7,000\n05/06/26-12:00', classification: 'BANK_TRANSACTION', parserId: 'mellat-credit-v1', row: { direction: 'CREDIT', balanceIrr: 7000 } });
+    const resent = await raw({ sender: 'Bank Mellat', body: 'حساب1\nواریز2,000\nمانده7,000\n05/06/26-12:00', classification: 'BANK_TRANSACTION', parserId: 'mellat-credit-v1' });
+    await db.prepare(`UPDATE raw_sms_events SET duplicate_of = ?1 WHERE id = ?2`).bind(first, resent).run();
 
     // Other suites leave rows on this database; look only at the senders written here.
     const ours = new Set(['Bank Maskan', 'KESHAVARZI', 'Bank Mellat', 'B.QMEHRIRAN']);

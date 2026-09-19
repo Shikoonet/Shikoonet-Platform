@@ -18,20 +18,21 @@ const envAs = (email: string) => ({ ...baseEnv, TEST_ACCESS_USER: email });
 const post = (path: string, body: unknown, email = ADMIN) =>
   app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, envAs(email));
 
-async function raw(id: string, sender: string, body: string, classification: string, parserId: string): Promise<void> {
-  const now = Date.now();
+async function raw(id: string, sender: string, body: string, classification: string, parserId: string, at = Date.now() - 3_600_000): Promise<void> {
   await baseEnv.DB.prepare(
     `INSERT INTO raw_sms_events
        (id, device_id, sender, normalized_body, body_sha256, app_checksum, sms_timestamp,
         received_at, classification, parser_status, parser_id, parser_version, created_at)
      VALUES (?1, ?2, ?3, ?4, ?5, 'c', ?6, ?6, ?7, 'WARN', ?8, 'v1', ?6)`,
   )
-    .bind(id, DEVICE, sender, body, `${P}hash-${id}`, now - 3_600_000, classification, parserId)
+    .bind(id, DEVICE, sender, body, `${P}hash-${id}`, at, classification, parserId)
     .run();
 }
 
 const BILL = `${P}melli-bill`;
 const NOBODY = `${P}nobody`;
+const FIRST = `${P}melli-first`;
+const RESENT = `${P}melli-resent`;
 
 beforeAll(async () => {
   await applySchema();
@@ -126,5 +127,34 @@ describe('POST /api/v1/admin/sms/reparse', () => {
       .bind(ap.made[0]!.transactionId)
       .first<{ n: number }>();
     expect(audits?.n).toBe(1);
+  });
+
+  it('a text the bank sent twice makes one row; the re-send is marked duplicate_of, as ingest would have', async () => {
+    // The real Melli night: the same text at 20:46 and again at 21:12.
+    const body = 'بانک ملی ایران\nخریداینترنتی:39,900,000-\nحساب:06006\nمانده:12,140\n0627-20:45';
+    const at = Date.now() - 2 * 3_600_000;
+    await raw(FIRST, '+989830009417', body, 'BANK_DEBIT', 'generic-debit', at);
+    await raw(RESENT, '+989830009417', body, 'BANK_DEBIT', 'generic-debit', at + 26 * 60_000);
+
+    const dr = (await (await post('/api/v1/admin/sms/reparse/dry-run', { days: 7 })).json()) as {
+      report: { candidates: { eventId: string; redeliveryOf: string | null }[] };
+    };
+    expect(dr.report.candidates.find((x) => x.eventId === FIRST)).toMatchObject({ redeliveryOf: null });
+    expect(dr.report.candidates.find((x) => x.eventId === RESENT)).toMatchObject({ redeliveryOf: FIRST });
+
+    const ap = (await (await post('/api/v1/admin/sms/reparse/apply', { eventIds: [FIRST, RESENT], confirm: true })).json()) as {
+      made: { eventId: string }[];
+      skipped: { eventId: string; why: string }[];
+      failed: unknown[];
+    };
+    expect(ap.made.map((m) => m.eventId)).toEqual([FIRST]);
+    expect(ap.skipped).toEqual([{ eventId: RESENT, why: 'redelivery' }]);
+    expect(ap.failed).toEqual([]);
+    const rows = await baseEnv.DB.prepare(`SELECT COUNT(*)::int AS n FROM transaction_candidates WHERE raw_sms_event_id IN (?1, ?2)`)
+      .bind(FIRST, RESENT)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
+    const dup = await baseEnv.DB.prepare(`SELECT duplicate_of FROM raw_sms_events WHERE id = ?1`).bind(RESENT).first<{ duplicate_of: string | null }>();
+    expect(dup?.duplicate_of).toBe(FIRST);
   });
 });
