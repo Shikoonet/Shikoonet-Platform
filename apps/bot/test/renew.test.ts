@@ -363,6 +363,26 @@ describe('choosing what to renew', () => {
     expect(buttons.map((b) => b.callback_data)).toContain(`rnw:${subId}`);
   });
 
+  it('but not one the import found already disabled — the PHP did not either', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-gone`,
+      username: `u_${telegramId}`,
+      expiresInDays: -3,
+      status: 'DISABLED',
+    });
+    // `disabledn` — Mirzabot's word for «the panel no longer has this account».
+    await db
+      .prepare(`UPDATE subscriptions SET legacy_status = 'disabledn' WHERE id = ?1`)
+      .bind(subId)
+      .run();
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'renew'));
+
+    expect(out.replies[0]?.text).toBe(menu.NOTHING_TO_RENEW);
+  });
+
   it('names the service without the price its legacy name quotes', async () => {
     // Production, 2026-09-16 23:37 UTC: a service sold as «…-280.000ت» renewed
     // onto a 399,000 plan. The intro and the invoice both printed the old name,

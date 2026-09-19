@@ -250,12 +250,17 @@ export interface RenewableSubscription {
  * and leaves `invoice.Status` at `active`, so the service stayed renewable.
  * `actions.ts` records the same tap as DISABLED, and this list then lost it.
  * The renewal sends `status: active` back to the panel (`marzban.ts`, `renew`),
- * so paying does switch it on. A row the import marked DISABLED because the
- * panel no longer had the account (`disabledn`) is listed too, and fails at
- * the panel's 404 with a refund — nothing here can tell the two apart.
+ * so paying does switch it on.
+ *
+ * Not a DISABLED the import brought: `disabledn` is «the panel no longer has
+ * this account» (`index.php:935`), `disablebyadmin` is the admin's word
+ * (`admin.php:10374`), and the PHP renewed neither. `legacy_status` keeps the
+ * spelling, and a row our own bot switched off has none — or `active`.
  */
 const RENEWABLE = `
-  s.status IN ('ACTIVE', 'ON_HOLD', 'DISABLED')
+  (s.status IN ('ACTIVE', 'ON_HOLD')
+   OR (s.status = 'DISABLED'
+       AND COALESCE(s.legacy_status, '') NOT IN ('disabled', 'disabledn', 'disablebyadmin')))
   AND s.remote_username IS NOT NULL
   AND pv.status = 'ACTIVE'
   -- An account from the shelf is bought, not extended: there is no panel to
