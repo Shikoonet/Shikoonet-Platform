@@ -341,11 +341,11 @@ export const TEXTS = {
     screen: 'planDetail',
     hint: 'به‌جای خط بالا، وقتی پلن حجم نامحدود دارد',
   },
-  PLAN_SERVICE_BONUS: {
-    default: '🎁 حجم هدیهٔ این سرویس: {bonus}',
+  PLAN_BONUS: {
+    default: '🎁 حجم هدیه: {bonus}',
     placeholders: ['bonus'],
     screen: 'planDetail',
-    hint: 'فقط وقتی سرویس درصد حجم هدیه دارد — {bonus} مثل «+20٪ حجم — جمعاً 72 گیگ»',
+    hint: 'فقط وقتی پلن درصد حجم هدیه دارد — {bonus} مثل «+20٪ حجم — جمعاً 72 گیگ»',
   },
   PLAN_DURATION: {
     default: '⏳ مدت: {days} روز',
@@ -400,6 +400,12 @@ export const TEXTS = {
     placeholders: [],
     screen: 'planDetail',
     hint: 'پلنی که حذف یا پنهان شده',
+  },
+  PLAN_BONUS_TAG: {
+    default: '+{percent}٪ حجم هدیه',
+    placeholders: ['percent'],
+    screen: 'plans',
+    hint: 'پسوند دکمهٔ پلنی که درصد حجم هدیه دارد — {percent} همان عددی است که در داشبورد زده‌اید',
   },
   PLAN_OUT_OF_STOCK_TAG: {
     default: 'ناموجود',

@@ -35,7 +35,7 @@
 import { encode } from './callback.js';
 import { MAX_MESSAGE_LENGTH } from './telegram.js';
 import {
-  serviceBonusGb,
+  planBonusGb,
   type CatalogCategory,
   type CatalogPlan,
   type CatalogProduct,
@@ -972,13 +972,26 @@ export function volumeText(gb: number | null): string {
 }
 
 /**
- * «60 گیگ +20٪» — the volume, and the service's own bonus (0081) beside it
- * wherever the volume is drawn, so a customer sees the gift before the plan
- * screen spells the total out. Just the volume for the ordinary service.
+ * «60 گیگ +20٪» — the volume with the plan's own gift (0082) beside it, for
+ * the price table, where the volume is the whole left column. Just the volume
+ * for the ordinary plan.
  */
 function volumeWithBonus(plan: Pick<CatalogPlan, 'volumeGb' | 'bonusPercent'>): string {
   const base = volumeText(plan.volumeGb);
-  return serviceBonusGb(plan) > 0 ? `${base} +${trimGb(plan.bonusPercent)}٪` : base;
+  return planBonusGb(plan) > 0 ? `${base} +${trimGb(plan.bonusPercent)}٪` : base;
+}
+
+/**
+ * «… +20٪ حجم هدیه» on the button of a plan that gives volume (0082), on
+ * either label route. Sam: the percent typed on the dashboard, and those
+ * words after it, right on the button — a gift nobody sees is not a gift.
+ * Nothing for the ordinary plan, and nothing for a plan with no volume to
+ * add to, since `planBonusGb` is what the order would actually freeze.
+ */
+function gifted(label: string, plan: CatalogPlan): string {
+  return planBonusGb(plan) > 0
+    ? `${label} ${TEXTS_NOW.render('PLAN_BONUS_TAG', { percent: trimGb(plan.bonusPercent) })}`
+    : label;
 }
 
 /**
@@ -1157,11 +1170,11 @@ function planLabel(plan: CatalogPlan, discountPercent: number, template: string 
           name: plan.planName,
           badge: plan.badge ?? '',
           duration: durationText(plan.durationDays),
-          volume: volumeWithBonus(plan),
+          volume: volumeText(plan.volumeGb),
           users: usersText(plan.userLimit),
           price: formatToman(price.totalIrr),
         });
-  return outOfStock(label, plan.shelfAvailable);
+  return outOfStock(gifted(label, plan), plan.shelfAvailable);
 }
 
 /**
@@ -1326,11 +1339,11 @@ export function planDetail(plan: CatalogPlan, price: Price, applied?: AppliedCod
     plan.volumeGb === null
       ? t.raw('PLAN_VOLUME_UNLIMITED')
       : t.render('PLAN_VOLUME', { volume: plan.volumeGb }),
-    // The service's own bonus (0081), worded exactly like a BONUS_PERCENT
-    // code's, right under the volume it is a share of.
-    ...(serviceBonusGb(plan) > 0
+    // The plan's own gift (0082), worded exactly like a BONUS_PERCENT code's,
+    // right under the volume it is a share of.
+    ...(planBonusGb(plan) > 0
       ? [
-          t.render('PLAN_SERVICE_BONUS', {
+          t.render('PLAN_BONUS', {
             bonus: bonusLabel(
               { kind: 'BONUS_PERCENT', percent: plan.bonusPercent, bonus_gb: null },
               plan.volumeGb,

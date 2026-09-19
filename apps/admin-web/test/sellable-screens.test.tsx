@@ -81,7 +81,6 @@ function service(
     rowIndex: null,
     badge: null,
     buttonStyle: null,
-    bonusPercent: 0,
     panel,
     configs: [
       {
@@ -93,6 +92,7 @@ function service(
         priceIrr: 1_000_000,
         durationDays: 30,
         volumeGb: 10,
+        bonusPercent: 0,
         userLimit: null,
         status,
         sortOrder: id,

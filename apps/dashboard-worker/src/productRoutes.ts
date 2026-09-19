@@ -176,6 +176,12 @@ const PLAN_FIELDS = {
   sortOrder: z.number().int().min(0).max(10_000),
   status: z.enum(STATUSES),
   deliveryNote: DELIVERY_NOTE,
+  /**
+   * Extra volume this config delivers, as a percent of its own (0082 — on the
+   * config, not the service, since Sam picks them one by one). The code's
+   * range (0062): 0 ≤ p ≤ 100, two decimals, and 0 is «no gift».
+   */
+  bonusPercent: z.number().min(0).max(100).multipleOf(0.01),
 };
 
 /**
@@ -243,6 +249,7 @@ const PlanPatch = z
     sortOrder: PLAN_FIELDS.sortOrder.optional(),
     status: PLAN_FIELDS.status.optional(),
     deliveryNote: PLAN_FIELDS.deliveryNote.optional(),
+    bonusPercent: PLAN_FIELDS.bonusPercent.optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -321,12 +328,6 @@ const PRODUCT_FIELDS = {
   /** The tier button's own badge and colour (0061) — the plan's rules, verbatim. */
   badge: BADGE,
   buttonStyle: BUTTON_STYLE,
-  /**
-   * Extra volume every config of this service delivers, as a percent (0081).
-   * The code's range (0062): 0 ≤ p ≤ 100, and two decimals is what the column
-   * holds. Zero is «no bonus», which is what a new service starts at.
-   */
-  bonusPercent: z.number().min(0).max(100).multipleOf(0.01),
 };
 
 const ProductCreate = z
@@ -364,7 +365,6 @@ const ProductPatch = z
     deliveryNote: PRODUCT_FIELDS.deliveryNote.optional(),
     badge: PRODUCT_FIELDS.badge.optional(),
     buttonStyle: PRODUCT_FIELDS.buttonStyle.optional(),
-    bonusPercent: PRODUCT_FIELDS.bonusPercent.optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -455,6 +455,7 @@ interface PlanRow {
   button_style: 'primary' | 'success' | 'danger' | null;
   duration_days: number | null;
   volume_gb: number | null;
+  bonus_percent: number;
   user_limit: number | null;
   plan_status: string;
   sort_order: number;
@@ -497,6 +498,8 @@ function shape(r: PlanRow) {
     // numeric(12,3) arrives as a number through the adapter; NULL means
     // unmetered, which is not the same as 0 and must not collapse into it.
     volumeGb: r.volume_gb === null ? null : Number(r.volume_gb),
+    // numeric(5,2), the same way; 0 is «no gift».
+    bonusPercent: Number(r.bonus_percent ?? 0),
     userLimit: r.user_limit,
     status: r.plan_status,
     sortOrder: r.sort_order,
@@ -592,7 +595,6 @@ interface ServiceRow {
   delivery_note: string | null;
   badge: string | null;
   button_style: 'primary' | 'success' | 'danger' | null;
-  bonus_percent: number;
   row_index: number | null;
   provider_id: number | null;
   provider_name: string | null;
@@ -618,6 +620,7 @@ interface ConfigRow {
   price_irr: number;
   duration_days: number | null;
   volume_gb: number | null;
+  bonus_percent: number;
   user_limit: number | null;
   status: string;
   sort_order: number;
@@ -643,7 +646,7 @@ async function configsFor(db: D1Database, productIds: number[]): Promise<ConfigR
   const rows = await db
     .prepare(
       `SELECT pl.id, pl.product_id, pl.name, pl.badge, pl.button_style, pl.price_irr,
-              pl.duration_days, pl.volume_gb,
+              pl.duration_days, pl.volume_gb, pl.bonus_percent,
               pl.user_limit, pl.status, pl.sort_order, pl.row_index,
               pl.attrs->>'delivery_note' AS delivery_note,
               (SELECT COUNT(*)::int FROM provisioning_stock st
@@ -676,8 +679,6 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
     groupIds: r.group_ids,
     badge: r.badge,
     buttonStyle: r.button_style,
-    // numeric(5,2) arrives as a number through the adapter, like `volumeGb` above.
-    bonusPercent: Number(r.bonus_percent ?? 0),
     // Which row of the TIER screen this service sits on — `category:<id>`
     // layout, not the config layout inside it.
     rowIndex: r.row_index,
@@ -738,6 +739,7 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
         // learned this the hard way; collapsing them here would resell the
         // lesson.
         volumeGb: cf.volume_gb === null ? null : Number(cf.volume_gb),
+        bonusPercent: Number(cf.bonus_percent ?? 0),
         userLimit: cf.user_limit,
         status: cf.status,
         sortOrder: cf.sort_order,
@@ -808,7 +810,7 @@ const PANEL_CEILING = `
 
 const SELECT_PLAN = `
   SELECT pl.id, pl.name AS plan_name, pl.badge, pl.button_style, pl.price_irr,
-         pl.duration_days, pl.volume_gb,
+         pl.duration_days, pl.volume_gb, pl.bonus_percent,
          pl.user_limit, pl.status AS plan_status, pl.sort_order, pl.row_index,
          p.id AS product_id, p.code AS product_code, p.name AS product_name,
          p.kind AS product_kind, p.status AS product_status,
@@ -1199,7 +1201,7 @@ export function registerProductRoutes(
       `SELECT p.id, p.code, p.name, p.kind, p.status, p.description, p.sort_order,
               p.category_id, p.resellers_only, p.once_per_user,
               p.attrs->'group_ids' AS group_ids, p.attrs->>'delivery_note' AS delivery_note,
-              p.row_index, p.badge, p.button_style, p.bonus_percent,
+              p.row_index, p.badge, p.button_style,
               pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
               pr.status AS provider_status, pr.sort_order AS provider_sort_order,
               pr.kind AS provider_kind,
@@ -1291,6 +1293,7 @@ export function registerProductRoutes(
     if (patch.priceIrr !== undefined) put('price_irr', patch.priceIrr);
     if (patch.durationDays !== undefined) put('duration_days', patch.durationDays);
     if (patch.volumeGb !== undefined) put('volume_gb', patch.volumeGb);
+    if (patch.bonusPercent !== undefined) put('bonus_percent', patch.bonusPercent);
     if (patch.userLimit !== undefined) put('user_limit', patch.userLimit);
     if (patch.sortOrder !== undefined) put('sort_order', patch.sortOrder);
     if (patch.status !== undefined) put('status', patch.status);
@@ -1880,7 +1883,7 @@ export function registerProductRoutes(
     if (patchProblem) return c.json({ ok: false, error: 'invalid_body', detail: patchProblem }, 400);
 
     const SELECT_PRODUCT = `SELECT id, code, name, kind, provider_id, category_id, description,
-                                   badge, button_style, bonus_percent,
+                                   badge, button_style,
                                    resellers_only, once_per_user, sort_order, status,
                                    attrs->'group_ids' AS group_ids,
                                    attrs->>'delivery_note' AS delivery_note
@@ -1907,7 +1910,6 @@ export function registerProductRoutes(
     if (patch.status !== undefined) put('status', patch.status);
     if (patch.badge !== undefined) put('badge', patch.badge);
     if (patch.buttonStyle !== undefined) put('button_style', patch.buttonStyle);
-    if (patch.bonusPercent !== undefined) put('bonus_percent', patch.bonusPercent);
     // Both of these live in `attrs`, so they must produce ONE assignment
     // between them — see `attrsSql`. Not `put()`: these write a CASE over the
     // column rather than a value into it, and each reads its parameter twice.

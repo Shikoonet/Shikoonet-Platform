@@ -395,6 +395,25 @@ describe('the plan list', () => {
     expect(plans[0]?.[0]?.text).toBe('۵۰ گیگ — 195,000 تومان');
   });
 
+  it('writes «+20٪ حجم هدیه» after the label of a plan that gives volume (0082)', () => {
+    // Sam, 2026-09-19: the percent typed on the dashboard, and those words,
+    // on the button itself — on either label route, and after the badge and
+    // price so the gift is the last thing read. Nothing on the ordinary plan,
+    // and nothing on an unmetered one, where the order would freeze 0.
+    const rows = menu.planMenu([
+      { ...PLAN, badge: '🔴 آف', bonusPercent: 20, planName: '۵۰ گیگ' },
+      { ...PLAN, planId: 43, planName: '۵۰ گیگ' },
+      { ...PLAN, planId: 44, bonusPercent: 20, volumeGb: null, planName: 'نامحدود' },
+    ]);
+    expect(rows.flat().slice(0, 3).map((b) => b.text)).toEqual([
+      '🔴 آف ۵۰ گیگ — 195,000 تومان +20٪ حجم هدیه',
+      '۵۰ گیگ — 195,000 تومان',
+      'نامحدود — 195,000 تومان',
+    ]);
+    const templated = menu.planMenu([{ ...PLAN, bonusPercent: 12.5 }], 0, '{volume} | {price}');
+    expect(templated[0]?.[0]?.text).toBe('50 گیگ | 195,000 تومان +12.5٪ حجم هدیه');
+  });
+
   it('draws the shop own label when one is configured, from the plan fields', () => {
     // The two layouts asked for: «1 ماهه | 50 گیگ | 195,000 تومان» and the
     // two-part version. Built from `durationDays`/`volumeGb`, not from the

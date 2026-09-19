@@ -57,7 +57,6 @@ function service(
     rowIndex: null,
     badge: null,
     buttonStyle: null,
-    bonusPercent: 0,
     panel: PANEL,
     configs: configs.map((cfName, i) => ({
       id: id * 100 + i,
@@ -67,6 +66,8 @@ function service(
       deliveryNote: null,
       priceIrr: 1_000_000 * (i + 1),
       volumeGb: 10 * (i + 1),
+      // The one config giving extra volume (0082) — its chip says so, the others' do not.
+      bonusPercent: id === 8 && i === 1 ? 20 : 0,
       durationDays: 30,
       userLimit: null,
       rowIndex: null,
@@ -78,8 +79,7 @@ function service(
 }
 
 const SERVICES = [
-  // The one service giving extra volume (0081) — its card says so, the others' do not.
-  { ...service(8, 'پلاتینیوم', [6], ['۱ ماهه - ۱۰ گیگ', '۱ ماهه - ۲۰ گیگ', '۱ ماهه - ۳۰ گیگ']), bonusPercent: 20 },
+  service(8, 'پلاتینیوم', [6], ['۱ ماهه - ۱۰ گیگ', '۱ ماهه - ۲۰ گیگ', '۱ ماهه - ۳۰ گیگ']),
   service(9, 'طلایی', [7], ['۱ ماهه - ۱۰ گیگ']),
   // Two groups at once — the shape the live panel had, where four of these
   // rendered inline and came out as one four-digit number.
@@ -110,6 +110,7 @@ const catalog = vi.fn(async (_params: unknown): Promise<Record<string, unknown>>
 const panelGroups = vi.fn(async (_id: number) => GROUPS);
 const setProductStatus = vi.fn(async (_id: number, _status: string) => ({ ok: true, status: 'HIDDEN' }));
 const mergeProduct = vi.fn(async (_id: number, _into: number) => ({ ok: true, moved: 1 }));
+const updatePlan = vi.fn(async (_id: number, _patch: unknown) => ({ ok: true }));
 
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
@@ -120,6 +121,7 @@ vi.mock('../src/api.js', async () => {
       panelGroups: (id: number) => panelGroups(id),
       setProductStatus: (id: number, status: string) => setProductStatus(id, status),
       mergeProduct: (id: number, into: number) => mergeProduct(id, into),
+      updatePlan: (id: number, patch: unknown) => updatePlan(id, patch),
       productCategories: async () => ({ ok: true, items: [] }),
       // The service form carries a `BadgeField` since 0061, and it asks this.
       emojiPacks: async () => ({ ok: true, customEmoji: false, packs: [] }),
@@ -139,6 +141,7 @@ beforeEach(() => {
   catalog.mockClear();
   panelGroups.mockClear();
   setProductStatus.mockClear();
+  updatePlan.mockClear();
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -238,8 +241,30 @@ describe('the catalogue screen', () => {
     expect(screen.getByText('۲۰۰٬۰۰۰ تومان')).toBeTruthy();
     // And the header counts the shop, not the page.
     expect(screen.getByText(/۴ قابل خرید/)).toBeTruthy();
-    // The service's volume bonus is on its card, and only on its card.
-    expect(screen.getAllByText('+20٪ حجم')).toHaveLength(1);
+    // The config's volume gift is on its chip, and only on its chip.
+    expect(screen.getAllByText('+20٪ حجم هدیه')).toHaveLength(1);
+  });
+
+  it('gives the ticked configs one percent and one colour from «حجم هدیه»', async () => {
+    draw();
+    await screen.findByText('svc-8');
+    fireEvent.click(screen.getAllByRole('button', { name: 'حجم هدیه' })[0]!);
+    const panel = screen.getByLabelText('حجم هدیهٔ «پلاتینیوم»');
+    const boxes = within(panel).getAllByRole('checkbox') as HTMLInputElement[];
+    // The one already gifted comes ticked, with its percent in the box.
+    expect(boxes.map((b) => b.checked)).toEqual([false, true, false]);
+    expect((within(panel).getByLabelText('درصد حجم هدیه') as HTMLInputElement).value).toBe('20');
+
+    fireEvent.click(boxes[2]!);
+    fireEvent.change(within(panel).getByLabelText('درصد حجم هدیه'), { target: { value: '25' } });
+    fireEvent.click(within(panel).getByRole('button', { name: 'قرمز' }));
+    fireEvent.click(within(panel).getByRole('button', { name: /اعمال روی/ }));
+
+    await waitFor(() => expect(updatePlan).toHaveBeenCalledTimes(2));
+    expect(updatePlan.mock.calls.map(([id, patch]) => [id, patch])).toEqual([
+      [801, { bonusPercent: 25, buttonStyle: 'danger' }],
+      [802, { bonusPercent: 25, buttonStyle: 'danger' }],
+    ]);
   });
 
   it('opens a config editor from its chip, under its own card', async () => {

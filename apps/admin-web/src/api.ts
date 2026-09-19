@@ -279,6 +279,8 @@ export interface ConfigRow {
   priceIrr: number;
   /** null is unmetered. Zero is a real, free allowance — not the same thing. */
   volumeGb: number | null;
+  /** Extra volume this config delivers, as a percent of `volumeGb` (0082). 0 = none. */
+  bonusPercent: number;
   durationDays: number | null;
   userLimit: number | null;
   status: string;
@@ -319,8 +321,6 @@ export interface ServiceRow {
   /** The tier button's own badge and colour (0061); null borrows its one config's. */
   badge: string | null;
   buttonStyle: ButtonStyle | null;
-  /** Extra volume every config here delivers, as a percent (0081). 0 = none. */
-  bonusPercent: number;
   panel: PanelRef | null;
   configs: ConfigRow[];
 }
@@ -390,6 +390,8 @@ export interface PlanPatch {
   status?: CatalogStatus;
   /** Sent to the customer under this plan's delivery. Null or '' removes it. */
   deliveryNote?: string | null;
+  /** 0 ≤ p ≤ 100, two decimals; 0 takes the gift away. */
+  bonusPercent?: number;
 }
 
 /**
@@ -425,8 +427,6 @@ export interface ProductBody {
   status?: CatalogStatus;
   badge?: string | null;
   buttonStyle?: ButtonStyle | null;
-  /** 0 ≤ p ≤ 100, two decimals. */
-  bonusPercent?: number;
   /**
    * The panel groups an account bought here joins — this service's tier.
    *
