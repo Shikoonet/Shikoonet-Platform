@@ -51,8 +51,12 @@ export interface UnparsedShape {
 
 const num = (v: unknown): number => Number(v ?? 0);
 
-/** Filtered on purpose: not bank money. */
-const FILTERED = `r.classification IN ('OTP','PROMOTIONAL','IGNORED')`;
+/**
+ * Filtered on purpose: not bank money. A body the redactor scrubbed is an OTP
+ * text whatever its label says — the confirmation of a transfer request, whose
+ * money arrives as its own signed text. Three predated the marker #342 taught.
+ */
+const FILTERED = `(r.classification IN ('OTP','PROMOTIONAL','IGNORED') OR r.normalized_body LIKE '%[otp-redacted]%')`;
 const HAS_ROW = `EXISTS (SELECT 1 FROM transaction_candidates t WHERE t.raw_sms_event_id = r.id)`;
 const GENERIC = `COALESCE(r.parser_id, '') LIKE 'generic-%'`;
 
