@@ -1,6 +1,6 @@
 import type { NormalizedSms, ParseResult } from '@shikoo/contracts';
 import { type SmsParser, matched, DIRECTION_PHRASES } from './types.js';
-import { extractAllAmounts } from '../normalize.js';
+import { extractAllAmounts, labelledBalance } from '../normalize.js';
 
 const DEBIT_KEYWORDS = DIRECTION_PHRASES.debit;
 
@@ -29,7 +29,8 @@ export const debitParser: SmsParser = {
       };
     }
     const primary = amounts[0]!;
-    const balance = amounts.length >= 2 ? amounts[amounts.length - 1]! : null;
+    // Only a number the text labels as the balance; never «the last number».
+    const balance = labelledBalance(input.text, amounts);
 
     if (primary.currency === 'AMBIGUOUS') {
       return {
@@ -56,7 +57,7 @@ export const debitParser: SmsParser = {
       classification: 'BANK_DEBIT',
       direction: 'DEBIT',
       amountIrr: primary.value,
-      balanceIrr: balance && balance !== primary ? balance.value : null,
+      balanceIrr: balance?.value ?? null,
       accountHint: extractAccountHint(input.text),
       transactionReference: extractRef(input.text),
       confidence: primary.currency === 'NONE' ? 0.5 : 0.8,

@@ -1,6 +1,6 @@
 import type { NormalizedSms, ParseResult } from '@shikoo/contracts';
 import { type SmsParser, matched } from './types.js';
-import { extractAllAmounts } from '../normalize.js';
+import { extractAllAmounts, labelledBalance } from '../normalize.js';
 
 const BALANCE_KEYWORDS = /(?:مانده|موجودی|balance)/i;
 
@@ -28,19 +28,25 @@ export const balanceParser: SmsParser = {
         warnings: ['balance_keyword_without_amount'],
       };
     }
-    const last = amounts[amounts.length - 1]!;
+    // Only a number the text labels as the balance; an unlabelled body says nothing.
+    const labelledOne = labelledBalance(input.text, amounts);
+    const last = labelledOne ?? amounts[amounts.length - 1]!;
+    const labelled = labelledOne !== null;
     return matched({
       classification: 'BALANCE',
       direction: 'UNKNOWN',
       amountIrr: null,
-      balanceIrr: last.value,
+      balanceIrr: labelled ? last.value : null,
       accountHint: null,
       transactionReference: null,
       confidence: last.currency === 'NONE' ? 0.5 : 0.7,
       parserId: this.id,
       parserVersion: this.version,
       evidence: { currency: last.currency, raw: last.raw },
-      warnings: last.currency === 'NONE' ? ['AMBIGUOUS_CURRENCY'] : [],
+      warnings: [
+        ...(last.currency === 'NONE' ? ['AMBIGUOUS_CURRENCY'] : []),
+        ...(labelled ? [] : ['BALANCE_UNLABELLED_IGNORED']),
+      ],
     });
   },
 };

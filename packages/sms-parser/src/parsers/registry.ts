@@ -8,6 +8,7 @@ import { shahrCreditParser } from './shahr.js';
 import { samanCreditParser } from './saman.js';
 import { melliTransferParser } from './melli.js';
 import { mellatCreditParser } from './mellat.js';
+import { keshavarziParser } from './keshavarzi.js';
 import { accountTransferSignedParser } from './account-transfer.js';
 import { internetTransferSignedParser } from './internet-transfer.js';
 import { compactSignedParser } from './compact.js';
@@ -36,6 +37,9 @@ const ORDER: SmsParser[] = [
   // recorded as 4,436,995,648. Moving this line below the generic parsers
   // restores that bug exactly.
   mellatCreditParser,
+  // Keshavarzi, for the same reason as Mellat: its last number is the card,
+  // and `generic-credit` was recording it as the balance.
+  keshavarziParser,
   // Internet-account transfer parser (compact 4-line): "انتقال اینترنت"
   // header line that combines keyword + signed amount in one line, plus
   // حساب: / مانده: / MMDD-HH:mm. Must run BEFORE the 5-line

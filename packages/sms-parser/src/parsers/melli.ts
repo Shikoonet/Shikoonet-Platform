@@ -26,7 +26,12 @@ import { maskIdentifier } from '../identifier.js';
 const DAY_MS = 86_400_000;
 const FALLBACK_THRESHOLD_DAYS = 2;
 
-const AMOUNT_RE = /^انتقال\s*:?\s*([+-]?)\s*([\d,،\s]+?)\s*([+-]?)\s*$/;
+// The label before the signed amount names what the bank did: انتقال, قبض
+// (a bill), خرید / خریداینترنتی (a purchase), برداشت, واریز. Until 2026-09-19
+// only «انتقال» was accepted and every bill or purchase fell to the generic
+// parsers, which made no row of it — two bills and a purchase in one
+// fortnight on production, each a hole in «دفتر بانک».
+const AMOUNT_RE = /^(انتقال|قبض|خرید(?:\s*اینترنتی)?|برداشت|واریز)\s*:?\s*([+-]?)\s*([\d,،\s]+?)\s*([+-]?)\s*$/;
 const ACCOUNT_RE = /^حساب\s*:?\s*(.+)$/;
 const BALANCE_RE = /^مانده\s*:?\s*([\d,،\s]+?)\s*$/;
 // Accept both MM/DD-HH:mm (slash-separated) and MMDD-HH:mm (concatenated).
@@ -74,7 +79,7 @@ export const melliTransferParser = {
     if (!amountMatch) {
       return unsupportedWarn('انتقال line malformed', 'melli_amount_malformed');
     }
-    const [, signA, digits, signB] = amountMatch as unknown as [string, string, string, string];
+    const [, label, signA, digits, signB] = amountMatch as unknown as [string, string, string, string, string];
     const amountStr = `${signA}${digits}${signB}`.replace(/\s+/g, '');
     const amountIrr = parseIrr(digits);
     if (amountIrr === null) {
@@ -196,6 +201,7 @@ export const melliTransferParser = {
         accountHint,
         directionSource,
         amountRaw: amountStr,
+        label,
         balanceRaw: balanceMatch[1] ?? '',
         dateRaw: dateLine,
         timeRaw: dateLine,
