@@ -90,7 +90,10 @@ export function BroadcastProgress() {
  * should know first: a ban, then a bot that has gone quiet, then the pace.
  */
 function whatIsHappening(p: NonNullable<BulkSend['progress']>, now: number): string {
-  if (p.pending === 0 && p.sending === 0 && p.waiting > 0 && p.waitingUntil !== null) {
+  // Whatever else is queued: a 429 puts ONE row into `waiting` and the pause
+  // holds every other one too, so requiring the queue to be empty showed a
+  // ban as «ارسالی نمی‌رود» (CodeRabbit on #372).
+  if (p.waiting > 0 && p.waitingUntil !== null && p.waitingUntil > now) {
     const min = Math.max(1, Math.ceil((p.waitingUntil - now) / 60_000));
     return `تلگرام گفته صبر کنید — تا حدود ${count(min)} دقیقهٔ دیگر`;
   }

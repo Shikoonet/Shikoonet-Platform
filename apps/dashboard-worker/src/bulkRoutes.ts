@@ -510,21 +510,32 @@ export function registerBulkRoutes(
     const id = c.req.param('id');
     if (!/^[0-9a-f-]{36}$/i.test(id)) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
-    const { results } = await c.env.DB.prepare(
-      `SELECT r.user_id, u.username, r.error, r.attempts
-         FROM broadcast_recipients r
-         JOIN users u ON u.id = r.user_id
-        WHERE r.broadcast_id = ?1 AND r.status = 'FAILED'
-        ORDER BY r.user_id
-        LIMIT 500`,
-    )
-      .bind(id)
-      .all<{
-        user_id: number;
-        username: string | null;
-        error: string | null;
-        attempts: number;
-      }>();
+    // The grouping reads EVERY failed row and the list stops at 500: a
+    // distribution taken from the first 500 of 800 is a different
+    // distribution (CodeRabbit on #372). Only the error text travels for the
+    // count — no name, no id.
+    const [{ results: errors }, { results }] = await Promise.all([
+      c.env.DB.prepare(
+        `SELECT error FROM broadcast_recipients WHERE broadcast_id = ?1 AND status = 'FAILED'`,
+      )
+        .bind(id)
+        .all<{ error: string | null }>(),
+      c.env.DB.prepare(
+        `SELECT r.user_id, u.username, r.error, r.attempts
+           FROM broadcast_recipients r
+           JOIN users u ON u.id = r.user_id
+          WHERE r.broadcast_id = ?1 AND r.status = 'FAILED'
+          ORDER BY r.user_id
+          LIMIT 500`,
+      )
+        .bind(id)
+        .all<{
+          user_id: number;
+          username: string | null;
+          error: string | null;
+          attempts: number;
+        }>(),
+    ]);
 
     const items = (results ?? []).map((r) => {
       const reason = failureReason(r.error);
@@ -537,7 +548,10 @@ export function registerBulkRoutes(
       };
     });
     const byKind: Record<string, number> = {};
-    for (const it of items) byKind[it.kind] = (byKind[it.kind] ?? 0) + 1;
+    for (const r of errors ?? []) {
+      const kind = failureReason(r.error).kind;
+      byKind[kind] = (byKind[kind] ?? 0) + 1;
+    }
     return c.json({ ok: true, items, byKind });
   });
 

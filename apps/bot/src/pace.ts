@@ -71,12 +71,15 @@ export function heldFor(now = Date.now()): number {
 
 /**
  * Telegram said wait. Held in memory for every worker in this process, and
- * written down for the next one. The write is not awaited by the send path —
- * a ban that cannot be recorded is still a ban here — but it is not silent.
+ * written down for the next one. The memory half lands first, so a ban that
+ * cannot be recorded is still a ban here; the write IS awaited, because the
+ * process that stops between the 429 and the row is exactly the one whose
+ * successor needs the row (CodeRabbit on #372). A failed write is logged,
+ * never thrown — the send path is mid-failure already.
  */
-export function pauseFor(db: D1Database, waitMs: number, now = Date.now()): void {
+export async function pauseFor(db: D1Database, waitMs: number, now = Date.now()): Promise<void> {
   pace.pauseUntil = Math.max(pace.pauseUntil, now + waitMs);
-  void db
+  await db
     .prepare(
       `INSERT INTO settings (scope, key, value, updated_at)
        VALUES ('bot', ?1, to_jsonb(?2::bigint), now())

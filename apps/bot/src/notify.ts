@@ -308,6 +308,12 @@ export async function flush(
   }
 
   for (const row of rows) {
+    // A 429 from an earlier row of THIS batch, or from the broadcast loop
+    // meanwhile: the rest of the batch is not offered into the ban
+    // (CodeRabbit on #372). The rows keep their lease and are due again when
+    // it lapses — sixty seconds, which no ban Telegram has handed this bot
+    // was shorter than — and nothing burns an attempt.
+    if (pausedFor() > 0) break;
     try {
       // The picture first, so the customer's eye lands on the code and the
       // text under it explains what they are looking at.
@@ -354,7 +360,7 @@ export async function flush(
     } catch (err) {
       // A 429 holds both loops, not just this row (#364).
       const waitMs = rateLimitedForMs(err);
-      if (waitMs !== null) pauseFor(db, waitMs);
+      if (waitMs !== null) await pauseFor(db, waitMs);
       // A customer who blocked the bot is not reachable by trying harder, and
       // eight attempts at one of those is eight attempts not spent on somebody
       // who can still be told.

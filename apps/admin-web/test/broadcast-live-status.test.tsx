@@ -83,6 +83,21 @@ describe('the header bar', () => {
     expect(screen.getByRole('status').textContent).toContain('۴۸ دقیقه');
   });
 
+  it('says so even while unclaimed rows remain — one 429 holds the whole queue', async () => {
+    // What a real ban looks like: ONE row carries the deadline, the other
+    // fourteen thousand are still PENDING, and the bot has been quiet for a
+    // while. Before the fix this read as «ارسالی نمی‌رود».
+    recent = broadcast({
+      pending: 14_076,
+      waiting: 1,
+      waitingUntil: NOW + 30 * 60_000,
+      lastAt: NOW - 95_000,
+    });
+    render(<BroadcastProgress />);
+    await screen.findByText(/تلگرام گفته صبر کنید/);
+    expect(screen.getByRole('status').textContent).toContain('۳۰ دقیقه');
+  });
+
   it('says the bot has gone quiet rather than showing a frozen number', async () => {
     recent = broadcast({ pending: 14_077, lastAt: NOW - 95_000 });
     render(<BroadcastProgress />);

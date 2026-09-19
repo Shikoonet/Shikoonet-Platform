@@ -100,6 +100,12 @@ function BroadcastFailures({ send }: { send: BulkSend | null }) {
   // setState is visible, and the list must be asked for once.
   const asked = useRef(false);
   const failed = send?.progress?.failed ?? 0;
+  // A newer broadcast replacing `send` must not keep the old one's list under
+  // its own heading (CodeRabbit on #372).
+  useEffect(() => {
+    asked.current = false;
+    setRows(null);
+  }, [send?.id]);
   if (send === null || failed === 0) return null;
   const load = async () => {
     if (asked.current) return;
@@ -108,6 +114,8 @@ function BroadcastFailures({ send }: { send: BulkSend | null }) {
       const r = await api.broadcastFailures(send.id);
       setRows({ items: r.items, byKind: r.byKind });
     } catch {
+      // Shown as empty, and asked again on the next open.
+      asked.current = false;
       setRows({ items: [], byKind: {} });
     }
   };

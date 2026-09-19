@@ -613,16 +613,24 @@ export async function sweepBroadcasts(
       // workers each sleeping 40ms between their own sends would be twelve
       // times the rate Telegram allows; this makes the gap a property of the
       // BROADCAST, which is the thing being limited.
-      const wait = reserveSlot(gapMs);
-      if (wait > 0) await sleep(wait, signal);
-
-      // A pause that appeared while this worker was waiting for its slot — a
-      // 429, or an outbox message that just took the slot (#364). A loop
-      // rather than one sleep: a second 429 may land from another worker
-      // while this one is serving the first.
-      while (heldFor() > 0) {
+      //
+      // Reserved AGAIN after every hold, not once. A 429 pause outlives every
+      // slot the pool had reserved before it, and twelve workers whose slots
+      // are all in the past leave the pause on one deadline and call Telegram
+      // together — the burst the next 429 answers. Going round the loop hands
+      // each of them a fresh slot a gap apart (CodeRabbit on #372).
+      for (;;) {
+        const wait = reserveSlot(gapMs);
+        if (wait > 0) await sleep(wait, signal);
         if (signal?.aborted) break;
-        await sleep(heldFor(), signal);
+        // A pause that appeared while this worker was waiting for its slot — a
+        // 429, or an outbox message that just took the slot (#364). Checked
+        // after the pace and immediately before the call, so a worker already
+        // waiting still stops; a second 429 from another worker is caught on
+        // the next turn.
+        const held = heldFor();
+        if (held <= 0) break;
+        await sleep(held, signal);
       }
       if (signal?.aborted) {
         unsent.push(message);
@@ -676,7 +684,7 @@ export async function sweepBroadcasts(
         // applies is on the BOT, and eleven others carrying on would earn the
         // next 429 immediately. Sends already in flight cannot be recalled —
         // what this stops is everyone who has not called yet.
-        pauseFor(db, waitMs);
+        await pauseFor(db, waitMs);
         const ended = await markBroadcastRetryable(
           db,
           message.broadcastId,

@@ -172,7 +172,7 @@ describe('a 429, wherever it lands', () => {
     // The previous container was told to wait; this one reads it before its
     // first send. Without the row, the promote on 2026-09-17 would have sent
     // straight into the ban and extended it.
-    pauseFor(db, 1_000);
+    await pauseFor(db, 1_000);
     await new Promise((r) => setTimeout(r, 50));
     const recorded = pace.pauseUntil;
     resetPace();
@@ -220,7 +220,9 @@ describe('a broadcast across a restart', () => {
     expect((between['SENT'] ?? 0) + (between['PENDING'] ?? 0)).toBe(8);
     expect(between['SENT']).toBe(sent.length);
 
-    // The second process knows nothing and needs to know nothing.
+    // The second process knows nothing and needs to know nothing — including
+    // the pace the first one had in memory, which a restart does not keep.
+    resetPace();
     const second = stubApi({
       sendMessage: async (chat) => {
         sent.push(chat);
