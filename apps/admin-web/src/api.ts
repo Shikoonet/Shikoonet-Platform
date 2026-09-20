@@ -1698,6 +1698,10 @@ export interface RetentionRule {
   textAfter: string;
   /** Tehran «HH:MM» the rule sends at each day; null is «on entering the window, then every 24 h». */
   sendAt: string | null;
+  /** At most this many messages to one service about one expiry; 0 is no cap. */
+  maxMessages: number;
+  /** Days between two messages to the same service; 1 is daily. */
+  everyDays: number;
 }
 
 export interface RetentionFunnel {

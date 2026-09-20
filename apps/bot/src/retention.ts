@@ -19,6 +19,19 @@
  * `expires_at`, so the next cycle earns a new key, which is what a retention
  * rule should do for a customer who stayed and is now nearing the end again.
  *
+ * ## A cap and a pace read the outbox back
+ *
+ * Sam, 2026-09-20: «هفت بار بیشتر به طرف پیغام نده … هر دو روز یه بار». A
+ * rule with `maxMessages` or `everyDays > 1` asks, per service, what it has
+ * already written about this expiry — a prefix scan of its own keys (0088).
+ * The count is the cap; the smallest day part is the LAST message, because
+ * the day index only ever falls, and «K days since» is read off it rather
+ * than off `created_at`: the key was written from the sweep's own clock, so
+ * a service that was written to and the sweep that asks agree on what day it
+ * is. Somebody who is deep in the window when the rule is made starts from
+ * their first message like anybody else; editing the numbers later counts
+ * what was already sent; a new rule is a new key and a clean count.
+ *
  * ## A code that cannot be used is a rule that does not fire
  *
  * The rule prints `{code}`. A code that is disabled, expired or used up would
@@ -79,8 +92,39 @@ const DUE = `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.remote_username,
                       || extract(epoch FROM s.expires_at)::bigint::text || ':'
                       || (${RETENTION_DAY_INDEX_SQL})::int::text AS dedupe_key
                FROM subscriptions s
-               JOIN users u ON u.id = s.user_id
+               JOIN users u ON u.id = s.user_id`;
+
+/**
+ * What this rule already wrote about this service and expiry, for a rule
+ * with a cap or a pace. `?8` is `retention:<rule>:`; the range in collation
+ * "C" is the prefix scan 0088 indexed — `;` is the byte after `:`, and the
+ * day part after the prefix is digits and `-`, both below it.
+ */
+const SENT_SO_FAR = `
+         CROSS JOIN LATERAL (
+                  SELECT count(*)::int AS n,
+                         min(split_part(x.dedupe_key, ':', 5)::int) AS last_day
+                    FROM bot_notifications x
+                   WHERE x.dedupe_key COLLATE "C" >= ?8 || s.id::text || ':'
+                           || extract(epoch FROM s.expires_at)::bigint::text || ':'
+                     AND x.dedupe_key COLLATE "C" <  ?8 || s.id::text || ':'
+                           || extract(epoch FROM s.expires_at)::bigint::text || ';') sent`;
+
+const WHERE = `
               WHERE ${RETENTION_AUDIENCE_WHERE}`;
+
+/**
+ * Under the cap, and `?10` days past the last message. The day index skips
+ * 0, so +1 and −1 are one day apart, not two: each side is shifted onto one
+ * line before subtracting.
+ */
+const PACED = `
+                AND (?9::int IS NULL OR sent.n < ?9::int)
+                AND (sent.last_day IS NULL
+                     OR (CASE WHEN sent.last_day > 0 THEN sent.last_day ELSE sent.last_day + 1 END)
+                        - (CASE WHEN (${RETENTION_DAY_INDEX_SQL})::int > 0
+                                THEN (${RETENTION_DAY_INDEX_SQL})::int
+                                ELSE (${RETENTION_DAY_INDEX_SQL})::int + 1 END) >= ?10::int)`;
 
 const ONLY_SERVICE = `
                 AND ${RETENTION_ONLY_SERVICE_WHERE}`;
@@ -180,9 +224,21 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
       }
     }
 
+    const paced = rule.maxMessages > 0 || rule.everyDays > 1;
     const { results } = await db
-      .prepare(DUE + (rule.onlyService ? ONLY_SERVICE : '') + TAIL)
-      .bind(slot, rule.providerId, rule.daysBefore, rule.daysAfter, rule.panelAdmin, rule.key, BATCH)
+      .prepare(
+        DUE + (paced ? SENT_SO_FAR : '') + WHERE + (rule.onlyService ? ONLY_SERVICE : '') + (paced ? PACED : '') + TAIL,
+      )
+      .bind(
+        slot,
+        rule.providerId,
+        rule.daysBefore,
+        rule.daysAfter,
+        rule.panelAdmin,
+        rule.key,
+        BATCH,
+        ...(paced ? [`retention:${rule.key}:`, rule.maxMessages === 0 ? null : rule.maxMessages, rule.everyDays] : []),
+      )
       .all<DueRow>();
 
     let sent = 0;

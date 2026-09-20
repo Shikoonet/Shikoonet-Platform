@@ -240,6 +240,8 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
         text: DEFAULT_TEXT,
         textAfter: DEFAULT_TEXT_AFTER,
         sendAt: tehranNow(),
+        maxMessages: 0,
+        everyDays: 1,
       },
     ]);
   }
@@ -269,7 +271,13 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
       .join(' و ');
     const code = codes.find((c) => c.id === rule.codeId)?.code;
     const at = rule.sendAt ? `ساعت ${rule.sendAt.replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]!)}` : 'هر وقت وارد بازه شد';
-    return [who, when || 'بازه‌ای ندارد', at, code ? `کد ${code}` : 'بدون کد'].join(' · ');
+    return [who, when || 'بازه‌ای ندارد', at, howOften(rule), code ? `کد ${code}` : 'بدون کد'].join(' · ');
+  }
+
+  /** «هر ۲ روز یک پیام، حداکثر ۷ تا» — the cap and the pace, or the daily default. */
+  function howOften(rule: RetentionRule): string {
+    const pace = rule.everyDays > 1 ? `هر ${count(rule.everyDays)} روز یک پیام` : 'روزی یک پیام';
+    return rule.maxMessages > 0 ? `${pace}، حداکثر ${count(rule.maxMessages)} تا` : pace;
   }
 
   /**
@@ -535,12 +543,36 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
                     : 'خالی: به محض ورود به بازه، و بعد هر ۲۴ ساعت — رفتار قبلی.'}
                 </span>
               </div>
+              <div className="cron-number">
+                <label htmlFor={`ret-max-${rule.key}`}>حداکثر چند پیام به هر نفر</label>
+                <input
+                  id={`ret-max-${rule.key}`}
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={rule.maxMessages}
+                  disabled={disabled}
+                  onChange={(e) => patch(i, { maxMessages: Number(e.target.value) })}
+                />
+                <span className="page-head__sub">پیام (۰ = بی‌سقف)</span>
+                <label htmlFor={`ret-every-${rule.key}`}>هر چند روز یک‌بار</label>
+                <input
+                  id={`ret-every-${rule.key}`}
+                  type="number"
+                  min={1}
+                  max={90}
+                  value={rule.everyDays}
+                  disabled={disabled}
+                  onChange={(e) => patch(i, { everyDays: Number(e.target.value) })}
+                />
+                <span className="page-head__sub">روز</span>
+              </div>
               <p className="cron-note page-head__sub" data-testid={`retention-audience-${rule.key}`}>
                 {audience[rule.key] === 'loading'
                   ? 'در حال شمردن…'
                   : audience[rule.key] === null || audience[rule.key] === undefined
                     ? 'دست‌کم یکی از دو عدد باید بزرگ‌تر از صفر باشد.'
-                    : `الان ${count(audience[rule.key] as number)} نفر در این بازه‌اند — هر کدام روزی یک پیام، تا وقتی از بازه بیرون بروند یا تمدید کنند.`}
+                    : `الان ${count(audience[rule.key] as number)} نفر در این بازه‌اند — ${howOften(rule)}، تا وقتی از بازه بیرون بروند یا تمدید کنند. کسی که تازه وارد بازه شود از اول همین را می‌گیرد؛ کسی که به سقف رسیده دیگر نه، مگر با قانون تازه.`}
               </p>
 
               <div className="cron-number">

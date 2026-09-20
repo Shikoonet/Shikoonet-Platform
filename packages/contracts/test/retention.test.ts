@@ -31,7 +31,12 @@ const good = {
 describe('parseRetentionRules', () => {
   it('accepts a good list and trims the name', () => {
     const out = parseRetentionRules([{ ...good, name: '  x  ', codeId: 3 }]);
-    expect(out).toEqual([{ ...good, name: 'x', codeId: 3, textAfter: '', sendAt: null }]);
+    expect(out).toEqual([{ ...good, name: 'x', codeId: 3, textAfter: '', sendAt: null, maxMessages: 0, everyDays: 1 }]);
+  });
+
+  it('a cap and a pace are kept; absent they are «no cap, daily», as every older rule was', () => {
+    const [r] = parseRetentionRules([{ ...good, maxMessages: 7, everyDays: 2 }]) ?? [];
+    expect([r?.maxMessages, r?.everyDays]).toEqual([7, 2]);
   });
 
   it('a clock time is «HH:MM» Tehran, blank is none, and anything else is refused', () => {
@@ -84,6 +89,11 @@ describe('parseRetentionRules', () => {
     ['days before too big', { daysBefore: RETENTION_LIMITS.daysBefore + 1 }],
     ['days after too big', { daysAfter: RETENTION_LIMITS.daysAfter + 1 }],
     ['window of nothing', { daysBefore: 0, daysAfter: 0 }],
+    ['negative cap', { maxMessages: -1 }],
+    ['cap too big', { maxMessages: RETENTION_LIMITS.maxMessages + 1 }],
+    ['every zero days', { everyDays: 0 }],
+    ['every too many days', { everyDays: RETENTION_LIMITS.everyDays + 1 }],
+    ['fractional pace', { everyDays: 1.5 }],
     ['code as string', { codeId: '3' }],
     ['empty text', { text: '' }],
     ['long text', { text: 'x'.repeat(RETENTION_LIMITS.text + 1) }],
