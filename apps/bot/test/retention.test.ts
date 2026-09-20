@@ -90,6 +90,8 @@ interface RuleInput {
   text?: string;
   textAfter?: string;
   sendAt?: string | null;
+  maxMessages?: number;
+  everyDays?: number;
 }
 
 async function setRules(rules: RuleInput[]): Promise<void> {
@@ -107,6 +109,8 @@ async function setRules(rules: RuleInput[]): Promise<void> {
       text: r.text ?? 'سرویس {service} — {days} روز — {username} — {renewButton}',
       textAfter: r.textAfter ?? '',
       sendAt: r.sendAt ?? null,
+      maxMessages: r.maxMessages ?? 0,
+      everyDays: r.everyDays ?? 1,
     })),
   );
   await db
@@ -352,6 +356,94 @@ describe('once a day inside the window', () => {
     await setRules([{ key: 'k3', daysBefore: 0, daysAfter: 1, text: 'ONLY {days}' }]);
     expect(await remindToRenew(db, NOW_MS)).toBe(1);
     expect((await messagesTo(tg))[0]?.text).toBe('ONLY 1');
+  });
+});
+
+describe('a cap and a pace', () => {
+  /** Days of the message texts, in the order they were queued. */
+  async function daysSent(tg: number): Promise<string[]> {
+    return (await messagesTo(tg)).map((m) => m.text);
+  }
+
+  it('«at most N»: the window goes on, the messages stop', async () => {
+    const tg = nextTelegramId();
+    await makeService(await makeCustomer(tg), { expiresInDays: -0.2 });
+    await setRules([{ key: 'cap', daysBefore: 0, daysAfter: 6, text: '{days}', maxMessages: 2 }]);
+
+    expect(await remindToRenew(db, NOW_MS)).toBe(1);
+    expect(await remindToRenew(db, NOW_MS + DAY)).toBe(1);
+    expect(await remindToRenew(db, NOW_MS + 2 * DAY)).toBe(0);
+    expect(await remindToRenew(db, NOW_MS + 5 * DAY)).toBe(0);
+    expect(await daysSent(tg)).toEqual(['1', '2']);
+  });
+
+  it('«every K days»: the day between is silent, and the count falls where it falls', async () => {
+    const tg = nextTelegramId();
+    await makeService(await makeCustomer(tg), { expiresInDays: -0.2 });
+    await setRules([{ key: 'pace', daysBefore: 0, daysAfter: 6, text: '{days}', everyDays: 2 }]);
+
+    for (let day = 0; day < 8; day += 1) await remindToRenew(db, NOW_MS + day * DAY);
+    expect(await daysSent(tg)).toEqual(['1', '3', '5']);
+  });
+
+  it('the pace crosses expiry as one day, not two: +1 and −1 are neighbours', async () => {
+    const tg = nextTelegramId();
+    // Expires in 1.5 days: +2 today, +1 tomorrow, −1 the day after, −2 then out.
+    await makeService(await makeCustomer(tg), { expiresInDays: 1.5 });
+    await setRules([{ key: 'edge', daysBefore: 2, daysAfter: 2, text: '{days}', everyDays: 2 }]);
+
+    for (let day = 0; day < 5; day += 1) await remindToRenew(db, NOW_MS + day * DAY);
+    expect((await messagesTo(tg)).map((m) => m.dedupeKey.split(':').at(-1))).toEqual(['2', '-1']);
+  });
+
+  it('with a clock time, «every K days» is K days of that clock', async () => {
+    // NOW_MS is 15:30 Tehran; the rule sends at 10:00.
+    const tenAm = NOW_MS - 15.5 * 60 * 60 * 1000 + 10 * 60 * 60 * 1000;
+    const tg = nextTelegramId();
+    // Expired 12 hours ago — 03:30 Tehran, before today's slot.
+    await makeService(await makeCustomer(tg), { expiresInDays: -0.5 });
+    await setRules([{ key: 'clock', daysBefore: 0, daysAfter: 10, sendAt: '10:00', maxMessages: 2, everyDays: 3 }]);
+
+    // Today's slot has passed (NOW is 15:30): the first message goes now, as
+    // a late sweep after the minute always does. Day 3 at 10:00 is the next;
+    // days 1, 2 and a sweep at 09:59 on day 3 are not.
+    expect(await remindToRenew(db, NOW_MS)).toBe(1);
+    expect(await remindToRenew(db, tenAm + DAY)).toBe(0);
+    expect(await remindToRenew(db, tenAm + 2 * DAY)).toBe(0);
+    expect(await remindToRenew(db, tenAm + 3 * DAY - 60_000)).toBe(0);
+    expect(await remindToRenew(db, tenAm + 3 * DAY)).toBe(1);
+    // Two is the cap: day 6 sends nothing, though the window is open.
+    expect(await remindToRenew(db, tenAm + 6 * DAY)).toBe(0);
+  });
+
+  it('the cap counts what the rule already sent before it had one; a new rule starts at zero', async () => {
+    const tg = nextTelegramId();
+    await makeService(await makeCustomer(tg), { expiresInDays: -0.2 });
+    await setRules([{ key: 'old', daysBefore: 0, daysAfter: 30, text: '{days}' }]);
+    for (let day = 0; day < 3; day += 1) expect(await remindToRenew(db, NOW_MS + day * DAY)).toBe(1);
+
+    // Three went out daily. A cap of three, added now, is already met.
+    await setRules([{ key: 'old', daysBefore: 0, daysAfter: 30, text: '{days}', maxMessages: 3 }]);
+    expect(await remindToRenew(db, NOW_MS + 3 * DAY)).toBe(0);
+    // Raised to four: exactly one more.
+    await setRules([{ key: 'old', daysBefore: 0, daysAfter: 30, text: '{days}', maxMessages: 4 }]);
+    expect(await remindToRenew(db, NOW_MS + 3 * DAY)).toBe(1);
+    expect(await remindToRenew(db, NOW_MS + 4 * DAY)).toBe(0);
+    expect(await daysSent(tg)).toEqual(['1', '2', '3', '4']);
+
+    // Sam, 2026-09-20: «مگر این که من یه دونه قانون جدید بسازم».
+    await setRules([{ key: 'fresh', daysBefore: 0, daysAfter: 30, text: 'F{days}', maxMessages: 1 }]);
+    expect(await remindToRenew(db, NOW_MS + 4 * DAY)).toBe(1);
+    expect(await remindToRenew(db, NOW_MS + 5 * DAY)).toBe(0);
+  });
+
+  it('somebody already deep in the window when the rule is made gets the full count from their first message', async () => {
+    const tg = nextTelegramId();
+    await makeService(await makeCustomer(tg), { expiresInDays: -20.2 });
+    await setRules([{ key: 'deep', daysBefore: 0, daysAfter: 60, text: '{days}', maxMessages: 3, everyDays: 2 }]);
+
+    for (let day = 0; day < 10; day += 1) await remindToRenew(db, NOW_MS + day * DAY);
+    expect(await daysSent(tg)).toEqual(['21', '23', '25']);
   });
 });
 

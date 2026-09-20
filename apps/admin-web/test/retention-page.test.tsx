@@ -24,6 +24,8 @@ function rule(key: string, extra: Record<string, unknown>) {
     text: 'x {days}',
     textAfter: '',
     sendAt: '10:00',
+    maxMessages: 0,
+    everyDays: 1,
     lastActed: null,
     audience: 0,
     funnel: {
@@ -105,7 +107,7 @@ describe('the overview', () => {
 
     // The folded row says who, how many now, and what the reached people did.
     const one = screen.getByTestId('retention-summary-r_one');
-    expect(one.textContent).toContain('mirzavip · ۳ روز مانده · ساعت ۱۰:۰۰ · بدون کد');
+    expect(one.textContent).toContain('mirzavip · ۳ روز مانده · ساعت ۱۰:۰۰ · روزی یک پیام · بدون کد');
     expect(one.textContent).toContain('۱٬۱۶۱ در بازه');
     expect(one.textContent).toContain('کد زدند ۷ از ۴۰');
     expect(one.textContent).toContain('۳ نرسیده');
@@ -141,10 +143,14 @@ describe('folding', () => {
     expect(at.value).toMatch(/^([01]\d|2[0-3]):[0-5]\d$/);
     fireEvent.change(at, { target: { value: '09:30' } });
     fireEvent.change(details[2]!.querySelector('input.form-control')!, { target: { value: 'تازه' } });
+    // «هفت بار بیشتر نه، هر دو روز یک بار» — the cap and the pace go out as numbers.
+    fireEvent.change(details[2]!.querySelector('input[id^="ret-max-"]')!, { target: { value: '7' } });
+    fireEvent.change(details[2]!.querySelector('input[id^="ret-every-"]')!, { target: { value: '2' } });
+    expect(details[2]!.textContent).toContain('هر ۲ روز یک پیام، حداکثر ۷ تا');
     fireEvent.click(screen.getByRole('button', { name: 'ذخیره' }));
     await vi.waitFor(() => expect(posts).toHaveLength(1));
     const body = posts[0] as { items: { name: string; sendAt: string | null }[] };
-    expect(body.items.at(-1)).toMatchObject({ name: 'تازه', sendAt: '09:30' });
+    expect(body.items.at(-1)).toMatchObject({ name: 'تازه', sendAt: '09:30', maxMessages: 7, everyDays: 2 });
     await vi.waitFor(() =>
       expect(([...document.querySelectorAll('details')] as HTMLDetailsElement[]).every((d) => !d.open)).toBe(true),
     );

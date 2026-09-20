@@ -74,6 +74,21 @@ export interface RetentionRule {
    * existed: sent on entering the window, then every 24 hours.
    */
   sendAt: string | null;
+  /**
+   * At most this many messages to one service about one expiry; 0 is no cap.
+   *
+   * Sam, 2026-09-20: «هفت بار بیشتر به طرف پیغام نده». Counted from the
+   * outbox rows this rule already wrote about that service and expiry, so
+   * editing the number later still counts what went before, and a new rule
+   * (new key) starts every count at zero. A renewal moves the expiry and
+   * starts it too, as the daily key always did.
+   */
+  maxMessages: number;
+  /**
+   * Days between two messages to the same service; 1 is every day, the
+   * behaviour every rule had before the field. «هر دو روز یه بار».
+   */
+  everyDays: number;
 }
 
 export const RETENTION_PLACEHOLDERS = ['days', 'service', 'username', 'code', 'discount', 'renewButton'] as const;
@@ -120,6 +135,8 @@ export const RETENTION_LIMITS = {
   text: 1000,
   daysBefore: 365,
   daysAfter: 90,
+  maxMessages: 100,
+  everyDays: 90,
 } as const;
 
 const KEY = /^[a-z0-9_-]{1,40}$/;
@@ -169,6 +186,11 @@ export function parseRetentionRules(value: unknown): RetentionRule[] | null {
     // Optional too; absent or blank is «on entering the window».
     const sendAt = r['sendAt'] === undefined || r['sendAt'] === '' ? null : r['sendAt'];
     if (sendAt !== null && (typeof sendAt !== 'string' || !CLOCK.test(sendAt))) return null;
+    // Both absent on every rule saved before 2026-09-20 evening: no cap, daily.
+    const maxMessages = r['maxMessages'] === undefined ? 0 : r['maxMessages'];
+    if (!isInt(maxMessages, 0, RETENTION_LIMITS.maxMessages)) return null;
+    const everyDays = r['everyDays'] === undefined ? 1 : r['everyDays'];
+    if (!isInt(everyDays, 1, RETENTION_LIMITS.everyDays)) return null;
     // A text that promises a code needs one. The default text does, so a
     // rule saved without picking a code would send «با کد  از  تخفیف» — two
     // blanks where the offer was. Only an ENABLED rule is held to this: a
@@ -188,6 +210,8 @@ export function parseRetentionRules(value: unknown): RetentionRule[] | null {
       text: r['text'],
       textAfter: textAfter.trim() === '' ? '' : textAfter,
       sendAt,
+      maxMessages,
+      everyDays,
     });
   }
   return out;
