@@ -39,6 +39,10 @@ export interface ReportTarget {
  * public id, the payment's — and never from a clock. `report:` prefixes it here
  * so a report and a customer-facing message about the same order cannot
  * collide on one key, which would silently drop whichever came second.
+ *
+ * `ownTopic` is the service's own topic (`products.report_thread_id`, 0091):
+ * Sam, 2026-09-20, one topic per service and per shelf. An order's report goes
+ * there when the service has one, and to the kind's topic otherwise.
  */
 export async function report(
   tx: D1DatabaseSession,
@@ -46,12 +50,13 @@ export async function report(
   kind: ReportKind,
   dedupeKey: string,
   text: string,
+  ownTopic: number | null = null,
 ): Promise<boolean> {
   if (shop.reportChatId === null) return false;
   return enqueue(tx, {
     dedupeKey: `report:${kind}:${dedupeKey}`,
     chatId: shop.reportChatId,
     text,
-    threadId: shop.reportTopics[kind],
+    threadId: ownTopic ?? shop.reportTopics[kind],
   });
 }

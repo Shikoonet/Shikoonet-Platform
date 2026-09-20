@@ -93,6 +93,8 @@ interface PendingOrder {
   plan_name: string | null;
   plan_attrs: Record<string, unknown> | null;
   product_attrs: Record<string, unknown> | null;
+  /** The service's own topic in the reports group, or null for the kind's (0091). */
+  product_thread_id: number | null;
   volume_gb: string | number | null;
   duration_days: number | null;
   user_limit: number | null;
@@ -539,6 +541,7 @@ export async function provisionPaidOrders(
               pl.name         AS plan_name,
               pl.attrs        AS plan_attrs,
               pr.attrs        AS product_attrs,
+              pr.report_thread_id AS product_thread_id,
               pl.volume_gb    AS volume_gb,
               pl.duration_days AS duration_days,
               pl.user_limit   AS user_limit,
@@ -698,7 +701,9 @@ export async function provisionPaidOrders(
       const shop = await loadShopSettings(db);
       if (shop.reportChatId !== null && row.telegram_id !== null) {
         const [kind, text] = await reportFor(db, row, now);
-        await db.withSession((tx) => report(tx, shop, kind, row.order_public_id, text));
+        await db.withSession((tx) =>
+          report(tx, shop, kind, row.order_public_id, text, row.product_thread_id),
+        );
       }
     }
 

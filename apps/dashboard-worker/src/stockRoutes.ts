@@ -39,6 +39,7 @@ import { createLogger } from '@shikoo/domain';
 import {
   attachmentOf,
   botTelegram,
+  openProductTopic,
   reportsGroup,
   type TelegramCall,
   type TelegramReply,
@@ -359,6 +360,7 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
     const code = `shelf-${suffix}`;
 
     let planId: number | null = null;
+    let productId: number | null = null;
     try {
       await c.env.DB.withSession(async (tx) => {
         const provider = await tx
@@ -378,6 +380,7 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
           )
           .bind(code, b.name, b.kind, provider!.id, b.categoryId)
           .first<{ id: number }>();
+        productId = Number(product!.id);
         // Named after the shelf, not «یک‌ماهه»: the screen shows the service
         // above the plan and hides the plan when they match, so one shelf reads
         // as one line. A second plan added later is what makes it two.
@@ -437,6 +440,8 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
       },
       null,
     );
+    // The shelf's own topic in the reports group, when the shop has one (0091).
+    await openProductTopic(c.env, { id: productId!, name: b.name });
     return c.json({ ok: true, planId });
   });
 

@@ -12,6 +12,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { enqueue, flush } from '../src/notify.js';
+import { report } from '../src/reports.js';
 import type { TelegramApi } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 
@@ -42,7 +43,7 @@ function recorder(): { sent: Sent[]; api: TelegramApi } {
 }
 
 beforeEach(async () => {
-  await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'rt-%'`).run();
+  await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'rt-%' OR dedupe_key LIKE 'report:%:rt-%'`).run();
 });
 
 describe('a report queued for a topic', () => {
@@ -80,6 +81,32 @@ describe('a report queued for a topic', () => {
     await flush(db, api, { now: NOW + 60 * 60 * 1000 });
 
     expect(seen).toEqual([7, 7]);
+  });
+});
+
+describe('a report about an order', () => {
+  const shop = {
+    reportChatId: GROUP,
+    reportTopics: { buyreport: 11 } as Parameters<typeof report>[1]['reportTopics'],
+  };
+
+  it('goes to the service’s own topic when it has one', async () => {
+    // Sam, 2026-09-20: one topic per service and per shelf (0091).
+    await db.withSession((tx) => report(tx, shop, 'buyreport', 'rt-5', 'sold', 77));
+
+    const { sent, api } = recorder();
+    await flush(db, api, { now: NOW });
+
+    expect(sent[0]).toMatchObject({ chatId: GROUP, threadId: 77 });
+  });
+
+  it('and to the kind’s topic when it has none', async () => {
+    await db.withSession((tx) => report(tx, shop, 'buyreport', 'rt-6', 'sold', null));
+
+    const { sent, api } = recorder();
+    await flush(db, api, { now: NOW });
+
+    expect(sent[0]).toMatchObject({ chatId: GROUP, threadId: 11 });
   });
 });
 
