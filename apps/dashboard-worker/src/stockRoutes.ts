@@ -28,14 +28,21 @@ import type { EnvName } from '@shikoo/contracts';
  * case a read-then-write misses.
  */
 
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import { checkRemoteUsername, isAutomated } from '@shikoo/domain';
-import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
+import { MAX_SINGLE_PAYMENT_IRR, parseChannelPostLink } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 import { checkNameEmoji } from './customEmojiNames.js';
 import { createLogger } from '@shikoo/domain';
+import {
+  attachmentOf,
+  botTelegram,
+  reportsGroup,
+  type TelegramCall,
+  type TelegramReply,
+} from './telegramCall.js';
 
 const log = createLogger('dashboard');
 
@@ -172,9 +179,30 @@ const SELECT_STOCK = `
     JOIN provisioning_providers pr ON pr.id = st.provider_id
     LEFT JOIN orders o ON o.id = st.order_id`;
 
-export function registerStockRoutes(
-  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
-) {
+/**
+ * The papers a shelf sends after every sale (#377): a config file, a tutorial.
+ *
+ * Nothing is stored but Telegram's `file_id`, which the bot gets by sending
+ * the file to the reports group once — an upload from the browser goes
+ * through this service as multipart, a post too big for that (48 MiB, the
+ * server's own body cap) is forwarded from its channel link. Either way the
+ * message lands where the shop's own people watch, so a wrong file is seen
+ * by an operator before a customer.
+ */
+const AttachmentQuery = z.object({
+  name: z.string().trim().min(1).max(255),
+  kind: z.enum(['document', 'video', 'photo']),
+});
+const AttachmentLink = z.object({ postLink: z.string().trim().min(1).max(500) }).strict();
+/** nginx's cap on the way in (`deploy/README.md`), restated so a local run refuses the same. */
+const MAX_ATTACHMENT_BYTES = 48 * 1024 * 1024;
+
+type StockEnv = {
+  Bindings: { DB: D1Database; ENV_NAME: EnvName; TELEGRAM_BOT_TOKEN?: string };
+  Variables: { identity: Ident };
+};
+
+export function registerStockRoutes(app: Hono<StockEnv>) {
   app.get('/api/v1/admin/stock', async (c) => {
     const q = StockQuery.safeParse(Object.fromEntries(new URL(c.req.url).searchParams));
     if (!q.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
@@ -225,7 +253,9 @@ export function registerStockRoutes(
               COUNT(st.id) FILTER (WHERE st.status = 'AVAILABLE')::int AS available,
               -- Held by an unpaid invoice (0063): not for sale, not yet sold.
               COUNT(st.id) FILTER (WHERE st.status = 'RESERVED')::int AS reserved,
-              COUNT(st.id) FILTER (WHERE st.status = 'USED')::int AS used
+              COUNT(st.id) FILTER (WHERE st.status = 'USED')::int AS used,
+              -- The papers filed on the shelf (#377), for the button's count.
+              (SELECT COUNT(*)::int FROM shelf_attachments sa WHERE sa.plan_id = pl.id) AS attachments
          FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
          LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
@@ -245,6 +275,7 @@ export function registerStockRoutes(
       available: number;
       reserved: number;
       used: number;
+      attachments: number;
     }>();
 
     return c.json({
@@ -268,6 +299,7 @@ export function registerStockRoutes(
           available: Number(r.available),
           reserved: Number(r.reserved),
           used: Number(r.used),
+          attachments: Number(r.attachments),
         })),
     });
   });
@@ -740,6 +772,218 @@ export function registerStockRoutes(
       null,
       null,
     );
+    return c.json({ ok: true });
+  });
+
+  /**
+   * A plan the shelf screen lists — one on a panel with no automated adapter,
+   * which is what «قفسهٔ تازه» builds and what an account shop is. Nothing
+   * stops the bot sending a panel-delivered plan's papers; this only keeps
+   * the route to the plans the screen shows.
+   */
+  async function shelfPlan(db: D1Database, planId: number): Promise<boolean> {
+    if (!Number.isInteger(planId) || planId <= 0) return false;
+    const row = await db
+      .prepare(
+        `SELECT pr.kind FROM product_plans pl
+           JOIN products p ON p.id = pl.product_id
+           LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
+          WHERE pl.id = ?1`,
+      )
+      .bind(planId)
+      .first<{ kind: string | null }>();
+    return row !== null && !isAutomated(row.kind ?? '');
+  }
+
+  app.get('/api/v1/admin/stock/shelves/:planId/attachments', async (c) => {
+    if (c.get('identity').role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const planId = Number(c.req.param('planId'));
+    if (!(await shelfPlan(c.env.DB, planId))) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    // The plan's own words over the service's, as `planAttrsFor` reads them
+    // at delivery — and the plan's is what «ذخیره» on this card writes.
+    const note = await c.env.DB.prepare(
+      `SELECT COALESCE(pl.attrs->>'delivery_note', p.attrs->>'delivery_note') AS note
+         FROM product_plans pl JOIN products p ON p.id = pl.product_id WHERE pl.id = ?1`,
+    )
+      .bind(planId)
+      .first<{ note: string | null }>();
+    // `file_id` stays here: it is the bot's handle on the file, and the
+    // browser has no use for it.
+    const rows = await c.env.DB.prepare(
+      `SELECT id, kind, file_name, size_bytes, created_at
+         FROM shelf_attachments WHERE plan_id = ?1 ORDER BY id`,
+    )
+      .bind(planId)
+      .all<{ id: number; kind: string; file_name: string; size_bytes: number; created_at: string }>();
+    return c.json({
+      ok: true,
+      deliveryNote: note?.note ?? '',
+      items: (rows.results ?? []).map((r) => ({
+        id: Number(r.id),
+        kind: r.kind,
+        fileName: r.file_name,
+        sizeBytes: Number(r.size_bytes),
+        createdAt: r.created_at,
+      })),
+    });
+  });
+
+  /**
+   * Sends the message that yields the `file_id`, and files it under the plan.
+   * `send` is the one Telegram call that differs between an upload and a link.
+   */
+  async function fileAttachment(
+    c: Context<StockEnv>,
+    planId: number,
+    source: 'upload' | 'link',
+    send: (
+      call: TelegramCall,
+      group: { chatId: number; threadId: number | null },
+    ) => Promise<TelegramReply>,
+  ): Promise<Response> {
+    const ident = c.get('identity');
+    const group = await reportsGroup(c.env.DB);
+    if (group === null) {
+      return c.json(
+        {
+          ok: false,
+          error: 'no_report_group',
+          detail: 'اول باید گروه گزارش وصل باشد — فایل یک بار آن‌جا فرستاده می‌شود تا ربات بتواند بعداً برای مشتری بفرستدش.',
+        },
+        409,
+      );
+    }
+    const bot = await botTelegram(c.env);
+    if (!bot.ok) return c.json({ ok: false, error: bot.error, detail: bot.detail }, bot.status);
+
+    let reply;
+    try {
+      reply = await send(bot.call, group);
+    } catch {
+      return c.json({ ok: false, error: 'telegram_unreachable', detail: 'تلگرام جواب نداد.' }, 502);
+    }
+    if (reply.ok !== true) {
+      return c.json(
+        {
+          ok: false,
+          error: 'telegram_refused',
+          detail: `تلگرام فایل را نگرفت: ${reply.description ?? 'بدون توضیح'}`,
+        },
+        422,
+      );
+    }
+    const file = attachmentOf(reply.result);
+    if (file === null) {
+      return c.json(
+        {
+          ok: false,
+          error: 'no_file',
+          detail: 'این پست فایل، ویدیو یا عکسی ندارد که ربات بتواند برای مشتری بفرستد.',
+        },
+        422,
+      );
+    }
+    const row = await c.env.DB.prepare(
+      `INSERT INTO shelf_attachments (plan_id, kind, file_id, file_name, size_bytes)
+       VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id`,
+    )
+      .bind(planId, file.kind, file.fileId, file.fileName, file.sizeBytes)
+      .first<{ id: number }>();
+    await audit(c.env.DB, ident, 'stock.attachment_added', 'PRODUCT_PLAN', String(planId), null, {
+      id: Number(row!.id),
+      kind: file.kind,
+      file_name: file.fileName,
+      size_bytes: file.sizeBytes,
+      source,
+    }, null);
+    return c.json({ ok: true, id: Number(row!.id), kind: file.kind, fileName: file.fileName });
+  }
+
+  app.post('/api/v1/admin/stock/shelves/:planId/attachments', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const planId = Number(c.req.param('planId'));
+    if (!(await shelfPlan(c.env.DB, planId))) return c.json({ ok: false, error: 'not_found' }, 404);
+    const q = AttachmentQuery.safeParse(Object.fromEntries(new URL(c.req.url).searchParams));
+    if (!q.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
+
+    // The body is the file, raw, as `import/upload` takes a dump — and capped
+    // the same way, as it streams in, not from a `content-length` the client
+    // chose. Held in memory: it is going straight back out to Telegram.
+    const body = c.req.raw.body;
+    if (body === null) return c.json({ ok: false, error: 'empty_upload', detail: 'فایلی فرستاده نشد.' }, 400);
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+      bytes += chunk.byteLength;
+      if (bytes > MAX_ATTACHMENT_BYTES) {
+        return c.json(
+          {
+            ok: false,
+            error: 'attachment_too_large',
+            detail: `فایل نباید از ${MAX_ATTACHMENT_BYTES / 1024 / 1024} مگابایت بزرگ‌تر باشد — بزرگ‌تر را با لینک پست کانال اضافه کن.`,
+          },
+          413,
+        );
+      }
+      chunks.push(chunk);
+    }
+    if (bytes === 0) return c.json({ ok: false, error: 'empty_upload', detail: 'فایلی فرستاده نشد.' }, 400);
+
+    const { name, kind } = q.data;
+    return fileAttachment(c, planId, 'upload', (call, group) => {
+      const form = new FormData();
+      form.set('chat_id', String(group.chatId));
+      if (group.threadId !== null) form.set('message_thread_id', String(group.threadId));
+      form.set(kind, new Blob(chunks), name);
+      return call(kind === 'video' ? 'sendVideo' : kind === 'photo' ? 'sendPhoto' : 'sendDocument', form);
+    });
+  });
+
+  app.post('/api/v1/admin/stock/shelves/:planId/attachments/link', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const planId = Number(c.req.param('planId'));
+    if (!(await shelfPlan(c.env.DB, planId))) return c.json({ ok: false, error: 'not_found' }, 404);
+    const body = AttachmentLink.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const post = parseChannelPostLink(body.data.postLink);
+    if (post === null) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: 'لینک پست کانال را به شکل t.me/کانال/شماره بده.' },
+        400,
+      );
+    }
+
+    // The forward is the whole trick: Telegram hands back the message as the
+    // bot now sees it, `file_id` included. The source post need not stay.
+    return fileAttachment(c, planId, 'link', (call, group) =>
+      call('forwardMessage', {
+        chat_id: group.chatId,
+        from_chat_id: post.chat,
+        message_id: post.messageId,
+        ...(group.threadId === null ? {} : { message_thread_id: group.threadId }),
+      }),
+    );
+  });
+
+  app.delete('/api/v1/admin/stock/shelves/:planId/attachments/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const planId = Number(c.req.param('planId'));
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(planId) || planId <= 0 || !Number.isInteger(id) || id <= 0) {
+      return c.json({ ok: false, error: 'invalid_id' }, 400);
+    }
+    // Both ids, so a URL built for one shelf cannot remove another's paper.
+    const done = await c.env.DB.prepare(
+      `DELETE FROM shelf_attachments WHERE id = ?1 AND plan_id = ?2`,
+    )
+      .bind(id, planId)
+      .run();
+    if (done.meta.changes === 0) return c.json({ ok: false, error: 'not_found' }, 404);
+    await audit(c.env.DB, ident, 'stock.attachment_removed', 'PRODUCT_PLAN', String(planId), { id }, null, null);
     return c.json({ ok: true });
   });
 }

@@ -536,6 +536,77 @@ describe('what a message carries besides its text', () => {
 });
 
 /**
+ * A shelf's papers (#377): a row that IS a file, sent by the method its
+ * `file_id` belongs to, and retried on its own.
+ */
+describe('a row that carries a file instead of a text', () => {
+  function recorder(opts: { videoFails?: boolean } = {}): { api: TelegramApi; sent: string[] } {
+    const sent: string[] = [];
+    const api = {
+      sendMessage: async (_chat: number, text: string) => {
+        sent.push(`text:${text}`);
+      },
+      sendDocument: async (_chat: number, fileId: string) => {
+        sent.push(`document:${fileId}`);
+      },
+      sendVideo: async (_chat: number, fileId: string) => {
+        if (opts.videoFails) throw new Error('telegram sendVideo failed: 400 boom');
+        sent.push(`video:${fileId}`);
+      },
+      sendPhoto: async (_chat: number, fileId: string) => {
+        sent.push(`photo:${fileId}`);
+      },
+    } as unknown as TelegramApi;
+    return { api, sent };
+  }
+
+  async function putFile(key: string, kind: 'document' | 'video' | 'photo', fileId: string) {
+    await db.withSession((tx) =>
+      enqueue(tx, { dedupeKey: key, chatId: CHAT, text: '', file: { kind, fileId } }),
+    );
+  }
+
+  it('sends each by the method its id space belongs to, in queue order, after the text', async () => {
+    await put('f0', 'your service');
+    await putFile('f1', 'document', 'BQACdoc');
+    await putFile('f2', 'video', 'BAACvid');
+    await putFile('f3', 'photo', 'AgACpic');
+    const { api, sent } = recorder();
+
+    expect((await flush(db, api, { now: NOW })).sent).toBe(4);
+
+    // Never `sendMessage` for a file row: an empty text would be refused and
+    // the file never sent.
+    expect(sent).toEqual(['text:your service', 'document:BQACdoc', 'video:BAACvid', 'photo:AgACpic']);
+    expect(await rowOf('f2')).toMatchObject({ status: 'SENT' });
+  });
+
+  it('retries the file that was refused alone — the text is not sent again', async () => {
+    await put('g0', 'your service');
+    await putFile('g1', 'video', 'BAACvid');
+    const first = recorder({ videoFails: true });
+    expect(await flush(db, first.api, { now: NOW })).toMatchObject({ sent: 1, failed: 1 });
+    expect(await rowOf('g0')).toMatchObject({ status: 'SENT' });
+    expect(await rowOf('g1')).toMatchObject({ status: 'FAILED', attempt_count: 1 });
+
+    const second = recorder();
+    expect((await flush(db, second.api, { now: NOW + nextAttemptDelayMs(1) })).sent).toBe(1);
+    expect(second.sent).toEqual(['video:BAACvid']);
+    expect(await rowOf('g1')).toMatchObject({ status: 'SENT' });
+  });
+
+  it('refuses a kind without an id, and an id without a kind, at the table', async () => {
+    // The pair is one thing; half of it is a row the sweep could not send.
+    await expect(
+      db.prepare(`INSERT INTO bot_notifications (dedupe_key, chat_id, body, file_kind) VALUES ('h1', 1, '', 'video')`).run(),
+    ).rejects.toThrow();
+    await expect(
+      db.prepare(`INSERT INTO bot_notifications (dedupe_key, chat_id, body, file_id) VALUES ('h2', 1, '', 'x')`).run(),
+    ).rejects.toThrow();
+  });
+});
+
+/**
  * The link a customer has to get into another app.
  *
  * Telegram's monospace is tap-to-copy, and this file sets no `parse_mode`

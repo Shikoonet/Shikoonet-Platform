@@ -33,7 +33,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 
-import { MAX_SINGLE_PAYMENT_IRR, parseChannelPostLink, reportTopicKey } from '@shikoo/contracts';
+import { MAX_SINGLE_PAYMENT_IRR, parseChannelPostLink } from '@shikoo/contracts';
 import type { EnvName } from '@shikoo/contracts';
 import {
   MAX_MESSAGE_LENGTH,
@@ -48,7 +48,7 @@ import {
   type BroadcastContent,
 } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
-import { botTelegram, type BotCallEnv } from './telegramCall.js';
+import { botTelegram, reportsGroup, type BotCallEnv } from './telegramCall.js';
 
 /**
  * A v4 UUID, which is what `newBatchId()` produces on the bot side. Bounded
@@ -199,10 +199,11 @@ const BroadcastBody = z.union([
  * free trial accounts handed to customers, and an operator watching it would
  * have no idea why a shop announcement appeared in it.
  *
- * The key comes from `reportTopicKey` rather than being spelled out, because
- * `botRoutes` WRITES it with that helper. Two spellings of one settings key
- * means the day it changes this lookup silently finds nothing and the rehearsal
- * lands in the group's General instead.
+ * The group and topic come from `reportsGroup`, which spells the settings keys
+ * once for this and for the shelf's file upload — `botRoutes` WRITES the topic
+ * key with the same helper, and two spellings of one key means the day it
+ * changes this lookup silently finds nothing and the rehearsal lands in the
+ * group's General instead.
  */
 async function rehearseForward(
   env: BotCallEnv,
@@ -211,18 +212,8 @@ async function rehearseForward(
 ): Promise<
   { ok: true } | { ok: false; status: 409 | 422 | 502 | 503; error: string; detail: string }
 > {
-  const topicKey = reportTopicKey('otherreport');
-  const rows = await env.DB.prepare(
-    `SELECT key, value FROM settings
-      WHERE scope = 'bot' AND key IN ('Channel_Report', ?1)`,
-  )
-    .bind(topicKey)
-    .all<{ key: string; value: unknown }>();
-  const setting = new Map((rows.results ?? []).map((r) => [r.key, String(r.value ?? '').trim()]));
-
-  const rawChat = setting.get('Channel_Report') ?? '';
-  const chatId = /^-?[0-9]{1,19}$/.test(rawChat) ? Number(rawChat) : null;
-  if (chatId === null || chatId === 0) {
+  const group = await reportsGroup(env.DB);
+  if (group === null) {
     return {
       ok: false,
       status: 409,
@@ -231,11 +222,7 @@ async function rehearseForward(
         'برای فوروارد پست، اول باید گروه گزارش وصل باشد — پست یک بار آن‌جا آزمایش می‌شود تا اگر ربات به کانال دسترسی ندارد، شما ببینیدش نه یازده هزار مشتری.',
     };
   }
-  // Zero and negative are «not configured» — legacy's own sentinels, and what
-  // the bot's settings reader treats as absent. An unset topic lands in the
-  // group's General, which is a fine place for a rehearsal.
-  const rawTopic = Number(setting.get(topicKey) ?? '');
-  const threadId = Number.isSafeInteger(rawTopic) && rawTopic > 0 ? rawTopic : null;
+  const { chatId, threadId } = group;
 
   const bot = await botTelegram(env);
   if (!bot.ok) return bot;

@@ -400,6 +400,12 @@ export interface TelegramApi {
    */
   sendDocument(chatId: number, fileId: string, caption?: string): Promise<void>;
   /**
+   * The same again for a video's `file_id` — the third id space (#377). A
+   * shelf's tutorial goes out as a video rather than a document so it plays
+   * inside Telegram instead of downloading first.
+   */
+  sendVideo(chatId: number, fileId: string, caption?: string): Promise<void>;
+  /**
    * Uploads a file we produced ourselves — the database dump.
    *
    * `sendPhotoBytes` with a filename and a topic, and without the keyboard: a
@@ -1023,6 +1029,18 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
           document: fileId,
           // Not run through `withEmojiFallback`, for the same reason `sendPhoto`
           // is not: a caption here is one short line the bot writes itself.
+          ...(caption === undefined ? {} : { caption: clampCaption(caption) }),
+        },
+        15_000,
+      );
+    },
+
+    async sendVideo(chatId, fileId, caption) {
+      await call(
+        'sendVideo',
+        {
+          chat_id: chatId,
+          video: fileId,
           ...(caption === undefined ? {} : { caption: clampCaption(caption) }),
         },
         15_000,

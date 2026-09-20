@@ -46,7 +46,7 @@ import {
 import { renewalPanelsFor } from './catalog.js';
 import * as menu from './menu.js';
 import type { InlineKeyboard } from './telegram.js';
-import { enqueue } from './notify.js';
+import { enqueue, type AttachmentKind } from './notify.js';
 import { subscriptionOnPanelForUser } from './owned.js';
 import { actionsFor, tierFor } from './serviceActions.js';
 import { deliverFromStock, failingSinceMs, STOCK_GRACE_MS, type StockDelivery } from './stock.js';
@@ -320,15 +320,36 @@ const UNTOLD_WINDOW_HOURS = 24;
 async function tell(db: D1Database, row: PendingOrder, note: Delivered): Promise<void> {
   const chatId = row.telegram_id;
   if (chatId === null) return;
-  await db.withSession((tx) =>
-    enqueue(tx, {
+  await db.withSession(async (tx) => {
+    await enqueue(tx, {
       dedupeKey: `provision:${row.order_public_id}`,
       chatId,
       text: note.sold === true ? withDeliveryNote(note.text, row) : note.text,
       keyboard: note.keyboard ?? null,
       qrPayload: note.qrPayload ?? null,
-    }),
-  );
+    });
+    // The shelf's papers — a config file, a tutorial video — after the
+    // message, in the order they were filed (#377). One row each, keyed on
+    // the attachment, so a file Telegram refuses is retried alone and the
+    // service message is never sent twice for it. `NEW_PURCHASE` only: the
+    // untold sweep rebuilds a renewal's screen with `sold: true` too, and a
+    // customer renewing has had the papers since they first bought.
+    if (note.sold !== true || row.order_kind !== 'NEW_PURCHASE' || row.plan_id === null) return;
+    const { results } = await tx
+      .prepare(`SELECT id, kind, file_id FROM shelf_attachments WHERE plan_id = ?1 ORDER BY id`)
+      .bind(row.plan_id)
+      .all<{ id: number; kind: AttachmentKind; file_id: string }>();
+    // ponytail: a FAILED text row does not hold back its file rows; on a
+    // Telegram hiccup a file may land before the retried text.
+    for (const att of results ?? []) {
+      await enqueue(tx, {
+        dedupeKey: `provision:${row.order_public_id}:att:${att.id}`,
+        chatId,
+        text: '',
+        file: { kind: att.kind, fileId: att.file_id },
+      });
+    }
+  });
 }
 
 /**

@@ -24,6 +24,7 @@
 
 import type { D1Database } from '@shikoo/database';
 import type { EnvName } from '@shikoo/contracts';
+import { reportTopicKey } from '@shikoo/contracts';
 import { resolveBotToken } from '@shikoo/domain';
 
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -38,6 +39,12 @@ const TELEGRAM_API = 'https://api.telegram.org';
  * throw, so an abort arrives as the right sentence.
  */
 const CALL_TIMEOUT_MS = 15_000;
+
+/**
+ * Longer for a multipart body: the one caller uploading files sends up to
+ * 48 MiB, and the bot's own `sendDocumentBytes` allows two minutes for less.
+ */
+const UPLOAD_TIMEOUT_MS = 120_000;
 
 /** The bindings any route needs before it can speak as the bot. */
 export interface BotCallEnv {
@@ -61,7 +68,83 @@ export interface BotCallEnv {
 export interface TelegramReply {
   ok?: boolean;
   description?: string;
-  result?: { is_forum?: boolean; message_thread_id?: number; chat?: { is_forum?: boolean } };
+  result?: TelegramMessage;
+}
+
+/** A sent or forwarded message, narrowed to the file it may carry. */
+export interface TelegramMessage {
+  is_forum?: boolean;
+  message_thread_id?: number;
+  chat?: { is_forum?: boolean };
+  document?: TelegramFile;
+  video?: TelegramFile;
+  photo?: TelegramFile[];
+}
+
+interface TelegramFile {
+  file_id: string;
+  file_name?: string;
+  file_size?: number;
+}
+
+export type AttachmentKind = 'document' | 'video' | 'photo';
+
+/**
+ * The one file a message carries, as a shelf attachment (#377) — or null for
+ * a text, a sticker, an album's other members, anything that is not one of
+ * the three kinds the bot can send back by `file_id`.
+ *
+ * A photo arrives as its sizes, largest last; the largest is the one kept.
+ */
+export function attachmentOf(
+  message: TelegramMessage | undefined,
+): { kind: AttachmentKind; fileId: string; fileName: string; sizeBytes: number } | null {
+  if (!message) return null;
+  const photo = message.photo?.at(-1);
+  const pick: [AttachmentKind, TelegramFile | undefined][] = [
+    ['document', message.document],
+    ['video', message.video],
+    ['photo', photo],
+  ];
+  for (const [kind, f] of pick) {
+    if (f?.file_id) {
+      return {
+        kind,
+        fileId: f.file_id,
+        fileName: f.file_name ?? kind,
+        sizeBytes: f.file_size ?? 0,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Where the shop's own people watch: the reports group and its «سایر گزارشات»
+ * topic. Read here so the broadcast rehearsal and the shelf's file upload
+ * agree about it, rather than each spelling the settings keys again.
+ *
+ * Zero and negative are «not configured» — legacy's own sentinels, and what
+ * the bot's settings reader treats as absent. An unset topic lands in the
+ * group's General, which is a fine place for either.
+ */
+export async function reportsGroup(
+  db: D1Database,
+): Promise<{ chatId: number; threadId: number | null } | null> {
+  const topicKey = reportTopicKey('otherreport');
+  const rows = await db
+    .prepare(
+      `SELECT key, value FROM settings
+        WHERE scope = 'bot' AND key IN ('Channel_Report', ?1)`,
+    )
+    .bind(topicKey)
+    .all<{ key: string; value: unknown }>();
+  const setting = new Map((rows.results ?? []).map((r) => [r.key, String(r.value ?? '').trim()]));
+  const rawChat = setting.get('Channel_Report') ?? '';
+  const chatId = /^-?[0-9]{1,19}$/.test(rawChat) ? Number(rawChat) : null;
+  if (chatId === null || chatId === 0) return null;
+  const rawTopic = Number(setting.get(topicKey) ?? '');
+  return { chatId, threadId: Number.isSafeInteger(rawTopic) && rawTopic > 0 ? rawTopic : null };
 }
 
 export type TelegramCall = (method: string, payload: unknown) => Promise<TelegramReply>;
@@ -137,12 +220,19 @@ export async function botTelegram(env: BotCallEnv): Promise<BotCall> {
     // `globalThis.fetch` read at call time rather than captured, so a test can
     // spy on it. A captured reference binds the original at module load and
     // quietly ignores the spy.
+    //
+    // A `FormData` goes as multipart with NO content-type of ours: fetch writes
+    // the header with the boundary it chose, and one set by hand names a
+    // boundary the body does not have (the bot's client says the same at
+    // `apps/bot/src/telegram.ts`, `callForm`).
     call: async (method, payload) => {
+      const form = payload instanceof FormData;
       const res = await globalThis.fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+        ...(form
+          ? { body: payload }
+          : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }),
+        signal: AbortSignal.timeout(form ? UPLOAD_TIMEOUT_MS : CALL_TIMEOUT_MS),
       });
       return (await res.json()) as TelegramReply;
     },

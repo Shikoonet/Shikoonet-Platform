@@ -78,6 +78,17 @@ const productCategories = vi.fn(async () => ({
 }));
 let nextPlanId = 4242;
 const createShelf = vi.fn(async (_b: unknown) => ({ ok: true, planId: nextPlanId }));
+const shelfAttachments = vi.fn(async (_planId: number) => ({
+  ok: true,
+  deliveryNote: 'فایل را در OpenVPN Connect وارد کن.',
+  items: [
+    { id: 1, kind: 'document' as const, fileName: 'client.ovpn', sizeBytes: 4096, createdAt: '' },
+    { id: 2, kind: 'video' as const, fileName: 'howto.mp4', sizeBytes: 9_000_000, createdAt: '' },
+  ],
+}));
+const uploadShelfAttachment = vi.fn(
+  async (_planId: number, _f: File, _kind: string, _p: (n: number) => void) => ({ id: 3 }),
+);
 
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
@@ -89,6 +100,9 @@ vi.mock('../src/api.js', async () => {
       addStockBulk: (b: { planId: number; text: string }) => addStockBulk(b),
       productCategories: () => productCategories(),
       createShelf: (b: unknown) => createShelf(b),
+      shelfAttachments: (id: number) => shelfAttachments(id),
+      uploadShelfAttachment: (id: number, f: File, k: string, p: (n: number) => void) =>
+        uploadShelfAttachment(id, f, k, p),
     },
   };
 });
@@ -251,5 +265,61 @@ describe('a second shelf does not inherit the first one', () => {
     const text = document.querySelector('#bulk-text') as HTMLTextAreaElement;
     expect(picker.value).toBe('5353');
     expect(text.value).toBe('');
+  });
+});
+
+/**
+ * The papers on a shelf (#377). What the server refuses is asserted there
+ * (`shelf-attachments.test.ts`); what only the browser can do is refuse the
+ * 48 MiB file BEFORE sending a byte of it, and pick the kind from the file.
+ */
+describe('a shelf’s papers', () => {
+  async function openPapers() {
+    stock.mockResolvedValueOnce({
+      ok: true,
+      total: 0,
+      page: 1,
+      pageSize: 50,
+      items: [],
+      shelves: [
+        {
+          planId: 7,
+          planName: 'یک‌ماهه',
+          productName: 'OpenVPN',
+          available: 3,
+          reserved: 0,
+          used: 1,
+          attachments: 2,
+        },
+      ] as never[],
+    });
+    draw();
+    fireEvent.click(await screen.findByRole('button', { name: 'پیوست‌ها (۲)' }));
+    await waitFor(() => expect(shelfAttachments).toHaveBeenCalledWith(7));
+    await screen.findByText('client.ovpn');
+    return document.querySelector('#papers-file') as HTMLInputElement;
+  }
+
+  it('shows the note and the files in order, and sends a video as a video', async () => {
+    const input = await openPapers();
+    expect((document.querySelector('#papers-note') as HTMLTextAreaElement).value).toBe(
+      'فایل را در OpenVPN Connect وارد کن.',
+    );
+    const names = [...document.querySelectorAll('td.ltr')].map((td) => td.textContent);
+    expect(names).toEqual(['client.ovpn', 'howto.mp4']);
+
+    const video = new File(['x'], 'setup.mp4', { type: 'video/mp4' });
+    fireEvent.change(input, { target: { files: [video] } });
+    await waitFor(() => expect(uploadShelfAttachment).toHaveBeenCalledTimes(1));
+    expect(uploadShelfAttachment.mock.calls[0]![2]).toBe('video');
+  });
+
+  it('refuses a file past 48 MiB before uploading it', async () => {
+    const input = await openPapers();
+    const big = new File([''], 'big.mp4', { type: 'video/mp4' });
+    Object.defineProperty(big, 'size', { value: 48 * 1024 * 1024 + 1 });
+    fireEvent.change(input, { target: { files: [big] } });
+    await screen.findByText(/در کانال بگذارش/);
+    expect(uploadShelfAttachment).not.toHaveBeenCalled();
   });
 });

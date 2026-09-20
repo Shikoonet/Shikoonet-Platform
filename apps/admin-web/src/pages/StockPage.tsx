@@ -20,6 +20,7 @@ import {
   type BulkStockResult,
   type CategoryRow,
   type PlanRow,
+  type ShelfAttachment,
   type ShelfCount,
   type StockRow,
 } from '../api.js';
@@ -145,6 +146,8 @@ export function StockPage() {
    * list catching up only changes what the option says.
    */
   const [fillPlanId, setFillPlanId] = useState<number | null>(null);
+  /** The shelf whose papers are open below the table, if any. */
+  const [papersOf, setPapersOf] = useState<ShelfCount | null>(null);
 
   async function load() {
     setErr(null);
@@ -266,12 +269,13 @@ export function StockPage() {
                 <th>آماده</th>
                 <th>در فاکتور</th>
                 <th>فروخته‌شده</th>
+                <th>پیوست‌ها</th>
               </tr>
             </thead>
             <tbody>
               {shelves.length === 0 && (
                 <tr>
-                  <td className="empty" colSpan={4}>
+                  <td className="empty" colSpan={5}>
                     هنوز هیچ قفسه‌ای نیست — یک سرویس روی پنلی بساز که تحویلش دستی یا از قفسه است.
                   </td>
                 </tr>
@@ -293,6 +297,15 @@ export function StockPage() {
                   </td>
                   <td>{count(s.reserved ?? 0)}</td>
                   <td>{count(s.used)}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setPapersOf(papersOf?.planId === s.planId ? null : s)}
+                    >
+                      پیوست‌ها ({count(s.attachments ?? 0)})
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -462,6 +475,15 @@ export function StockPage() {
           نمی‌آیند.
         </p>
       </div>
+
+      {papersOf && (
+        <ShelfPapers
+          key={papersOf.planId}
+          shelf={papersOf}
+          onClose={() => setPapersOf(null)}
+          onChanged={() => void load()}
+        />
+      )}
 
       {adding && (
         <StockForm
@@ -653,6 +675,257 @@ function StockForm({
  * box of Spotify accounts. Asked here as the two things a shelf actually is;
  * the server builds the rest in one transaction.
  */
+const MAX_UPLOAD_BYTES = 48 * 1024 * 1024;
+const KIND_FA: Record<ShelfAttachment['kind'], string> = {
+  document: 'فایل',
+  video: 'ویدیو',
+  photo: 'عکس',
+};
+
+/** A video goes as a video so it plays in the chat; a picture as a photo; the rest as a file. */
+function kindOf(file: File): ShelfAttachment['kind'] {
+  if (file.type.startsWith('video/')) return 'video';
+  if (file.type.startsWith('image/')) return 'photo';
+  return 'document';
+}
+
+/**
+ * The papers on one shelf (#377): what the bot sends after every sale from it.
+ *
+ * The note is the plan's `delivery_note` — the same words `provision.ts` has
+ * appended to every delivery since before this card existed — shown here
+ * because this is where an operator setting up an OpenVPN shelf looks for it.
+ * «اول توضیح، بعد فایل‌ها» falls out of that: the note rides on the message,
+ * and the files are queued after it.
+ *
+ * A file goes up as the whole request body, and a post too big for the
+ * server's 48 MiB (nginx) is added by its channel link instead; the page
+ * refuses the big file before sending a byte of it.
+ */
+function ShelfPapers({
+  shelf,
+  onClose,
+  onChanged,
+}: {
+  shelf: ShelfCount;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const w = useAdminWriteProps();
+  const [items, setItems] = useState<ShelfAttachment[]>([]);
+  const [note, setNote] = useState('');
+  const [savedNote, setSavedNote] = useState('');
+  const [postLink, setPostLink] = useState('');
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+
+  async function load() {
+    try {
+      const r = await api.shelfAttachments(shelf.planId);
+      setItems(r.items);
+      setNote(r.deliveryNote);
+      setSavedNote(r.deliveryNote);
+    } catch (e) {
+      setErr(message(e));
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [shelf.planId]);
+
+  async function run(work: () => Promise<string>) {
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      setDone(await work());
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function upload(f: File) {
+    if (f.size > MAX_UPLOAD_BYTES) {
+      setErr('این فایل از ۴۸ مگابایت بزرگ‌تر است — در کانال بگذارش و لینک پستش را این‌جا بده.');
+      return;
+    }
+    setUploadPct(0);
+    await run(async () => {
+      await api.uploadShelfAttachment(shelf.planId, f, kindOf(f), setUploadPct);
+      return `«${f.name}» به ربات داده شد و به قفسه پیوست شد.`;
+    });
+    setUploadPct(null);
+    // So picking the same file again fires `onChange`.
+    if (picker.current) picker.current.value = '';
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <span className="card__title">پیوست‌های «{shelfLabel(shelf)}»</span>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
+      </div>
+
+      {err && <div className="alert alert-error">{err}</div>}
+      {done && <div className="alert alert-info">{done}</div>}
+
+      <p className="muted">
+        بعد از تحویل هر خرید از این قفسه، ربات اول توضیح را زیر پیام تحویل می‌نویسد و بعد این
+        فایل‌ها را به همان ترتیب می‌فرستد. هر فایل یک بار به گروه گزارش فرستاده می‌شود تا ربات
+        آن را داشته باشد.
+      </p>
+
+      <label className="form-label" htmlFor="papers-note">
+        توضیح — زیر پیام تحویل
+      </label>
+      <textarea
+        id="papers-note"
+        className="form-control"
+        rows={3}
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="مثلاً: فایل کانفیگ را در OpenVPN Connect وارد کن؛ ویدیو نصب را ببین."
+        {...w}
+      />
+      <div style={{ marginBlockStart: 8 }}>
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          disabled={busy || note.trim() === savedNote.trim()}
+          onClick={() =>
+            void run(async () => {
+              await api.updatePlan(shelf.planId, {
+                deliveryNote: note.trim() === '' ? null : note.trim(),
+              });
+              return 'توضیح ذخیره شد.';
+            })
+          }
+          {...w}
+        >
+          ذخیرهٔ توضیح
+        </button>
+      </div>
+
+      <div className="table-wrap" style={{ marginBlockStart: 16 }}>
+        <table className="app-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>نوع</th>
+              <th>نام</th>
+              <th>حجم</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {items.length === 0 && (
+              <tr>
+                <td className="empty" colSpan={5}>
+                  هنوز پیوستی نیست.
+                </td>
+              </tr>
+            )}
+            {items.map((a, i) => (
+              <tr key={a.id}>
+                <td>{count(i + 1)}</td>
+                <td>{KIND_FA[a.kind]}</td>
+                <td className="ltr">{a.fileName}</td>
+                <td>{count(Math.max(1, Math.round(a.sizeBytes / 1024)))} KB</td>
+                <td>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={busy}
+                    onClick={() => {
+                      if (!window.confirm(`«${a.fileName}» از پیوست‌ها برداشته شود؟`)) return;
+                      void run(async () => {
+                        await api.deleteShelfAttachment(shelf.planId, a.id);
+                        return 'برداشته شد.';
+                      });
+                    }}
+                    {...w}
+                  >
+                    حذف
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="filters" style={{ marginBlockStart: 16 }}>
+        <div className="grow">
+          <label className="form-label" htmlFor="papers-file">
+            فایل — تا ۴۸ مگابایت؛ ویدیو به‌صورت ویدیو می‌رود
+          </label>
+          <input
+            id="papers-file"
+            ref={picker}
+            type="file"
+            className="form-control"
+            disabled={busy}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void upload(f);
+            }}
+            {...w}
+          />
+          {uploadPct !== null && (
+            <div style={{ marginTop: 10 }}>
+              <progress value={uploadPct} max={1} style={{ width: '100%' }} />
+              <p className="muted" style={{ marginTop: 4 }}>
+                در حال آپلود — {count(Math.round(uploadPct * 100))}٪
+              </p>
+            </div>
+          )}
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="papers-link">
+            یا لینک پست کانال — برای فایل بزرگ‌تر
+          </label>
+          <input
+            id="papers-link"
+            className="form-control ltr"
+            value={postLink}
+            onChange={(e) => setPostLink(e.target.value)}
+            placeholder="https://t.me/channel/123"
+            disabled={busy}
+            {...w}
+          />
+          <div style={{ marginBlockStart: 8 }}>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy || postLink.trim() === ''}
+              onClick={() =>
+                void run(async () => {
+                  await api.linkShelfAttachment(shelf.planId, postLink.trim());
+                  setPostLink('');
+                  return 'فایلِ پست به قفسه پیوست شد.';
+                })
+              }
+              {...w}
+            >
+              افزودن از پست
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NewShelfForm({
   categories,
   onClose,

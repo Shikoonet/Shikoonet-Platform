@@ -18,6 +18,7 @@ export function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
     sendPhoto: async () => undefined,
     sendPhotoBytes: async () => undefined,
     sendDocument: async () => undefined,
+    sendVideo: async () => undefined,
     sendDocumentBytes: async () => undefined,
     editMessageText: async () => undefined,
     deleteMessage: async () => undefined,
