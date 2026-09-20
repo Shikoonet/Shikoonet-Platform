@@ -570,11 +570,24 @@ function Statement({
                   <>
                     <td className="tabular-nums">
                       {s.opening ? (
-                        <span title={s.opening.source === 'opening' ? 'شروع تازهٔ دفتر' : dateTime(s.opening.asOf)}>
+                        <span
+                          title={
+                            s.opening.source === 'opening'
+                              ? 'شروع تازهٔ دفتر'
+                              : s.opening.source === 'first'
+                                ? `از اولین پیامک این ماه (${dateTime(s.opening.asOf + 1)}): موجودی آن پیامک منهای مبلغش`
+                                : dateTime(s.opening.asOf)
+                          }
+                        >
                           {toman(s.opening.balanceIrr)}
                           {s.opening.source === 'opening' && (
                             <span className="badge" style={{ marginInlineStart: 6 }}>
                               شروع
+                            </span>
+                          )}
+                          {s.opening.source === 'first' && (
+                            <span className="badge" style={{ marginInlineStart: 6 }}>
+                              از اولین پیامک
                             </span>
                           )}
                         </span>
