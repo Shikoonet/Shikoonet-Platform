@@ -1684,7 +1684,10 @@ export interface RetentionRule {
   key: string;
   name: string;
   enabled: boolean;
-  providerId: number;
+  /** The provider row — rules from before 2026-09-20; null on a new rule. */
+  providerId: number | null;
+  /** The panel admin that owns the accounts — the audience since 2026-09-20. */
+  panelAdmin: string | null;
   daysBefore: number;
   daysAfter: number;
   onlyService: boolean;
@@ -3066,13 +3069,21 @@ export const api = {
       ok: boolean;
       items: RetentionRuleRow[];
       panels: { id: number; name: string; baseUrl: string | null; status: string }[];
+      admins: { admin: string; accounts: number }[];
       codes: RetentionCodeOption[];
     }>('/retention');
   },
 
-  retentionAudience(q: { providerId: number; daysBefore: number; daysAfter: number; onlyService: boolean }) {
+  retentionAudience(q: {
+    providerId: number | null;
+    panelAdmin: string | null;
+    daysBefore: number;
+    daysAfter: number;
+    onlyService: boolean;
+  }) {
     const qs = new URLSearchParams({
-      providerId: String(q.providerId),
+      providerId: q.providerId === null ? '' : String(q.providerId),
+      panelAdmin: q.panelAdmin ?? '',
       daysBefore: String(q.daysBefore),
       daysAfter: String(q.daysAfter),
       onlyService: String(q.onlyService),

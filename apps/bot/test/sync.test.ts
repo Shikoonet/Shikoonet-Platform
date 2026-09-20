@@ -41,6 +41,8 @@ function fakePanel(
     /** The panel's own word: active / on_hold / … Left out when undefined. */
     status?: string;
     online_at?: string | null;
+    /** `{ username }` of the admin who made it. Left out when undefined. */
+    admin?: { username?: string } | null;
   }[],
 ) {
   const calls: string[] = [];
@@ -60,6 +62,7 @@ function fakePanel(
             expire: a.expire,
             status: a.status,
             online_at: a.online_at,
+            admin: a.admin,
           })),
           total: accounts.length,
         }),
@@ -180,6 +183,20 @@ describe('refreshing what the customer sees', () => {
     expect(after?.used_bytes).toBe(3 * GIB);
     expect(after?.subscription_url).toBe('https://sync.test/sub/u_a');
     expect(after?.last_synced_at).not.toBeNull();
+  });
+
+  it('writes down who made the account, and keeps it when the panel stops saying (0085)', async () => {
+    const userId = await makeCustomer(nextTelegramId());
+    const id = await makeService(userId, panelId, { publicId: 'sync-adm', username: 'u_adm' });
+    const read = () =>
+      db.prepare(`SELECT panel_admin FROM subscriptions WHERE id = ?1`).bind(id).first<{ panel_admin: string | null }>();
+
+    await syncSubscriptions(db, fakePanel([{ username: 'u_adm', used: 1, admin: { username: 'mirza-first-buy' } }]).fetchImpl, NOW_MS);
+    expect((await read())?.panel_admin).toBe('mirza-first-buy');
+
+    // A later row without the field does not unmake the account.
+    await syncSubscriptions(db, fakePanel([{ username: 'u_adm', used: 2 }]).fetchImpl, NOW_MS + 1);
+    expect((await read())?.panel_admin).toBe('mirza-first-buy');
   });
 
   it('leaves accounts that belong to nobody here alone', async () => {

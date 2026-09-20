@@ -19,7 +19,8 @@ const good = {
   key: 'r_abc123',
   name: 'خرید اولی‌ها',
   enabled: true,
-  providerId: 7,
+  providerId: null,
+  panelAdmin: 'mirza-first-buy',
   daysBefore: 1,
   daysAfter: 0,
   onlyService: true,
@@ -31,6 +32,12 @@ describe('parseRetentionRules', () => {
   it('accepts a good list and trims the name', () => {
     const out = parseRetentionRules([{ ...good, name: '  x  ', codeId: 3 }]);
     expect(out).toEqual([{ ...good, name: 'x', codeId: 3, textAfter: '' }]);
+  });
+
+  it('a rule from before the admin picker — provider row only — still reads, with panelAdmin null', () => {
+    const { panelAdmin: _a, ...legacy } = { ...good, providerId: 7 };
+    expect(parseRetentionRules([legacy])?.[0]).toMatchObject({ providerId: 7, panelAdmin: null });
+    expect(parseRetentionRules([{ ...good, providerId: 7, panelAdmin: 'x' }])?.[0]).toMatchObject({ providerId: 7, panelAdmin: 'x' });
   });
 
   it('a rule saved before textAfter existed reads back with an empty one; a blank one is empty too', () => {
@@ -62,6 +69,9 @@ describe('parseRetentionRules', () => {
     ['long name', { name: 'x'.repeat(RETENTION_LIMITS.name + 1) }],
     ['missing enabled', { enabled: undefined }],
     ['provider 0', { providerId: 0 }],
+    ['no audience at all', { providerId: null, panelAdmin: null }],
+    ['admin with a space', { panelAdmin: 'first buy' }],
+    ['admin as number', { panelAdmin: 5 }],
     ['fractional days', { daysBefore: 1.5 }],
     ['days before too big', { daysBefore: RETENTION_LIMITS.daysBefore + 1 }],
     ['days after too big', { daysAfter: RETENTION_LIMITS.daysAfter + 1 }],

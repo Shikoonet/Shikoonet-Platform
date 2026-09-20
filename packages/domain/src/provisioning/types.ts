@@ -252,6 +252,13 @@ export interface RemoteAccount {
   status: string | null;
   /** When the panel last saw this account connect. NULL when it does not say. */
   onlineAt: string | null;
+  /**
+   * The panel admin that owns the account, as the panel names it.
+   *
+   * `UserResponse.admin.username` on PasarGuard/Marzban. NULL when the panel
+   * does not say. «یادآوری تمدید» picks its audience by this (0085).
+   */
+  admin: string | null;
 }
 
 /** One group as the panel reports it. `name` is for a person to recognise. */

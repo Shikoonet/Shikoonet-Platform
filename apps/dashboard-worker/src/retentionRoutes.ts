@@ -31,13 +31,14 @@ import {
   withoutQuotedPrice,
   type EnvName,
 } from '@shikoo/contracts';
-import { NOT_A_SHELF, retentionAudienceCount, retentionFunnel } from '@shikoo/domain';
+import { NOT_A_SHELF, retentionAudienceCount, retentionFunnel, retentionPanelAdmins } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 const Body = z.object({ items: z.array(z.unknown()) });
 const TestBody = z.object({ rule: z.unknown() });
 const AudienceQuery = z.object({
-  providerId: z.coerce.number().int().positive(),
+  providerId: z.coerce.number().int().positive().nullable(),
+  panelAdmin: z.string().regex(/^\S{1,64}$/).nullable(),
   daysBefore: z.coerce.number().int().min(0).max(RETENTION_LIMITS.daysBefore),
   daysAfter: z.coerce.number().int().min(0).max(RETENTION_LIMITS.daysAfter),
   onlyService: z.enum(['true', 'false']).transform((v) => v === 'true'),
@@ -72,7 +73,7 @@ export function registerRetentionRoutes(
       .first<{ value: unknown }>();
     const rules = row ? (parseRetentionRules(row.value) ?? []) : [];
 
-    const [{ results: acted }, { results: panels }, { results: codes }] = await Promise.all([
+    const [{ results: acted }, { results: panels }, { results: codes }, admins] = await Promise.all([
       db
         .prepare(
           `SELECT DISTINCT ON (fields->>'job')
@@ -108,6 +109,9 @@ export function registerRetentionRoutes(
           firstPurchaseOnly: boolean;
           expired: boolean;
         }>(),
+      // The panel admins the sync has seen — the picker. Empty until the
+      // first sync after 0085, and the screen says so.
+      retentionPanelAdmins(db),
     ]);
     const lastActed = new Map((acted ?? []).map((r) => [r.job, r]));
 
@@ -126,6 +130,7 @@ export function registerRetentionRoutes(
       ok: true,
       items,
       panels: panels ?? [],
+      admins,
       codes: codes ?? [],
     });
   });
@@ -140,12 +145,16 @@ export function registerRetentionRoutes(
    */
   app.get('/api/v1/admin/retention/audience', async (c) => {
     const parsed = AudienceQuery.safeParse({
-      providerId: c.req.query('providerId'),
+      providerId: c.req.query('providerId') || null,
+      panelAdmin: c.req.query('panelAdmin') || null,
       daysBefore: c.req.query('daysBefore') ?? '0',
       daysAfter: c.req.query('daysAfter') ?? '0',
       onlyService: c.req.query('onlyService') ?? 'false',
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
+    if (parsed.data.providerId === null && parsed.data.panelAdmin === null) {
+      return c.json({ ok: false, error: 'invalid_query' }, 400);
+    }
     return c.json({ ok: true, count: await retentionAudienceCount(c.env.DB, parsed.data) });
   });
 
@@ -187,10 +196,12 @@ export function registerRetentionRoutes(
     const sample = await db
       .prepare(
         `SELECT plan_name_at_sale, remote_username FROM subscriptions
-          WHERE provider_id = ?1 AND status = 'ACTIVE'
+          WHERE (?1::bigint IS NULL OR provider_id = ?1)
+            AND (?2::text IS NULL OR panel_admin = ?2)
+            AND status = 'ACTIVE'
           ORDER BY purchased_at DESC LIMIT 1`,
       )
-      .bind(rule.providerId)
+      .bind(rule.providerId, rule.panelAdmin)
       .first<{ plan_name_at_sale: string; remote_username: string | null }>();
     const code =
       rule.codeId === null
@@ -253,7 +264,7 @@ export function registerRetentionRoutes(
     if (items === null) return c.json({ ok: false, error: 'invalid_rules' }, 400);
 
     const db = c.env.DB;
-    const providerIds = [...new Set(items.map((r) => r.providerId))];
+    const providerIds = [...new Set(items.flatMap((r) => (r.providerId === null ? [] : [r.providerId])))];
     if (providerIds.length > 0) {
       const { results } = await db
         .prepare(`SELECT id FROM provisioning_providers WHERE id = ANY(?1)`)

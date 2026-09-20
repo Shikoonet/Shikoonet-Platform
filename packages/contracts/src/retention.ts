@@ -33,8 +33,18 @@ export interface RetentionRule {
   /** For the operator and the group report. */
   name: string;
   enabled: boolean;
-  /** `provisioning_providers.id` — the panel row as the dashboard lists it. */
-  providerId: number;
+  /**
+   * `provisioning_providers.id`, or null.
+   *
+   * The audience was the provider row until 2026-09-20; Sam: «دسته‌بندی بر
+   * اساس یوزرنیم پنل‌ها باشه» — the panel admin who made the account is the
+   * line, because the import gave every legacy account the same row. Rules
+   * saved before that day still carry this and still work; a new rule sets
+   * `panelAdmin` and leaves this null. At least one of the two is required.
+   */
+  providerId: number | null;
+  /** `subscriptions.panel_admin` — the panel admin that owns the account (0085). */
+  panelAdmin: string | null;
   /** Fires this many days before expiry. 0 = not before. */
   daysBefore: number;
   /** And this many days after. 0 = not after. */
@@ -102,6 +112,8 @@ export const RETENTION_LIMITS = {
 } as const;
 
 const KEY = /^[a-z0-9_-]{1,40}$/;
+/** A panel admin username as PasarGuard allows them: no whitespace, sane length. */
+const ADMIN = /^\S{1,64}$/;
 const MENTIONS_CODE = /\{(?:code|discount)\}/;
 
 function isInt(v: unknown, min: number, max: number): v is number {
@@ -126,7 +138,12 @@ export function parseRetentionRules(value: unknown): RetentionRule[] | null {
     if (typeof r['key'] !== 'string' || !KEY.test(r['key']) || keys.has(r['key'])) return null;
     if (typeof r['name'] !== 'string' || r['name'].trim().length === 0 || r['name'].length > RETENTION_LIMITS.name) return null;
     if (typeof r['enabled'] !== 'boolean' || typeof r['onlyService'] !== 'boolean') return null;
-    if (!isInt(r['providerId'], 1, Number.MAX_SAFE_INTEGER)) return null;
+    const providerId = r['providerId'] === undefined ? null : r['providerId'];
+    if (providerId !== null && !isInt(providerId, 1, Number.MAX_SAFE_INTEGER)) return null;
+    const panelAdmin = r['panelAdmin'] === undefined ? null : r['panelAdmin'];
+    if (panelAdmin !== null && (typeof panelAdmin !== 'string' || !ADMIN.test(panelAdmin))) return null;
+    // No audience at all is not a rule.
+    if (providerId === null && panelAdmin === null) return null;
     if (!isInt(r['daysBefore'], 0, RETENTION_LIMITS.daysBefore)) return null;
     if (!isInt(r['daysAfter'], 0, RETENTION_LIMITS.daysAfter)) return null;
     // A window of nothing is a rule that can never fire, which the operator
@@ -147,7 +164,8 @@ export function parseRetentionRules(value: unknown): RetentionRule[] | null {
       key: r['key'],
       name: r['name'].trim(),
       enabled: r['enabled'],
-      providerId: r['providerId'],
+      providerId,
+      panelAdmin,
       daysBefore: r['daysBefore'],
       daysAfter: r['daysAfter'],
       onlyService: r['onlyService'],

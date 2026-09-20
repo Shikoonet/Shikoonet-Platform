@@ -114,10 +114,18 @@ interface MarzbanUser {
   note?: unknown;
   /** The tiers this account carries. Read by `moveGroupMembers` and nothing else. */
   group_ids?: unknown;
+  /** `AdminBase | null` — who created the account. */
+  admin?: unknown;
 }
 
 function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/** `{ username }` off a user row, or null when the panel sends no admin. */
+function adminUsername(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null;
+  return asString((value as { username?: unknown }).username);
 }
 
 /**
@@ -1467,6 +1475,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
             // rather than makes them wrong.
             status: asString(user.status)?.toLowerCase() ?? null,
             onlineAt: asString(user.online_at),
+            admin: adminUsername(user.admin),
           });
         }
         // A short page is the last page. Trusting `total` instead would mean
