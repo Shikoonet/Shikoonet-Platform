@@ -2236,6 +2236,7 @@ export const api = {
     kind?: string;
     priceIrr: number;
     durationDays?: number | null;
+    userLimit?: number | null;
     categoryId: number;
   }) {
     return req<{ ok: boolean; planId: number }>('/stock/shelves', {

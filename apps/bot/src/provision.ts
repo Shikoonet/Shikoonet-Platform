@@ -95,6 +95,7 @@ interface PendingOrder {
   product_attrs: Record<string, unknown> | null;
   volume_gb: string | number | null;
   duration_days: number | null;
+  user_limit: number | null;
   /** What a volume code added, frozen on the order at placement (0062). */
   bonus_volume_gb: string | number;
   total_irr: number;
@@ -408,7 +409,7 @@ async function untoldNote(
   // right for everything else, a shelved config included.
   const account = await db
     .prepare(
-      `SELECT remote_username, remote_ref->>'secret' AS secret, expires_at
+      `SELECT remote_username, remote_ref->>'secret' AS secret, duration_days
          FROM subscriptions
         WHERE order_id = ?1
           AND subscription_url IS NULL
@@ -417,13 +418,14 @@ async function untoldNote(
         LIMIT 1`,
     )
     .bind(row.order_id)
-    .first<{ remote_username: string | null; secret: string; expires_at: string | null }>();
+    .first<{ remote_username: string | null; secret: string; duration_days: number | null }>();
   if (account !== null) {
     return handedOver(
       menu.accountReady(
         account.remote_username ?? '',
         account.secret,
-        account.expires_at === null ? null : new Date(account.expires_at),
+        account.duration_days,
+        row.user_limit,
       ),
     );
   }
@@ -539,6 +541,7 @@ export async function provisionPaidOrders(
               pr.attrs        AS product_attrs,
               pl.volume_gb    AS volume_gb,
               pl.duration_days AS duration_days,
+              pl.user_limit   AS user_limit,
               o.bonus_volume_gb AS bonus_volume_gb,
               pr.name         AS product_name,
               -- The order's OWN panel is last, and last is what makes it safe to

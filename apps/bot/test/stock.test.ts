@@ -500,6 +500,7 @@ describe('selling from the shelf', () => {
         total_irr: 1_950_000,
         volume_gb: 50,
         duration_days: 30,
+        user_limit: null,
       },
       afterGrace(),
     );
@@ -548,10 +549,38 @@ describe('selling accounts from the shelf', () => {
     expect(ref?.secret).toBe('stock-acct-pw-1');
 
     // Both halves of the credential reach the customer — a username without
-    // its password is not a delivery.
+    // its password is not a delivery. Each as `<code>`, so it is tap-to-copy
+    // on every client and the customer never retypes a password (the invoice's
+    // card number goes the same way, #322).
     const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
-    expect(note?.text).toContain('stock-acct@mail.test');
-    expect(note?.text).toContain('stock-acct-pw-1');
+    expect(note?.text).toContain('<code>stock-acct@mail.test</code>');
+    expect(note?.text).toContain('<code>stock-acct-pw-1</code>');
+    // Validity as a count of days from the first connection, not a date: the
+    // server the account lives on starts the clock when the customer connects,
+    // so a date computed at purchase would be wrong by however long they wait.
+    expect(note?.text).toContain('30 روز پس از اولین اتصال');
+    expect(note?.text).not.toContain('اعتبار تا');
+    // And the plan's «حداکثر کاربر»: the fixture plan seeds 1.
+    expect(note?.text).toContain('تعداد کاربر مجاز همزمان: 1 کاربر');
+  });
+
+  it('stays silent about seats when the shelf’s plan sets no limit', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-seats@mail.test', {
+      secret: 'stock-acct-pw-seats',
+      providerCode: 'sim-shop',
+    });
+    // And says nothing about it when the plan has no limit: an OpenVPN
+    // shelf whose server does not count seats must not promise a number.
+    await db.prepare(`UPDATE product_plans SET user_limit = NULL WHERE id = ?1`).bind(order.planId).run();
+    try {
+      await provisionPaidOrders(db, deadPanel, Date.now());
+      const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+      expect(note?.text).toContain('stock-acct-pw-seats');
+      expect(note?.text).not.toContain('کاربر مجاز');
+    } finally {
+      await db.prepare(`UPDATE product_plans SET user_limit = 1 WHERE id = ?1`).bind(order.planId).run();
+    }
 
     // Nothing failed, so nothing was stamped as failing.
     const failed = await db

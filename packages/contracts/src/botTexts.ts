@@ -784,6 +784,18 @@ export const TEXTS = {
     screen: 'delivery',
     hint: 'گذرواژهٔ اکانت، وقتی تحویل اکانت است نه لینک',
   },
+  SERVICE_READY_ACCOUNT_DAYS: {
+    default: '📅 اعتبار: {days} روز پس از اولین اتصال',
+    placeholders: ['days'],
+    screen: 'delivery',
+    hint: 'اعتبار اکانت قفسه، به‌جای تاریخ — Sam ۲۰۲۶-۰۹-۲۰: مثل ربات قدیمی',
+  },
+  SERVICE_READY_ACCOUNT_USERS: {
+    default: '👥 تعداد کاربر مجاز همزمان: {users} کاربر',
+    placeholders: ['users'],
+    screen: 'delivery',
+    hint: 'حد کاربر همزمان اکانت قفسه، از «حداکثر کاربر» پلن — وقتی پلن دارد',
+  },
   SERVICE_STILL_WORKING_TITLE: {
     default: '⏳ سفارش شما هنوز در حال آماده‌سازی است.',
     placeholders: [],

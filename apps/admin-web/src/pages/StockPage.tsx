@@ -940,6 +940,7 @@ function NewShelfForm({
   const [kind, setKind] = useState('other');
   const [priceToman, setPriceToman] = useState('');
   const [durationDays, setDurationDays] = useState('30');
+  const [userLimit, setUserLimit] = useState('1');
   const [categoryId, setCategoryId] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -955,6 +956,7 @@ function NewShelfForm({
         // the same way every other price form in this panel does it.
         priceIrr: Math.round(Number(priceToman) * 10),
         durationDays: durationDays.trim() === '' ? null : Number(durationDays),
+        userLimit: userLimit.trim() === '' ? null : Number(userLimit),
         categoryId: Number(categoryId),
       });
       onMade(name.trim(), made.planId);
@@ -1047,6 +1049,22 @@ function NewShelfForm({
             placeholder="بی‌انقضا"
             value={durationDays}
             onChange={(e) => setDurationDays(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="shelf-users">
+            کاربر همزمان
+          </label>
+          {/* Read by the delivery message as «تعداد کاربر مجاز همزمان»; empty
+              means the message says nothing about seats. */}
+          <input
+            id="shelf-users"
+            className="form-control ltr"
+            type="number"
+            min={1}
+            placeholder="بی‌حد"
+            value={userLimit}
+            onChange={(e) => setUserLimit(e.target.value)}
           />
         </div>
         <div className="grow">

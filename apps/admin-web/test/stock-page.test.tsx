@@ -229,7 +229,7 @@ describe('making a shelf', () => {
     await waitFor(() => expect(createShelf).toHaveBeenCalled());
     // Toman on the screen, IRR on the wire.
     expect(createShelf).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'اسپاتیفای', priceIrr: 2_500_000, categoryId: 1 }),
+      expect.objectContaining({ name: 'اسپاتیفای', priceIrr: 2_500_000, categoryId: 1, userLimit: 1 }),
     );
 
     const picker = await waitFor(() => {
