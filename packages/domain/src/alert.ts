@@ -156,10 +156,9 @@ function chatOf(value: unknown): number | null {
  * report goes to — with `fallbackChatId` (`ALERT_CHAT_ID`) only for a database
  * that has no row. Both, and the «❌ گزارش خطا ها» topic, are read from
  * `settings` here rather than handed in: the workers have no settings cache,
- * and until 2026-09-20 the chat came from the environment alone, so a shop
- * that had made its group in the dashboard kept getting the topic id of that
- * group attached to the owner's private chat from the boot-time variable —
- * which Telegram refuses, so the outbox row died and no error reached anyone.
+ * and until 2026-09-20 the chat came from the environment alone — a variable
+ * no service had set, so a shop that had made its group in the dashboard
+ * logged 621 errors in three days and not one was queued for anyone.
  */
 export async function alert(
   db: D1Database | D1DatabaseSession,

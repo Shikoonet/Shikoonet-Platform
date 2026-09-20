@@ -260,9 +260,8 @@ describe('alerting', () => {
 
   it('goes to the shop\'s own Channel_Report when there is one, and the variable is only a fallback', async () => {
     // The shape of the 2026-09-20 outage: the group is made in the dashboard,
-    // its topic id is in settings, but the chat came from ALERT_CHAT_ID — the
-    // owner's private chat from before the group existed — and a thread id on
-    // a private chat is a 400, so the alert died in the outbox.
+    // its topic id is in settings, but no service had ALERT_CHAT_ID set — so
+    // 621 errors reached app_events in three days and not one was queued.
     await db
       .prepare(
         `INSERT INTO settings (scope, key, value)
