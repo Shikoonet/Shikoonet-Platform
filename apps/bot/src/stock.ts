@@ -57,6 +57,7 @@ export interface StockOrder {
   /** `numeric` comes back as a string from some drivers; the column takes both. */
   volume_gb: string | number | null;
   duration_days: number | null;
+  user_limit: number | null;
 }
 
 interface StockRow {
@@ -242,7 +243,12 @@ export async function deliverFromStock(
   }
   return {
     // The CHECK constraint says a URL-less row has a secret.
-    text: menu.accountReady(sold.remote_username, sold.secret ?? '', row.duration_days),
+    text: menu.accountReady(
+      sold.remote_username,
+      sold.secret ?? '',
+      row.duration_days,
+      row.user_limit,
+    ),
     credential: true,
   };
 }

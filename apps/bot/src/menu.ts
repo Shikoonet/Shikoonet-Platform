@@ -1987,6 +1987,7 @@ export function accountReady(
   username: string,
   password: string,
   durationDays: number | null,
+  userLimit: number | null,
 ): string {
   const t = TEXTS_NOW;
   const lines = [
@@ -2001,6 +2002,11 @@ export function accountReady(
   // by however long the customer waits before connecting.
   if (durationDays !== null) {
     lines.push(t.render('SERVICE_READY_ACCOUNT_DAYS', { days: durationDays }));
+  }
+  // The plan's «حداکثر کاربر», when the shelf has one — the same field the
+  // catalogue edits for a panel plan, read here for an OpenVPN account.
+  if (userLimit !== null) {
+    lines.push(t.render('SERVICE_READY_ACCOUNT_USERS', { users: userLimit }));
   }
   return lines.join('\n');
 }
