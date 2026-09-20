@@ -22,7 +22,7 @@
 import { useEffect, useState } from 'react';
 import { CustomerLink } from '../CustomerLink.js';
 import { BulkSelectionToolbar } from '../hub/historyRangeNav.js';
-import { api, ApiError, type DiscountItem, type RedemptionRow } from '../api.js';
+import { api, ApiError, type DiscountItem, type RedemptionRow, type ServiceRow } from '../api.js';
 import { count, dateTime, endOfTehranDay, toman } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -374,13 +374,17 @@ export function DiscountsPage() {
                         />
                       </span>
                     )}
-                    {d.product && <span className="badge">{d.product.name}</span>}
+                    {d.products.map((p) => (
+                      <span key={p.id} className="badge">
+                        {p.name}
+                      </span>
+                    ))}
                     {d.provider && <span className="badge">{d.provider.name}</span>}
                     {!d.firstPurchaseOnly &&
                       !d.resellersOnly &&
                       d.usesPerUser === 1 &&
                       !d.targetUser &&
-                      !d.product &&
+                      d.products.length === 0 &&
                       !d.provider &&
                       '—'}
                   </td>
@@ -494,6 +498,44 @@ function CreateForm({ onDone }: { onDone: () => void }) {
    */
   const [expiresOn, setExpiresOn] = useState('');
   const [appliesTo, setAppliesTo] = useState('ALL');
+  /**
+   * Which services the code is for; none ticked is every service.
+   *
+   * Sam, 2026-09-20: «تمام سرویس‌ها رو بیاره، من تیک بزنم بگم این سرویس رو
+   * می‌خوام … رو اینا فقط اعمال بشه، رو بقیه نه». The bot refuses the code on
+   * any service not in the set (`discount_code_products`, 0086).
+   */
+  const [productIds, setProductIds] = useState<Set<number>>(new Set());
+  // The same list «سرویس‌ها» shows, every page of it. Not loaded yet and
+  // failed are kept apart from «no services»: a form that quietly showed no
+  // checklist would let an admin make an all-services code by accident
+  // (CodeRabbit on #395), so «ساخت» waits for the list.
+  const [services, setServices] = useState<ServiceRow[] | 'loading' | 'failed'>('loading');
+  const [servicesTry, setServicesTry] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    setServices('loading');
+    (async () => {
+      const all: ServiceRow[] = [];
+      // 100 is the route's ceiling on pageSize.
+      for (let page = 1; ; page++) {
+        const d = await api.catalog({ page, pageSize: 100 });
+        all.push(...d.items);
+        if (d.items.length === 0 || all.length >= d.total) break;
+      }
+      return all;
+    })().then(
+      (all) => {
+        if (!cancelled) setServices(all);
+      },
+      () => {
+        if (!cancelled) setServices('failed');
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [servicesTry]);
   const [firstPurchaseOnly, setFirst] = useState(false);
   const [resellersOnly, setResellers] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -503,6 +545,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
   // Two kinds carry a percent — of the price, or of the plan's volume.
   const isPercent = kind === 'PERCENT_OFF' || kind === 'BONUS_PERCENT';
   const isBonusGb = kind === 'BONUS_GB';
+  const servicesReady = isGift || Array.isArray(services);
 
   async function submit() {
     setBusy(true);
@@ -524,7 +567,14 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         ...(expiresOn ? { expiresAt: endOfTehranDay(expiresOn) } : {}),
         // A gift credits a wallet and is never applied to a purchase, so the
         // server refuses these on one; the form does not offer them either.
-        ...(isGift ? {} : { appliesTo, firstPurchaseOnly, resellersOnly }),
+        ...(isGift
+          ? {}
+          : {
+              appliesTo,
+              firstPurchaseOnly,
+              resellersOnly,
+              productIds: [...productIds],
+            }),
       });
       onDone();
     } catch (e) {
@@ -691,7 +741,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={busy}
+          disabled={busy || !servicesReady}
           onClick={() => void submit()}
           {...w}
         >
@@ -718,6 +768,43 @@ function CreateForm({ onDone }: { onDone: () => void }) {
             فقط نماینده‌ها
           </label>
         </div>
+      )}
+
+      {!isGift && (
+        <fieldset className="filters" data-testid="service-scope">
+          <legend className="form-label">
+            فقط برای این سرویس‌ها — هیچ تیکی یعنی همهٔ سرویس‌ها
+          </legend>
+          {services === 'loading' && <span className="muted">در حال خواندن سرویس‌ها…</span>}
+          {services === 'failed' && (
+            <span className="alert alert-error">
+              فهرست سرویس‌ها خوانده نشد؛ تا خوانده نشود کدی ساخته نمی‌شود.{' '}
+              <button type="button" className="btn btn-sm" onClick={() => setServicesTry((n) => n + 1)}>
+                دوباره
+              </button>
+            </span>
+          )}
+          {Array.isArray(services) && services.length === 0 && (
+            <span className="muted">هنوز سرویسی ساخته نشده.</span>
+          )}
+          {Array.isArray(services) && services.map((s) => (
+            <label key={s.id} className="form-label">
+              <input
+                type="checkbox"
+                checked={productIds.has(s.id)}
+                onChange={(e) =>
+                  setProductIds((prev) => {
+                    const next = new Set(prev);
+                    if (e.target.checked) next.add(s.id);
+                    else next.delete(s.id);
+                    return next;
+                  })
+                }
+              />{' '}
+              {s.name}
+            </label>
+          ))}
+        </fieldset>
       )}
 
       <p className="muted">

@@ -178,8 +178,11 @@ async function findCode(tx: D1DatabaseSession, typed: string) {
   return tx
     .prepare(
       `SELECT id, code, kind, amount_irr, percent, bonus_gb, max_uses, first_purchase_only,
-              resellers_only, product_id, provider_id, expires_at, applies_to,
-              uses_per_user, status, target_user_id
+              resellers_only, provider_id, expires_at, applies_to,
+              uses_per_user, status, target_user_id,
+              -- The services it is for (0086); empty means every service.
+              ARRAY(SELECT product_id FROM discount_code_products
+                     WHERE code_id = discount_codes.id) AS product_ids
          FROM discount_codes
         WHERE lower(code) = ?1
         ORDER BY id
@@ -192,7 +195,7 @@ async function findCode(tx: D1DatabaseSession, typed: string) {
         max_uses: number | null;
         first_purchase_only: boolean;
         resellers_only: boolean;
-        product_id: number | null;
+        product_ids: (number | string)[];
         provider_id: number | null;
         expires_at: string | null;
         applies_to: 'ALL' | 'BUY' | 'RENEW';
@@ -290,10 +293,11 @@ export async function checkCode(
   if (isBonus(row) && context.planVolumeGb === null) {
     return { ok: false, reason: 'NOT_FOR_THIS' };
   }
+  // bigint[] arrives as strings from node-pg; compare by Number on both sides.
   if (
-    row.product_id !== null &&
+    row.product_ids.length > 0 &&
     context.productId !== null &&
-    row.product_id !== context.productId
+    !row.product_ids.some((id) => Number(id) === context.productId)
   ) {
     return { ok: false, reason: 'NOT_FOR_THIS' };
   }
@@ -529,7 +533,7 @@ export async function redeemGift(
   // The same two checks `checkCode` makes, and they have to be repeated
   // because this path does not go through it — a gift is not a discount on
   // anything, so it has its own reading of the same row. Repeated rather than
-  // shared: the two functions disagree about `applies_to`, `product_id` and
+  // shared: the two functions disagree about `applies_to`, `product_ids` and
   // every other purchase-shaped field, and folding them together to save four
   // lines would mean one of them starts enforcing rules that do not apply.
   if (row.status !== 'ACTIVE') return { ok: false, reason: 'DISABLED' };

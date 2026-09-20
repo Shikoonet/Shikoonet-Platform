@@ -246,8 +246,42 @@ describe('creating a code', () => {
     // A gift credits a wallet; `checkCode` refuses GIFT_BALANCE outright, so
     // these fields would be settings that silently do nothing.
     expect((await create(gift(`${PREFIX}g1`, { appliesTo: 'BUY' }))).status).toBe(400);
-    expect((await create(gift(`${PREFIX}g2`, { productId: 1 }))).status).toBe(400);
+    expect((await create(gift(`${PREFIX}g2`, { productIds: [1] }))).status).toBe(400);
     expect((await create(gift(`${PREFIX}g3`, { providerId: 1 }))).status).toBe(400);
+  });
+
+  it('is for the services picked, and the list names them (0086)', async () => {
+    const ids = (
+      await baseEnv.DB.prepare(`SELECT id FROM products ORDER BY id LIMIT 2`).all<{ id: number }>()
+    ).results.map((r) => Number(r.id));
+    expect(ids).toHaveLength(2);
+    const res = await create({
+      code: `${PREFIX}svc`,
+      kind: 'PERCENT_OFF',
+      percent: 10,
+      // Repeated on purpose: a double tick is one row, not a constraint error.
+      productIds: [ids[1], ids[0], ids[1]],
+    });
+    expect(res.status).toBe(201);
+    const { discount } = (await res.json()) as { discount: { id: number; products: { id: number }[] } };
+    expect(discount.products.map((p) => p.id).sort()).toEqual(ids);
+    const rows = await baseEnv.DB.prepare(
+      `SELECT product_id FROM discount_code_products WHERE code_id = ?1 ORDER BY product_id`,
+    )
+      .bind(discount.id)
+      .all<{ product_id: number }>();
+    expect(rows.results.map((r) => Number(r.product_id))).toEqual(ids);
+    // One bad id among good ones refuses the whole code, not just the bad id.
+    expect(
+      (
+        await create({
+          code: `${PREFIX}svc2`,
+          kind: 'PERCENT_OFF',
+          percent: 10,
+          productIds: [ids[0], 2_000_000_003],
+        })
+      ).status,
+    ).toBe(400);
   });
 
   it('refuses a product or panel that does not exist', async () => {
@@ -257,7 +291,7 @@ describe('creating a code', () => {
           code: `${PREFIX}np`,
           kind: 'PERCENT_OFF',
           percent: 10,
-          productId: 2_000_000_003,
+          productIds: [2_000_000_003],
         })
       ).status,
     ).toBe(400);

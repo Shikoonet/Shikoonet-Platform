@@ -840,7 +840,7 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
    * `DiscountSell.code_product` names one legacy `product` ROW, and a legacy
    * row is now a PLAN: `migrateProducts` groups rows by Location into one
    * service each. Money points at the plan (`orders.plan_id`) while a discount
-   * points at the service (`discount_codes.product_id`), so a scoped code has
+   * points at the service (`discount_code_products`), so a scoped code has
    * to be resolved THROUGH its plan to the service that carries it.
    *
    * Matching on `products.code` alone would only ever find a group's head row.
@@ -868,6 +868,8 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     uses: number;
     giftFirst: number;
     legacyId: number;
+    /** The one service `code_product` named, written to `discount_code_products` after the code. */
+    productId: string | null;
     values: unknown[];
   }
   const candidates: Candidate[] = [];
@@ -883,6 +885,7 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
       uses: Number(r.limitused ?? 0),
       giftFirst: 0,
       legacyId: Number(r.id),
+      productId: null,
       // A NULL price credits nothing: PHP adds NULL, which is 0. Reproduced,
       // not repaired — the row stays visible instead of vanishing.
       values: [
@@ -897,7 +900,6 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
         false,
         // A gift code credits a wallet. It is not scoped to a product or a
         // panel, does not expire, and `Discount` has no column for any of it.
-        null,
         null,
         null,
         'ALL',
@@ -947,6 +949,7 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
       uses: Number(r.usedDiscount ?? 0),
       giftFirst: 1,
       legacyId: Number(r.id),
+      productId,
       values: [
         'DiscountSell',
         Number(r.id),
@@ -957,7 +960,6 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
         Number.isFinite(limit) && limit > 0 ? limit : null,
         r.usefirst === '1',
         r.agent === 'n',
-        productId,
         providerId,
         expiryFromLegacy(r.time),
         scope,
@@ -995,7 +997,6 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
       'max_uses',
       'first_purchase_only',
       'resellers_only',
-      'product_id',
       'provider_id',
       'expires_at',
       'applies_to',
@@ -1008,6 +1009,17 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     'SELECT id, code FROM discount_codes',
   );
   const byCode = new Map(codes.map((c) => [c.code, c.id]));
+
+  // The scope, once the code has an id to hang it on (0086).
+  n += await insertBatch(
+    ctx.pg,
+    'discount_code_products',
+    cols(['code_id', 'product_id']),
+    [...winners.values()].flatMap((c) =>
+      c.productId === null ? [] : [[byCode.get(c.code)!, c.productId]],
+    ),
+    { conflict: '(code_id, product_id)' },
+  );
 
   const consumed = await mysqlRows<Row>(ctx.my, 'SELECT * FROM Giftcodeconsumed');
   n += await insertBatch(
