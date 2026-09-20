@@ -1690,11 +1690,14 @@ export interface RetentionRule {
   onlyService: boolean;
   codeId: number | null;
   text: string;
+  /** After expiry; empty means «same as text». */
+  textAfter: string;
 }
 
 export interface RetentionFunnel {
   sent: number;
   usedCode: number;
+  usedOutside: number;
   stayed: number;
   left: number;
   pending: number;
@@ -3065,6 +3068,16 @@ export const api = {
       panels: { id: number; name: string; baseUrl: string | null; status: string }[];
       codes: RetentionCodeOption[];
     }>('/retention');
+  },
+
+  retentionAudience(q: { providerId: number; daysBefore: number; daysAfter: number; onlyService: boolean }) {
+    const qs = new URLSearchParams({
+      providerId: String(q.providerId),
+      daysBefore: String(q.daysBefore),
+      daysAfter: String(q.daysAfter),
+      onlyService: String(q.onlyService),
+    });
+    return req<{ ok: boolean; count: number }>(`/retention/audience?${qs.toString()}`);
   },
 
   testRetentionRule(rule: RetentionRule) {

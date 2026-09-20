@@ -3294,11 +3294,12 @@ export function retentionNightRow(f: {
   rule: string;
   sent: number;
   usedCode: number;
+  usedOutside: number;
   stayed: number;
   left: number;
   pending: number;
 }): string {
-  return TEXTS_NOW.render('REPORT_RETENTION_NIGHT_ROW', f);
+  return TEXTS_NOW.render('REPORT_RETENTION_NIGHT_ROW', { ...f, notUsed: f.sent - f.usedCode });
 }
 
 export function cronTimeNotice(f: { config: string; status: string; days: number }): string {

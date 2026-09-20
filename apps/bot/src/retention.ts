@@ -8,12 +8,15 @@
  * `settings ('bot','retention_rules')` every cycle; the shape is checked by
  * the same `parseRetentionRules` the panel refused the body with.
  *
- * ## Once, and the outbox is the record
+ * ## Once a day, and the outbox is the record
  *
- * No flag on `subscriptions`. The dedupe key carries the rule, the service
- * and the expiry it was about, and `enqueue` is `ON CONFLICT DO NOTHING` on
- * it — the same claim `nudge.ts` makes. A renewal moves `expires_at`, so the
- * next cycle earns a new key and a new message, which is what a retention
+ * No flag on `subscriptions`. The dedupe key carries the rule, the service,
+ * the expiry it was about and the DAY of the window (+3, −2), and `enqueue`
+ * is `ON CONFLICT DO NOTHING` on it — the same claim `nudge.ts` makes. The
+ * day part moves once every 24 hours, so a five-day window is five messages
+ * a day apart and not one every 25 seconds (Sam, 2026-09-20: «روزی یک بار»);
+ * past the window the SELECT stops finding the row. A renewal moves
+ * `expires_at`, so the next cycle earns a new key, which is what a retention
  * rule should do for a customer who stayed and is now nearing the end again.
  *
  * ## A code that cannot be used is a rule that does not fire
@@ -27,12 +30,17 @@
 import type { D1Database } from '@shikoo/database';
 import {
   RETENTION_RULES,
+  discountLabel,
   parseRetentionRules,
   renderRetentionText,
-  retentionDedupeKey,
   type RetentionRule,
 } from '@shikoo/contracts';
-import { createLogger } from '@shikoo/domain';
+import {
+  RETENTION_AUDIENCE_WHERE,
+  RETENTION_DAY_INDEX_SQL,
+  RETENTION_ONLY_SERVICE_WHERE,
+  createLogger,
+} from '@shikoo/domain';
 import { enqueue } from './notify.js';
 import { report } from './reports.js';
 import { loadShopSettings, settingText } from './settings.js';
@@ -49,49 +57,39 @@ interface DueRow {
   telegram_id: number;
   plan_name_at_sale: string;
   remote_username: string | null;
-  expires_at: string;
-  expires_epoch: number;
+  /** +N days before expiry, −N after. Computed in SQL beside the key. */
+  day_index: number;
+  /** The outbox key for this row TODAY, built by the same SQL that selected it. */
+  dedupe_key: string;
 }
 
 /**
- * Those in the window who have not been told about this expiry.
+ * Those in the window who have not been written to TODAY about this expiry.
  *
- * `u.status` is deliberately not consulted, as in `warn.ts`: a paid customer
- * is told about a thing they own. `s.status = 'ACTIVE'` holds after expiry
- * too — nothing but the removal sweep changes it — so «days after» reaches a
- * lapsed service without a second branch.
+ * The window and «only one service» are `@shikoo/domain`'s, shared with the
+ * dashboard's count. The key is built here in SQL and returned rather than
+ * recomputed in TypeScript, so the row selected and the row claimed are the
+ * same row at every midnight. `u.status` is deliberately not consulted, as
+ * in `warn.ts`: a paid customer is told about a thing they own.
  */
 const DUE = `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.remote_username,
-                    s.expires_at::text AS expires_at,
-                    extract(epoch FROM s.expires_at)::bigint AS expires_epoch
+                    (${RETENTION_DAY_INDEX_SQL})::int AS day_index,
+                    'retention:' || ?5 || ':' || s.id::text || ':'
+                      || extract(epoch FROM s.expires_at)::bigint::text || ':'
+                      || (${RETENTION_DAY_INDEX_SQL})::int::text AS dedupe_key
                FROM subscriptions s
                JOIN users u ON u.id = s.user_id
-              WHERE s.status = 'ACTIVE'
-                AND u.notify_enabled
-                AND s.provider_id = ?2
-                AND s.expires_at IS NOT NULL
-                AND s.expires_at >  to_timestamp(?1 / 1000.0) - make_interval(days => ?4)
-                AND s.expires_at <= to_timestamp(?1 / 1000.0) + make_interval(days => ?3)
+              WHERE ${RETENTION_AUDIENCE_WHERE}`;
+
+const ONLY_SERVICE = `
+                AND ${RETENTION_ONLY_SERVICE_WHERE}`;
+
+const TAIL = `
                 AND NOT EXISTS (
                   SELECT 1 FROM bot_notifications n
                    WHERE n.dedupe_key = 'retention:' || ?5 || ':' || s.id::text || ':'
-                                        || extract(epoch FROM s.expires_at)::bigint::text)`;
-
-/**
- * «فقط یک سرویس، به‌جز تست» — no OTHER paid service. The same family as
- * `OWNS_PAID_SERVICE_SQL`, minus the row being messaged; imported services
- * carry no order and count, as there.
- */
-const ONLY_SERVICE = `
-                AND NOT EXISTS (
-                  SELECT 1 FROM subscriptions s2
-                    LEFT JOIN orders o2 ON o2.id = s2.order_id
-                   WHERE s2.user_id = s.user_id
-                     AND s2.id <> s.id
-                     AND s2.status <> 'PENDING_PAYMENT'
-                     AND o2.kind IS DISTINCT FROM 'TRIAL')`;
-
-const TAIL = `
+                                        || extract(epoch FROM s.expires_at)::bigint::text || ':'
+                                        || (${RETENTION_DAY_INDEX_SQL})::int::text)
               ORDER BY s.expires_at
               LIMIT ?6`;
 
@@ -111,11 +109,14 @@ export async function loadRetentionRules(db: D1Database): Promise<RetentionRule[
   return rules;
 }
 
-/** The code's text if a customer could use it today, else null. */
-async function usableCode(db: D1Database, codeId: number): Promise<string | null> {
+/** The code and its offer in words, if a customer could use it today; else null. */
+async function usableCode(
+  db: D1Database,
+  codeId: number,
+): Promise<{ code: string; discount: string } | null> {
   const row = await db
     .prepare(
-      `SELECT code FROM discount_codes
+      `SELECT code, kind, percent, amount_irr, bonus_gb FROM discount_codes
         WHERE id = ?1 AND status = 'ACTIVE'
           AND (expires_at IS NULL OR expires_at > now())
           AND (max_uses IS NULL OR max_uses > (
@@ -125,8 +126,12 @@ async function usableCode(db: D1Database, codeId: number): Promise<string | null
                    AND (r.order_id IS NULL OR o.status NOT IN ('EXPIRED', 'CANCELLED', 'FAILED'))))`,
     )
     .bind(codeId)
-    .first<{ code: string }>();
-  return row?.code ?? null;
+    .first<{ code: string; kind: string; percent: number | null; amount_irr: number | null; bonus_gb: number | null }>();
+  if (!row) return null;
+  return {
+    code: row.code,
+    discount: discountLabel({ kind: row.kind, percent: row.percent, amountIrr: row.amount_irr, bonusGb: row.bonus_gb }),
+  };
 }
 
 export async function remindToRenew(db: D1Database, now: number = Date.now()): Promise<number> {
@@ -145,7 +150,7 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
 
   let total = 0;
   for (const rule of rules) {
-    let code: string | null = null;
+    let code: { code: string; discount: string } | null = null;
     if (rule.codeId !== null) {
       code = await usableCode(db, rule.codeId);
       if (code === null) {
@@ -161,13 +166,16 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
 
     let sent = 0;
     for (const row of results ?? []) {
-      const days = wholeDays(row.expires_at, now);
-      const dedupeKey = retentionDedupeKey(rule.key, row.id, Number(row.expires_epoch));
+      const days = Number(row.day_index);
+      // After expiry the rule's own «after» text, when it wrote one; the
+      // «before» text otherwise, which is what every rule from before the
+      // field existed has.
+      const template = days < 0 && rule.textAfter !== '' ? rule.textAfter : rule.text;
       const queued = await db.withSession(async (tx) => {
         const ok = await enqueue(tx, {
-          dedupeKey,
+          dedupeKey: row.dedupe_key,
           chatId: row.telegram_id,
-          text: renderRetentionText(rule.text, {
+          text: renderRetentionText(template, {
             days: String(Math.abs(days)),
             service: withoutQuotedPrice(row.plan_name_at_sale),
             username: row.remote_username ?? '',
@@ -175,7 +183,8 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
             // bot's own `<code>` passes `toTelegramHtml`; the operator's text
             // around it is escaped like any other, so nothing they type can
             // open a tag.
-            code: code === null ? '' : `<code>${code}</code>`,
+            code: code === null ? '' : `<code>${code.code}</code>`,
+            discount: code?.discount ?? '',
             renewButton: menu.renewButtonLabel(),
           }),
           // One green button, and it is a LINK, not a callback. Sam,
@@ -194,12 +203,12 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
             tx,
             shop,
             'reportcron',
-            dedupeKey,
+            row.dedupe_key,
             menu.retentionNotice({
               rule: rule.name,
               config: row.remote_username ?? '',
               days,
-              code: code ?? '—',
+              code: code?.code ?? '—',
             }),
           );
         }
@@ -220,14 +229,4 @@ export function renewLink(botUsername: string, subscriptionId: number) {
     url: `https://t.me/${botUsername}?start=rnw_${subscriptionId}`,
     style: 'success' as const,
   };
-}
-
-/**
- * Days until expiry: positive before it (rounded up, so the last hours read
- * as «1» not «0», as `warn.ts` does), negative after it (rounded down, so
- * «3 days ago» is not printed before three whole days have passed).
- */
-function wholeDays(expiresAt: string, now: number): number {
-  const ms = Date.parse(expiresAt) - now;
-  return ms >= 0 ? Math.max(1, Math.ceil(ms / 86_400_000)) : -Math.floor(-ms / 86_400_000);
 }

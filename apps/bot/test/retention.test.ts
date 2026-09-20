@@ -82,6 +82,7 @@ interface RuleInput {
   onlyService?: boolean;
   codeId?: number | null;
   text?: string;
+  textAfter?: string;
 }
 
 async function setRules(rules: RuleInput[]): Promise<void> {
@@ -96,6 +97,7 @@ async function setRules(rules: RuleInput[]): Promise<void> {
       onlyService: r.onlyService ?? false,
       codeId: r.codeId ?? null,
       text: r.text ?? 'سرویس {service} — {days} روز — {username} — {code} — {renewButton}',
+      textAfter: r.textAfter ?? '',
     })),
   );
   await db
@@ -236,31 +238,69 @@ describe('who is due', () => {
   });
 });
 
-describe('once per expiry', () => {
-  it('a second sweep sends nothing; a renewal earns a new message', async () => {
+describe('once a day inside the window', () => {
+  it('a second sweep the same day sends nothing; the next day sends again; past the window, silence; a renewal starts over', async () => {
     const tg = nextTelegramId();
-    const subId = await makeService(await makeCustomer(tg), { expiresInDays: 0.5 });
-    await setRules([{ key: 'k1' }]);
+    const subId = await makeService(await makeCustomer(tg), { expiresInDays: 2.5 });
+    await setRules([{ key: 'k1', daysBefore: 3 }]);
 
-    expect(await remindToRenew(db)).toBe(1);
-    expect(await remindToRenew(db)).toBe(0);
-    expect(await messagesTo(tg)).toHaveLength(1);
-
+    // Day +3.
+    expect(await remindToRenew(db, NOW_MS)).toBe(1);
+    expect(await remindToRenew(db, NOW_MS)).toBe(0);
+    expect(await remindToRenew(db, NOW_MS + 6 * 60 * 60 * 1000)).toBe(0);
     // The outbox row is the record even after it was sent.
     await db.prepare(`UPDATE bot_notifications SET status = 'SENT', sent_at = now()`).run();
-    expect(await remindToRenew(db)).toBe(0);
+    expect(await remindToRenew(db, NOW_MS)).toBe(0);
 
-    // Renewed: 30 more days. Out of the window now, then back in it later.
+    // Day +2, then +1: one each.
+    expect(await remindToRenew(db, NOW_MS + 1 * DAY)).toBe(1);
+    expect(await remindToRenew(db, NOW_MS + 1 * DAY + 60_000)).toBe(0);
+    expect(await remindToRenew(db, NOW_MS + 2 * DAY)).toBe(1);
+
+    // Expired, and the rule has no «after» side: nothing.
+    expect(await remindToRenew(db, NOW_MS + 3 * DAY)).toBe(0);
+
+    const keys = (
+      await db
+        .prepare(`SELECT dedupe_key FROM bot_notifications WHERE dedupe_key LIKE 'retention:k1:%' ORDER BY id`)
+        .all<{ dedupe_key: string }>()
+    ).results ?? [];
+    expect(keys.map((k) => k.dedupe_key.split(':').at(-1))).toEqual(['3', '2', '1']);
+
+    // Renewed for 30 days: out of the window, then back in it — three more.
     await db
       .prepare(`UPDATE subscriptions SET expires_at = ?2 WHERE id = ?1`)
-      .bind(subId, new Date(NOW_MS + 30.5 * DAY).toISOString())
+      .bind(subId, new Date(NOW_MS + 32.5 * DAY).toISOString())
       .run();
-    expect(await remindToRenew(db)).toBe(0);
-    vi.spyOn(Date, 'now').mockReturnValue(NOW_MS + 30 * DAY);
+    expect(await remindToRenew(db, NOW_MS + 3 * DAY)).toBe(0);
     expect(await remindToRenew(db, NOW_MS + 30 * DAY)).toBe(1);
-    const keys = (await db.prepare(`SELECT dedupe_key FROM bot_notifications WHERE dedupe_key LIKE 'retention:k1:%' ORDER BY id`).all<{ dedupe_key: string }>()).results ?? [];
-    expect(keys).toHaveLength(2);
-    expect(keys[0]?.dedupe_key).not.toBe(keys[1]?.dedupe_key);
+    expect(await remindToRenew(db, NOW_MS + 31 * DAY)).toBe(1);
+    expect(await remindToRenew(db, NOW_MS + 32 * DAY)).toBe(1);
+    expect(await remindToRenew(db, NOW_MS + 32.2 * DAY)).toBe(0);
+  });
+
+  it('after expiry: one a day for «days after» days, with the after-text, then never again', async () => {
+    const tg = nextTelegramId();
+    await makeService(await makeCustomer(tg), { expiresInDays: -0.2 });
+    await setRules([{ key: 'k2', daysBefore: 0, daysAfter: 3, text: 'BEFORE {days}', textAfter: 'AFTER {days}' }]);
+
+    expect(await remindToRenew(db, NOW_MS)).toBe(1); // −1
+    expect(await remindToRenew(db, NOW_MS)).toBe(0);
+    expect(await remindToRenew(db, NOW_MS + 1 * DAY)).toBe(1); // −2
+    expect(await remindToRenew(db, NOW_MS + 2 * DAY)).toBe(1); // −3
+    expect(await remindToRenew(db, NOW_MS + 3 * DAY)).toBe(0); // out of the window
+    expect(await remindToRenew(db, NOW_MS + 10 * DAY)).toBe(0);
+
+    const texts = (await messagesTo(tg)).map((m) => m.text);
+    expect(texts).toEqual(['AFTER 1', 'AFTER 2', 'AFTER 3']);
+  });
+
+  it('an old rule with no after-text uses the before-text on the after side', async () => {
+    const tg = nextTelegramId();
+    await makeService(await makeCustomer(tg), { expiresInDays: -0.2 });
+    await setRules([{ key: 'k3', daysBefore: 0, daysAfter: 1, text: 'ONLY {days}' }]);
+    expect(await remindToRenew(db, NOW_MS)).toBe(1);
+    expect((await messagesTo(tg))[0]?.text).toBe('ONLY 1');
   });
 });
 
@@ -270,7 +310,7 @@ describe('the text', () => {
     const uid = await makeCustomer(tg);
     await makeService(uid, { expiresInDays: 0.5 });
     const codeId = await makeCode('RET30');
-    await setRules([{ codeId, text: '{service}|{days}|{username}|{code}|{renewButton}|{nope}' }]);
+    await setRules([{ codeId, text: '{service}|{days}|{username}|{code}|{discount}|{renewButton}|{nope}' }]);
 
     expect(await remindToRenew(db)).toBe(1);
     const [m] = await messagesTo(tg);
@@ -279,8 +319,9 @@ describe('the text', () => {
     expect(parts[1]).toBe('1');
     expect(parts[2]).toMatch(/^u_ret_/);
     expect(parts[3]).toBe('<code>RET30</code>');
-    expect(parts[4]).not.toBe('');
-    expect(parts[5]).toBe('{nope}');
+    expect(parts[4]).toBe('30٪');
+    expect(parts[5]).not.toBe('');
+    expect(parts[6]).toBe('{nope}');
   });
 
   it('a code the customer could not use stops the rule, loudly, and sends nothing', async () => {
@@ -379,7 +420,7 @@ describe('the group hears about it', () => {
     expect(await remindToRenew(db)).toBe(1);
     const toGroup = (await pendingNotifications()).filter((n) => n.chatId === channel);
     expect(toGroup).toHaveLength(1);
-    expect(toGroup[0]?.dedupeKey).toMatch(/^report:reportcron:retention:rk:\d+:\d+$/);
+    expect(toGroup[0]?.dedupeKey).toMatch(/^report:reportcron:retention:rk:\d+:\d+:1$/);
     expect(toGroup[0]?.text).toContain('قانون گزارش');
     expect(toGroup[0]?.text).toContain('RETRPT');
     expect(toGroup[0]?.text).toContain('1 روز مانده');
@@ -399,7 +440,9 @@ describe('the group hears about it', () => {
     const parts = await buildDailyReport(db, '2026-09-19');
     expect(parts).toHaveLength(4);
     expect(parts[3]).toContain('قانون شب');
-    expect(parts[3]).toContain('فرستاده 1');
+    expect(parts[3]).toContain('به 1 نفر رسید');
+    expect(parts[3]).toContain('نزدند 1');
+    expect(parts[3]).toContain('بیرون از فهرست 0');
     expect(parts[3]).toContain('هنوز 1');
   });
 });

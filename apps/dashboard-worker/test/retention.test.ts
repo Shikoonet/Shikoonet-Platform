@@ -39,6 +39,7 @@ function rule(change: Record<string, unknown> = {}) {
     onlyService: true,
     codeId: null,
     text: 'سلام {code}',
+    textAfter: '',
     ...change,
   };
 }
@@ -91,6 +92,9 @@ afterAll(emptyRules);
 
 beforeEach(async () => {
   await emptyRules();
+  // Fixture rows from a run that failed before its own cleanup.
+  await baseEnv.DB.prepare(`DELETE FROM subscriptions WHERE public_id LIKE 'zz-aud-%' OR public_id = 'zz-retw-1'`).run();
+  await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id IN (749900, 749901)`).run();
   await baseEnv.DB.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'retention:r_test%'`).run();
 });
 
@@ -105,10 +109,45 @@ describe('reading', () => {
       codes: { id: number; firstPurchaseOnly: boolean }[];
     };
     expect(body.items.map((i) => i.key)).toEqual(['r_test1']);
-    expect(body.items[0]?.funnel).toEqual({ sent: 0, usedCode: 0, stayed: 0, left: 0, pending: 0 });
+    expect(body.items[0]?.funnel).toEqual({ sent: 0, usedCode: 0, usedOutside: 0, stayed: 0, left: 0, pending: 0 });
     expect(body.items[0]?.lastActed).toBeNull();
     expect(body.panels.some((p) => Number(p.id) === panelId)).toBe(true);
     expect(body.codes.find((c) => Number(c.id) === firstOnlyCodeId)?.firstPurchaseOnly).toBe(true);
+  });
+});
+
+describe('the audience count', () => {
+  const ask = (email: string, q: Record<string, string>) =>
+    app.request(`/api/v1/admin/retention/audience?${new URLSearchParams(q).toString()}`, {}, envAs(email));
+
+  it('counts the sweep\'s own window, and a reviewer may ask', async () => {
+    const user = await baseEnv.DB.prepare(
+      `INSERT INTO users (telegram_id, username, registered_at) VALUES (749901, 'ret_aud', now())
+       ON CONFLICT (telegram_id) DO UPDATE SET username = excluded.username RETURNING id`,
+    ).first<{ id: number }>();
+    const mk = (pub: string, days: number) =>
+      baseEnv.DB.prepare(
+        `INSERT INTO subscriptions (public_id, user_id, plan_name_at_sale, price_irr, remote_username, status, purchased_at, expires_at, provider_id)
+         VALUES (?1, ?2, 'p', 1, ?1, 'ACTIVE', now(), now() + make_interval(hours => ?3), ?4)
+         ON CONFLICT (public_id) DO UPDATE SET expires_at = excluded.expires_at`,
+      ).bind(pub, user!.id, days, panelId).run();
+    await mk('zz-aud-1', 12); // half a day left
+    await mk('zz-aud-2', 108); // 4.5 days left
+    await mk('zz-aud-3', -36); // 1.5 days gone
+
+    const count = async (q: Record<string, string>) =>
+      ((await (await ask(REVIEWER, q)).json()) as { count: number }).count;
+    const base = { providerId: String(panelId), onlyService: 'false' };
+    expect(await count({ ...base, daysBefore: '1', daysAfter: '0' })).toBe(1);
+    expect(await count({ ...base, daysBefore: '5', daysAfter: '0' })).toBe(2);
+    expect(await count({ ...base, daysBefore: '0', daysAfter: '3' })).toBe(1);
+    expect(await count({ ...base, daysBefore: '5', daysAfter: '3' })).toBe(3);
+    // «only one service»: this customer owns three, so none of them counts.
+    expect(await count({ ...base, daysBefore: '5', daysAfter: '3', onlyService: 'true' })).toBe(0);
+    expect((await ask(REVIEWER, { providerId: 'x', daysBefore: '1', daysAfter: '0', onlyService: 'false' })).status).toBe(400);
+
+    await baseEnv.DB.prepare(`DELETE FROM subscriptions WHERE public_id LIKE 'zz-aud-%'`).run();
+    await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id = 749901`).run();
   });
 });
 
@@ -155,10 +194,10 @@ describe('«تست»', () => {
        ON CONFLICT (public_id) DO NOTHING`,
     ).bind(user!.id, panelId).run();
 
-    const res = await testPost(ADMIN, rule({ codeId, text: 'سرویس {service} · {username} · {days} روز · کد {code} · {renewButton}' }));
+    const res = await testPost(ADMIN, rule({ codeId, text: 'سرویس {service} · {username} · {days} روز · کد {code} · {discount} · {renewButton}' }));
     expect(res.status).toBe(200);
     const { text } = (await res.json()) as { text: string };
-    expect(text).toBe('سرویس یک‌ماهه · firstbuy_w1 · 1 روز · کد RETW30 · تمدید سرویس');
+    expect(text).toBe('سرویس یک‌ماهه · firstbuy_w1 · 1 روز · کد RETW30 · 30٪ · تمدید سرویس');
 
     const queued = await baseEnv.DB.prepare(
       `SELECT chat_id, message_thread_id, body, reply_markup FROM bot_notifications WHERE dedupe_key LIKE 'retention-test:r_test1:%' ORDER BY id DESC LIMIT 1`,
@@ -170,6 +209,10 @@ describe('«تست»', () => {
     expect(queued?.body).toContain('کد <code>RETW30</code>');
     expect(queued?.reply_markup[0]?.[0]?.url).toBe('https://t.me/Test_Shikoo_bot?start=renew');
     expect(queued?.reply_markup[0]?.[0]?.style).toBe('success');
+    // A rule with only an «after» side tests its after-text.
+    const afterRes = await testPost(ADMIN, rule({ daysBefore: 0, daysAfter: 2, text: 'B {days}', textAfter: 'A {days}' }));
+    expect(((await afterRes.json()) as { text: string }).text).toBe('A 2');
+
     const toCustomer = await baseEnv.DB.prepare(
       `SELECT count(*)::int AS n FROM bot_notifications WHERE chat_id = 749900`,
     ).first<{ n: number }>();
