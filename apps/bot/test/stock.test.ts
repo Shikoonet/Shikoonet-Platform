@@ -554,6 +554,11 @@ describe('selling accounts from the shelf', () => {
     const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
     expect(note?.text).toContain('<code>stock-acct@mail.test</code>');
     expect(note?.text).toContain('<code>stock-acct-pw-1</code>');
+    // Validity as a count of days from the first connection, not a date: the
+    // server the account lives on starts the clock when the customer connects,
+    // so a date computed at purchase would be wrong by however long they wait.
+    expect(note?.text).toContain('30 روز پس از اولین اتصال');
+    expect(note?.text).not.toContain('اعتبار تا');
 
     // Nothing failed, so nothing was stamped as failing.
     const failed = await db

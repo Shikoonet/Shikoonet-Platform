@@ -242,7 +242,7 @@ export async function deliverFromStock(
   }
   return {
     // The CHECK constraint says a URL-less row has a secret.
-    text: menu.accountReady(sold.remote_username, sold.secret ?? '', expiresAt),
+    text: menu.accountReady(sold.remote_username, sold.secret ?? '', row.duration_days),
     credential: true,
   };
 }

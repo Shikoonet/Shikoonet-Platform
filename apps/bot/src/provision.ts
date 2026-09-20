@@ -408,7 +408,7 @@ async function untoldNote(
   // right for everything else, a shelved config included.
   const account = await db
     .prepare(
-      `SELECT remote_username, remote_ref->>'secret' AS secret, expires_at
+      `SELECT remote_username, remote_ref->>'secret' AS secret, duration_days
          FROM subscriptions
         WHERE order_id = ?1
           AND subscription_url IS NULL
@@ -417,14 +417,10 @@ async function untoldNote(
         LIMIT 1`,
     )
     .bind(row.order_id)
-    .first<{ remote_username: string | null; secret: string; expires_at: string | null }>();
+    .first<{ remote_username: string | null; secret: string; duration_days: number | null }>();
   if (account !== null) {
     return handedOver(
-      menu.accountReady(
-        account.remote_username ?? '',
-        account.secret,
-        account.expires_at === null ? null : new Date(account.expires_at),
-      ),
+      menu.accountReady(account.remote_username ?? '', account.secret, account.duration_days),
     );
   }
 

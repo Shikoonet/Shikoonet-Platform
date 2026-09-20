@@ -1983,7 +1983,11 @@ export function serviceReady(
  * bot's OpenVPN delivery: «username و password مونو باشه که بتونن کپی کنن».
  * `toTelegramHtml` escapes whatever the credential itself contains.
  */
-export function accountReady(username: string, password: string, expiresAt: Date | null): string {
+export function accountReady(
+  username: string,
+  password: string,
+  durationDays: number | null,
+): string {
   const t = TEXTS_NOW;
   const lines = [
     t.raw('SERVICE_READY_TITLE'),
@@ -1991,8 +1995,12 @@ export function accountReady(username: string, password: string, expiresAt: Date
     t.render('SERVICE_READY_USERNAME', { username: `<code>${username}</code>` }),
     t.render('SERVICE_READY_PASSWORD', { password: `<code>${password}</code>` }),
   ];
-  if (expiresAt !== null) {
-    lines.push(t.render('SERVICE_READY_EXPIRES', { date: formatTehranDate(expiresAt) }));
+  // «N روز پس از اولین اتصال», not a date — Sam, 2026-09-20, from the old
+  // bot's OpenVPN delivery: the server the account lives on starts the clock
+  // at the first connection, so a date computed at purchase would be wrong
+  // by however long the customer waits before connecting.
+  if (durationDays !== null) {
+    lines.push(t.render('SERVICE_READY_ACCOUNT_DAYS', { days: durationDays }));
   }
   return lines.join('\n');
 }
