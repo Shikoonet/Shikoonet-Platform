@@ -825,8 +825,10 @@ export interface RevenueAdjustmentRow {
 }
 
 export interface RevenueTotals {
-  /** Negative or zero — what the shop actually spent. */
+  /** Negative or zero — what left the account: the invoices plus the bank's fees on them. */
   expensesIrr: number;
+  /** Positive or zero — how much of `expensesIrr` was the bank's fee, so it can be read on its own. */
+  feesIrr: number;
   /** Corrections to income: a fake receipt, a duplicate charge. Either sign. */
   revenueFixIrr: number;
   /** Sales recorded by hand, mostly reseller top-ups. Positive. */

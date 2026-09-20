@@ -496,6 +496,13 @@ function ledgerWhere(q: z.infer<typeof AdjustmentQuery>): { sql: string; binds: 
 /**
  * The three kinds and the net, over whatever the filter selected.
  *
+ * An expense is `amount_irr − fee_irr`: what left the account, not what the
+ * invoice said. 0073 gave the fee its own column so «کارمزدهای بانکی» could be
+ * read on its own, and every sum written before it kept reading `amount_irr`
+ * alone — Sam, 2026-09-20: «۱۰۹٬۰۰۰ تومان و ۱٬۱۰۰ تراکنش، باید این دو تا را با هم
+ * جمع کند، چون در هر صورت جمع این دو تا از حساب کم شده». `fees_irr` is that
+ * own-number, positive, over the same rows.
+ *
  * The COUNTS travel with the sums, and they are not decoration. Sam's second
  * look at this card was «معلوم نیست از کجا میاد اطلاعاتش» — four figures with
  * nothing saying what they were added up from. «−۷۵۴٬۵۳۹٬۷۵۰ تومان» answers
@@ -503,10 +510,11 @@ function ledgerWhere(q: z.infer<typeof AdjustmentQuery>): { sql: string; binds: 
  * traced back to a set of rows is a number nobody checks twice.
  */
 const TOTALS_SQL = `
-  COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'EXPENSE'), 0)       AS expenses_irr,
-  COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'REVENUE_FIX'), 0)   AS revenue_fix_irr,
-  COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'MANUAL_INCOME'), 0) AS manual_income_irr,
-  COALESCE(SUM(ra.amount_irr), 0)                                          AS net_irr,
+  COALESCE(SUM(ra.amount_irr - ra.fee_irr) FILTER (WHERE ra.kind = 'EXPENSE'), 0) AS expenses_irr,
+  COALESCE(SUM(ra.fee_irr) FILTER (WHERE ra.kind = 'EXPENSE'), 0)                 AS fees_irr,
+  COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'REVENUE_FIX'), 0)          AS revenue_fix_irr,
+  COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'MANUAL_INCOME'), 0)        AS manual_income_irr,
+  COALESCE(SUM(ra.amount_irr - ra.fee_irr), 0)                                    AS net_irr,
   count(*) FILTER (WHERE ra.kind = 'EXPENSE')::int                         AS expenses_n,
   count(*) FILTER (WHERE ra.kind = 'REVENUE_FIX')::int                     AS revenue_fix_n,
   count(*) FILTER (WHERE ra.kind = 'MANUAL_INCOME')::int                   AS manual_income_n,
@@ -514,6 +522,7 @@ const TOTALS_SQL = `
 
 type TotalsRow = {
   expenses_irr: string | number;
+  fees_irr: string | number;
   revenue_fix_irr: string | number;
   manual_income_irr: string | number;
   net_irr: string | number;
@@ -525,6 +534,7 @@ type TotalsRow = {
 
 const totals = (r: TotalsRow | null) => ({
   expensesIrr: Number(r?.expenses_irr ?? 0),
+  feesIrr: Number(r?.fees_irr ?? 0),
   revenueFixIrr: Number(r?.revenue_fix_irr ?? 0),
   manualIncomeIrr: Number(r?.manual_income_irr ?? 0),
   netIrr: Number(r?.net_irr ?? 0),
@@ -1091,12 +1101,12 @@ export function registerRevenueRoutes(
      * because a category on a correction is a field nobody fills.
      */
     const byCategory = await c.env.DB.prepare(
-      `SELECT ra.category_id, ec.name, count(*)::int AS n, SUM(ra.amount_irr) AS irr
+      `SELECT ra.category_id, ec.name, count(*)::int AS n, SUM(ra.amount_irr - ra.fee_irr) AS irr
          FROM revenue_adjustments ra
          LEFT JOIN expense_categories ec ON ec.id = ra.category_id
         ${f.sql}${f.sql ? ' AND' : ' WHERE'} ra.kind = 'EXPENSE'
         GROUP BY ra.category_id, ec.name
-        ORDER BY SUM(ra.amount_irr) ASC`,
+        ORDER BY SUM(ra.amount_irr - ra.fee_irr) ASC`,
     )
       .bind(...f.binds)
       .all<{ category_id: number | null; name: string | null; n: number; irr: string | number }>();
@@ -1201,6 +1211,12 @@ export function registerRevenueRoutes(
       'دسته',
       'شرح',
       'مبلغ (تومان)',
+      // The bank's cut and the sum of the two: the invoice figure stays its own
+      // column so it can be checked against the paperwork, and «از حساب رفت» is
+      // the figure the bank statement will show.
+      'کارمزد (تومان)',
+      'از حساب رفت (تومان)',
+      'از حساب',
       // The invoice, so a euro bill can be checked against the paperwork it came
       // from rather than only against the Toman figure it produced.
       'ارز',
@@ -1218,6 +1234,9 @@ export function registerRevenueRoutes(
         // Toman, because every other figure an admin reads is Toman and a file
         // that silently switched unit is the one mistake this export can make.
         r.amountIrr / IRR_PER_TOMAN,
+        r.feeIrr / IRR_PER_TOMAN,
+        (r.amountIrr - r.feeIrr) / IRR_PER_TOMAN,
+        r.accountName ?? '',
         r.currency === 'IRR' ? '' : r.currency,
         r.originalAmount ?? '',
         r.fxRateIrr === null ? '' : r.fxRateIrr / IRR_PER_TOMAN,
