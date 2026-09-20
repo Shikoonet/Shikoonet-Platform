@@ -84,7 +84,9 @@ const CreateBody = z
     appliesTo: z.enum(['ALL', 'BUY', 'RENEW']).default('ALL'),
     firstPurchaseOnly: z.boolean().default(false),
     resellersOnly: z.boolean().default(false),
-    productId: z.number().int().positive().nullable().default(null),
+    // The services it is for (0086). Empty is every service. Fifty is a typo
+    // guard, not a policy: the shop has a few dozen.
+    productIds: z.array(z.number().int().positive()).max(50).default([]),
     providerId: z.number().int().positive().nullable().default(null),
     expiresAt: z.string().datetime().nullable().default(null),
     // How many times ONE customer may use it. 1 is what every code did before
@@ -114,7 +116,7 @@ const CreateBody = z
   .refine(
     (b) =>
       b.kind !== 'GIFT_BALANCE' ||
-      (b.appliesTo === 'ALL' && b.productId === null && b.providerId === null),
+      (b.appliesTo === 'ALL' && b.productIds.length === 0 && b.providerId === null),
     'a gift code credits a wallet and cannot be limited to a product, panel or action',
   );
 
@@ -138,8 +140,8 @@ interface CodeRow {
   applies_to: string;
   first_purchase_only: boolean;
   resellers_only: boolean;
-  product_id: number | null;
-  product_name: string | null;
+  /** json_agg of `{id, name}`; `[]` is every service. */
+  products: { id: number; name: string }[];
   provider_id: number | null;
   provider_name: string | null;
   expires_at: string | null;
@@ -186,7 +188,7 @@ function shape(r: CodeRow, nowMs: number) {
     appliesTo: r.applies_to,
     firstPurchaseOnly: r.first_purchase_only,
     resellersOnly: r.resellers_only,
-    product: r.product_id ? { id: r.product_id, name: r.product_name } : null,
+    products: r.products.map((p) => ({ id: Number(p.id), name: p.name })),
     provider: r.provider_id ? { id: r.provider_id, name: r.provider_name } : null,
     expiresAt: r.expires_at,
     createdAt: r.created_at,
@@ -210,7 +212,9 @@ function shape(r: CodeRow, nowMs: number) {
 const SELECT_CODE = `
   SELECT dc.id, dc.code, dc.kind, dc.amount_irr, dc.percent, dc.bonus_gb, dc.max_uses,
          dc.applies_to, dc.first_purchase_only, dc.resellers_only,
-         dc.product_id, p.name AS product_name,
+         COALESCE((SELECT json_agg(json_build_object('id', p.id, 'name', p.name) ORDER BY p.name)
+                     FROM discount_code_products cp JOIN products p ON p.id = cp.product_id
+                    WHERE cp.code_id = dc.id), '[]'::json) AS products,
          dc.provider_id, pr.name AS provider_name,
          dc.expires_at, dc.created_at,
          dc.uses_per_user, dc.status, dc.target_user_id,
@@ -226,7 +230,6 @@ const SELECT_CODE = `
              AND (r.order_id IS NULL
                   OR o.status NOT IN ('EXPIRED', 'CANCELLED', 'FAILED'))) AS used
     FROM discount_codes dc
-    LEFT JOIN products p ON p.id = dc.product_id
     LEFT JOIN provisioning_providers pr ON pr.id = dc.provider_id
     LEFT JOIN users tu ON tu.id = dc.target_user_id`;
 
@@ -374,11 +377,16 @@ export function registerDiscountRoutes(
       return c.json({ ok: false, error: 'code_exists', detail: clash.code }, 409);
     }
 
-    if (b.productId !== null) {
-      const p = await c.env.DB.prepare(`SELECT 1 AS ok FROM products WHERE id = ?1`)
-        .bind(b.productId)
-        .first<{ ok: number }>();
-      if (!p) return c.json({ ok: false, error: 'unknown_product' }, 400);
+    const productIds = [...new Set(b.productIds)];
+    if (productIds.length > 0) {
+      const found = await c.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM products WHERE id = ANY(?1::bigint[])`,
+      )
+        .bind(productIds)
+        .first<{ n: number }>();
+      if (Number(found?.n) !== productIds.length) {
+        return c.json({ ok: false, error: 'unknown_product' }, 400);
+      }
     }
     if (b.providerId !== null) {
       const p = await c.env.DB.prepare(`SELECT 1 AS ok FROM provisioning_providers WHERE id = ?1`)
@@ -402,9 +410,9 @@ export function registerDiscountRoutes(
     const created = await c.env.DB.prepare(
       `INSERT INTO discount_codes
          (code, kind, amount_irr, percent, max_uses, applies_to,
-          first_purchase_only, resellers_only, product_id, provider_id, expires_at,
+          first_purchase_only, resellers_only, provider_id, expires_at,
           uses_per_user, target_user_id, bonus_gb)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
        RETURNING id`,
     )
       .bind(
@@ -416,7 +424,6 @@ export function registerDiscountRoutes(
         b.appliesTo,
         b.firstPurchaseOnly,
         b.resellersOnly,
-        b.productId,
         b.providerId,
         b.expiresAt,
         b.usesPerUser,
@@ -425,6 +432,14 @@ export function registerDiscountRoutes(
       )
       .first<{ id: number }>();
     const id = Number(created!.id);
+    if (productIds.length > 0) {
+      await c.env.DB.prepare(
+        `INSERT INTO discount_code_products (code_id, product_id)
+         SELECT ?1, unnest(?2::bigint[])`,
+      )
+        .bind(id, productIds)
+        .run();
+    }
 
     await audit(
       c.env.DB,
@@ -441,6 +456,7 @@ export function registerDiscountRoutes(
         bonus_gb: b.bonusGb,
         max_uses: b.maxUses,
         applies_to: b.appliesTo,
+        product_ids: productIds,
         expires_at: b.expiresAt,
         uses_per_user: b.usesPerUser,
         target_user_id: targetUserId,

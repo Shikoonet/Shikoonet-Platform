@@ -1336,7 +1336,8 @@ export interface DiscountItem {
   appliesTo: string;
   firstPurchaseOnly: boolean;
   resellersOnly: boolean;
-  product: { id: number; name: string | null } | null;
+  /** The services it is for; empty is every service. */
+  products: { id: number; name: string }[];
   provider: { id: number; name: string | null } | null;
   expiresAt: string | null;
   createdAt: string;

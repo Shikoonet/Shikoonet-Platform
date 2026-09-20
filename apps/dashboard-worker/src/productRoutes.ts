@@ -876,7 +876,7 @@ const COUNT_PLAN_REFS = `
 /**
  * Remove a product only if nothing points at any of its plans.
  *
- * `product_plans.product_id` and `discount_codes.product_id` are both
+ * `product_plans.product_id` and `discount_code_products.product_id` are both
  * `ON DELETE CASCADE`, so deleting a product is a much larger act than deleting
  * a plan: every plan under it goes, and with the plans go the SET NULLs on
  * every order and subscription that ever named one. The guard therefore reaches
@@ -898,7 +898,7 @@ const DELETE_PRODUCT = `
     AND NOT EXISTS (
       SELECT 1 FROM provisioning_stock st JOIN product_plans pl ON pl.id = st.plan_id
        WHERE pl.product_id = ?1)
-    AND NOT EXISTS (SELECT 1 FROM discount_codes WHERE product_id = ?1)
+    AND NOT EXISTS (SELECT 1 FROM discount_code_products WHERE product_id = ?1)
   RETURNING id`;
 
 const COUNT_PRODUCT_REFS = `
@@ -908,7 +908,7 @@ const COUNT_PRODUCT_REFS = `
            WHERE pl.product_id = ?1) AS subscriptions,
          (SELECT COUNT(*) FROM provisioning_stock st JOIN product_plans pl ON pl.id = st.plan_id
            WHERE pl.product_id = ?1) AS stock,
-         (SELECT COUNT(*) FROM discount_codes WHERE product_id = ?1) AS discounts`;
+         (SELECT COUNT(*) FROM discount_code_products WHERE product_id = ?1) AS discounts`;
 
 interface Refs {
   orders: number;
@@ -2051,10 +2051,12 @@ export function registerProductRoutes(
         `UPDATE product_plans SET product_id = ?2, sort_order = ?3, updated_at = now()
           WHERE product_id = ?1 RETURNING id`,
       ).bind(id, into, src.sort_order),
-      c.env.DB.prepare(`UPDATE discount_codes SET product_id = ?2 WHERE product_id = ?1 RETURNING id`).bind(
-        id,
-        into,
-      ),
+      // A code already for both keeps one row: the pair is the primary key.
+      c.env.DB.prepare(
+        `UPDATE discount_code_products SET product_id = ?2 WHERE product_id = ?1
+           AND code_id NOT IN (SELECT code_id FROM discount_code_products WHERE product_id = ?2)
+         RETURNING code_id`,
+      ).bind(id, into),
       c.env.DB.prepare(`DELETE FROM products WHERE id = ?1`).bind(id),
     ]);
 

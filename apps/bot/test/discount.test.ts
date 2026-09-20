@@ -76,9 +76,9 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
     .prepare(
       `INSERT INTO discount_codes
          (code, kind, percent, amount_irr, expires_at, max_uses, first_purchase_only,
-          resellers_only, product_id, provider_id, applies_to,
+          resellers_only, provider_id, applies_to,
           uses_per_user, status, target_user_id, bonus_gb)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
        -- Every column, not just the one it conflicted on. This used to set the
        -- code to itself, which is a no-op upsert: a code left in the table by
        -- an earlier run kept its OLD kind, so a test asking for a gift code
@@ -89,8 +89,7 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
          amount_irr = EXCLUDED.amount_irr, expires_at = EXCLUDED.expires_at,
          max_uses = EXCLUDED.max_uses,
          first_purchase_only = EXCLUDED.first_purchase_only,
-         resellers_only = EXCLUDED.resellers_only,
-         product_id = EXCLUDED.product_id, provider_id = EXCLUDED.provider_id,
+         resellers_only = EXCLUDED.resellers_only, provider_id = EXCLUDED.provider_id,
          applies_to = EXCLUDED.applies_to,
          uses_per_user = EXCLUDED.uses_per_user, status = EXCLUDED.status,
          target_user_id = EXCLUDED.target_user_id, bonus_gb = EXCLUDED.bonus_gb
@@ -107,7 +106,6 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
       options.maxUses ?? null,
       options.firstPurchaseOnly ?? false,
       options.resellersOnly ?? false,
-      options.productId ?? null,
       options.providerId ?? null,
       options.appliesTo ?? 'ALL',
       options.usesPerUser ?? 1,
@@ -117,6 +115,14 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
     )
     .first<{ id: number }>();
   if (!row) throw new Error(`code fixture ${code} failed`);
+  // The scope lives in its own table since 0086; an upserted code starts clean.
+  await db.prepare(`DELETE FROM discount_code_products WHERE code_id = ?1`).bind(row.id).run();
+  if (options.productId) {
+    await db
+      .prepare(`INSERT INTO discount_code_products (code_id, product_id) VALUES (?1, ?2)`)
+      .bind(row.id, options.productId)
+      .run();
+  }
   return row.id;
 }
 

@@ -374,13 +374,17 @@ export function DiscountsPage() {
                         />
                       </span>
                     )}
-                    {d.product && <span className="badge">{d.product.name}</span>}
+                    {d.products.map((p) => (
+                      <span key={p.id} className="badge">
+                        {p.name}
+                      </span>
+                    ))}
                     {d.provider && <span className="badge">{d.provider.name}</span>}
                     {!d.firstPurchaseOnly &&
                       !d.resellersOnly &&
                       d.usesPerUser === 1 &&
                       !d.targetUser &&
-                      !d.product &&
+                      d.products.length === 0 &&
                       !d.provider &&
                       '—'}
                   </td>
@@ -495,13 +499,13 @@ function CreateForm({ onDone }: { onDone: () => void }) {
   const [expiresOn, setExpiresOn] = useState('');
   const [appliesTo, setAppliesTo] = useState('ALL');
   /**
-   * Which service the code is for; blank is every service.
+   * Which services the code is for; none ticked is every service.
    *
-   * `discount_codes.product_id` has existed since 0002 and the bot has refused
-   * a code on the wrong service the whole time — the form simply never asked.
-   * Sam, 2026-09-20: «میخوام بگم این کد تخفیف روی کدوم سرویس‌ها اعمال بشه».
+   * Sam, 2026-09-20: «تمام سرویس‌ها رو بیاره، من تیک بزنم بگم این سرویس رو
+   * می‌خوام … رو اینا فقط اعمال بشه، رو بقیه نه». The bot refuses the code on
+   * any service not in the set (`discount_code_products`, 0086).
    */
-  const [productId, setProductId] = useState('');
+  const [productIds, setProductIds] = useState<Set<number>>(new Set());
   const [services, setServices] = useState<ServiceRow[]>([]);
   useEffect(() => {
     // ponytail: one page of 100 — the shop has a few dozen services, not a thousand.
@@ -546,7 +550,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
               appliesTo,
               firstPurchaseOnly,
               resellersOnly,
-              ...(productId ? { productId: Number(productId) } : {}),
+              productIds: [...productIds],
             }),
       });
       onDone();
@@ -711,26 +715,6 @@ function CreateForm({ onDone }: { onDone: () => void }) {
             </select>
           </div>
         )}
-        {!isGift && (
-          <div>
-            <label className="form-label" htmlFor="new-product">
-              فقط برای این سرویس
-            </label>
-            <select
-              id="new-product"
-              className="form-control"
-              value={productId}
-              onChange={(e) => setProductId(e.target.value)}
-            >
-              <option value="">همهٔ سرویس‌ها</option>
-              {services.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
         <button
           type="button"
           className="btn btn-primary"
@@ -761,6 +745,31 @@ function CreateForm({ onDone }: { onDone: () => void }) {
             فقط نماینده‌ها
           </label>
         </div>
+      )}
+
+      {!isGift && services.length > 0 && (
+        <fieldset className="filters" data-testid="service-scope">
+          <legend className="form-label">
+            فقط برای این سرویس‌ها — هیچ تیکی یعنی همهٔ سرویس‌ها
+          </legend>
+          {services.map((s) => (
+            <label key={s.id} className="form-label">
+              <input
+                type="checkbox"
+                checked={productIds.has(s.id)}
+                onChange={(e) =>
+                  setProductIds((prev) => {
+                    const next = new Set(prev);
+                    if (e.target.checked) next.add(s.id);
+                    else next.delete(s.id);
+                    return next;
+                  })
+                }
+              />{' '}
+              {s.name}
+            </label>
+          ))}
+        </fieldset>
       )}
 
       <p className="muted">

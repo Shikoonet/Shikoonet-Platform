@@ -23,7 +23,7 @@ function code(id: number, kind: string, extra: Record<string, unknown>) {
     appliesTo: 'ALL',
     firstPurchaseOnly: false,
     resellersOnly: false,
-    product: null,
+    products: [],
     provider: null,
     expiresAt: null,
     createdAt: '2026-09-12T08:00:00.000Z',
@@ -150,8 +150,8 @@ describe('bulk delete (#383)', () => {
   });
 });
 
-describe('a code can be for one service', () => {
-  it('the form lists the services and sends the picked one as productId', async () => {
+describe('a code can be for some services', () => {
+  it('the form lists the services and sends the ticked ones as productIds', async () => {
     const posts: string[] = [];
     vi.stubGlobal(
       'fetch',
@@ -184,24 +184,25 @@ describe('a code can be for one service', () => {
       </RoleProvider>,
     );
     fireEvent.click(await screen.findByRole('button', { name: 'کد جدید' }));
-    const select = (await screen.findByLabelText('فقط برای این سرویس')) as HTMLSelectElement;
-    await screen.findByRole('option', { name: 'فرانسه' });
-    expect([...select.options].map((o) => o.textContent)).toEqual([
-      'همهٔ سرویس‌ها',
+    const scope = await screen.findByTestId('service-scope');
+    expect([...scope.querySelectorAll('label')].map((l) => l.textContent?.trim())).toEqual([
       'آلمان',
       'فرانسه',
     ]);
 
     // A gift code charges a wallet; the service question is not asked.
     fireEvent.change(screen.getByLabelText('نوع'), { target: { value: 'GIFT_BALANCE' } });
-    expect(screen.queryByLabelText('فقط برای این سرویس')).toBeNull();
+    expect(screen.queryByTestId('service-scope')).toBeNull();
     fireEvent.change(screen.getByLabelText('نوع'), { target: { value: 'PERCENT_OFF' } });
 
     fireEvent.change(screen.getByLabelText('کد'), { target: { value: 'FR10' } });
     fireEvent.change(screen.getByLabelText('درصد'), { target: { value: '10' } });
-    fireEvent.change(screen.getByLabelText('فقط برای این سرویس'), { target: { value: '9' } });
+    // Tick both, untick one: what is sent is what is ticked at the end.
+    fireEvent.click(screen.getByLabelText('آلمان'));
+    fireEvent.click(screen.getByLabelText('فرانسه'));
+    fireEvent.click(screen.getByLabelText('آلمان'));
     fireEvent.click(screen.getByRole('button', { name: 'ساخت' }));
     await vi.waitFor(() => expect(posts).toHaveLength(1));
-    expect(JSON.parse(posts[0]!)).toMatchObject({ code: 'FR10', productId: 9 });
+    expect(JSON.parse(posts[0]!)).toMatchObject({ code: 'FR10', productIds: [9] });
   });
 });

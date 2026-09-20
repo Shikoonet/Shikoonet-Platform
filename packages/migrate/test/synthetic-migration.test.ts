@@ -251,7 +251,8 @@ maybe('a migration that reaches the database', () => {
           ).rows.map((r) => r.name);
           scopedCodes = (
             await pgc!.query<{ code: string; product_id: string }>(
-              'SELECT code, product_id FROM discount_codes WHERE product_id IS NOT NULL',
+              `SELECT dc.code, cp.product_id FROM discount_code_products cp
+                 JOIN discount_codes dc ON dc.id = cp.code_id`,
             )
           ).rows;
           return true;
@@ -304,7 +305,7 @@ maybe('a migration that reaches the database', () => {
 
     // ── the discounts ─────────────────────────────────────────────────────
     // Money points at the plan (`orders.plan_id`); a discount points at the
-    // service (`discount_codes.product_id`). `DiscountSell.code_product` names
+    // service (`discount_code_products`). `DiscountSell.code_product` names
     // a legacy ROW, so a code scoped to a row that is no longer a service of
     // its own has to resolve THROUGH its plan to the service carrying it.
     const scoped = new Map(scopedCodes.map((c) => [c.code, c.product_id]));

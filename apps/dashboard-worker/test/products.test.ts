@@ -1083,7 +1083,10 @@ describe('POST /api/v1/admin/products/:id/merge', () => {
     // A sold config: an order and a subscription point at the PLAN, so they
     // must survive the service they were filed under going away.
     await placeOrder(price.planId, 991_000_020);
-    await baseEnv.DB.prepare(`INSERT INTO discount_codes (code, kind, percent, product_id) VALUES (?1, 'PERCENT_OFF', 10, ?2)`)
+    await baseEnv.DB.prepare(
+      `WITH c AS (INSERT INTO discount_codes (code, kind, percent) VALUES (?1, 'PERCENT_OFF', 10) RETURNING id)
+       INSERT INTO discount_code_products (code_id, product_id) SELECT id, ?2 FROM c`,
+    )
       .bind(`${PREFIX}mcode`, price.productId)
       .run();
 
@@ -1101,7 +1104,10 @@ describe('POST /api/v1/admin/products/:id/merge', () => {
     expect(await baseEnv.DB.prepare(`SELECT id FROM products WHERE id = ?1`).bind(price.productId).first()).toBeNull();
     const order = await baseEnv.DB.prepare(`SELECT plan_id FROM orders WHERE plan_id = ?1`).bind(price.planId).first();
     expect(order).not.toBeNull();
-    const code = await baseEnv.DB.prepare(`SELECT product_id FROM discount_codes WHERE code = ?1`)
+    const code = await baseEnv.DB.prepare(
+      `SELECT cp.product_id FROM discount_code_products cp
+         JOIN discount_codes dc ON dc.id = cp.code_id WHERE dc.code = ?1`,
+    )
       .bind(`${PREFIX}mcode`)
       .first<{ product_id: number }>();
     expect(Number(code?.product_id)).toBe(tier.productId);
@@ -1156,16 +1162,14 @@ describe('DELETE /api/v1/admin/products/:id', () => {
   });
 
   it('refuses a product a discount code is scoped to', async () => {
-    // `discount_codes.product_id` is CASCADE and `discount_redemptions` cascades
+    // `discount_code_products` is CASCADE and `discount_redemptions` cascades
     // from the code — so this delete would reach a record of money given.
     const { productId } = await makeCatalog('discounted');
     await baseEnv.DB.prepare(
-      `INSERT INTO discount_codes (code, kind, percent) VALUES (?1, 'PERCENT_OFF', 20)`,
+      `WITH c AS (INSERT INTO discount_codes (code, kind, percent) VALUES (?1, 'PERCENT_OFF', 20) RETURNING id)
+       INSERT INTO discount_code_products (code_id, product_id) SELECT id, ?2 FROM c`,
     )
-      .bind(`${PREFIX}code`)
-      .run();
-    await baseEnv.DB.prepare(`UPDATE discount_codes SET product_id = ?1 WHERE code = ?2`)
-      .bind(productId, `${PREFIX}code`)
+      .bind(`${PREFIX}code`, productId)
       .run();
 
     const res = await del(productId);
