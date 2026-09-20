@@ -168,14 +168,15 @@ interface DueRow {
 
 /**
  * Enough identity to make a dead row actionable without logging its customer,
- * order or payment identifier. Reports (`report:*` and `spam:*`) go to the
- * configured reports group; every other producer currently targets a customer.
+ * order or payment identifier. Reports (`report:*`, `spam:*` and `alert:*`) go
+ * to the configured reports group; every other producer currently targets a
+ * customer.
  */
 function routeOf(dedupeKey: string): { kind: string; destination: 'report' | 'customer' } {
   const kind = dedupeKey.split(':', 1)[0] || 'unknown';
   return {
     kind,
-    destination: kind === 'report' || kind === 'spam' ? 'report' : 'customer',
+    destination: kind === 'report' || kind === 'spam' || kind === 'alert' ? 'report' : 'customer',
   };
 }
 

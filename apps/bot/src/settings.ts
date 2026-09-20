@@ -638,23 +638,6 @@ function tomanLimit(value: number | null, fallback: number): number {
  */
 let reportFallback: number | null = null;
 
-/**
- * The topic for one kind of report, from the cache, without awaiting.
- *
- * For the event sink alone. That sink is created at boot — before any settings
- * have been read — and is SYNCHRONOUS, because it is called from `log.error`
- * on paths that are already failing and must not be made to await a database.
- *
- * Null before the first `loadShopSettings`, which means the handful of alerts
- * raised in the first seconds of a boot land in the group's General topic
- * rather than in «گزارش خطاها». That is the correct trade: an alert in the
- * wrong topic is read; an alert that had to await a settings query on the path
- * that is already broken might not be sent at all.
- */
-export function peekReportTopic(kind: ReportKind): number | null {
-  return cached?.value.reportTopics[kind] ?? null;
-}
-
 export function setReportChatIdFallback(chatId: number | null): void {
   reportFallback = chatId;
   invalidateShopSettings();

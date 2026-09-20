@@ -13,7 +13,8 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPostgresD1 } from '@shikoo/db';
-import { alert, alertDedupeKey } from '../../src/alert.js';
+import { hasMarkup, reportTopicKey, toTelegramHtml } from '@shikoo/contracts';
+import { alert, alertDedupeKey, alertText } from '../../src/alert.js';
 import { createPostgresEventSink, pruneAppEvents } from '../../src/eventSink.js';
 import { createLogger, setEventSink, type LogRecord } from '../../src/log.js';
 
@@ -23,9 +24,12 @@ const SVC = 'e2e-log';
 const ALERT_CHAT = -100_777_000_111;
 const NOW_MS = Date.UTC(2026, 7, 22, 18, 40, 0);
 
+const TOPIC_KEY = reportTopicKey('errorreport');
+
 async function cleanup(): Promise<void> {
   await db.prepare(`DELETE FROM app_events WHERE svc = ?1`).bind(SVC).run();
   await db.prepare(`DELETE FROM bot_notifications WHERE chat_id = ?1`).bind(ALERT_CHAT).run();
+  await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = ?1`).bind(TOPIC_KEY).run();
 }
 
 beforeEach(async () => {
@@ -166,14 +170,55 @@ describe('alerting', () => {
       hour: '2-digit',
       hour12: false,
     }).format(new Date(NOW_MS));
-    expect(alertDedupeKey('x', NOW_MS)).toBe(`alert:x:2026-08-22T${tehranHour}`);
+    expect(alertDedupeKey('x', undefined, NOW_MS)).toBe(`alert:x:-:2026-08-22T${tehranHour}`);
   });
 
-  it('only alerts for the named events, and only with a chat configured', async () => {
+  it('is one message per failing thing, not one per event name', async () => {
+    const at = (ref: string): LogRecord => ({
+      ts: new Date(NOW_MS).toISOString(),
+      level: 'error',
+      svc: SVC,
+      evt: 'provision.failed',
+      ref,
+      fields: {},
+    });
+    // Two orders failing in the same hour are two customers, and were one
+    // message before #382.
+    expect(await alert(db, ALERT_CHAT, at('ORD-1'), NOW_MS)).toBe(true);
+    expect(await alert(db, ALERT_CHAT, at('ORD-2'), NOW_MS)).toBe(true);
+    expect(await alert(db, ALERT_CHAT, at('ORD-1'), NOW_MS + 60_000)).toBe(false);
+  });
+
+  it('alerts on every error and on no warning, with a chat configured', async () => {
     setEventSink(createPostgresEventSink(db, { alertChatId: ALERT_CHAT }));
     const log = createLogger(SVC);
-    log.error('panel.slow', {});
-    log.error('provision.failed', { ref: 'ORD-9' });
+    log.warn('panel.slow', {});
+    // Not on any list — before #382 this reached `/admin/events` and nobody.
+    log.error('panel.unreachable', { ref: 'ORD-9', host: 'p1' }, new Error('ECONNREFUSED'));
+
+    await settle();
+    await new Promise((r) => setTimeout(r, 200));
+    const queued = await db
+      .prepare(`SELECT body, message_thread_id FROM bot_notifications WHERE chat_id = ?1`)
+      .bind(ALERT_CHAT)
+      .all<{ body: string; message_thread_id: number | null }>();
+    expect(queued.results).toHaveLength(1);
+    const body = queued.results[0]?.body ?? '';
+    expect(body).toContain('panel.unreachable');
+    expect(body).toContain('ORD-9');
+    // The detail the events page shows: the stack, quoted, and the fields.
+    expect(body).toMatch(/<blockquote>Error: ECONNREFUSED\n\s+at /);
+    expect(body).toContain('<code>host=p1</code>');
+    // No topic configured → the group's General, never `0`.
+    expect(queued.results[0]?.message_thread_id).toBeNull();
+  });
+
+  it('does not alert about an alert that died — the one error that would breed for ever', async () => {
+    setEventSink(createPostgresEventSink(db, { alertChatId: ALERT_CHAT }));
+    const log = createLogger(SVC);
+    // The shape `notify.ts` logs for a DEAD row, `kind` being the key prefix.
+    log.error('notify.dead', { ref: '5', kind: 'alert', destination: 'report' });
+    log.error('notify.dead', { ref: '6', kind: 'invoice', destination: 'customer' });
 
     await settle();
     await new Promise((r) => setTimeout(r, 200));
@@ -181,11 +226,74 @@ describe('alerting', () => {
       .prepare(`SELECT body FROM bot_notifications WHERE chat_id = ?1`)
       .bind(ALERT_CHAT)
       .all<{ body: string }>();
-    expect(queued.results).toHaveLength(1);
-    expect(queued.results[0]?.body).toContain('provision.failed');
-    expect(queued.results[0]?.body).toContain('ORD-9');
-    // House rule: no `parse_mode` anywhere in this bot, so no markup that
-    // could turn an alert into a 400.
-    expect(queued.results[0]?.body).not.toMatch(/<\/?[a-z]+>/);
+    expect(queued.results.map((r) => /مورد: (\S+)/.exec(r.body)?.[1])).toEqual(['6']);
+  });
+
+  it('lands in «❌ گزارش خطا ها» from any service, read from settings', async () => {
+    await db
+      .prepare(`INSERT INTO settings (scope, key, value) VALUES ('bot', ?1, '77'::jsonb)`)
+      .bind(TOPIC_KEY)
+      .run();
+    const record: LogRecord = {
+      ts: new Date(NOW_MS).toISOString(),
+      level: 'error',
+      svc: SVC,
+      evt: 'ingest.parse_failed',
+      fields: {},
+    };
+    expect(await alert(db, ALERT_CHAT, record, NOW_MS)).toBe(true);
+    const row = await db
+      .prepare(`SELECT message_thread_id FROM bot_notifications WHERE chat_id = ?1`)
+      .bind(ALERT_CHAT)
+      .first<{ message_thread_id: number | null }>();
+    expect(row?.message_thread_id).toBe(77);
+  });
+
+  it('survives the HTML escaper: a stack full of angle brackets is markup only where we put it', () => {
+    const err = new Error('boom <b>not markup</b>');
+    err.stack = 'Error: boom <b>not markup</b>\n    at <anonymous> (file.ts:1:1)';
+    const text = alertText(
+      {
+        ts: new Date(NOW_MS).toISOString(),
+        level: 'error',
+        svc: SVC,
+        evt: 'x.failed',
+        fields: { note: 'a < b & c' },
+      },
+      NOW_MS,
+    );
+    const withErr = alertText(
+      {
+        ts: new Date(NOW_MS).toISOString(),
+        level: 'error',
+        svc: SVC,
+        evt: 'x.failed',
+        fields: {},
+        err: { name: err.name, message: err.message, stack: err.stack },
+      },
+      NOW_MS,
+    );
+    // Measured against the sender's own converter, not against this module.
+    expect(hasMarkup(text)).toBe(true);
+    expect(toTelegramHtml(text)).toContain('<code>note=a &lt; b &amp; c</code>');
+    expect(toTelegramHtml(withErr)).toContain('&lt;anonymous&gt;');
+    expect(toTelegramHtml(withErr)).toContain('&lt;b&gt;not markup&lt;/b&gt;');
+    expect(toTelegramHtml(withErr)).toMatch(/^[^<]*<blockquote>[^<]*<\/blockquote>[^<]*$/s);
+  });
+
+  it('cuts a runaway stack inside the quote, never through its closing tag', () => {
+    const text = alertText(
+      {
+        ts: new Date(NOW_MS).toISOString(),
+        level: 'error',
+        svc: SVC,
+        evt: 'x.failed',
+        fields: {},
+        err: { name: 'Error', message: 'deep', stack: 'Error: deep\n' + '    at f (a.ts:1:1)\n'.repeat(400) },
+      },
+      NOW_MS,
+    );
+    expect(text.length).toBeLessThan(4096);
+    expect(text).toMatch(/…<\/blockquote>$/);
   });
 });
