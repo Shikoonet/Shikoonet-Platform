@@ -1914,12 +1914,18 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'به تاپیک «🛍 گزارش های خرید»، بعد از تحویل سرویس — قالب میرزا `accountCreatedAfterPay`',
   },
+  /**
+   * Legacy's `renewReportAdminFn` plus one line it never had: the plan the
+   * account WAS before this renewal — Sam, 2026-09-20: «اکانت قبلیش چی بوده و
+   * الان به چی تبدیل شده». Only the name: «تو نامش همه چیش مشخصه». The
+   * «نام محصول» lines below it are the new service.
+   */
   REPORT_RENEWAL: {
     default:
-      '📣 جزئیات تمدید اکانت در ربات شما ثبت شد .\n    \n▫️آیدی عددی کاربر : {telegramId}\n▫️نام کاربری کاربر : @{username}\n▫️نام کاربری کانفیگ :{config}\n▫️موقعیت سرویس سرویس : {panel}\n▫️نام محصول : {plan}\n▫️حجم محصول : {volume}\n▫️زمان محصول : {days}\n▫️مبلغ تمدید : {price} تومان\n▫️موجودی قبل از خرید : {balanceBefore} تومان\n▫️زمان خرید : {time}',
-    placeholders: ["telegramId", "username", "config", "panel", "plan", "volume", "days", "price", "balanceBefore", "time"],
+      '📣 جزئیات تمدید اکانت در ربات شما ثبت شد .\n    \n▫️آیدی عددی کاربر : {telegramId}\n▫️نام کاربری کاربر : @{username}\n▫️نام کاربری کانفیگ :{config}\n▫️موقعیت سرویس سرویس : {panel}\n▫️سرویس قبلی : {previousPlan}\n▫️نام محصول : {plan}\n▫️حجم محصول : {volume}\n▫️زمان محصول : {days}\n▫️مبلغ تمدید : {price} تومان\n▫️موجودی قبل از خرید : {balanceBefore} تومان\n▫️زمان خرید : {time}',
+    placeholders: ["telegramId", "username", "config", "panel", "previousPlan", "plan", "volume", "days", "price", "balanceBefore", "time"],
     screen: 'warnings',
-    hint: 'به تاپیک «📌 گزارش خرید خدمات»، بعد از تمدید — قالب میرزا `renewedFn`',
+    hint: 'به تاپیک «📌 گزارش خرید خدمات»، بعد از تمدید — قالب میرزا `renewedFn` به‌علاوهٔ سرویس قبلی',
   },
   REPORT_ADD_VOLUME: {
     default:

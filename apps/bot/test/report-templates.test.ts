@@ -64,7 +64,6 @@ function sprintf(section: keyof typeof SECTION, key: string, ...args: (string | 
 const REGISTRY: [TextKey, keyof typeof SECTION, string, string[]][] = [
   ['REPORT_PURCHASE', 'any', 'accountCreateReportAfterPay', ['first', 'telegramId', 'username', 'config', 'panel', 'days', 'plan', 'volume', 'balanceBefore', 'balanceAfter', 'tracking', 'userType', 'phone', 'price', 'finalPrice', 'time']],
   ['REPORT_FIRST_PURCHASE', 'any', 'firstPurchaseLabel', []],
-  ['REPORT_RENEWAL', 'any', 'renewReportAdminFn', ['telegramId', 'username', 'config', 'panel', 'plan', 'volume', 'days', 'price', 'balanceBefore', 'time']],
   ['REPORT_ADD_VOLUME', 'any', 'extraVolumeReportAdminFn', ['telegramId', 'volume', 'price', 'config', 'balanceBefore']],
   ['REPORT_ADD_TIME', 'any', 'extraTimeReportAdminFn', ['telegramId', 'days', 'price', 'config']],
   ['REPORT_TRIAL', 'any', 'testAccountReportAdmin', ['telegramId', 'username', 'config', 'name', 'panel', 'hours', 'mb', 'tracking', 'userType', 'phone', 'time']],
@@ -145,6 +144,30 @@ describe('the report templates are mirzabot’s, read from fa.php', () => {
       firstPurchase: false, telegramId: 1, username: null, config: 'c', panel: 'p', days: null, plan: 'x',
       volumeGb: null, balanceBeforeIrr: 0, balanceAfterIrr: 0, tracking: 't', tier: 'n', priceIrr: 0, finalPriceIrr: 0, atMs: AT,
     })).toBe(sprintf('any', 'accountCreateReportAfterPay', '', 1, '', 'c', 'p', 0, 'x', 0, '0', '0', 't', 'n', 'none', '0', '0', STAMP));
+  });
+
+  it('the renewal report is renewReportAdminFn with the previous service inserted above «نام محصول»', () => {
+    // Sam, 2026-09-20: the group should say what the account was and what it
+    // became — the old plan's name only, «تو نامش همه چیش مشخصه». One line
+    // added to legacy's string; everything else is its.
+    const PREVIOUS = '▫️سرویس قبلی : {previousPlan}\n';
+    const base = template('any', 'renewReportAdminFn', ['telegramId', 'username', 'config', 'panel', 'plan', 'volume', 'days', 'price', 'balanceBefore', 'time']);
+    expect(DEFAULT_TEXTS.raw('REPORT_RENEWAL')).toBe(base.replace('▫️نام محصول', `${PREVIOUS}▫️نام محصول`));
+
+    const text = menu.renewalReport({
+      telegramId: 123, username: 'sam', config: 'sam_1', panel: 'آلمان',
+      previousPlan: 'یک ماهه',
+      plan: 'سه ماهه', volumeGb: 100, days: 90, priceIrr: 2_000_000, balanceBeforeIrr: 500_000, atMs: AT,
+    });
+    expect(text).toBe(
+      sprintf('any', 'renewReportAdminFn', 123, 'sam', 'sam_1', 'آلمان', 'سه ماهه', 100, 90, '200,000', '50,000', STAMP)
+        .replace('▫️نام محصول', '▫️سرویس قبلی : یک ماهه\n▫️نام محصول'),
+    );
+    // A migrated row that never recorded its plan: a dash, not «null».
+    expect(menu.renewalReport({
+      telegramId: 1, username: null, config: 'c', panel: 'p', previousPlan: null,
+      plan: 'x', volumeGb: null, days: null, priceIrr: 0, balanceBeforeIrr: 0, atMs: AT,
+    })).toContain('▫️سرویس قبلی : —\n');
   });
 
   it('fills the trial report in hours and megabytes', () => {

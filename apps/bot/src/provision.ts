@@ -1799,6 +1799,9 @@ async function reportFor(
           username: row.telegram_username,
           config,
           panel,
+          // `row` was read before renew() rewrote the subscription, so the
+          // target_name is still the plan the customer renewed FROM.
+          previousPlan: row.target_name,
           plan: row.plan_name ?? row.target_name ?? row.product_name ?? '',
           volumeGb: numberOrNull(row.volume_gb),
           days: row.duration_days,
