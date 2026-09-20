@@ -281,6 +281,57 @@ describe('alerting', () => {
     expect(toTelegramHtml(withErr)).toMatch(/^[^<]*<blockquote>[^<]*<\/blockquote>[^<]*$/s);
   });
 
+  it('folds dead outbox rows into one an hour — a sweep is not three hundred alerts', async () => {
+    const dead = (ref: string): LogRecord => ({
+      ts: new Date(NOW_MS).toISOString(),
+      level: 'error',
+      svc: SVC,
+      evt: 'notify.dead',
+      ref,
+      fields: { kind: 'nudge', destination: 'customer' },
+    });
+    expect(await alert(db, ALERT_CHAT, dead('301'), NOW_MS)).toBe(true);
+    expect(await alert(db, ALERT_CHAT, dead('302'), NOW_MS)).toBe(false);
+  });
+
+  it('makes a literal tag in the error text inert, so the quote stays balanced', () => {
+    const text = alertText(
+      {
+        ts: new Date(NOW_MS).toISOString(),
+        level: 'error',
+        svc: SVC,
+        evt: 'x.failed',
+        fields: { body: '<code>upstream</code>' },
+        err: { name: 'Error', message: 'got </blockquote> back' },
+      },
+      NOW_MS,
+    );
+    const html = toTelegramHtml(text);
+    expect(html.match(/<blockquote>/g)).toHaveLength(1);
+    expect(html.match(/<\/blockquote>/g)).toHaveLength(1);
+    expect(html.match(/<code>/g)).toHaveLength(1);
+    expect(html.match(/<\/code>/g)).toHaveLength(1);
+  });
+
+  it('caps the fields and never ends a cut on half an emoji', () => {
+    const text = alertText(
+      {
+        ts: new Date(NOW_MS).toISOString(),
+        level: 'error',
+        svc: SVC,
+        evt: 'x.failed',
+        // `note=` is five units, so the cap falls on the HIGH half of an emoji.
+        fields: { note: '🔥'.repeat(2000) },
+      },
+      NOW_MS,
+    );
+    expect(text.length).toBeLessThan(1000);
+    // Measured by the platform, not by this module: a lone surrogate is what
+    // `encodeURIComponent` refuses.
+    expect(() => encodeURIComponent(text)).not.toThrow();
+    expect(text).toMatch(/…<\/code>$/);
+  });
+
   it('cuts a runaway stack inside the quote, never through its closing tag', () => {
     const text = alertText(
       {

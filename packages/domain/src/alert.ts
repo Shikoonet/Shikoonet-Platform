@@ -47,11 +47,33 @@ export function alertDedupeKey(evt: string, ref: string | undefined, atMs: numbe
 }
 
 /**
- * How much of the stack travels. Telegram's cap is 4096 on the visible text;
- * this leaves room for the header and the fields above and below it, and
- * `clamp()` in the bot would otherwise cut through the closing tag.
+ * How much of the stack and of the fields travel. Telegram's cap is 4096 on
+ * the visible text; these two plus the header stay under it, because the bot's
+ * `clamp()` runs before the HTML conversion and would otherwise cut through a
+ * closing tag — a 400, a plain re-send, and a spurious `markup_refused`.
  */
 const MAX_STACK_CHARS = 3000;
+const MAX_FIELDS_CHARS = 600;
+
+/**
+ * `slice` that never ends on half an emoji — the same rule as `cutTo` in the
+ * bot. A lone high surrogate is not valid UTF-8, and Telegram refuses the body
+ * on both the rich and the plain send, which makes the row DEAD on attempt one.
+ */
+function cut(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const end = (text.charCodeAt(max - 1) & 0xfc00) === 0xd800 ? max - 1 : max;
+  return `${text.slice(0, end)}\n…`;
+}
+
+/**
+ * The four strings `toTelegramHtml` would pass through as markup, made inert.
+ * An upstream HTML error body, or a stack cut between such tags, would
+ * otherwise unbalance the quote. Angle quotes keep the text readable.
+ */
+function inert(text: string): string {
+  return text.replace(/<(\/?(?:code|blockquote))>/g, '‹$1›');
+}
 
 function tehranTime(atMs: number): string {
   return new Intl.DateTimeFormat('fa-IR', {
@@ -73,8 +95,7 @@ function errorBlock(err: SerializedError): string {
     ? err.stack
     : `${headline}${err.stack ? `\n${err.stack}` : ''}`;
   const cause = err.cause ? `\ncause: ${errorBlock(err.cause)}` : '';
-  const full = body.trimEnd() + cause;
-  return full.length > MAX_STACK_CHARS ? `${full.slice(0, MAX_STACK_CHARS)}\n…` : full;
+  return cut(inert(body.trimEnd() + cause), MAX_STACK_CHARS);
 }
 
 /**
@@ -101,12 +122,10 @@ export function alertText(record: LogRecord, atMs: number): string {
   // written to stdout, not a second serialisation with its own rules.
   const fields = Object.entries(record.fields);
   if (fields.length > 0) {
-    lines.push(
-      '',
-      `<code>${fields
-        .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
-        .join('\n')}</code>`,
-    );
+    const text = fields
+      .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+      .join('\n');
+    lines.push('', `<code>${cut(inert(text), MAX_FIELDS_CHARS)}</code>`);
   }
   return lines.join('\n');
 }
@@ -150,7 +169,11 @@ export async function alert(
        ON CONFLICT (dedupe_key) DO NOTHING`,
     )
     .bind(
-      alertDedupeKey(record.evt, record.ref, atMs),
+      // A dead outbox row's `ref` is its own id, so with it in the key a nudge
+      // sweep that meets three hundred customers who blocked the bot is three
+      // hundred messages in the hour. That one folds to one, as it always did;
+      // `/admin/events` still has every row.
+      alertDedupeKey(record.evt, record.evt === 'notify.dead' ? undefined : record.ref, atMs),
       chatId,
       alertText(record, atMs),
       topicOf(topic?.value),
