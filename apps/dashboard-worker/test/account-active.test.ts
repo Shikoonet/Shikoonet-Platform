@@ -168,3 +168,67 @@ describe('turning an account back on', () => {
     expect(await activeOf(id)).toBe(0);
   });
 });
+
+/**
+ * The third switch, 0090 — «نمایش به مشتری». Same route, same boolean-to-
+ * smallint path, and the same reason to read the column back: the response
+ * cannot tell a bound field from one that failed the statement.
+ */
+describe('showing an account to customers, and hiding it again', () => {
+  async function visibleOf(id: string): Promise<number | null> {
+    const row = await baseEnv.DB.prepare(
+      `SELECT customer_visible FROM financial_accounts WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ customer_visible: number }>();
+    return row === null ? null : Number(row.customer_visible);
+  }
+
+  it('starts hidden when made from the accounts screen', async () => {
+    // Sam, 2026-09-20: a new account is books-only until somebody turns it on.
+    const res = await app.request(
+      '/api/v1/accounts',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          bank_name: 'BANK',
+          display_name: `${PREFIX}new`,
+          account_type: 'ACCOUNT',
+          account_hint: `${PREFIX}hint`,
+        }),
+      },
+      envAs(),
+    );
+    expect(res.status).toBe(200);
+    const { id } = (await res.json()) as { id: string };
+    try {
+      expect(await visibleOf(id)).toBe(0);
+    } finally {
+      await baseEnv.DB.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(id).run();
+    }
+  });
+
+  it('turns on and off through PATCH, and leaves `active` alone', async () => {
+    const id = `${PREFIX}vis`;
+    await makeAccount(id, { active: 1 });
+    expect(await visibleOf(id)).toBe(0);
+
+    expect((await patch(id, { customer_visible: true })).status).toBe(200);
+    expect(await visibleOf(id)).toBe(1);
+    expect(await activeOf(id)).toBe(1);
+
+    expect((await patch(id, { customer_visible: false })).status).toBe(200);
+    expect(await visibleOf(id)).toBe(0);
+    // The books switch did not move: that is the whole point of a second one.
+    expect(await activeOf(id)).toBe(1);
+  });
+
+  it('is not a reader’s decision either', async () => {
+    const id = `${PREFIX}vis-role`;
+    await makeAccount(id, { active: 1 });
+
+    expect((await patch(id, { customer_visible: true }, READER)).status).toBe(403);
+    expect(await visibleOf(id)).toBe(0);
+  });
+});

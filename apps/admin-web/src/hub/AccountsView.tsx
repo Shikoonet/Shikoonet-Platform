@@ -88,6 +88,7 @@ function formatPaymentCardCell(a: AccountListItem): string {
       .map((c) => {
         const name = c.holder_name ? `${c.display} (${c.holder_name})` : c.display;
         if (accountOff) return `${name} — حساب خاموش`;
+        if (a.customer_visible === 0) return `${name} — پنهان از مشتری`;
         // `!== 'ACTIVE'` rather than `=== 'DISABLED'`: an older response with
         // no status must read as live, which is what it always was.
         return c.status !== undefined && c.status !== 'ACTIVE' ? `${name} — خاموش` : name;
@@ -114,7 +115,11 @@ function PaymentCardCell({ a }: { a: AccountListItem }) {
       {mapped.map((c) => (
         <span key={c.id} className="payment-card-cell__card">
           <IdentifierText value={c.display} {...(c.holder_name ? { label: c.holder_name } : {})} />
-          <CardStateBadges card={c} accountActive={a.active !== 0} />
+          <CardStateBadges
+            card={c}
+            accountActive={a.active !== 0}
+            customerVisible={a.customer_visible !== 0}
+          />
         </span>
       ))}
     </span>
@@ -317,6 +322,44 @@ export function AccountsView({ cache }: AccountsViewProps) {
       await api.updateAccount(id, { active: true });
       setSuccess(`«${name}» فعال شد.`);
       cache.invalidate(QK.accounts, QK.accountTotals('all_time'));
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * The third switch — 0090, Sam 2026-09-20: an account whose texts must
+   * reach the books but whose cards no customer may see. `active` off takes
+   * the books down with it, so it could not be that switch.
+   *
+   * Asks only on the way ON: that is the direction that puts a card in front
+   * of customers. Off is the safe direction and the books do not change.
+   */
+  async function setCustomerVisible(id: string, on: boolean) {
+    const acc = items.find((x) => x.id === id);
+    const name = acc?.display_name ?? id;
+    if (
+      on &&
+      !window.confirm(
+        `«${name}» به مشتری نشان داده شود؟ ربات از این پس کارت‌های این حساب را در صف می‌گذارد ` +
+          `و روی فاکتور مشتری می‌نویسد.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(id);
+    setError(null);
+    try {
+      await api.updateAccount(id, { customer_visible: on });
+      setSuccess(
+        on
+          ? `«${name}» به صف مشتری برگشت.`
+          : `«${name}» از صف مشتری بیرون رفت؛ پیامک‌ها و حساب‌کتابش همچنان ثبت می‌شود.`,
+      );
+      cache.invalidate(QK.accounts);
       setTimeout(() => setSuccess(null), 4000);
     } catch (e) {
       setError(String(e));
@@ -634,6 +677,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                 onEdit={() => setEditing(a.id)}
                 onDeactivate={() => deactivate(a.id)}
                 onActivate={() => activate(a.id)}
+                onCustomerVisible={(on) => setCustomerVisible(a.id, on)}
                 onDelete={() => setDeletingId(a.id)}
                 onRerunAssignment={() => setRerunAssignmentFor(a.id)}
                 onAccept={() => runStatusTransition(a.id, 'accept')}
@@ -706,8 +750,16 @@ export function AccountsView({ cache }: AccountsViewProps) {
                        * two cannot be read against each other and disagree.
                        */}
                       {a.active === 0 && <span className="status-pill status-muted">خاموش</span>}
+                      {a.active !== 0 && a.customer_visible === 0 && (
+                        <span className="status-pill status-muted">پنهان از مشتری</span>
+                      )}
                     </td>
                     <td className="actions-cell">
+                      <CustomerVisibleSwitch
+                        on={a.customer_visible !== 0}
+                        busy={busy === a.id}
+                        onChange={(on) => setCustomerVisible(a.id, on)}
+                      />{' '}
                       <button type="button" onClick={() => setEditing(a.id)}>
                         ویرایش
                       </button>{' '}
@@ -919,6 +971,7 @@ function emptyAccountStub(id: string): AccountListItem {
     iban: null,
     device_id: null,
     active: 0,
+    customer_visible: 0,
     status: 'PENDING',
     parser_configuration: '{}',
     created_at: 0,
@@ -971,6 +1024,7 @@ function AccountCard({
   onEdit,
   onDeactivate,
   onActivate,
+  onCustomerVisible,
   onDelete,
   onRerunAssignment,
   onAccept,
@@ -984,6 +1038,7 @@ function AccountCard({
   onEdit: () => void;
   onDeactivate: () => void;
   onActivate: () => void;
+  onCustomerVisible: (on: boolean) => void;
   onDelete: () => void;
   onRerunAssignment: () => void;
   onAccept: () => void;
@@ -1004,6 +1059,9 @@ function AccountCard({
             pill: the desktop table was fixed and this was not, which would
             have left «فعال» beside «فعال‌کردن» on a phone only. */}
         {a.active === 0 && <span className="status-pill status-muted">خاموش</span>}
+        {a.active !== 0 && a.customer_visible === 0 && (
+          <span className="status-pill status-muted">پنهان از مشتری</span>
+        )}
       </div>
       <div className="card-row">
         <span className="label">بانک</span>
@@ -1028,6 +1086,7 @@ function AccountCard({
       )}
 
       <div className="card-actions">
+        <CustomerVisibleSwitch on={a.customer_visible !== 0} busy={busy} onChange={onCustomerVisible} />
         <button type="button" onClick={onEdit}>
           ویرایش
         </button>
@@ -1138,21 +1197,69 @@ interface PaymentCardRow {
  * a tooltip. An older list response carries neither field; then only the
  * state is drawn.
  */
+/**
+ * The on/off switch for «نمایش به مشتری» (0090). A `role="switch"` button, so
+ * a screen reader says on/off and the two states are one control, not two
+ * buttons that swap. Draws from the write-props hook like every other press
+ * on this screen.
+ */
+function CustomerVisibleSwitch({
+  on,
+  busy,
+  onChange,
+}: {
+  on: boolean;
+  busy: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  const w = useWriteProps();
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      className={`switch${on ? ' switch--on' : ''}`}
+      disabled={busy}
+      onClick={() => onChange(!on)}
+      title={
+        on
+          ? 'ربات کارت‌های این حساب را به مشتری می‌دهد'
+          : 'فقط در حساب‌کتاب؛ به مشتری نشان داده نمی‌شود'
+      }
+      {...w}
+    >
+      <span className="switch__track" aria-hidden="true">
+        <span className="switch__knob" />
+      </span>
+      نمایش به مشتری
+    </button>
+  );
+}
+
 function CardStateBadges({
   card: c,
   accountActive,
+  customerVisible,
 }: {
   card: { status?: string; queue_position?: number; held_until?: number | null };
   accountActive: boolean;
+  /** 0090: the third switch the picker asks. Required for the same reason `accountActive` is. */
+  customerVisible: boolean;
 }) {
   // `!== 'DISABLED'` rather than `=== 'ACTIVE'`: an older response with no
   // status must read as live, which is what it always was.
   const cardOn = c.status !== 'DISABLED';
-  const on = cardOn && accountActive;
+  const on = cardOn && accountActive && customerVisible;
   return (
     <>
       <span className={`badge ${on ? 'badge-active' : 'badge-block'}`}>
-        {on ? 'در گردش' : cardOn ? 'حساب خاموش است' : 'خاموش'}
+        {on
+          ? 'در گردش'
+          : !cardOn
+            ? 'خاموش'
+            : !accountActive
+              ? 'حساب خاموش است'
+              : 'پنهان از مشتری'}
       </span>
       {on && c.queue_position != null && (
         <span className="badge">نوبت {count(c.queue_position)}</span>
@@ -1167,9 +1274,12 @@ function CardStateBadges({
 export function PaymentCardsPanel({
   accountId,
   accountActive,
+  customerVisible,
   onChanged,
 }: {
   accountId: string;
+  /** 0090: whether the bot may show this account's cards at all. Same contract as `accountActive`. */
+  customerVisible: boolean;
   /**
    * Whether the ACCOUNT these cards belong to is in service.
    *
@@ -1316,7 +1426,7 @@ export function PaymentCardsPanel({
           // `financial_accounts` and requires the account to be live, so a card
           // that is ACTIVE on an account that is not is a card nobody will ever
           // be shown — and this badge is the only place that says so.
-          const on = c.status === 'ACTIVE' && accountActive;
+          const on = c.status === 'ACTIVE' && accountActive && customerVisible;
           return (
             <li key={c.id} className={on ? undefined : 'is-off'}>
               {/* Line one is the card's identity and its one state. The state
@@ -1324,7 +1434,11 @@ export function PaymentCardsPanel({
                   the only badge, a live card said nothing at all and the two
                   states looked identical at a glance. */}
               <div className="payment-card__identity">
-                <CardStateBadges card={c} accountActive={accountActive} />
+                <CardStateBadges
+                  card={c}
+                  accountActive={accountActive}
+                  customerVisible={customerVisible}
+                />
                 <IdentifierText value={c.display} />
                 {c.bank_name && <span className="badge">{c.bank_name}</span>}
                 {/* A card number that fails its own check digit cannot exist. One
@@ -1685,6 +1799,7 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
         <PaymentCardsPanel
           accountId={account.id}
           accountActive={account.active !== 0}
+          customerVisible={account.customer_visible !== 0}
           {...(onCardsChanged ? { onChanged: onCardsChanged } : {})}
         />
       )}

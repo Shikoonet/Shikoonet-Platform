@@ -568,6 +568,7 @@ export async function loadCardAnalytics(
               fa.account_hint,
               fa.status AS account_status,
               fa.active AS account_active,
+              fa.customer_visible AS account_customer_visible,
               -- The CARD's own switch. Eligibility read the account's status
               -- and nothing else, so a card somebody had turned off was
               -- reported «واجد شرایط» and counted among the eligible cards with
@@ -659,6 +660,7 @@ export async function loadCardAnalytics(
       account_hint: string | null;
       account_status: string;
       account_active: number;
+      account_customer_visible: number;
       card_status: string;
       purchase_count: number;
       verified_count: number;
@@ -795,17 +797,22 @@ export async function loadCardAnalytics(
      * the bot would never hand out.
      */
     hubEligible:
-      r.card_status === 'ACTIVE' && r.account_status === 'ACTIVE' && Number(r.account_active) === 1,
+      r.card_status === 'ACTIVE' &&
+      r.account_status === 'ACTIVE' &&
+      Number(r.account_active) === 1 &&
+      Number(r.account_customer_visible) === 1,
     // The FIRST reason it is out, so the operator is sent to one switch rather
-    // than told «not eligible» and left to find which of three it is.
+    // than told «not eligible» and left to find which of four it is.
     exclusionReason:
       r.card_status !== 'ACTIVE'
         ? 'card_disabled'
         : Number(r.account_active) !== 1
           ? 'account_deactivated'
-          : r.account_status === 'ACTIVE'
-            ? 'hub_active'
-            : `account_${r.account_status.toLowerCase()}`,
+          : r.account_status !== 'ACTIVE'
+            ? `account_${r.account_status.toLowerCase()}`
+            : Number(r.account_customer_visible) !== 1
+              ? 'account_hidden'
+              : 'hub_active',
   }));
 
   // Appended, not merged in: they sort after the mapped cards because they are

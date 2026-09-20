@@ -556,7 +556,8 @@ describe('GET /api/v1/cards/analytics', () => {
       .bind(ACCOUNT, digits, Date.now())
       .run();
     await baseEnv.DB.prepare(
-      `UPDATE financial_accounts SET active = 1, status = 'ACTIVE' WHERE id = ?1`,
+      `UPDATE financial_accounts SET active = 1, status = 'ACTIVE', customer_visible = 1
+        WHERE id = ?1`,
     )
       .bind(ACCOUNT)
       .run();
@@ -596,7 +597,20 @@ describe('GET /api/v1/cards/analytics', () => {
       exclusionReason: 'account_muted',
     });
 
-    await baseEnv.DB.prepare(`UPDATE financial_accounts SET status = 'ACTIVE' WHERE id = ?1`)
+    // 4. the customer switch (0090): in the books, off the invoice
+    await baseEnv.DB.prepare(
+      `UPDATE financial_accounts SET status = 'ACTIVE', customer_visible = 0 WHERE id = ?1`,
+    )
+      .bind(ACCOUNT)
+      .run();
+    expect(await eligibilityOf(digits)).toMatchObject({
+      hubEligible: false,
+      exclusionReason: 'account_hidden',
+    });
+
+    await baseEnv.DB.prepare(
+      `UPDATE financial_accounts SET status = 'ACTIVE', customer_visible = 1 WHERE id = ?1`,
+    )
       .bind(ACCOUNT)
       .run();
   });

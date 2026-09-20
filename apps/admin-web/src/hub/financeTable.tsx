@@ -52,6 +52,7 @@ const EXCLUSION_REASON_FA: Record<string, string> = {
   account_muted: 'حساب این کارت بی‌صدا است',
   account_declined: 'حساب این کارت رد شده است',
   account_pending: 'حساب این کارت هنوز تایید نشده است',
+  account_hidden: 'حساب این کارت به مشتری نشان داده نمی‌شود — فقط در حساب‌کتاب است',
 };
 
 export function exclusionReasonFa(reason: string): string {

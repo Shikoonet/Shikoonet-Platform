@@ -2005,7 +2005,7 @@ app.get('/api/v1/matches', async (c) => {
 const ACCOUNT_BASE_SELECT = `
   SELECT fa.id, fa.bank_name, fa.display_name, fa.owner_label, fa.account_type,
          fa.account_hint, fa.card_last_four, fa.account_last_four, fa.iban,
-         fa.device_id, fa.active, fa.status, fa.parser_configuration,
+         fa.device_id, fa.active, fa.customer_visible, fa.status, fa.parser_configuration,
          fa.created_at, fa.updated_at,
          d.display_name AS device_display_name,
          fa.suggested_owner_id, fa.suggested_reason,
@@ -2039,6 +2039,7 @@ app.get('/api/v1/accounts', async (c) => {
     iban: string | null;
     device_id: string | null;
     active: number;
+    customer_visible: number;
     parser_configuration: string;
     created_at: number;
     updated_at: number;
@@ -2341,6 +2342,8 @@ type MirroredColumns = Record<keyof typeof MIRRORED_IDENTIFIER_KINDS, string | n
 
 const AccountUpdate = AccountCreate.partial().extend({
   active: z.boolean().optional(),
+  /** 0090: whether the bot may hand this account's cards to customers. Books unaffected. */
+  customer_visible: z.boolean().optional(),
 });
 
 app.patch('/api/v1/accounts/:id', async (c) => {

@@ -198,9 +198,9 @@ async function main(): Promise<number> {
       .prepare(
         `INSERT INTO financial_accounts
            (id, bank_name, display_name, owner_label, account_type,
-            account_hint, card_last_four, active, status, parser_configuration,
+            account_hint, card_last_four, active, customer_visible, status, parser_configuration,
             created_at, updated_at)
-         VALUES (?1, 'MELLI', 'حساب تست', 'تست شیکو', 'CARD', ?2, ?3, 1, 'ACTIVE', '{}', ?4, ?4)
+         VALUES (?1, 'MELLI', 'حساب تست', 'تست شیکو', 'CARD', ?2, ?3, 1, 1, 'ACTIVE', '{}', ?4, ?4)
          ON CONFLICT (id) DO UPDATE
             SET account_hint = ?2, card_last_four = ?3,
                 status = 'ACTIVE', active = 1, updated_at = ?4`,

@@ -124,6 +124,11 @@ export async function rotateCard(tx: D1DatabaseSession, now: number): Promise<Ro
              -- cannot disagree about which accounts are in service.
              AND fa.active = 1
              AND fa.status = 'ACTIVE'
+             -- And the third switch, 0090: an account kept for its books
+             -- alone. Sam, 2026-09-20 — accounts whose texts must reach the
+             -- ledger but whose cards no customer may see. active could not
+             -- say it, because off takes the books down too.
+             AND fa.customer_visible = 1
            -- Free cards first (COALESCE: a NULL hold is "free", and a bare
            -- boolean would sort NULL after true). Among the busy, the one that
            -- frees soonest. Then the line itself.

@@ -508,7 +508,7 @@ describe('the read-only ledgers', () => {
     // Sam, 2026-09-20: a first purchase in Mordad, changed to «الماس» today,
     // and the Mordad order on the customer's card read «الماس» too. The
     // service's `plan_name_at_sale` is the name it is sold under NOW — a
-    // tier change rewrites it, rightly — so the order carries its own (0089).
+    // tier change rewrites it, rightly — so the order carries its own (0090).
     const { id: userId, telegramId } = await makeUser();
     const orderPublicId = `zzsales-order-${seq}`;
     await baseEnv.DB.prepare(

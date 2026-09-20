@@ -188,8 +188,8 @@ export async function seed(db: D1Database, opts: { verbose?: boolean } = {}): Pr
       accounts.push(a);
       await db
         .prepare(
-          `INSERT INTO financial_accounts (id, bank_name, display_name, owner_label, account_type, account_hint, card_last_four, account_last_four, device_id, active, parser_configuration, created_at, updated_at)
-           VALUES (?1, ?2, ?3, NULL, 'CARD', ?4, ?5, ?6, ?7, 1, ?8, ?9, ?9)`,
+          `INSERT INTO financial_accounts (id, bank_name, display_name, owner_label, account_type, account_hint, card_last_four, account_last_four, device_id, active, customer_visible, parser_configuration, created_at, updated_at)
+           VALUES (?1, ?2, ?3, NULL, 'CARD', ?4, ?5, ?6, ?7, 1, 1, ?8, ?9, ?9)`,
         )
         .bind(
           a.id,
@@ -293,8 +293,8 @@ export async function seed(db: D1Database, opts: { verbose?: boolean } = {}): Pr
     if (!dev) continue;
     await db
       .prepare(
-        `INSERT INTO financial_accounts (id, bank_name, display_name, owner_label, account_type, account_hint, card_last_four, account_last_four, device_id, active, parser_configuration, created_at, updated_at)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, NULL, NULL, ?6, 1, '{}', ?7, ?7)`,
+        `INSERT INTO financial_accounts (id, bank_name, display_name, owner_label, account_type, account_hint, card_last_four, account_last_four, device_id, active, customer_visible, parser_configuration, created_at, updated_at)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, NULL, NULL, ?6, 1, 1, '{}', ?7, ?7)`,
       )
       .bind(id(), sa.bank_name, sa.display_name, sa.account_type, sa.account_hint, dev.id, t0)
       .run();

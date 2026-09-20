@@ -82,4 +82,5 @@ export const CARD_QUEUE_POSITION_SQL = `(
   SELECT COUNT(*)::int + 1 FROM payment_cards o
     JOIN financial_accounts ofa ON ofa.id = o.financial_account_id
    WHERE o.status = 'ACTIVE' AND ofa.active = 1 AND ofa.status = 'ACTIVE'
+     AND ofa.customer_visible = 1
      AND (o.rotation_cursor, o.id) < (pc.rotation_cursor, pc.id))`;
