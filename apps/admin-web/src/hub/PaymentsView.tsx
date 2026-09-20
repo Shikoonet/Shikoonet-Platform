@@ -3040,7 +3040,7 @@ function DeclineIncomeModal({
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal">
+      <div className="modal-body">
         <h2>این واریزی رد شود؟</h2>
         <p>
           مبلغ: <strong>{formatTomanFromIrr(item.amountIrr)}</strong>
@@ -3066,7 +3066,7 @@ function DeclineIncomeModal({
           یادداشت
           <input value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
-        <div className="modal__actions">
+        <div className="modal-actions">
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
             انصراف
           </button>
@@ -3113,7 +3113,7 @@ function DuplicateDepositModal({
   }
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal">
+      <div className="modal-body">
         <h2>این واریزی تکراری است؟</h2>
         <p>
           مبلغ: <strong>{item.amountIrr == null ? '—' : formatTomanFromIrr(item.amountIrr)}</strong>
@@ -3123,7 +3123,7 @@ function DuplicateDepositModal({
           مشتری‌ها» و از حرکت‌های «دفتر بانک» بیرون می‌رود و به هیچ پرداختی نمی‌چسبد. پیامک بانک دست
           نمی‌خورد. از پنل برنمی‌گردد؛ اگر شک داری «رد» بزن، نه این.
         </p>
-        <div className="modal__actions">
+        <div className="modal-actions">
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
             انصراف
           </button>
@@ -3168,7 +3168,7 @@ function BulkDeclineModal({
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal">
+      <div className="modal-body">
         <h2>واریزی‌های انتخاب‌شده رد شوند؟</h2>
         <p>
           تراکنش‌ها: <strong>{items.length}</strong>
@@ -3180,7 +3180,7 @@ function BulkDeclineModal({
           دلیل
           <input value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
-        <div className="modal__actions">
+        <div className="modal-actions">
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
             انصراف
           </button>
