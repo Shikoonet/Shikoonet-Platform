@@ -105,14 +105,24 @@ describe('reading', () => {
     const res = await app.request('/api/v1/admin/retention', {}, envAs(REVIEWER));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      items: { key: string; codeId: number; funnel: { sent: number }; lastActed: unknown }[];
+      items: { key: string; codeId: number; funnel: { sent: number }; lastActed: unknown; audience: number }[];
       panels: { id: number }[];
       admins: { admin: string; accounts: number }[];
       codes: { id: number; firstPurchaseOnly: boolean }[];
     };
     expect(body.items.map((i) => i.key)).toEqual(['r_test1']);
-    expect(body.items[0]?.funnel).toEqual({ sent: 0, usedCode: 0, usedOutside: 0, stayed: 0, left: 0, pending: 0 });
+    expect(body.items[0]?.funnel).toEqual({
+      sent: 0,
+      usedCode: 0,
+      usedOutside: 0,
+      stayed: 0,
+      left: 0,
+      pending: 0,
+      messages: { queued: 0, sent: 0, dead: 0, today: 0 },
+    });
     expect(body.items[0]?.lastActed).toBeNull();
+    // The saved rule's audience, counted server-side for the overview.
+    expect(typeof body.items[0]?.audience).toBe('number');
     expect(body.panels.some((p) => Number(p.id) === panelId)).toBe(true);
     expect(Array.isArray(body.admins)).toBe(true);
     expect(body.codes.find((c) => Number(c.id) === firstOnlyCodeId)?.firstPurchaseOnly).toBe(true);

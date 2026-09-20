@@ -63,6 +63,17 @@ export interface RetentionRule {
    * every rule saved before this field existed does.
    */
   textAfter: string;
+  /**
+   * The Tehran clock time the rule sends at, «HH:MM», or null.
+   *
+   * Sam, 2026-09-20: «از اون به بعد همیشه همون موقع پیغام بده». With a time,
+   * the day's message goes at the first sweep after that minute, and only to
+   * services already inside the window at that minute — one who enters it
+   * later in the day waits for tomorrow's slot, so a «one day before» rule
+   * is one message and not two. Null is every rule saved before the field
+   * existed: sent on entering the window, then every 24 hours.
+   */
+  sendAt: string | null;
 }
 
 export const RETENTION_PLACEHOLDERS = ['days', 'service', 'username', 'code', 'discount', 'renewButton'] as const;
@@ -112,6 +123,7 @@ export const RETENTION_LIMITS = {
 } as const;
 
 const KEY = /^[a-z0-9_-]{1,40}$/;
+const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** A panel admin username as PasarGuard allows them: no whitespace, sane length. */
 const ADMIN = /^\S{1,64}$/;
 const MENTIONS_CODE = /\{(?:code|discount)\}/;
@@ -154,6 +166,9 @@ export function parseRetentionRules(value: unknown): RetentionRule[] | null {
     // Optional and absent on every rule saved before 2026-09-20.
     const textAfter = r['textAfter'] === undefined ? '' : r['textAfter'];
     if (typeof textAfter !== 'string' || textAfter.length > RETENTION_LIMITS.text) return null;
+    // Optional too; absent or blank is «on entering the window».
+    const sendAt = r['sendAt'] === undefined || r['sendAt'] === '' ? null : r['sendAt'];
+    if (sendAt !== null && (typeof sendAt !== 'string' || !CLOCK.test(sendAt))) return null;
     // A text that promises a code needs one. The default text does, so a
     // rule saved without picking a code would send «با کد  از  تخفیف» — two
     // blanks where the offer was. Only an ENABLED rule is held to this: a
@@ -172,6 +187,7 @@ export function parseRetentionRules(value: unknown): RetentionRule[] | null {
       codeId: r['codeId'] as number | null,
       text: r['text'],
       textAfter: textAfter.trim() === '' ? '' : textAfter,
+      sendAt,
     });
   }
   return out;

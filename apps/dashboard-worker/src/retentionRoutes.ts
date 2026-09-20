@@ -118,10 +118,25 @@ export function registerRetentionRoutes(
     const items = await Promise.all(
       rules.map(async (r) => {
         const last = lastActed.get(`retention:${r.key}`);
+        const [funnel, audience] = await Promise.all([
+          retentionFunnel(db, r.key, r.codeId),
+          // «الان چند نفر در بازه‌اند» for the SAVED rule, the same predicate
+          // the sweep uses — the screen's overview needs it without a draft.
+          r.providerId === null && r.panelAdmin === null
+            ? Promise.resolve(0)
+            : retentionAudienceCount(db, {
+                providerId: r.providerId,
+                panelAdmin: r.panelAdmin,
+                daysBefore: r.daysBefore,
+                daysAfter: r.daysAfter,
+                onlyService: r.onlyService,
+              }),
+        ]);
         return {
           ...r,
           lastActed: last ? { at: last.at, count: last.count } : null,
-          funnel: await retentionFunnel(db, r.key, r.codeId),
+          funnel,
+          audience,
         };
       }),
     );

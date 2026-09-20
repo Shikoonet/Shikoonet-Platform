@@ -21,6 +21,11 @@
  *
  * «did not use» is `sent − usedCode` and the screen does that subtraction.
  *
+ * `messages` counts ROWS of the outbox, not people — what the operator sees
+ * as «in the queue», «delivered», «could not be delivered» — and `today` is
+ * the rows the sweep wrote since Tehran midnight. Sam, 2026-09-20: «چند نفر
+ * تو کیو هستن، چند نفر بد کردن، چند نفر رسیده».
+ *
  * ponytail: split_part on the key is the ceiling. A `retention_sends` table is
  * the upgrade if this query ever shows in the nightly report's timings.
  */
@@ -34,6 +39,7 @@ export interface RetentionFunnel {
   stayed: number;
   left: number;
   pending: number;
+  messages: { queued: number; sent: number; dead: number; today: number };
 }
 
 export async function retentionFunnel(
@@ -49,15 +55,17 @@ export async function retentionFunnel(
       // expiry is compared as the sweep wrote it — `::bigint` on both sides —
       // because a fractional second on the live column would otherwise read
       // as «moved» against its own truncated copy in the key.
-      `WITH sent AS (
+      `WITH rows AS (
+         SELECT n.dedupe_key, n.status, n.sent_at, n.created_at
+           FROM bot_notifications n
+          WHERE n.dedupe_key LIKE 'retention:%'
+            AND split_part(n.dedupe_key, ':', 2) = ?1),
+       sent AS (
          SELECT DISTINCT ON (sub_id) sub_id, expires_epoch, sent_at
-           FROM (SELECT split_part(n.dedupe_key, ':', 3)::bigint AS sub_id,
-                        split_part(n.dedupe_key, ':', 4)::bigint AS expires_epoch,
-                        n.sent_at
-                   FROM bot_notifications n
-                  WHERE n.dedupe_key LIKE 'retention:%'
-                    AND split_part(n.dedupe_key, ':', 2) = ?1
-                    AND n.status = 'SENT') x
+           FROM (SELECT split_part(dedupe_key, ':', 3)::bigint AS sub_id,
+                        split_part(dedupe_key, ':', 4)::bigint AS expires_epoch,
+                        sent_at
+                   FROM rows WHERE status = 'SENT') x
           ORDER BY sub_id, sent_at),
        -- One row per PERSON: the first service of theirs this rule reached
        -- stands for them, so somebody with two services is one in every
@@ -81,7 +89,12 @@ export async function retentionFunnel(
               (SELECT count(*) FROM people
                 WHERE expires_now <= expires_epoch AND expires_at < now())::int AS left_,
               (SELECT count(*) FROM people
-                WHERE expires_now <= expires_epoch AND expires_at >= now())::int AS pending`,
+                WHERE expires_now <= expires_epoch AND expires_at >= now())::int AS pending,
+              (SELECT count(*) FROM rows WHERE status IN ('PENDING', 'FAILED'))::int AS queued,
+              (SELECT count(*) FROM rows WHERE status = 'SENT')::int AS msg_sent,
+              (SELECT count(*) FROM rows WHERE status = 'DEAD')::int AS dead,
+              (SELECT count(*) FROM rows
+                WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Tehran') AT TIME ZONE 'Asia/Tehran')::int AS today`,
     )
     .bind(ruleKey, codeId)
     .first<{
@@ -91,6 +104,10 @@ export async function retentionFunnel(
       stayed: number;
       left_: number;
       pending: number;
+      queued: number;
+      msg_sent: number;
+      dead: number;
+      today: number;
     }>();
   return {
     sent: row?.sent ?? 0,
@@ -99,5 +116,11 @@ export async function retentionFunnel(
     stayed: row?.stayed ?? 0,
     left: row?.left_ ?? 0,
     pending: row?.pending ?? 0,
+    messages: {
+      queued: row?.queued ?? 0,
+      sent: row?.msg_sent ?? 0,
+      dead: row?.dead ?? 0,
+      today: row?.today ?? 0,
+    },
   };
 }

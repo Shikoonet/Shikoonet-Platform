@@ -31,7 +31,15 @@ const good = {
 describe('parseRetentionRules', () => {
   it('accepts a good list and trims the name', () => {
     const out = parseRetentionRules([{ ...good, name: '  x  ', codeId: 3 }]);
-    expect(out).toEqual([{ ...good, name: 'x', codeId: 3, textAfter: '' }]);
+    expect(out).toEqual([{ ...good, name: 'x', codeId: 3, textAfter: '', sendAt: null }]);
+  });
+
+  it('a clock time is «HH:MM» Tehran, blank is none, and anything else is refused', () => {
+    expect(parseRetentionRules([{ ...good, sendAt: '10:30' }])?.[0]?.sendAt).toBe('10:30');
+    expect(parseRetentionRules([{ ...good, sendAt: '' }])?.[0]?.sendAt).toBeNull();
+    for (const bad of ['24:00', '9:05', '10:60', '1030', 7]) {
+      expect(parseRetentionRules([{ ...good, sendAt: bad }])).toBeNull();
+    }
   });
 
   it('a rule from before the admin picker — provider row only — still reads, with panelAdmin null', () => {

@@ -1696,6 +1696,8 @@ export interface RetentionRule {
   text: string;
   /** After expiry; empty means «same as text». */
   textAfter: string;
+  /** Tehran «HH:MM» the rule sends at each day; null is «on entering the window, then every 24 h». */
+  sendAt: string | null;
 }
 
 export interface RetentionFunnel {
@@ -1705,11 +1707,15 @@ export interface RetentionFunnel {
   stayed: number;
   left: number;
   pending: number;
+  /** Outbox rows, not people: in the queue, delivered, undeliverable, written today. */
+  messages: { queued: number; sent: number; dead: number; today: number };
 }
 
 export interface RetentionRuleRow extends RetentionRule {
   lastActed: { at: string; count: number } | null;
   funnel: RetentionFunnel;
+  /** How many people are in the saved rule's window right now. */
+  audience: number;
 }
 
 export interface RetentionCodeOption {
