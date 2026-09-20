@@ -48,6 +48,7 @@ const ACCOUNT: AccountListItem = {
   iban: null,
   device_id: null,
   active: 1,
+  customer_visible: 1,
   parser_configuration: '{}',
   created_at: 0,
   updated_at: 0,

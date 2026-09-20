@@ -31,8 +31,8 @@ export async function ensurePaymentCard(): Promise<void> {
     .prepare(
       `INSERT INTO financial_accounts
          (id, bank_name, display_name, account_type, account_hint, card_last_four,
-          active, parser_configuration, created_at, updated_at)
-       VALUES (?1, 'Melli', 'حساب تست ربات', 'CARD', '0095', '0095', 1, '{}', 0, 0)
+          active, customer_visible, parser_configuration, created_at, updated_at)
+       VALUES (?1, 'Melli', 'حساب تست ربات', 'CARD', '0095', '0095', 1, 1, '{}', 0, 0)
        ON CONFLICT (id) DO NOTHING`,
     )
     .bind(FIXTURE_ACCOUNT_ID)

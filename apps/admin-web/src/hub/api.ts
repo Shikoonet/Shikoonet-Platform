@@ -103,6 +103,8 @@ export interface AccountListItem {
   iban: string | null;
   device_id: string | null;
   active: number;
+  /** 0090: 1 when the bot may show this account's cards; 0 keeps it in the books only. */
+  customer_visible: number;
   status: 'PENDING' | 'ACTIVE' | 'MUTED' | 'DECLINED';
   parser_configuration: string;
   created_at: number;
@@ -534,6 +536,7 @@ export const api = {
       iban: string | null;
       device_id: string | null;
       active: boolean;
+      customer_visible: boolean;
     }>,
   ) =>
     req<{ ok: boolean }>(`/api/v1/accounts/${encodeURIComponent(id)}`, {

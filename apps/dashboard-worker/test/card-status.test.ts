@@ -116,10 +116,10 @@ beforeEach(async () => {
   await baseEnv.DB.prepare(
     `INSERT INTO financial_accounts
        (id, bank_name, display_name, owner_label, account_type, account_hint,
-        card_last_four, account_last_four, iban, device_id, active,
+        card_last_four, account_last_four, iban, device_id, active, customer_visible,
         parser_configuration, status, created_at, updated_at)
      VALUES (?1, 'BANK', 'card-status account', NULL, 'ACCOUNT', 'card-status-hint',
-             NULL, NULL, NULL, NULL, 1, '{}', 'ACTIVE', 1, 1)`,
+             NULL, NULL, NULL, NULL, 1, 1, '{}', 'ACTIVE', 1, 1)`,
   )
     .bind(ACCOUNT)
     .run();

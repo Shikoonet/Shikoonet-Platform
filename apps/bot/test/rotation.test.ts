@@ -75,8 +75,8 @@ async function pool(count: number): Promise<string[]> {
     .prepare(
       `INSERT INTO financial_accounts
          (id, bank_name, display_name, account_type, account_hint, card_last_four,
-          active, parser_configuration, created_at, updated_at)
-       VALUES (?1, 'ROTATION', 'حساب تست چرخش', 'CARD', '0000', '0000', 1, '{}', 0, 0)
+          active, customer_visible, parser_configuration, created_at, updated_at)
+       VALUES (?1, 'ROTATION', 'حساب تست چرخش', 'CARD', '0000', '0000', 1, 1, '{}', 0, 0)
        ON CONFLICT (id) DO NOTHING`,
     )
     .bind(ACCOUNT_ID)
@@ -206,8 +206,8 @@ async function ownAccount(digits: string): Promise<string> {
     .prepare(
       `INSERT INTO financial_accounts
          (id, bank_name, display_name, account_type, account_hint, card_last_four,
-          active, parser_configuration, created_at, updated_at)
-       VALUES (?1, 'ROTATION', 'حساب تست چرخش', 'CARD', ?2, ?2, 1, '{}', 0, 0)
+          active, customer_visible, parser_configuration, created_at, updated_at)
+       VALUES (?1, 'ROTATION', 'حساب تست چرخش', 'CARD', ?2, ?2, 1, 1, '{}', 0, 0)
        ON CONFLICT (id) DO NOTHING`,
     )
     .bind(id, digits.slice(-4))
@@ -708,9 +708,9 @@ describe('a card is only handed out while its account is in service', () => {
       .prepare(
         `INSERT INTO financial_accounts
            (id, bank_name, display_name, account_type, account_hint, card_last_four,
-            active, status, parser_configuration, created_at, updated_at)
-         VALUES (?1, 'ROTATION', 'حساب زنده', 'CARD', '0001', '0001', 1, 'ACTIVE', '{}', 0, 0)
-         ON CONFLICT (id) DO UPDATE SET active = 1, status = 'ACTIVE'`,
+            active, customer_visible, status, parser_configuration, created_at, updated_at)
+         VALUES (?1, 'ROTATION', 'حساب زنده', 'CARD', '0001', '0001', 1, 1, 'ACTIVE', '{}', 0, 0)
+         ON CONFLICT (id) DO UPDATE SET active = 1, customer_visible = 1, status = 'ACTIVE'`,
       )
       .bind(live)
       .run();
@@ -739,6 +739,74 @@ describe('a card is only handed out while its account is in service', () => {
     } finally {
       await db.prepare(`DELETE FROM payment_cards WHERE id = ?1`).bind(`${PREFIX}live`).run();
       await db.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(live).run();
+    }
+  });
+});
+
+/**
+ * The third switch — 0090. Sam, 2026-09-20: accounts whose texts must reach
+ * the books but whose cards no customer may see, «مگر اینکه ادمین دکمه‌اشون
+ * رو روشن کنه». `active` is not that switch: off takes the books down too.
+ */
+describe('a card is only handed out while its account is shown to customers', () => {
+  async function visible(on: 0 | 1, id: string = ACCOUNT_ID): Promise<void> {
+    await db
+      .prepare(`UPDATE financial_accounts SET customer_visible = ?2 WHERE id = ?1`)
+      .bind(id, on)
+      .run();
+  }
+
+  it('refuses every card on a hidden account, and hands them out again once it is shown', async () => {
+    await pool(3);
+    expect(await drawOne()).toBeTruthy();
+
+    await visible(0);
+    expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
+
+    await visible(1);
+    expect((await db.withSession((tx) => rotateCard(tx, T + 1)))?.card_digits).toBeTruthy();
+  });
+
+  it('is what a new account starts as: hidden, until an operator turns it on', async () => {
+    // The column's own default, read back from Postgres — not from the test.
+    // A fixture that wrote the value would prove nothing about an account the
+    // accounts screen or ingest creates without naming it.
+    await pool(1);
+    const id = 'fa-rotation-newborn';
+    await db
+      .prepare(
+        `INSERT INTO financial_accounts
+           (id, bank_name, display_name, account_type, account_hint, card_last_four,
+            active, status, parser_configuration, created_at, updated_at)
+         VALUES (?1, 'ROTATION', 'حساب نو', 'CARD', '0002', '0002', 1, 'ACTIVE', '{}', 0, 0)
+         ON CONFLICT (id) DO NOTHING`,
+      )
+      .bind(id)
+      .run();
+    const newDigits = digitsFor(91);
+    await db
+      .prepare(
+        `INSERT INTO payment_cards
+           (id, financial_account_id, card_digits, holder_name, status,
+            created_at, rotation_cursor)
+         VALUES (?1, ?2, ?3, 'نو', 'ACTIVE', 0, 0)
+         ON CONFLICT (card_digits) DO UPDATE SET status = 'ACTIVE', rotation_cursor = 0`,
+      )
+      .bind(`${PREFIX}newborn`, id, newDigits)
+      .run();
+    try {
+      const row = await db
+        .prepare(`SELECT customer_visible FROM financial_accounts WHERE id = ?1`)
+        .bind(id)
+        .first<{ customer_visible: number }>();
+      expect(Number(row?.customer_visible)).toBe(0);
+      // Its card sits at the very front of the line (cursor 0) and is still
+      // never drawn: every draw lands on the pool account's card.
+      const seen = await draw(5);
+      expect([...seen.keys()]).toEqual([digitsFor(0)]);
+    } finally {
+      await db.prepare(`DELETE FROM payment_cards WHERE id = ?1`).bind(`${PREFIX}newborn`).run();
+      await db.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(id).run();
     }
   });
 });
