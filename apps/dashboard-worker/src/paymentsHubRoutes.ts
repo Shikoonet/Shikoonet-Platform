@@ -161,6 +161,16 @@ function rangeClause(
   return { sql: ` AND ${column} >= ${p(start)} AND ${column} < ${p(end)}`, binds: [start, end] };
 }
 
+/**
+ * A declined deposit is still money the bank took in — it just is not a sale.
+ * A rejected one (a re-sent text, a false parse) is not money at all, and the
+ * off-books tag it may still carry is history, not a disposition: it left
+ * «دفتر بانک» on the same rule (books.ts) and it leaves «رد شده» here too.
+ * Production, 2026-09-20: a duplicate rejected from this tab kept sitting in
+ * it, 1,200,000 in the declined total.
+ */
+const NOT_REJECTED = `t.status NOT IN ('REJECTED','IGNORED')`;
+
 export async function loadDeclinedIncomeItems(
   db: D1Database,
   range: HistoryRange,
@@ -185,7 +195,7 @@ export async function loadDeclinedIncomeItems(
        FROM income_declined_transactions idt
        JOIN transaction_candidates t ON t.id = idt.transaction_candidate_id
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
-       WHERE idt.restored_at IS NULL${rangeFilter.sql}
+       WHERE idt.restored_at IS NULL AND ${NOT_REJECTED}${rangeFilter.sql}
        -- The id breaks the tie, and it is what makes OFFSET safe. Two rows
        -- with the same timestamp have no defined order between them, so a
        -- plain timestamp sort can hand page 2 a row page 1 already showed and
@@ -244,7 +254,7 @@ export async function loadDeclinedIncomeTotals(
       `SELECT COUNT(*) AS count, COALESCE(SUM(t.amount_irr), 0) AS amount_irr
        FROM income_declined_transactions idt
        JOIN transaction_candidates t ON t.id = idt.transaction_candidate_id
-       WHERE idt.restored_at IS NULL${rangeFilter.sql}`,
+       WHERE idt.restored_at IS NULL AND ${NOT_REJECTED}${rangeFilter.sql}`,
     )
     .bind(...binds)
     .first<{ count: number; amount_irr: number }>();
@@ -253,7 +263,11 @@ export async function loadDeclinedIncomeTotals(
 
 export async function loadDeclinedIncomeCount(db: D1Database) {
   const row = await db
-    .prepare(`SELECT COUNT(*) AS n FROM income_declined_transactions WHERE restored_at IS NULL`)
+    .prepare(
+      `SELECT COUNT(*) AS n FROM income_declined_transactions idt
+       JOIN transaction_candidates t ON t.id = idt.transaction_candidate_id
+       WHERE idt.restored_at IS NULL AND ${NOT_REJECTED}`,
+    )
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
