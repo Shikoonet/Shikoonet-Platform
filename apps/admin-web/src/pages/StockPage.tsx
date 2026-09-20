@@ -867,7 +867,7 @@ function ShelfPapers({
       <div className="filters" style={{ marginBlockStart: 16 }}>
         <div className="grow">
           <label className="form-label" htmlFor="papers-file">
-            فایل — تا ۴۸ مگابایت؛ ویدیو به‌صورت ویدیو می‌رود
+            فایل (مثلاً .ovpn)، عکس یا ویدیو — تا ۴۸ مگابایت؛ ویدیو به‌صورت ویدیو می‌رود
           </label>
           <input
             id="papers-file"
