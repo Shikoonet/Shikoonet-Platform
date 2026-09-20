@@ -128,20 +128,26 @@ describe('what still needs a person', () => {
    * stamp would answer the total and fail.
    */
   it('counts only the requests that arrived after the operator last looked', async () => {
+    // Both rows sit on the PINNED clock, not the database's. `Date.now()` is
+    // `NOW_MS` (09:00 UTC on 2026-09-20) for this file, and rows stamped with
+    // Postgres's own `now()` drift past it by the minute: from 10:00 UTC that
+    // day the «older» request, written at real-now minus an hour, was NEWER
+    // than the stamp and this test went red on every branch — the time bomb
+    // CLAUDE.md rule 5 names, one line off the version it warns about.
     const older = await makeUser();
     await baseEnv.DB.prepare(
       `INSERT INTO reseller_requests (user_id, description, status, created_at)
-       VALUES (?1, 'قدیمی', 'PENDING', now() - interval '1 hour')`,
+       VALUES (?1, 'قدیمی', 'PENDING', to_timestamp(?2 / 1000.0) - interval '1 hour')`,
     )
-      .bind(older)
+      .bind(older, NOW_MS)
       .run();
     const seenAt = Date.now() - 60_000;
     const newer = await makeUser();
     await baseEnv.DB.prepare(
       `INSERT INTO reseller_requests (user_id, description, status, created_at)
-       VALUES (?1, 'تازه', 'PENDING', now())`,
+       VALUES (?1, 'تازه', 'PENDING', to_timestamp(?2 / 1000.0))`,
     )
-      .bind(newer)
+      .bind(newer, NOW_MS)
       .run();
 
     const ask = async (query: string) => {
