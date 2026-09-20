@@ -44,7 +44,7 @@ function message(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.code === 'forbidden') return 'برای این کار دسترسی ادمین لازم است.';
     if (e.code === 'invalid_rules') {
-      return 'یکی از قانون‌ها ناقص است — نام، پنل، متن، و دست‌کم یکی از دو عدد روز لازم است.';
+      return 'یکی از قانون‌ها ناقص است — نام، پنل، متن، دست‌کم یکی از دو عدد روز، و برای قانونِ روشنی که در متنش {code} یا {discount} دارد، یک کد تخفیف.';
     }
     if (e.code === 'unknown_panel') return 'پنلی که انتخاب شده دیگر وجود ندارد.';
     if (e.code === 'unusable_code') {
@@ -140,6 +140,10 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
   // request rather than three.
   useEffect(() => {
     const rows = JSON.parse(audienceInputs) as [string, number, number, number, boolean][];
+    // A slow answer to an OLD question must not land on top of the new one:
+    // once the inputs change again this effect is cleaned up, `live` goes
+    // false, and whatever the earlier request returns is dropped.
+    let live = true;
     const timer = setTimeout(() => {
       for (const [key, providerId, daysBefore, daysAfter, onlyService] of rows) {
         if (providerId <= 0 || (daysBefore === 0 && daysAfter === 0)) {
@@ -149,11 +153,14 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
         setAudience((a) => ({ ...a, [key]: 'loading' }));
         api
           .retentionAudience({ providerId, daysBefore, daysAfter, onlyService })
-          .then((res) => setAudience((a) => ({ ...a, [key]: res.count })))
-          .catch(() => setAudience((a) => ({ ...a, [key]: null })));
+          .then((res) => live && setAudience((a) => ({ ...a, [key]: res.count })))
+          .catch(() => live && setAudience((a) => ({ ...a, [key]: null })));
       }
     }, 400);
-    return () => clearTimeout(timer);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
   }, [audienceInputs]);
 
   async function test(rule: RetentionRule) {

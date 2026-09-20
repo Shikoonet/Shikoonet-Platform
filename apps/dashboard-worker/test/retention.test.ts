@@ -38,7 +38,7 @@ function rule(change: Record<string, unknown> = {}) {
     daysAfter: 0,
     onlyService: true,
     codeId: null,
-    text: 'سلام {code}',
+    text: 'سلام',
     textAfter: '',
     ...change,
   };
@@ -209,9 +209,10 @@ describe('«تست»', () => {
     expect(queued?.body).toContain('کد <code>RETW30</code>');
     expect(queued?.reply_markup[0]?.[0]?.url).toBe('https://t.me/Test_Shikoo_bot?start=renew');
     expect(queued?.reply_markup[0]?.[0]?.style).toBe('success');
-    // A rule with only an «after» side tests its after-text.
+    // A rule with only an «after» side tests its after-text, on the FIRST
+    // day past expiry — the message a customer meets first, not the last.
     const afterRes = await testPost(ADMIN, rule({ daysBefore: 0, daysAfter: 2, text: 'B {days}', textAfter: 'A {days}' }));
-    expect(((await afterRes.json()) as { text: string }).text).toBe('A 2');
+    expect(((await afterRes.json()) as { text: string }).text).toBe('A 1');
 
     const toCustomer = await baseEnv.DB.prepare(
       `SELECT count(*)::int AS n FROM bot_notifications WHERE chat_id = 749900`,
@@ -257,6 +258,9 @@ describe('writing', () => {
     const res = await post(ADMIN, [rule({ daysBefore: 0, daysAfter: 0 })]);
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe('invalid_rules');
+    // The default text promises a code; an enabled rule without one is refused too.
+    expect((await post(ADMIN, [rule({ text: 'با کد {code}', codeId: null, enabled: true })])).status).toBe(400);
+    expect((await post(ADMIN, [rule({ text: 'با کد {code}', codeId: null, enabled: false })])).status).toBe(200);
   });
 
   it('refuses a panel that is not there', async () => {

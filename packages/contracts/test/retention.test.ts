@@ -24,7 +24,7 @@ const good = {
   daysAfter: 0,
   onlyService: true,
   codeId: null,
-  text: 'سلام {code}',
+  text: 'سلام',
 };
 
 describe('parseRetentionRules', () => {
@@ -72,6 +72,15 @@ describe('parseRetentionRules', () => {
   ])('refuses %s', (_name, change) => {
     const list = change === null ? [good, { ...good }] : [{ ...good, ...change }];
     expect(parseRetentionRules(list)).toBeNull();
+  });
+
+  it('an enabled rule whose text promises a code must name one; off, or without the promise, it need not', () => {
+    const promises = { ...good, text: 'با کد {code}', codeId: null };
+    expect(parseRetentionRules([{ ...promises, enabled: true }])).toBeNull();
+    expect(parseRetentionRules([{ ...promises, enabled: true, text: 'x', textAfter: '{discount}' }])).toBeNull();
+    expect(parseRetentionRules([{ ...promises, enabled: false }])).toHaveLength(1);
+    expect(parseRetentionRules([{ ...promises, enabled: true, codeId: 4 }])).toHaveLength(1);
+    expect(parseRetentionRules([{ ...good, enabled: true, codeId: null, text: 'بدون کد' }])).toHaveLength(1);
   });
 
   it('refuses more than the ceiling', () => {

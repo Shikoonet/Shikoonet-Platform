@@ -102,6 +102,7 @@ export const RETENTION_LIMITS = {
 } as const;
 
 const KEY = /^[a-z0-9_-]{1,40}$/;
+const MENTIONS_CODE = /\{(?:code|discount)\}/;
 
 function isInt(v: unknown, min: number, max: number): v is number {
   return typeof v === 'number' && Number.isSafeInteger(v) && v >= min && v <= max;
@@ -136,6 +137,11 @@ export function parseRetentionRules(value: unknown): RetentionRule[] | null {
     // Optional and absent on every rule saved before 2026-09-20.
     const textAfter = r['textAfter'] === undefined ? '' : r['textAfter'];
     if (typeof textAfter !== 'string' || textAfter.length > RETENTION_LIMITS.text) return null;
+    // A text that promises a code needs one. The default text does, so a
+    // rule saved without picking a code would send «با کد  از  تخفیف» — two
+    // blanks where the offer was. Only an ENABLED rule is held to this: a
+    // draft the operator has not finished may be saved off and finished later.
+    if (r['enabled'] && r['codeId'] === null && MENTIONS_CODE.test(`${r['text']}\n${textAfter}`)) return null;
     keys.add(r['key']);
     out.push({
       key: r['key'],

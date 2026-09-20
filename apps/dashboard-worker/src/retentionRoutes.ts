@@ -201,10 +201,11 @@ export function registerRetentionRoutes(
             .first<{ code: string; kind: string; percent: number | null; amount_irr: number | null; bonus_gb: number | null }>();
 
     // The «before» text when the rule has a before side, else the «after»
-    // one — the side the first customer would actually meet.
+    // one — and the FIRST day of that side, which is the message a customer
+    // actually meets first: «5 روز مانده» before, «1 روز گذشته» after.
     const after = rule.daysBefore === 0;
     const text = renderRetentionText(after && rule.textAfter !== '' ? rule.textAfter : rule.text, {
-      days: String(after ? rule.daysAfter : rule.daysBefore),
+      days: String(after ? 1 : rule.daysBefore),
       service: sample ? withoutQuotedPrice(sample.plan_name_at_sale) : 'نمونه',
       username: sample?.remote_username ?? 'sample_user',
       // The same `<code>` the bot sends, so the group sees it tap-to-copy.

@@ -96,7 +96,7 @@ async function setRules(rules: RuleInput[]): Promise<void> {
       daysAfter: r.daysAfter ?? 0,
       onlyService: r.onlyService ?? false,
       codeId: r.codeId ?? null,
-      text: r.text ?? 'سرویس {service} — {days} روز — {username} — {code} — {renewButton}',
+      text: r.text ?? 'سرویس {service} — {days} روز — {username} — {renewButton}',
       textAfter: r.textAfter ?? '',
     })),
   );
@@ -424,6 +424,39 @@ describe('the group hears about it', () => {
     expect(toGroup[0]?.text).toContain('قانون گزارش');
     expect(toGroup[0]?.text).toContain('RETRPT');
     expect(toGroup[0]?.text).toContain('1 روز مانده');
+  });
+
+  it('the funnel counts people, matches its own rule key exactly, and an untouched expiry is not «stayed»', async () => {
+    const { retentionFunnel } = await import('@shikoo/domain');
+    const tg = nextTelegramId();
+    const uid = await makeCustomer(tg);
+    // Two services on the panel: one person, two rows reached.
+    await makeService(uid, { expiresInDays: 0.5 });
+    await makeService(uid, { expiresInDays: 0.7 });
+    const codeId = await makeCode('RETFUN');
+    // `r_a` and `rxa`: LIKE would fold them, the segment match must not.
+    await setRules([{ key: 'r_a', codeId, onlyService: false }, { key: 'rxa', codeId, onlyService: false, provider: 'sim-gold' }]);
+    expect(await remindToRenew(db)).toBe(2);
+    await db.prepare(`UPDATE bot_notifications SET status = 'SENT', sent_at = now()`).run();
+
+    const f = await retentionFunnel(db, 'r_a', codeId);
+    expect(f.sent).toBe(1);
+    expect(f.stayed).toBe(0);
+    expect(f.pending).toBe(1);
+    expect(await retentionFunnel(db, 'rxa', codeId)).toMatchObject({ sent: 0 });
+
+    // An outsider redeems twice: one person outside, not two.
+    const outsider = await makeCustomer(nextTelegramId());
+    for (let i = 0; i < 2; i += 1) {
+      await db
+        .prepare(`INSERT INTO discount_redemptions (code_id, user_id, amount_irr) VALUES (?1, ?2, 0)`)
+        .bind(codeId, outsider)
+        .run()
+        .catch(() => undefined);
+    }
+    const g = await retentionFunnel(db, 'r_a', codeId);
+    expect(g.usedOutside).toBe(1);
+    expect(g.usedCode).toBe(0);
   });
 
   it('the nightly report grows a fourth message only while a rule is on', async () => {

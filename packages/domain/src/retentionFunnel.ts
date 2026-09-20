@@ -7,11 +7,12 @@
  * carries which service and which expiry; a person is counted once however
  * many days of the window they were written to.
  *
- *   sent         PEOPLE (services) this rule reached — not messages
+ *   sent         PEOPLE this rule reached — not messages, not services: a
+ *                person with two services on the panel is one
  *   usedCode     of those, how many redeemed the rule's code after their
  *                first message (0 when the rule has no code)
- *   usedOutside  redemptions of that code by people this rule never
- *                messaged — a code that leaked, or one the shop also gave
+ *   usedOutside  PEOPLE outside that list who redeemed the code — not
+ *                redemptions, one person twice is one — a code that leaked, or one the shop also gave
  *                out by hand. Sam, 2026-09-20: «کسایی خارج از این گروه»
  *   stayed       the service's expiry moved past the one the message was
  *                about — a renewal or added time
@@ -42,33 +43,45 @@ export async function retentionFunnel(
 ): Promise<RetentionFunnel> {
   const row = await db
     .prepare(
+      // The rule is matched on its own key SEGMENT, not with LIKE: a rule key
+      // may contain `_`, which LIKE reads as «any one character», and the
+      // prefix test alone would fold `r_a` and `rXa` into one funnel. The
+      // expiry is compared as the sweep wrote it — `::bigint` on both sides —
+      // because a fractional second on the live column would otherwise read
+      // as «moved» against its own truncated copy in the key.
       `WITH sent AS (
          SELECT DISTINCT ON (sub_id) sub_id, expires_epoch, sent_at
            FROM (SELECT split_part(n.dedupe_key, ':', 3)::bigint AS sub_id,
                         split_part(n.dedupe_key, ':', 4)::bigint AS expires_epoch,
                         n.sent_at
                    FROM bot_notifications n
-                  WHERE n.dedupe_key LIKE 'retention:' || ?1 || ':%'
+                  WHERE n.dedupe_key LIKE 'retention:%'
+                    AND split_part(n.dedupe_key, ':', 2) = ?1
                     AND n.status = 'SENT') x
           ORDER BY sub_id, sent_at),
+       -- One row per PERSON: the first service of theirs this rule reached
+       -- stands for them, so somebody with two services is one in every
+       -- count rather than two in «sent» and two in «stayed».
        people AS (
-         SELECT sent.sub_id, sent.expires_epoch, sent.sent_at, s.user_id, s.expires_at
-           FROM sent JOIN subscriptions s ON s.id = sent.sub_id)
+         SELECT DISTINCT ON (s.user_id)
+                sent.sub_id, sent.expires_epoch, sent.sent_at, s.user_id,
+                extract(epoch FROM s.expires_at)::bigint AS expires_now, s.expires_at
+           FROM sent JOIN subscriptions s ON s.id = sent.sub_id
+          ORDER BY s.user_id, sent.sent_at)
        SELECT (SELECT count(*) FROM people)::int AS sent,
               (SELECT count(*) FROM people p
                 WHERE ?2::bigint IS NOT NULL AND EXISTS (
                   SELECT 1 FROM discount_redemptions r
                    WHERE r.code_id = ?2 AND r.user_id = p.user_id
                      AND r.created_at >= p.sent_at))::int AS used_code,
-              (SELECT count(*) FROM discount_redemptions r
+              (SELECT count(DISTINCT r.user_id) FROM discount_redemptions r
                 WHERE ?2::bigint IS NOT NULL AND r.code_id = ?2
                   AND r.user_id NOT IN (SELECT user_id FROM people))::int AS used_outside,
+              (SELECT count(*) FROM people WHERE expires_now > expires_epoch)::int AS stayed,
               (SELECT count(*) FROM people
-                WHERE extract(epoch FROM expires_at) > expires_epoch)::int AS stayed,
+                WHERE expires_now <= expires_epoch AND expires_at < now())::int AS left_,
               (SELECT count(*) FROM people
-                WHERE extract(epoch FROM expires_at) <= expires_epoch AND expires_at < now())::int AS left_,
-              (SELECT count(*) FROM people
-                WHERE extract(epoch FROM expires_at) <= expires_epoch AND expires_at >= now())::int AS pending`,
+                WHERE expires_now <= expires_epoch AND expires_at >= now())::int AS pending`,
     )
     .bind(ruleKey, codeId)
     .first<{
