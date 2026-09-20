@@ -506,14 +506,36 @@ function CreateForm({ onDone }: { onDone: () => void }) {
    * any service not in the set (`discount_code_products`, 0086).
    */
   const [productIds, setProductIds] = useState<Set<number>>(new Set());
-  const [services, setServices] = useState<ServiceRow[]>([]);
+  // The same list «سرویس‌ها» shows, every page of it. Not loaded yet and
+  // failed are kept apart from «no services»: a form that quietly showed no
+  // checklist would let an admin make an all-services code by accident
+  // (CodeRabbit on #395), so «ساخت» waits for the list.
+  const [services, setServices] = useState<ServiceRow[] | 'loading' | 'failed'>('loading');
+  const [servicesTry, setServicesTry] = useState(0);
   useEffect(() => {
-    // ponytail: one page of 100 — the shop has a few dozen services, not a thousand.
-    api
-      .catalog({ pageSize: 100 })
-      .then((d) => setServices(d.items))
-      .catch(() => setServices([]));
-  }, []);
+    let cancelled = false;
+    setServices('loading');
+    (async () => {
+      const all: ServiceRow[] = [];
+      // 100 is the route's ceiling on pageSize.
+      for (let page = 1; ; page++) {
+        const d = await api.catalog({ page, pageSize: 100 });
+        all.push(...d.items);
+        if (d.items.length === 0 || all.length >= d.total) break;
+      }
+      return all;
+    })().then(
+      (all) => {
+        if (!cancelled) setServices(all);
+      },
+      () => {
+        if (!cancelled) setServices('failed');
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [servicesTry]);
   const [firstPurchaseOnly, setFirst] = useState(false);
   const [resellersOnly, setResellers] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -523,6 +545,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
   // Two kinds carry a percent — of the price, or of the plan's volume.
   const isPercent = kind === 'PERCENT_OFF' || kind === 'BONUS_PERCENT';
   const isBonusGb = kind === 'BONUS_GB';
+  const servicesReady = isGift || Array.isArray(services);
 
   async function submit() {
     setBusy(true);
@@ -718,7 +741,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={busy}
+          disabled={busy || !servicesReady}
           onClick={() => void submit()}
           {...w}
         >
@@ -747,12 +770,24 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         </div>
       )}
 
-      {!isGift && services.length > 0 && (
+      {!isGift && (
         <fieldset className="filters" data-testid="service-scope">
           <legend className="form-label">
             فقط برای این سرویس‌ها — هیچ تیکی یعنی همهٔ سرویس‌ها
           </legend>
-          {services.map((s) => (
+          {services === 'loading' && <span className="muted">در حال خواندن سرویس‌ها…</span>}
+          {services === 'failed' && (
+            <span className="alert alert-error">
+              فهرست سرویس‌ها خوانده نشد؛ تا خوانده نشود کدی ساخته نمی‌شود.{' '}
+              <button type="button" className="btn btn-sm" onClick={() => setServicesTry((n) => n + 1)}>
+                دوباره
+              </button>
+            </span>
+          )}
+          {Array.isArray(services) && services.length === 0 && (
+            <span className="muted">هنوز سرویسی ساخته نشده.</span>
+          )}
+          {Array.isArray(services) && services.map((s) => (
             <label key={s.id} className="form-label">
               <input
                 type="checkbox"
