@@ -89,6 +89,7 @@ interface RuleInput {
   codeId?: number | null;
   text?: string;
   textAfter?: string;
+  sendAt?: string | null;
 }
 
 async function setRules(rules: RuleInput[]): Promise<void> {
@@ -105,6 +106,7 @@ async function setRules(rules: RuleInput[]): Promise<void> {
       codeId: r.codeId ?? null,
       text: r.text ?? 'سرویس {service} — {days} روز — {username} — {renewButton}',
       textAfter: r.textAfter ?? '',
+      sendAt: r.sendAt ?? null,
     })),
   );
   await db
@@ -298,6 +300,34 @@ describe('once a day inside the window', () => {
     expect(await remindToRenew(db, NOW_MS + 31 * DAY)).toBe(1);
     expect(await remindToRenew(db, NOW_MS + 32 * DAY)).toBe(1);
     expect(await remindToRenew(db, NOW_MS + 32.2 * DAY)).toBe(0);
+  });
+
+  it('a rule with a clock time sends at that minute, once a day, and not to a service that entered the window later that day', async () => {
+    // NOW_MS is 12:00 UTC = 15:30 Tehran. The rule sends at 10:00 Tehran.
+    const tehranMidnight = NOW_MS - 15.5 * 60 * 60 * 1000;
+    const tenAm = tehranMidnight + 10 * 60 * 60 * 1000;
+    const tg = nextTelegramId();
+    // Expires in 2 days from NOW (17:30 Tehran, day after tomorrow): inside
+    // a three-day window at today's 10:00 already.
+    await makeService(await makeCustomer(tg), { expiresInDays: 2 });
+    await setRules([{ key: 'kt', daysBefore: 3, sendAt: '10:00' }]);
+
+    // 09:59 — nothing. 10:00 — one. 10:01 and 15:30 — nothing more today.
+    expect(await remindToRenew(db, tenAm - 60_000)).toBe(0);
+    expect(await remindToRenew(db, tenAm)).toBe(1);
+    expect(await remindToRenew(db, tenAm + 60_000)).toBe(0);
+    expect(await remindToRenew(db, NOW_MS)).toBe(0);
+
+    // A service that enters the window at 15:30 today (expires in exactly
+    // three days from NOW): today's slot has passed, so tomorrow's is its first.
+    const late = nextTelegramId();
+    await makeService(await makeCustomer(late), { expiresInDays: 3 });
+    expect(await remindToRenew(db, NOW_MS + 60_000)).toBe(0);
+    expect(await remindToRenew(db, tenAm + DAY)).toBe(2);
+    expect(await remindToRenew(db, tenAm + DAY + 3 * 60 * 60 * 1000)).toBe(0);
+
+    // The bot was down through the minute: the first sweep after it still sends the day's message.
+    expect(await remindToRenew(db, tenAm + 2 * DAY + 5 * 60 * 60 * 1000)).toBe(2);
   });
 
   it('after expiry: one a day for «days after» days, with the after-text, then never again', async () => {

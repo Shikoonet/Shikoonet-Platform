@@ -40,6 +40,7 @@ import {
   RETENTION_DAY_INDEX_SQL,
   RETENTION_ONLY_SERVICE_WHERE,
   createLogger,
+  tehranDayFromUtc,
 } from '@shikoo/domain';
 import { enqueue } from './notify.js';
 import { report } from './reports.js';
@@ -134,6 +135,22 @@ async function usableCode(
   };
 }
 
+/**
+ * Today's send slot for a rule with a clock time — Tehran midnight plus
+ * «HH:MM» — or `now` itself for a rule without one.
+ *
+ * The slot, not `now`, is the instant the window and the day index are read
+ * at (`?1` below): the same instant all day, so the key is the same all day
+ * and a service that enters the window after the slot is not due until
+ * tomorrow's. A rule without a time keeps reading at `now`, which is the
+ * every-24-hours behaviour it always had.
+ */
+export function retentionSlot(rule: Pick<RetentionRule, 'sendAt'>, now: number): number {
+  if (rule.sendAt === null) return now;
+  const [hh, mm] = rule.sendAt.split(':').map(Number);
+  return tehranDayFromUtc(now).start + (hh! * 60 + mm!) * 60_000;
+}
+
 export async function remindToRenew(db: D1Database, now: number = Date.now()): Promise<number> {
   const rules = (await loadRetentionRules(db)).filter((r) => r.enabled);
   if (rules.length === 0) return 0;
@@ -150,6 +167,10 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
 
   let total = 0;
   for (const rule of rules) {
+    // Not yet the rule's minute today: nothing, and nothing logged — this
+    // is the normal state for most of every day.
+    const slot = retentionSlot(rule, now);
+    if (now < slot) continue;
     let code: { code: string; discount: string } | null = null;
     if (rule.codeId !== null) {
       code = await usableCode(db, rule.codeId);
@@ -161,7 +182,7 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
 
     const { results } = await db
       .prepare(DUE + (rule.onlyService ? ONLY_SERVICE : '') + TAIL)
-      .bind(now, rule.providerId, rule.daysBefore, rule.daysAfter, rule.panelAdmin, rule.key, BATCH)
+      .bind(slot, rule.providerId, rule.daysBefore, rule.daysAfter, rule.panelAdmin, rule.key, BATCH)
       .all<DueRow>();
 
     let sent = 0;

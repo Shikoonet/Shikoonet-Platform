@@ -23,6 +23,7 @@ function rule(key: string, extra: Record<string, unknown>) {
     codeId: null,
     text: 'x {days}',
     textAfter: '',
+    sendAt: '10:00',
     lastActed: null,
     audience: 0,
     funnel: {
@@ -104,7 +105,7 @@ describe('the overview', () => {
 
     // The folded row says who, how many now, and what the reached people did.
     const one = screen.getByTestId('retention-summary-r_one');
-    expect(one.textContent).toContain('mirzavip · ۳ روز مانده · بدون کد');
+    expect(one.textContent).toContain('mirzavip · ۳ روز مانده · ساعت ۱۰:۰۰ · بدون کد');
     expect(one.textContent).toContain('۱٬۱۶۱ در بازه');
     expect(one.textContent).toContain('کد زدند ۷ از ۴۰');
     expect(one.textContent).toContain('۳ نرسیده');
@@ -135,9 +136,15 @@ describe('folding', () => {
     expect(details[2]!.open).toBe(true);
     expect(details[2]!.textContent).toContain('هنوز ذخیره نشده');
 
+    // A new rule is born with the Tehran clock of this moment as its send time.
+    const at = details[2]!.querySelector('input[type="time"]') as HTMLInputElement;
+    expect(at.value).toMatch(/^([01]\d|2[0-3]):[0-5]\d$/);
+    fireEvent.change(at, { target: { value: '09:30' } });
     fireEvent.change(details[2]!.querySelector('input.form-control')!, { target: { value: 'تازه' } });
     fireEvent.click(screen.getByRole('button', { name: 'ذخیره' }));
     await vi.waitFor(() => expect(posts).toHaveLength(1));
+    const body = posts[0] as { items: { name: string; sendAt: string | null }[] };
+    expect(body.items.at(-1)).toMatchObject({ name: 'تازه', sendAt: '09:30' });
     await vi.waitFor(() =>
       expect(([...document.querySelectorAll('details')] as HTMLDetailsElement[]).every((d) => !d.open)).toBe(true),
     );

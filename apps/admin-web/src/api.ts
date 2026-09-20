@@ -1696,6 +1696,8 @@ export interface RetentionRule {
   text: string;
   /** After expiry; empty means «same as text». */
   textAfter: string;
+  /** Tehran «HH:MM» the rule sends at each day; null is «on entering the window, then every 24 h». */
+  sendAt: string | null;
 }
 
 export interface RetentionFunnel {

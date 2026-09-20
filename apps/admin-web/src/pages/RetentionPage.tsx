@@ -88,6 +88,19 @@ function actedLabel(row: RetentionRuleRow): string {
 /** How often the overview re-reads itself while the screen is open. */
 const LIVE_EVERY_MS = 30_000;
 
+/**
+ * The Tehran clock right now, «HH:MM» — a new rule's send time. Sam,
+ * 2026-09-20: «وقتی قانون رو ذخیره می‌کنم، از اون به بعد همیشه همون موقع».
+ */
+function tehranNow(): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Tehran',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date());
+}
+
 function newKey(): string {
   return `r_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -226,6 +239,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
         codeId: null,
         text: DEFAULT_TEXT,
         textAfter: DEFAULT_TEXT_AFTER,
+        sendAt: tehranNow(),
       },
     ]);
   }
@@ -254,7 +268,8 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
       .filter(Boolean)
       .join(' و ');
     const code = codes.find((c) => c.id === rule.codeId)?.code;
-    return [who, when || 'بازه‌ای ندارد', code ? `کد ${code}` : 'بدون کد'].join(' · ');
+    const at = rule.sendAt ? `ساعت ${rule.sendAt.replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]!)}` : 'هر وقت وارد بازه شد';
+    return [who, when || 'بازه‌ای ندارد', at, code ? `کد ${code}` : 'بدون کد'].join(' · ');
   }
 
   /**
@@ -335,8 +350,8 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
           <h2 className="page-head__title">یادآوری تمدید</h2>
           <div className="page-head__sub">
             پیام خودتان به مشتری‌هایی که یک ادمین مشخصِ پنل ساخته، چند روز مانده به انقضا یا بعد از آن — با یک کد تخفیف که
-            روی «کدهای تخفیف» ساخته‌اید. هر سرویس تا وقتی داخل بازه است روزی یک پیام می‌گیرد؛ از بازه
-            که بیرون رفت یا تمدید کرد، تمام. گزارش هر ارسال در «📝 گزارش اطلاع رسانی ها» و جمع‌بندی
+            روی «کدهای تخفیف» ساخته‌اید. هر سرویس تا وقتی داخل بازه است روزی یک پیام می‌گیرد، در ساعتی که
+            برای قانون گذاشته‌اید؛ از بازه که بیرون رفت یا تمدید کرد، تمام. گزارش هر ارسال در «📝 گزارش اطلاع رسانی ها» و جمع‌بندی
             هر قانون در گزارش شبانه می‌آید.
           </div>
         </div>
@@ -502,6 +517,23 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
                   onChange={(e) => patch(i, { daysAfter: Number(e.target.value) })}
                 />
                 <span className="page-head__sub">روز (۰ = هیچ‌کدام)</span>
+              </div>
+              <div className="cron-number">
+                <label htmlFor={`ret-at-${rule.key}`}>ساعت ارسال، به وقت تهران</label>
+                <input
+                  id={`ret-at-${rule.key}`}
+                  className="form-control ltr"
+                  type="time"
+                  value={rule.sendAt ?? ''}
+                  disabled={disabled}
+                  onChange={(e) => patch(i, { sendAt: e.target.value === '' ? null : e.target.value })}
+                  style={{ inlineSize: 'auto' }}
+                />
+                <span className="page-head__sub">
+                  {rule.sendAt
+                    ? 'هر روز همین ساعت، به هر که در آن لحظه داخل بازه است — کسی که بعدش وارد بازه شود، فردا.'
+                    : 'خالی: به محض ورود به بازه، و بعد هر ۲۴ ساعت — رفتار قبلی.'}
+                </span>
               </div>
               <p className="cron-note page-head__sub" data-testid={`retention-audience-${rule.key}`}>
                 {audience[rule.key] === 'loading'
