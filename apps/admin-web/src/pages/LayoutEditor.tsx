@@ -105,10 +105,18 @@ export function LayoutEditor({
   // Reloading when the screen's contents change — a product added, a category
   // renamed — rather than keeping edits across it. Unsaved positions for rows
   // that no longer exist are not edits worth keeping.
+  //
+  // On the CONTENT, not the array. Both pages build `items` with `rows.map(...)`,
+  // a new array on every render, and this used to depend on `[items]` — so
+  // every re-render of the app reset the board to the saved order. The header
+  // polls continuity mode every thirty seconds and re-renders everything under
+  // it; with the banner up, and a broadcast in flight, far more often. Sam,
+  // 2026-09-21: «این دکمه‌ها جابجا نمیشن» — they moved, and snapped back.
+  const contents = JSON.stringify(items);
   useEffect(() => {
     setRows(groupIntoRows(items));
     setDone(null);
-  }, [items]);
+  }, [contents]);
 
   const dirty = JSON.stringify(serialise(rows)) !== JSON.stringify(serialise(groupIntoRows(items)));
 

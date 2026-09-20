@@ -137,6 +137,62 @@ describe('the arrangement editor', () => {
     ]);
   });
 
+  it('keeps an unsaved move when the page re-renders with the same buttons', async () => {
+    // Sam, 2026-09-21: «این دکمه‌ها جابجا نمیشن». They did move — and then
+    // snapped back. The page builds `items` with `rows.map(...)`, a new array
+    // every render, and the board reset itself on the array's IDENTITY. The
+    // header's 30-second continuity poll re-renders the whole app, so on a
+    // production screen with the banner up a drag never lived long enough to
+    // be saved. Same buttons, same order, new array: the move must survive.
+    const { rerender } = render(
+      <RoleProvider role="ADMIN">
+        <LayoutEditor scope="service:7" items={THREE} screenText="؟" onSaved={() => {}} />
+      </RoleProvider>,
+    );
+    press('شش ماهه', 'ArrowUp');
+    rerender(
+      <RoleProvider role="ADMIN">
+        <LayoutEditor
+          scope="service:7"
+          items={THREE.map((b) => ({ ...b }))}
+          screenText="؟"
+          onSaved={() => {}}
+        />
+      </RoleProvider>,
+    );
+
+    const [, items] = await save();
+    expect(items).toEqual([
+      { id: 11, rowIndex: 0 },
+      { id: 22, rowIndex: 1 },
+      { id: 33, rowIndex: 1 },
+    ]);
+  });
+
+  it('still reloads the board when the buttons themselves change', async () => {
+    // The reset was there for a reason — a product added or renamed while the
+    // board is open — and must keep firing for a real change.
+    const { rerender } = render(
+      <RoleProvider role="ADMIN">
+        <LayoutEditor scope="service:7" items={THREE} screenText="؟" onSaved={() => {}} />
+      </RoleProvider>,
+    );
+    press('شش ماهه', 'ArrowUp');
+    rerender(
+      <RoleProvider role="ADMIN">
+        <LayoutEditor
+          scope="service:7"
+          items={[...THREE, { id: 44, label: 'یک ساله', hint: null, rowIndex: null }]}
+          screenText="؟"
+          onSaved={() => {}}
+        />
+      </RoleProvider>,
+    );
+    expect(screen.getByText('یک ساله')).toBeTruthy();
+    // Nothing moved, so there is nothing to save.
+    expect(saveButton().hasAttribute('disabled')).toBe(true);
+  });
+
   it('never sends a gap or a row that goes backwards', async () => {
     // Not a restatement of the server's rule — it is why this editor works in
     // rows instead of in numbers. Serialising from the rows renumbers them, so
