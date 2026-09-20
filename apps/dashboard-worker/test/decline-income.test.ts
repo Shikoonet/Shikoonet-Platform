@@ -125,6 +125,35 @@ describe('decline income', () => {
     expect(declinedBody.items[0]?.declinedBy).toBe(EMAIL);
   });
 
+  it('a declined deposit rejected as a duplicate leaves «رد شده» and its total', async () => {
+    await seedTx('t-dup');
+    await seedTx('t-kept');
+    await declineIncomeTransaction(db(), { transactionId: 't-dup', actorEmail: EMAIL, reason: 'x' });
+    await declineIncomeTransaction(db(), { transactionId: 't-kept', actorEmail: EMAIL, reason: 'y' });
+    const reject = await app.fetch(
+      new Request('https://example.com/api/v1/transactions/t-dup/reject', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'duplicate', comment: 'bank sent it twice' }),
+      }),
+      envAs(),
+    );
+    expect(reject.status).toBe(200);
+
+    const declined = await app.fetch(
+      new Request('https://example.com/api/v1/payments?tab=declined_income&range=all'),
+      envAs(),
+    );
+    const body = (await declined.json()) as {
+      items: Array<{ id: string }>;
+      declinedTotals: { count: number; amountIrr: number };
+      counts: { declinedIncome: number };
+    };
+    expect(body.items.map((i) => i.id)).toEqual(['t-kept']);
+    expect(body.declinedTotals).toEqual({ count: 1, amountIrr: AMOUNT });
+    expect(body.counts.declinedIncome).toBe(1);
+  });
+
   it('restore returns eligible tx to income', async () => {
     await seedTx('t-restore');
     await declineIncomeTransaction(db(), {
