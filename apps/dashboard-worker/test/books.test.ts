@@ -387,6 +387,31 @@ describe('the monthly statement', () => {
     expect(s.gapIrr).toBe(0);
   });
 
+  /**
+   * Production, 2026-09-20: four accounts added after the fresh start showed
+   * «؟» for opening and gap all month. Their first text says what they held
+   * after one movement; that is enough to open them.
+   */
+  it('opens an account the books met mid-month on its first text, and the check works from there', async () => {
+    // No SMS before the month, no fresh-start row: two credits and a debit.
+    await tx({ direction: 'CREDIT', amountIrr: 1_500_000, balanceIrr: 4_500_000, at: T(3) });
+    await tx({ direction: 'CREDIT', amountIrr: 500_000, balanceIrr: 5_000_000, at: T(4) });
+    await tx({ direction: 'DEBIT', amountIrr: 200_000, balanceIrr: 4_800_000, at: T(5) });
+    const s = ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{
+        opening: { balanceIrr: number; asOf: number; source: string };
+        closing: { balanceIrr: number };
+        customerIncome: { count: number; amountIrr: number };
+        gapIrr: number;
+      }>;
+    }).accounts[0]!;
+    expect(s.opening).toEqual({ balanceIrr: 3_000_000, asOf: T(3) - 1, source: 'first' });
+    expect(s.closing.balanceIrr).toBe(4_800_000);
+    // The first text is a movement of the month, not part of the opening.
+    expect(s.customerIncome).toEqual({ count: 2, amountIrr: 2_000_000 });
+    expect(s.gapIrr).toBe(0);
+  });
+
   it('says by how much the bank disagrees when an SMS is missing', async () => {
     await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 1_000_000, at: month.start - DAY });
     // The bank says 1.5M after a 200k deposit — 300k moved without an SMS.

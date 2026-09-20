@@ -55,7 +55,11 @@ async function seedDevice(): Promise<void> {
     .run();
 }
 
-async function postSms(message: string, timestamp: number): Promise<{ eventId: string; status: string; duplicate: boolean }> {
+async function postSms(
+  message: string,
+  timestamp: number,
+  sender = 'Bank Melli',
+): Promise<{ eventId: string; status: string; duplicate: boolean }> {
   const r = await app.fetch(
     new Request('https://example.com/api/v1/sms', {
       method: 'POST',
@@ -65,7 +69,7 @@ async function postSms(message: string, timestamp: number): Promise<{ eventId: s
         deviceId: DEVICE,
         deviceName: 'Melli Phone',
         message,
-        sender: 'Bank Melli',
+        sender,
         timestamp: String(timestamp),
         checksum: 'e'.repeat(32),
       }),
@@ -117,6 +121,26 @@ describe('the same Melli text delivered twice', () => {
     const n = await env.DB.prepare(
       `SELECT COUNT(*)::int AS n FROM transaction_candidates WHERE raw_sms_event_id IN (?1, ?2)`,
     )
+      .bind(first.eventId, second.eventId)
+      .first<{ n: number }>();
+    expect(n?.n).toBe(1);
+  });
+
+  it('is still one deposit when the re-send comes from another number with a blank line fewer', async () => {
+    // Production, 2026-09-20 12:45 and 12:49 UTC: the same 1,200,000 on
+    // ملی-آینده, first from +989192030800 and then from Melli's own +98700717,
+    // the second copy 71 bytes to the first's 72. Sender and bytes are not
+    // the movement; the amount and the balance after it are.
+    const said = TWICE_SENT.replace('16,893,140', '17,993,140').replace('20:45', '21:30');
+    const first = await postSms(said.replace('\n0627', '\n\n0627'), ARRIVED + 2 * 60 * 60_000, '+989192030800');
+    const second = await postSms(said, ARRIVED + 2 * 60 * 60_000 + 4 * 60_000, '+98700717');
+    expect(first.status).toBe('received');
+    expect(second.duplicate).toBe(true);
+    const link = await env.DB.prepare(`SELECT duplicate_of FROM raw_sms_events WHERE id = ?1`)
+      .bind(second.eventId)
+      .first<{ duplicate_of: string | null }>();
+    expect(link?.duplicate_of).toBe(first.eventId);
+    const n = await env.DB.prepare(`SELECT COUNT(*)::int AS n FROM transaction_candidates WHERE raw_sms_event_id IN (?1, ?2)`)
       .bind(first.eventId, second.eventId)
       .first<{ n: number }>();
     expect(n?.n).toBe(1);

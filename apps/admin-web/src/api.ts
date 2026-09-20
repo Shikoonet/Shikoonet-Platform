@@ -692,7 +692,7 @@ export const OFF_BOOKS_CATEGORY_FA: Record<OffBooksCategory, string> = {
 export interface BalancePoint {
   balanceIrr: number;
   asOf: number;
-  source: 'sms' | 'opening';
+  source: 'sms' | 'opening' | 'first';
 }
 
 export interface OffBooksLine {

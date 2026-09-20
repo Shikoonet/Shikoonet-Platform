@@ -62,7 +62,13 @@ export function parseJalaliMonth(raw: string | null | undefined, nowMs = Date.no
 export interface BalancePoint {
   balanceIrr: number;
   asOf: number;
-  source: 'sms' | 'opening';
+  /**
+   * `sms`: the last balance the bank stated before the month. `opening`: the
+   * fresh start. `first`: the bank's balance before its first text of the
+   * month — that text's balance with its own amount undone — for an account
+   * that joined the books mid-month, which has neither of the other two.
+   */
+  source: 'sms' | 'opening' | 'first';
 }
 
 export interface OffBooksLine {
@@ -107,6 +113,27 @@ export interface AccountStatement {
 }
 
 const num = (v: unknown): number => Number(v ?? 0);
+
+/**
+ * The first text of the window that carries a balance, with the movement it
+ * announces. What the account held just before it is arithmetic: balance
+ * minus a credit, plus a debit.
+ */
+async function firstBalanceWithin(db: D1Database, accountId: string, fromMs: number, toMs: number) {
+  return db
+    .prepare(
+      `SELECT t.balance_irr, t.bank_timestamp, t.direction, t.amount_irr
+         FROM transaction_candidates t
+        WHERE t.financial_account_id = ?1 AND t.balance_irr IS NOT NULL AND t.amount_irr IS NOT NULL
+          AND t.direction IN ('CREDIT','DEBIT')
+          AND t.status NOT IN ('REJECTED','IGNORED')
+          AND t.bank_timestamp >= ?2 AND t.bank_timestamp < ?3
+        ORDER BY t.bank_timestamp ASC, t.created_at ASC
+        LIMIT 1`,
+    )
+    .bind(accountId, fromMs, toMs)
+    .first<{ balance_irr: string | number; bank_timestamp: string | number; direction: string; amount_irr: string | number }>();
+}
 
 async function lastBalanceBefore(db: D1Database, accountId: string, beforeMs: number) {
   return db
@@ -180,6 +207,18 @@ export async function accountStatement(
       opening = { balanceIrr: num(sms.balance_irr), asOf: num(sms.bank_timestamp), source: 'sms' };
     } else if (openingRow && openingAsOf !== null && openingAsOf < month.start) {
       opening = { balanceIrr: num(openingRow.balance_irr), asOf: openingAsOf, source: 'opening' };
+    }
+  }
+  if (opening === null) {
+    // An account the books met this month — added after the fresh start, no
+    // text before the month. Its first text says what it held after one
+    // movement; undo that movement and that is the opening, one millisecond
+    // before the text so the text itself is the month's first movement.
+    // Sam, 2026-09-20: four such accounts showed «؟» for the whole month.
+    const first = await firstBalanceWithin(db, accountId, month.start, month.end);
+    if (first) {
+      const signed = first.direction === 'CREDIT' ? num(first.amount_irr) : -num(first.amount_irr);
+      opening = { balanceIrr: num(first.balance_irr) - signed, asOf: num(first.bank_timestamp) - 1, source: 'first' };
     }
   }
   // Movements strictly after the opening point, never before the fresh start.
