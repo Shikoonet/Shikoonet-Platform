@@ -548,10 +548,12 @@ describe('selling accounts from the shelf', () => {
     expect(ref?.secret).toBe('stock-acct-pw-1');
 
     // Both halves of the credential reach the customer — a username without
-    // its password is not a delivery.
+    // its password is not a delivery. Each as `<code>`, so it is tap-to-copy
+    // on every client and the customer never retypes a password (the invoice's
+    // card number goes the same way, #322).
     const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
-    expect(note?.text).toContain('stock-acct@mail.test');
-    expect(note?.text).toContain('stock-acct-pw-1');
+    expect(note?.text).toContain('<code>stock-acct@mail.test</code>');
+    expect(note?.text).toContain('<code>stock-acct-pw-1</code>');
 
     // Nothing failed, so nothing was stamped as failing.
     const failed = await db

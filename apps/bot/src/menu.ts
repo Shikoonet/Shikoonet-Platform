@@ -1977,14 +1977,19 @@ export function serviceReady(
  * so no howto line. The password sits alone after its label for the same
  * reason the URL does above — anything appended becomes part of what the
  * customer copies.
+ *
+ * Both are `<code>`: tap-to-copy on every client, and OUR entity, exactly as
+ * the invoice's card number is (#322). Sam, 2026-09-20, holding up the old
+ * bot's OpenVPN delivery: «username و password مونو باشه که بتونن کپی کنن».
+ * `toTelegramHtml` escapes whatever the credential itself contains.
  */
 export function accountReady(username: string, password: string, expiresAt: Date | null): string {
   const t = TEXTS_NOW;
   const lines = [
     t.raw('SERVICE_READY_TITLE'),
     '',
-    t.render('SERVICE_READY_USERNAME', { username }),
-    t.render('SERVICE_READY_PASSWORD', { password }),
+    t.render('SERVICE_READY_USERNAME', { username: `<code>${username}</code>` }),
+    t.render('SERVICE_READY_PASSWORD', { password: `<code>${password}</code>` }),
   ];
   if (expiresAt !== null) {
     lines.push(t.render('SERVICE_READY_EXPIRES', { date: formatTehranDate(expiresAt) }));
