@@ -13,8 +13,8 @@
  * the case the ordering has to survive.
  */
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applySchema, env as baseEnv } from './helpers/env.js';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { applySchema, env as baseEnv, fixtureCategory } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { REPORT_KINDS } from '@shikoo/contracts';
 
@@ -23,6 +23,8 @@ const REVIEWER = 'reviewer-rg@example.com';
 const KEY_HEX = 'd'.repeat(64);
 const TOKEN = '7712345678:AAH9fakeTokenForTestsOnly_not_a_real_one';
 const GROUP = -1_001_777_000;
+/** A service of this suite's own; whatever other suites left behind is not asserted on. */
+const SERVICE = 'zz-topic-test';
 
 function envAs(email = ADMIN) {
   return { ...baseEnv, TEST_ACCESS_USER: email };
@@ -44,6 +46,8 @@ function json(body: unknown, status = 200): Response {
 function telegram(opts: { isForum?: boolean; topics?: (number | 'fail')[] } = {}) {
   const madeFor: string[] = [];
   const posted: string[] = [];
+  const deleted: (number | string)[] = [];
+  const renamed: (number | string)[] = [];
   let next = 100;
   const queue = [...(opts.topics ?? [])];
   // `Parameters<typeof fetch>[0]`, not `RequestInfo`: this package's lib does
@@ -71,9 +75,16 @@ function telegram(opts: { isForum?: boolean; topics?: (number | 'fail')[] } = {}
       madeFor.push(body.name);
       return Promise.resolve(json({ ok: true, result: { message_thread_id: answer } }));
     }
+    if (url.endsWith('/deleteForumTopic') || url.endsWith('/editForumTopic')) {
+      const body = JSON.parse(String(init?.body)) as { message_thread_id: number; name?: string };
+      (url.endsWith('/deleteForumTopic') ? deleted : renamed).push(
+        body.name === undefined ? body.message_thread_id : `${body.message_thread_id}:${body.name}`,
+      );
+      return Promise.resolve(json({ ok: true, result: true }));
+    }
     return Promise.resolve(json({ ok: true, result: {} }));
   });
-  return { madeFor, posted };
+  return { madeFor, posted, deleted, renamed };
 }
 
 async function setup(chatId: number, email = ADMIN) {
@@ -86,6 +97,24 @@ async function setup(chatId: number, email = ADMIN) {
     },
     envAs(email),
   );
+}
+
+async function makeService(name: string): Promise<number> {
+  const row = await baseEnv.DB.prepare(
+    `INSERT INTO products (code, name, kind, category_id) VALUES (?1, ?2, 'manual', ?3)
+     ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, report_thread_id = NULL
+     RETURNING id`,
+  )
+    .bind(SERVICE, name, await fixtureCategory())
+    .first<{ id: number }>();
+  return Number(row!.id);
+}
+
+async function topicOf(productId: number): Promise<number | null> {
+  const row = await baseEnv.DB.prepare(`SELECT report_thread_id FROM products WHERE id = ?1`)
+    .bind(productId)
+    .first<{ report_thread_id: number | null }>();
+  return row?.report_thread_id ?? null;
 }
 
 async function settingOf(key: string): Promise<unknown> {
@@ -154,6 +183,16 @@ afterEach(() => {
   delete process.env['PANEL_SECRET_KEY'];
 });
 
+afterAll(async () => {
+  await baseEnv.DB.prepare(`DELETE FROM products WHERE code LIKE ?1`).bind(`${SERVICE}%`).run();
+  // Back to «no group»: a suite after this one creates products, and a product
+  // born into a configured group asks Telegram for a topic.
+  await baseEnv.DB.prepare(
+    `UPDATE settings SET value = '""'::jsonb WHERE scope = 'bot' AND key = 'Channel_Report'`,
+  ).run();
+  await baseEnv.DB.prepare(`DELETE FROM bot_credentials`).run();
+});
+
 describe('pointing the bot at a reports group', () => {
   it('makes every topic and then names the group', async () => {
     await connectBot();
@@ -165,7 +204,7 @@ describe('pointing the bot at a reports group', () => {
     // What the group sees, in legacy's words and legacy's order: the test
     // message first, then the ten topics as `lang/fa.php` spells them.
     expect(tg.posted).toEqual(['تست  اتصال گروه']);
-    expect(tg.madeFor).toEqual([
+    expect(tg.madeFor.slice(0, REPORT_KINDS.length)).toEqual([
       '🛍 گزارش های خرید',
       '📌 گزارش خرید خدمات',
       '🔑 گزارش اکانت تست',
@@ -209,6 +248,78 @@ describe('pointing the bot at a reports group', () => {
     expect(res.status).toBe(200);
     // Nothing created: a second run must not leave the group with twenty topics.
     expect(again.madeFor).toEqual([]);
+  });
+
+  /**
+   * Sam, 2026-09-20: «برای هر محصول یه تاپیک» — services and shelves alike,
+   * after the ten kinds so the group lists them below. A shelf is a products
+   * row of its own, so one column and one loop cover both.
+   */
+  it('makes a topic per service, after the ten kinds', async () => {
+    const id = await makeService('🥇سرویس تیتانیوم');
+    await connectBot();
+    const tg = telegram();
+
+    const res = await setup(GROUP);
+
+    expect(res.status).toBe(200);
+    expect(tg.madeFor.indexOf('🥇سرویس تیتانیوم')).toBeGreaterThanOrEqual(REPORT_KINDS.length);
+    expect(await topicOf(id)).toBe(
+      ((await res.json()) as { created: Record<string, number> }).created[`product:${id}`],
+    );
+
+    // And not again: the service keeps the topic it has.
+    const again = telegram();
+    await setup(GROUP);
+    expect(again.madeFor).toEqual([]);
+  });
+
+  it('gives a service born after the group its topic, and takes it away with the service', async () => {
+    await connectBot();
+    telegram();
+    await setup(GROUP);
+
+    const tg = telegram();
+    const born = await app.request(
+      '/api/v1/admin/products',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          code: `${SERVICE}-born`,
+          name: 'سرویس الماس',
+          kind: 'manual',
+          providerId: null,
+          categoryId: await fixtureCategory(),
+        }),
+      },
+      envAs(),
+    );
+    expect(born.status).toBe(201);
+    const { productId } = (await born.json()) as { productId: number };
+    expect(tg.madeFor).toEqual(['سرویس الماس']);
+    const threadId = await topicOf(productId);
+    expect(threadId).not.toBeNull();
+
+    // A rename follows: the topic must not keep saying the old name.
+    await app.request(
+      `/api/v1/admin/products/${productId}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'سرویس طلایی' }),
+      },
+      envAs(),
+    );
+    expect(tg.renamed).toEqual([`${threadId}:سرویس طلایی`]);
+
+    const gone = await app.request(
+      `/api/v1/admin/products/${productId}`,
+      { method: 'DELETE' },
+      envAs(),
+    );
+    expect(gone.status).toBe(200);
+    expect(tg.deleted).toEqual([threadId]);
   });
 
   it('refuses a group that is not a forum, in the words legacy uses', async () => {

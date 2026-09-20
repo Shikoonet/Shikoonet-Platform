@@ -24,8 +24,10 @@
 
 import type { D1Database } from '@shikoo/database';
 import type { EnvName } from '@shikoo/contracts';
-import { reportTopicKey } from '@shikoo/contracts';
-import { resolveBotToken } from '@shikoo/domain';
+import { reportTopicKey, stripCustomEmoji } from '@shikoo/contracts';
+import { createLogger, resolveBotToken } from '@shikoo/domain';
+
+const log = createLogger('dashboard');
 
 const TELEGRAM_API = 'https://api.telegram.org';
 
@@ -237,4 +239,104 @@ export async function botTelegram(env: BotCallEnv): Promise<BotCall> {
       return (await res.json()) as TelegramReply;
     },
   };
+}
+
+/**
+ * A service's own topic in the reports group. Sam, 2026-09-20: beside the ten
+ * topics per KIND, one per service and per shelf — «سرویس تیتانیوم», «قفسهٔ
+ * OpenVPN» — and when the service goes, its topic goes with it.
+ *
+ * The thread id is written onto the product row (0090); the bot reads it
+ * there and sends the order's report to it instead of the kind's topic.
+ *
+ * Telegram's name limit is 128 characters, and a name may carry a custom-emoji
+ * tag that a topic title cannot render — the fallback emoji is what it gets.
+ */
+export async function makeProductTopic(
+  db: D1Database,
+  call: TelegramCall,
+  chatId: number,
+  product: { id: number; name: string },
+): Promise<number | null> {
+  const name = stripCustomEmoji(product.name).slice(0, 128);
+  let made: TelegramReply;
+  try {
+    made = await call('createForumTopic', { chat_id: chatId, name });
+  } catch (err) {
+    log.warn('reports.product_topic_failed', { product_id: product.id }, err);
+    return null;
+  }
+  const threadId = made.result?.message_thread_id;
+  if (made.ok !== true || typeof threadId !== 'number') {
+    log.warn('reports.product_topic_failed', { product_id: product.id, reason: made.description });
+    return null;
+  }
+  await db
+    .prepare(`UPDATE products SET report_thread_id = ?2 WHERE id = ?1`)
+    .bind(product.id, threadId)
+    .run();
+  return threadId;
+}
+
+/**
+ * Makes the topic for a product just born — or does nothing, quietly, when
+ * the shop has no reports group. A topic is a side effect of the product and
+ * must not be able to fail its creation; the missing ones are made on the
+ * next run of «گروه گزارش‌ها».
+ */
+export async function openProductTopic(
+  env: BotCallEnv,
+  product: { id: number; name: string },
+): Promise<void> {
+  const group = await reportsGroup(env.DB);
+  if (!group) return;
+  const bot = await botTelegram(env);
+  if (!bot.ok) return;
+  await makeProductTopic(env.DB, bot.call, group.chatId, product);
+}
+
+/** The topic follows a renamed product. Best effort, like the delete below. */
+export async function renameProductTopic(
+  env: BotCallEnv,
+  threadId: number | null,
+  name: string,
+): Promise<void> {
+  if (threadId === null) return;
+  const group = await reportsGroup(env.DB);
+  if (!group) return;
+  const bot = await botTelegram(env);
+  if (!bot.ok) return;
+  try {
+    await bot.call('editForumTopic', {
+      chat_id: group.chatId,
+      message_thread_id: threadId,
+      name: stripCustomEmoji(name).slice(0, 128),
+    });
+  } catch (err) {
+    log.warn('reports.product_topic_not_renamed', { thread_id: threadId }, err);
+  }
+}
+
+/**
+ * Deletes a gone product's topic. Best effort, after the row is already
+ * gone: a topic the bot cannot delete (it needs «can_delete_messages» in the
+ * group) is one the operator removes by hand, not a product that stays.
+ */
+export async function closeProductTopic(env: BotCallEnv, threadId: number | null): Promise<void> {
+  if (threadId === null) return;
+  const group = await reportsGroup(env.DB);
+  if (!group) return;
+  const bot = await botTelegram(env);
+  if (!bot.ok) return;
+  try {
+    const gone = await bot.call('deleteForumTopic', {
+      chat_id: group.chatId,
+      message_thread_id: threadId,
+    });
+    if (gone.ok !== true) {
+      log.warn('reports.product_topic_not_deleted', { thread_id: threadId, reason: gone.description });
+    }
+  } catch (err) {
+    log.warn('reports.product_topic_not_deleted', { thread_id: threadId }, err);
+  }
 }

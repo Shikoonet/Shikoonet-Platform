@@ -48,6 +48,7 @@ import { checkNameEmoji } from './customEmojiNames.js';
 import { AUTOMATED_KINDS_SQL, NOT_A_SHELF, isAutomated } from '@shikoo/domain';
 import { PRODUCT_KINDS, fieldsNotForKind } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
+import { closeProductTopic, openProductTopic, renameProductTopic } from './telegramCall.js';
 import { PANEL_HAS_SECRET } from './panelRoutes.js';
 import { faNum } from './fa.js';
 
@@ -1859,6 +1860,8 @@ export function registerProductRoutes(
       { code: p.code, name: p.name, kind: p.kind, status: p.status },
       null,
     );
+    // Its topic in the reports group, when the shop has one (0090).
+    await openProductTopic(c.env, { id: Number(row.id), name: p.name });
     return c.json({ ok: true, productId: Number(row.id) }, 201);
   });
 
@@ -1883,7 +1886,7 @@ export function registerProductRoutes(
     if (patchProblem) return c.json({ ok: false, error: 'invalid_body', detail: patchProblem }, 400);
 
     const SELECT_PRODUCT = `SELECT id, code, name, kind, provider_id, category_id, description,
-                                   badge, button_style,
+                                   badge, button_style, report_thread_id,
                                    resellers_only, once_per_user, sort_order, status,
                                    attrs->'group_ids' AS group_ids,
                                    attrs->>'delivery_note' AS delivery_note
@@ -1960,6 +1963,11 @@ export function registerProductRoutes(
       after,
       null,
     );
+    // The topic follows the name (0090): Sam renamed «خرید اولی» to «الماس»
+    // on 2026-09-20, and a topic still saying the old name is the wrong one.
+    if (patch.name !== undefined && patch.name !== before['name']) {
+      await renameProductTopic(c.env, before['report_thread_id'] as number | null, patch.name);
+    }
     return c.json({ ok: true });
   });
 
@@ -1973,10 +1981,16 @@ export function registerProductRoutes(
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
     const before = await c.env.DB.prepare(
-      `SELECT id, code, name, status FROM products WHERE id = ?1`,
+      `SELECT id, code, name, status, report_thread_id FROM products WHERE id = ?1`,
     )
       .bind(id)
-      .first<{ id: number; code: string; name: string; status: string }>();
+      .first<{
+        id: number;
+        code: string;
+        name: string;
+        status: string;
+        report_thread_id: number | null;
+      }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     const gone = await c.env.DB.prepare(DELETE_PRODUCT).bind(id).first<{ id: number }>();
@@ -1995,6 +2009,8 @@ export function registerProductRoutes(
       null,
       null,
     );
+    // The service is gone; so is its topic (0090).
+    await closeProductTopic(c.env, before.report_thread_id);
     return c.json({ ok: true });
   });
 
@@ -2031,8 +2047,17 @@ export function registerProductRoutes(
     const into = body.data.into;
     if (into === id) return c.json({ ok: false, error: 'invalid_body', detail: 'same service' }, 400);
 
-    const SEL = `SELECT id, code, name, kind, provider_id, sort_order FROM products WHERE id = ?1`;
-    type P = { id: number; code: string; name: string; kind: string; provider_id: number | null; sort_order: number };
+    const SEL = `SELECT id, code, name, kind, provider_id, sort_order, report_thread_id
+                   FROM products WHERE id = ?1`;
+    type P = {
+      id: number;
+      code: string;
+      name: string;
+      kind: string;
+      provider_id: number | null;
+      sort_order: number;
+      report_thread_id: number | null;
+    };
     const src = await c.env.DB.prepare(SEL).bind(id).first<P>();
     const dst = await c.env.DB.prepare(SEL).bind(into).first<P>();
     if (!src || !dst) return c.json({ ok: false, error: 'not_found' }, 404);
@@ -2070,6 +2095,8 @@ export function registerProductRoutes(
       { into, code: dst.code, name: dst.name, discount_codes: codes?.results.length ?? 0 },
       null,
     );
+    // A folded service is a gone service: its topic goes too (0090).
+    await closeProductTopic(c.env, src.report_thread_id);
     return c.json({ ok: true, moved: moved?.results.length ?? 0 });
   });
 

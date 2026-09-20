@@ -38,7 +38,7 @@ import {
 } from '@shikoo/domain';
 import { REPORT_KINDS, REPORT_TOPIC_TITLES, reportTopicKey } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
-import { botTelegram, type TelegramReply } from './telegramCall.js';
+import { botTelegram, makeProductTopic, type TelegramReply } from './telegramCall.js';
 
 const TELEGRAM_API = 'https://api.telegram.org';
 
@@ -421,6 +421,29 @@ export function registerBotRoutes(
         .bind(key, JSON.stringify(threadId), ident.email)
         .run();
       created[kind] = threadId;
+    }
+
+    // Then one per service and per shelf (0090) — after the ten, so the group
+    // lists them below the kinds. Only the ones still without a topic, which
+    // is also how a service made before the group was set gets its topic:
+    // re-run this.
+    const services = await c.env.DB.prepare(
+      `SELECT id, name FROM products WHERE report_thread_id IS NULL ORDER BY sort_order, id`,
+    ).all<{ id: number; name: string }>();
+    for (const product of services.results ?? []) {
+      const threadId = await makeProductTopic(c.env.DB, call, chatId, product);
+      if (threadId === null) {
+        return c.json(
+          {
+            ok: false,
+            error: 'topic_failed',
+            detail: `ساخت تاپیک «${product.name}» انجام نشد.`,
+            created,
+          },
+          502,
+        );
+      }
+      created[`product:${product.id}`] = threadId;
     }
 
     // Last, and only now: every topic this run was going to make exists.
