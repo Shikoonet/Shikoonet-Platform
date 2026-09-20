@@ -85,7 +85,11 @@ test('every section opens without a failed request, a thrown render or an error 
   // 31 -> 32 on 2026-09-19: «زیرمجموعه‌ها» — every referrer in one screen,
   // with who they brought and what it earned. A new section, so the number
   // moved for the reason a number should. Counted off `nav.ts`.
-  expect(labels.length).toBe(32);
+  // 32 -> 33 on 2026-09-20: «یادآوری تمدید» (#387) — the one sweep the
+  // operator writes the rules for, on a screen of its own beside
+  // «کرون‌جاب‌ها» rather than a block on it: a list that grows is not a row
+  // of switches. A new section, so the number moved.
+  expect(labels.length).toBe(33);
 
   for (const label of labels) {
     section = label;
