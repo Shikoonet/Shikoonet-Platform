@@ -89,7 +89,18 @@ export interface PendingNotification {
    * exists to prevent; a message in the wrong place is not.
    */
   editMessageId?: number | null;
+  /**
+   * A file to send INSTEAD of the text — a shelf's config or tutorial (#377).
+   *
+   * Its own row rather than a column beside a text, so each file is its own
+   * unit of retry and the text is never sent twice because a file after it
+   * was refused. `kind` picks the Telegram method: the three `file_id` spaces
+   * are distinct and Telegram refuses one given to another's method.
+   */
+  file?: { kind: AttachmentKind; fileId: string } | null;
 }
+
+export type AttachmentKind = 'document' | 'video' | 'photo';
 
 /** Attempts before a message stops being retried and starts needing a human. */
 export const MAX_ATTEMPTS = 8;
@@ -128,8 +139,8 @@ export async function enqueue(tx: D1DatabaseSession, note: PendingNotification):
     .prepare(
       `INSERT INTO bot_notifications
          (dedupe_key, chat_id, body, reply_markup, qr_payload, message_thread_id,
-          edit_message_id)
-       VALUES (?1, ?2, ?3, ?4::jsonb, ?5, ?6, ?7)
+          edit_message_id, file_kind, file_id)
+       VALUES (?1, ?2, ?3, ?4::jsonb, ?5, ?6, ?7, ?8, ?9)
        ON CONFLICT (dedupe_key) DO NOTHING`,
     )
     .bind(
@@ -142,6 +153,8 @@ export async function enqueue(tx: D1DatabaseSession, note: PendingNotification):
       note.qrPayload ?? null,
       note.threadId ?? null,
       note.editMessageId ?? null,
+      note.file?.kind ?? null,
+      note.file?.fileId ?? null,
     )
     .run();
   return written.meta.changes > 0;
@@ -164,6 +177,8 @@ interface DueRow {
   qr_sent_at: string | null;
   message_thread_id: number | null;
   edit_message_id: number | null;
+  file_kind: AttachmentKind | null;
+  file_id: string | null;
 }
 
 /**
@@ -229,6 +244,13 @@ async function isLiveInvoice(db: D1Database, chatId: number, messageId: number):
  * must reach the retry logic in the caller as what it is.
  */
 async function deliver(db: D1Database, api: TelegramApi, row: DueRow): Promise<void> {
+  // A file row is the file and nothing else: no text, no edit, no keyboard.
+  if (row.file_id !== null) {
+    if (row.file_kind === 'video') await api.sendVideo(row.chat_id, row.file_id);
+    else if (row.file_kind === 'photo') await api.sendPhoto(row.chat_id, row.file_id);
+    else await api.sendDocument(row.chat_id, row.file_id);
+    return;
+  }
   if (row.edit_message_id !== null && !(await isLiveInvoice(db, row.chat_id, row.edit_message_id))) {
     try {
       await api.editMessageText(row.chat_id, row.edit_message_id, row.body, keyboardOf(row));
@@ -298,11 +320,16 @@ export async function flush(
            WHERE id IN (SELECT id FROM due)
           RETURNING id, dedupe_key, chat_id, body, attempt_count,
                     reply_markup, qr_payload, qr_sent_at, message_thread_id,
-                    edit_message_id`,
+                    edit_message_id, file_kind, file_id`,
       )
       .bind(now, limit, LEASE_MS)
       .all<DueRow>();
-    rows = results ?? [];
+    // The CTE picks the batch in order; the UPDATE's RETURNING gives it back
+    // in whatever order the plan touched the rows — CI showed a shelf's file
+    // ahead of the message it belongs under (#377). Ids are issued in the
+    // order rows were queued, and a retried row is older than a fresh one,
+    // so this is the CTE's own order, restated where it actually holds.
+    rows = (results ?? []).sort((a, b) => Number(a.id) - Number(b.id));
   } catch (err) {
     log.error('notify.claim_failed', { will_retry: true }, err);
     return result;

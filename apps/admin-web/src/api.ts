@@ -587,6 +587,17 @@ export interface ShelfCount {
   /** Held by unpaid invoices — not for sale, not yet sold. */
   reserved: number;
   used: number;
+  /** Files the bot sends after every sale from this shelf (#377). */
+  attachments: number;
+}
+
+/** A file the bot sends after every sale from a shelf (#377). */
+export interface ShelfAttachment {
+  id: number;
+  kind: 'document' | 'video' | 'photo';
+  fileName: string;
+  sizeBytes: number;
+  createdAt: string;
 }
 
 export interface StockPage {
@@ -1840,6 +1851,62 @@ function ledgerParams(p: LedgerQuery): URLSearchParams {
   return qs;
 }
 
+/**
+ * Sends one file as the whole request body, reporting how much of it has gone.
+ *
+ * `XMLHttpRequest`, and it is the only one in this file. `fetch` cannot
+ * report upload progress — `ReadableStream` request bodies would, but they
+ * need HTTP/2 and `duplex: 'half'`, and they are unshipped in Safari. XHR has
+ * had `upload.onprogress` since before any of this existed. A progress bar
+ * that lies about a 6 MB file is worse than none, and this is the native way
+ * to make it honest.
+ *
+ * The body is the `File` itself, not a `FormData`. There is one field.
+ *
+ * Errors are mapped to `ApiError` by hand so the page can keep using
+ * `message()`. A 413 is the one that matters: nginx answers it with HTML, so
+ * there is no `error` field to read and the code is supplied here.
+ */
+function uploadRaw<T extends object>(
+  path: string,
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${BASE}${path}`);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      const body = (() => {
+        try {
+          return JSON.parse(xhr.responseText) as (T & { ok?: boolean; error?: string; detail?: string }) | null;
+        } catch {
+          return null;
+        }
+      })();
+      if (xhr.status >= 200 && xhr.status < 300 && body !== null && body.error === undefined) {
+        resolve(body);
+        return;
+      }
+      reject(
+        new ApiError(
+          xhr.status,
+          body?.error ?? (xhr.status === 413 ? 'body_too_large' : String(xhr.status)),
+          body?.detail ?? null,
+        ),
+      );
+    };
+    // Both fire with status 0 and no body: a dropped connection and a
+    // cancelled request are the same event to this caller.
+    xhr.onerror = () => reject(new ApiError(0, 'network', null));
+    xhr.onabort = () => reject(new ApiError(0, 'aborted', null));
+    xhr.send(file);
+  });
+}
+
 export const api = {
   me() {
     return req<{ ok: boolean } & Me>('/me');
@@ -2188,6 +2255,38 @@ export const api = {
 
   deleteStock(id: number) {
     return req<{ ok: boolean }>(`/stock/${id}`, { method: 'DELETE' });
+  },
+
+  shelfAttachments(planId: number) {
+    return req<{ ok: boolean; deliveryNote: string; items: ShelfAttachment[] }>(
+      `/stock/shelves/${planId}/attachments`,
+    );
+  },
+
+  uploadShelfAttachment(
+    planId: number,
+    file: File,
+    kind: ShelfAttachment['kind'],
+    onProgress: (fraction: number) => void,
+  ) {
+    return uploadRaw<{ id: number }>(
+      `/stock/shelves/${planId}/attachments?name=${encodeURIComponent(file.name)}&kind=${kind}`,
+      file,
+      onProgress,
+    );
+  },
+
+  linkShelfAttachment(planId: number, postLink: string) {
+    return req<{ ok: boolean; id: number }>(`/stock/shelves/${planId}/attachments/link`, {
+      method: 'POST',
+      body: JSON.stringify({ postLink }),
+    });
+  },
+
+  deleteShelfAttachment(planId: number, id: number) {
+    return req<{ ok: boolean }>(`/stock/shelves/${planId}/attachments/${id}`, {
+      method: 'DELETE',
+    });
   },
 
   revenueAdjustments(params: LedgerFilter & { page: number; pageSize: number }) {
@@ -3346,53 +3445,15 @@ export const api = {
   /**
    * Puts a dump on the server, reporting how much of it has gone.
    *
-   * `XMLHttpRequest`, and it is the only one in this file. `fetch` cannot
-   * report upload progress — `ReadableStream` request bodies would, but they
-   * need HTTP/2 and `duplex: 'half'`, and they are unshipped in Safari. XHR has
-   * had `upload.onprogress` since before any of this existed. A progress bar
-   * that lies about a 6 MB file is worse than none, and this is the native way
-   * to make it honest.
-   *
-   * The body is the `File` itself, not a `FormData`. There is one field.
-   *
-   * Errors are mapped to `ApiError` by hand so the page can keep using
-   * `message()`. A 413 is the one that matters: nginx answers it with HTML, so
-   * there is no `error` field to read and the code is supplied here.
+   * The shelf's file upload takes the same road (`uploadRaw`), for the same
+   * reason: one field, a progress bar that has to be honest.
    */
   uploadDump(file: File, onProgress: (fraction: number) => void): Promise<{ name: string }> {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${BASE}/import/upload?name=${encodeURIComponent(file.name)}`);
-      xhr.withCredentials = true;
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) onProgress(e.loaded / e.total);
-      };
-      xhr.onload = () => {
-        const body = (() => {
-          try {
-            return JSON.parse(xhr.responseText) as { name?: string; error?: string; detail?: string };
-          } catch {
-            return null;
-          }
-        })();
-        if (xhr.status >= 200 && xhr.status < 300 && body?.name !== undefined) {
-          resolve({ name: body.name });
-          return;
-        }
-        reject(
-          new ApiError(
-            xhr.status,
-            body?.error ?? (xhr.status === 413 ? 'body_too_large' : String(xhr.status)),
-            body?.detail ?? null,
-          ),
-        );
-      };
-      // Both fire with status 0 and no body: a dropped connection and a
-      // cancelled request are the same event to this caller.
-      xhr.onerror = () => reject(new ApiError(0, 'network', null));
-      xhr.onabort = () => reject(new ApiError(0, 'aborted', null));
-      xhr.send(file);
-    });
+    return uploadRaw<{ name: string }>(
+      `/import/upload?name=${encodeURIComponent(file.name)}`,
+      file,
+      onProgress,
+    );
   },
 
   /**

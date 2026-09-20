@@ -55,6 +55,7 @@ async function paidRenewal(): Promise<{
   orderId: number;
   publicId: string;
   telegramId: number;
+  planId: number;
 }> {
   const { telegramId, publicId } = nextIds();
   const userId = await makeCustomer(telegramId);
@@ -83,7 +84,7 @@ async function paidRenewal(): Promise<{
     )
     .bind(publicId, userId, plan, sub!.id)
     .first<{ id: number }>();
-  return { orderId: row!.id, publicId, telegramId };
+  return { orderId: row!.id, publicId, telegramId, planId: plan };
 }
 
 /**
@@ -222,6 +223,7 @@ beforeEach(async () => {
     )
     .run();
   await db.prepare(`DELETE FROM provisioning_stock`).run();
+  await db.prepare(`DELETE FROM shelf_attachments`).run();
   // Reset here rather than at the end of the tests that set them. A test whose
   // assertion goes red never reaches its own cleanup, and both of these live in
   // a database this whole suite shares: a leftover delivery note appends itself
@@ -690,6 +692,93 @@ describe('selling accounts from the shelf', () => {
     const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
     expect(note?.text).toContain('پشتیبانی: @shikoo_support');
 
+  });
+
+  /**
+   * The shelf's papers (#377): a config file, a tutorial — queued after the
+   * delivery message, one row each, and only for a NEW purchase.
+   */
+  async function paper(plan: number, kind: string, fileId: string): Promise<number> {
+    const row = await db
+      .prepare(
+        `INSERT INTO shelf_attachments (plan_id, kind, file_id, file_name, size_bytes)
+         VALUES (?1, ?2, ?3, ?3, 1) RETURNING id`,
+      )
+      .bind(plan, kind, fileId)
+      .first<{ id: number }>();
+    return row!.id;
+  }
+
+  /** Every queued row for one customer, in send order, with what it carries. */
+  async function queuedFor(chatId: number) {
+    const { results } = await db
+      .prepare(
+        `SELECT dedupe_key, file_kind, file_id FROM bot_notifications
+          WHERE chat_id = ?1 ORDER BY id`,
+      )
+      .bind(chatId)
+      .all<{ dedupe_key: string; file_kind: string | null; file_id: string | null }>();
+    return results ?? [];
+  }
+
+  it('sends the shelf’s papers after the account, in the order they were filed', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-papers@mail.test', {
+      secret: 'stock-acct-pw-papers',
+      providerCode: 'sim-shop',
+    });
+    const config = await paper(order.planId, 'document', 'BQACconfig');
+    const video = await paper(order.planId, 'video', 'BAAChowto');
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    expect(await queuedFor(order.telegramId)).toEqual([
+      { dedupe_key: `provision:${order.publicId}`, file_kind: null, file_id: null },
+      { dedupe_key: `provision:${order.publicId}:att:${config}`, file_kind: 'document', file_id: 'BQACconfig' },
+      { dedupe_key: `provision:${order.publicId}:att:${video}`, file_kind: 'video', file_id: 'BAAChowto' },
+    ]);
+    // Sweeping again queues nothing more: the keys are the papers' own.
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    expect(await queuedFor(order.telegramId)).toHaveLength(3);
+  });
+
+  it('sends only the message when the shelf has no papers', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-bare@mail.test', {
+      secret: 'stock-acct-pw-bare',
+      providerCode: 'sim-shop',
+    });
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    expect(await queuedFor(order.telegramId)).toHaveLength(1);
+  });
+
+  it('sends no papers with a refund', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await paper(order.planId, 'document', 'BQACconfig');
+    // An empty shelf: the account shop fails the order and refunds it.
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    expect(await orderStatus(order.orderId)).toBe('FAILED');
+    const rows = await queuedFor(order.telegramId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.file_id).toBeNull();
+  });
+
+  it('sends no papers again on a renewal — the customer has had them since they bought', async () => {
+    // The untold sweep rebuilds a renewal's screen as a sale (`sold: true`),
+    // which is the path that would otherwise re-send every paper on every
+    // renewal. A COMPLETED renewal nobody was told about is exactly that case.
+    const order = await paidRenewal();
+    await paper(order.planId, 'document', 'BQACconfig');
+    await db
+      .prepare(`UPDATE orders SET status = 'COMPLETED', updated_at = now() WHERE id = ?1`)
+      .bind(order.orderId)
+      .run();
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    const rows = await queuedFor(order.telegramId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ dedupe_key: `provision:${order.publicId}`, file_id: null });
   });
 
   it('keeps a config link off the account message path', async () => {

@@ -534,6 +534,15 @@ describe('every write route, asked directly', () => {
     // ADMIN-only like the write beside it: it puts a message in the bot's
     // outbox. Not audited: it changes nothing, and the message itself is
     // the record. `retention.test.ts` pins where it goes.
-    expect(writeRoutes().length).toBe(176);
+    //
+    // 177–179, 2026-09-20: a shelf's papers (#377). `POST
+    // /admin/stock/shelves/:planId/attachments` sends an uploaded file to the
+    // reports group as the bot and files the `file_id` it gets back;
+    // `…/attachments/link` does the same by forwarding a channel post;
+    // `DELETE …/attachments/:id` takes one off. Each is a file the bot will
+    // send every customer who buys from that shelf, so ADMIN-only like the
+    // rest of «قفسهٔ انبار», and audited; `shelf-attachments.test.ts` pins
+    // the round trip and that the `file_id` never reaches the browser.
+    expect(writeRoutes().length).toBe(179);
   });
 });
