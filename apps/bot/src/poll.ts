@@ -21,6 +21,7 @@ import { syncSubscriptions, SYNC_INTERVAL_MS } from './sync.js';
 import { meterResellers, METER_INTERVAL_MS } from './resellerMeter.js';
 import { downgradeExpired } from './downgrade.js';
 import { warnExpiringServices } from './warn.js';
+import { remindToRenew } from './retention.js';
 import { removeFinishedServices } from './remove.js';
 import { nudgeNeverBought } from './nudge.js';
 import { remindMissingReceipt } from './receiptReminder.js';
@@ -1042,6 +1043,10 @@ export async function run(
       // logs `sweep.acted` per reason. Passing one job here would put all
       // three warnings' last-acted time on whichever key was named.
       await sweep('warning about services running out', () => warnExpiringServices(db));
+      // The operator's own «stay with us» messages, after the shop's warning
+      // so a customer reads the general notice before the offer. Per-rule keys
+      // are logged inside, like warn's per-reason ones.
+      await sweep('reminding first buyers to renew', () => remindToRenew(db));
       // After the warning, and the order matters: a customer is told their
       // service is running out BEFORE anything is done to it. It also does
       // nothing at all until a panel is given downgrade groups, so on every

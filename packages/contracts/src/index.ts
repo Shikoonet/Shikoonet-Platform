@@ -30,6 +30,7 @@ export * from './productKinds.js';
 export * from './receipt.js';
 export * from './channelPost.js';
 export * from './cronJobs.js';
+export * from './retention.js';
 export * from './panelUsername.js';
 
 export const INGEST_PATH = '/api/v1/sms';

@@ -519,6 +519,14 @@ describe('every write route, asked directly', () => {
     // cascade would take the customers' record with a used one, so those get
     // a 409 and «باطل کن». ADMIN-only like every other write on that screen,
     // audited; `discounts.test.ts` pins the refusal and the audit row.
-    expect(writeRoutes().length).toBe(174);
+    //
+    // 175, 2026-09-20: `POST /admin/retention/rules` (#387). Replaces the
+    // «یادآوری تمدید» list — which panel, how many days around expiry, which
+    // discount code, what text — one `settings` row (0084). Each rule is a
+    // message the bot will send to paying customers on its own, so ADMIN-only
+    // like `POST /cron`; the body is refused unless the bot's own reader
+    // accepts it, a named panel exists and a named code is usable for a
+    // renewal. Audited with reason `retention`; `retention.test.ts` pins it.
+    expect(writeRoutes().length).toBe(175);
   });
 });

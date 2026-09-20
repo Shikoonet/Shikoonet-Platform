@@ -1977,6 +1977,20 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'سرِ اطلاعیهٔ کرون حجم در «📝 گزارش اطلاع رسانی ها»',
   },
+  REPORT_RETENTION_NOTICE: {
+    default:
+      '🎁 یادآوری تمدید — {rule}\n\nنام کاربری سرویس :‌ {config}\n{when}\nکد : {code}',
+    placeholders: ['rule', 'config', 'when', 'code'],
+    screen: 'warnings',
+    hint: 'اطلاعیهٔ هر پیام «یادآوری تمدید» در «📝 گزارش اطلاع رسانی ها»',
+  },
+  REPORT_RETENTION_NIGHT_ROW: {
+    default:
+      '🎁 {rule}: فرستاده {sent} · کد {usedCode} · ماند {stayed} · رفت {left} · هنوز {pending}',
+    placeholders: ['rule', 'sent', 'usedCode', 'stayed', 'left', 'pending'],
+    screen: 'warnings',
+    hint: 'یک خط به‌ازای هر قانون «یادآوری تمدید»، در گزارش شبانه',
+  },
   REPORT_CRON_TIME_TITLE: {
     default:
       '📌 اطلاعیه کرون زمان\n\n',

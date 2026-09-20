@@ -151,6 +151,11 @@ describe('navigation', () => {
       // an admin could not stop the shop warning customers, and could not see
       // that two jobs the PHP bot deletes services with had never been built.
       'cron',
+      // «یادآوری تمدید», 2026-09-20 (#387) — the one sweep the operator writes
+      // the rules for: which panel, how many days around expiry, which
+      // discount code, what text. Its own screen rather than a block on
+      // «کرون‌جاب‌ها», because a list that grows is not a row of switches.
+      'retention',
       // «نمایندگان» — a franchise, which is a business rather than a customer.
       // The screen shows what one bought and what the PANEL's meter says they
       // used; none of their own customers is on it, and none can be, because

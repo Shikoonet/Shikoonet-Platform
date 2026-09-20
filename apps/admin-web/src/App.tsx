@@ -61,6 +61,7 @@ import { PanelsPage } from './pages/PanelsPage.js';
 import { ContentPage } from './pages/ContentPage.js';
 import { StockPage } from './pages/StockPage.js';
 import { CronPage } from './pages/CronPage.js';
+import { RetentionPage } from './pages/RetentionPage.js';
 import { ResellersPage } from './pages/ResellersPage.js';
 import { ExpensesPage } from './pages/ExpensesPage.js';
 import { BooksPage } from './pages/BooksPage.js';
@@ -133,6 +134,8 @@ function Body({
       return <StockPage />;
     case 'cron':
       return <CronPage onGo={go} />;
+    case 'retention':
+      return <RetentionPage onGo={go} />;
     case 'resellers':
       return <ResellersPage />;
     case 'expenses':
