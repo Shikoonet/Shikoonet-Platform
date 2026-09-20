@@ -13,6 +13,16 @@
  * keystroke would write the list a hundred times while a text is typed, and
  * a rule half-typed is a rule the bot would run half-typed.
  *
+ * ## The overview first, and a saved rule folded
+ *
+ * Sam, 2026-09-20: «یه قسمت استاتیستیکس … لایو ویو … وقتی ذخیره می‌زنم باید
+ * کوچیک بشه … ۵-۶ تا قانون دارم، خیلی تمیز باشه». Four totals on top,
+ * re-read every half minute; then the rules, each a `<details>` folded to ONE
+ * aligned row — who it is for, how many are in its window now, and a small
+ * bar of what happened to the people it reached. The full figures sit inside
+ * the opened rule, above its form, so nothing is printed three times. A rule
+ * just added is open, because it has nothing to summarise.
+ *
  * ## The code is chosen, not typed
  *
  * The offer is a real code from «کدهای تخفیف», picked from a list, so the
@@ -75,6 +85,9 @@ function actedLabel(row: RetentionRuleRow): string {
   return `آخرین بار ${when} — ${count(row.lastActed.count)} پیام`;
 }
 
+/** How often the overview re-reads itself while the screen is open. */
+const LIVE_EVERY_MS = 30_000;
+
 function newKey(): string {
   return `r_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -96,13 +109,22 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
   const [busy, setBusy] = useState(false);
   /** «الان چند نفر»، per rule key, as the operator types. */
   const [audience, setAudience] = useState<Record<string, number | 'loading' | null>>({});
+  /** Which rules are unfolded for editing. A saved rule starts folded. */
+  const [open, setOpen] = useState<Set<string>>(new Set());
 
-  async function load() {
+  const asRule = ({ lastActed: _l, funnel: _f, audience: _a, ...rule }: RetentionRuleRow): RetentionRule => rule;
+
+  /**
+   * `withDraft` false re-reads the numbers only, so the live overview never
+   * overwrites what the operator is typing; true is the initial read and
+   * the one after a save, when the draft IS the saved list.
+   */
+  async function load(withDraft = true) {
     setErr(null);
     try {
       const res = await api.retention();
       setRows(res.items);
-      setDraft(res.items.map(({ lastActed: _l, funnel: _f, ...rule }) => rule));
+      if (withDraft) setDraft(res.items.map(asRule));
       setPanels(res.panels);
       setAdmins(res.admins);
       setCodes(res.codes);
@@ -113,9 +135,11 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
 
   useEffect(() => {
     void load();
+    const timer = setInterval(() => void load(false), LIVE_EVERY_MS);
+    return () => clearInterval(timer);
   }, []);
 
-  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(rows.map(({ lastActed: _l, funnel: _f, ...r }) => r));
+  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(rows.map(asRule));
 
   async function save() {
     if (!draft) return;
@@ -124,6 +148,8 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
     try {
       await api.updateRetentionRules(draft);
       await load();
+      // Saved, so every rule folds to its line — the point of the summary.
+      setOpen(new Set());
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -184,10 +210,12 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
   }
 
   function add() {
+    const key = newKey();
+    setOpen((o) => new Set(o).add(key));
     setDraft((d) => [
       ...(d ?? []),
       {
-        key: newKey(),
+        key,
         name: '',
         enabled: false,
         providerId: null,
@@ -203,6 +231,102 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
   }
 
   const disabled = busy || w.disabled === true;
+
+  const totals = rows.reduce(
+    (t, r) => ({
+      on: t.on + (r.enabled ? 1 : 0),
+      audience: t.audience + (r.enabled ? r.audience : 0),
+      queued: t.queued + r.funnel.messages.queued,
+      sent: t.sent + r.funnel.messages.sent,
+      dead: t.dead + r.funnel.messages.dead,
+      today: t.today + r.funnel.messages.today,
+    }),
+    { on: 0, audience: 0, queued: 0, sent: 0, dead: 0, today: 0 },
+  );
+
+  /** «firstbuy · ۹۰ روز مانده و ۷ روز گذشته · کد OFF30» — who a rule is for, in one breath. */
+  function whoAndWhen(rule: RetentionRule): string {
+    const who = rule.panelAdmin ?? panels.find((p) => p.id === rule.providerId)?.name ?? '—';
+    const when = [
+      rule.daysBefore > 0 ? `${count(rule.daysBefore)} روز مانده` : null,
+      rule.daysAfter > 0 ? `${count(rule.daysAfter)} روز گذشته` : null,
+    ]
+      .filter(Boolean)
+      .join(' و ');
+    const code = codes.find((c) => c.id === rule.codeId)?.code;
+    return [who, when || 'بازه‌ای ندارد', code ? `کد ${code}` : 'بدون کد'].join(' · ');
+  }
+
+  /**
+   * The folded row. Name and audience come from the DRAFT when it differs,
+   * so a rule being renamed reads as renamed; everything else is what the
+   * server last said.
+   */
+  function summaryRow(rule: RetentionRule, saved: RetentionRuleRow | undefined) {
+    const live = audience[rule.key];
+    const inWindow = typeof live === 'number' ? live : saved?.audience ?? 0;
+    const f = saved?.funnel;
+    const reached = f?.sent ?? 0;
+    const pct = (n: number) => (reached === 0 ? 0 : Math.round((n / reached) * 100));
+    return (
+      <>
+        <span className="retention-row__name">{rule.name || 'قانون بی‌نام'}</span>
+        <span className={rule.enabled ? 'badge badge-active' : 'badge'}>{rule.enabled ? 'روشن' : 'خاموش'}</span>
+        <span className="retention-row__who">{whoAndWhen(rule)}</span>
+        <span className="retention-row__now">
+          <strong>{count(inWindow)}</strong> در بازه
+        </span>
+        {f && reached > 0 ? (
+          <span className="retention-row__outcome" title={`ماندند ${count(f.stayed)} · رفتند ${count(f.left)} · هنوز ${count(f.pending)}`}>
+            <span className="retention-bar" aria-hidden="true">
+              <i className="retention-bar__stayed" style={{ inlineSize: `${pct(f.stayed)}%` }} />
+              <i className="retention-bar__left" style={{ inlineSize: `${pct(f.left)}%` }} />
+            </span>
+            کد زدند {count(f.usedCode)} از {count(reached)}
+          </span>
+        ) : (
+          <span className="retention-row__outcome page-head__sub">{saved ? 'هنوز به کسی نرسیده' : 'هنوز ذخیره نشده'}</span>
+        )}
+        {f && f.messages.dead > 0 && (
+          <span className="badge badge-block" title="بلاک کرده یا اکانتش حذف شده">
+            {count(f.messages.dead)} نرسیده
+          </span>
+        )}
+      </>
+    );
+  }
+
+  /** Every figure of a saved rule, inside the opened card, above its form. */
+  function figures(saved: RetentionRuleRow) {
+    const f = saved.funnel;
+    const cells: [string, string][] = [
+      ['در صف', count(f.messages.queued)],
+      ['امروز', count(f.messages.today)],
+      ['پیام رسیده', count(f.messages.sent)],
+      ['نرسیده', count(f.messages.dead)],
+      ['نفر', count(f.sent)],
+      ['کد زدند', count(f.usedCode)],
+      ['نزدند', count(f.sent - f.usedCode)],
+      ['بیرون از فهرست', count(f.usedOutside)],
+      ['ماندند', count(f.stayed)],
+      ['رفتند', count(f.left)],
+      ['هنوز', count(f.pending)],
+    ];
+    return (
+      <dl className="retention-figures" data-testid={`retention-figures-${saved.key}`}>
+        {cells.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+        <div className="retention-figures__acted">
+          <dt>آخرین ارسال</dt>
+          <dd>{actedLabel(saved)}</dd>
+        </div>
+      </dl>
+    );
+  }
 
   return (
     <div className="page">
@@ -235,14 +359,70 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
       {err && <div className="alert alert-error">{err}</div>}
       {note && <div className="alert alert-info">{note}</div>}
 
+      {rows.length > 0 && (
+        <section className="card" data-testid="retention-stats">
+          <div className="card__head">
+            <span className="card__title">آمار — زنده، هر ۳۰ ثانیه</span>
+            <span className="page-head__sub">
+              {count(rows.length)} قانون · {count(totals.on)} روشن
+            </span>
+          </div>
+          <div className="stats-grid retention-tiles">
+            <div className="stat-card tone-blue">
+              <div>
+                <div className="stat-card__value">{count(totals.audience)}</div>
+                <div className="stat-card__label">نفر الان در بازهٔ قانون‌های روشن</div>
+              </div>
+            </div>
+            <div className="stat-card tone-orange">
+              <div>
+                <div className="stat-card__value">{count(totals.queued)}</div>
+                <div className="stat-card__label">پیام در صف ارسال</div>
+              </div>
+            </div>
+            <div className="stat-card tone-green">
+              <div>
+                <div className="stat-card__value">{count(totals.today)}</div>
+                <div className="stat-card__label">پیام امروز · {count(totals.sent)} از اول</div>
+              </div>
+            </div>
+            <div className="stat-card tone-danger">
+              <div>
+                <div className="stat-card__value">{count(totals.dead)}</div>
+                <div className="stat-card__label">پیام نرسیده — بلاک یا حذف‌شده</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       <section className="cron-list">
         {(draft ?? []).length === 0 && (
           <div className="card page-head__sub">هنوز قانونی ندارید. با «افزودن قانون» شروع کنید.</div>
         )}
         {(draft ?? []).map((rule, i) => {
           const saved = rows.find((r) => r.key === rule.key);
+          const isOpen = !saved || open.has(rule.key);
           return (
-            <article className="card cron-card" key={rule.key} data-testid={`retention-rule-${rule.key}`}>
+            <details
+              className="card cron-card"
+              key={rule.key}
+              data-testid={`retention-rule-${rule.key}`}
+              open={isOpen}
+              onToggle={(e) => {
+                const now = (e.currentTarget as HTMLDetailsElement).open;
+                setOpen((o) => {
+                  const next = new Set(o);
+                  if (now) next.add(rule.key);
+                  else next.delete(rule.key);
+                  return next;
+                });
+              }}
+            >
+              <summary className="retention-row" data-testid={`retention-summary-${rule.key}`}>
+                {summaryRow(rule, saved)}
+              </summary>
+              {saved && figures(saved)}
               <div className="cron-card-head">
                 <input
                   className="form-control"
@@ -399,17 +579,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
               <p className="cron-note page-head__sub">{PLACEHOLDER_HINT}</p>
 
               <footer className="cron-card-foot page-head__sub">
-                <span>
-                  {saved ? (
-                    <>
-                      {actedLabel(saved)} · به {count(saved.funnel.sent)} نفر رسید · کد زدند {count(saved.funnel.usedCode)} · نزدند{' '}
-                      {count(saved.funnel.sent - saved.funnel.usedCode)} · بیرون از فهرست {count(saved.funnel.usedOutside)} · ماندند{' '}
-                      {count(saved.funnel.stayed)} · رفتند {count(saved.funnel.left)} · هنوز {count(saved.funnel.pending)}
-                    </>
-                  ) : (
-                    'هنوز ذخیره نشده'
-                  )}
-                </span>
+                <span>{saved ? '' : 'هنوز ذخیره نشده — با «ذخیره» بالای صفحه فعال می‌شود.'}</span>
                 <span style={{ display: 'flex', gap: 8 }}>
                   <button
                     type="button"
@@ -430,7 +600,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
                   </button>
                 </span>
               </footer>
-            </article>
+            </details>
           );
         })}
       </section>

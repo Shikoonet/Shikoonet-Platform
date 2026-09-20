@@ -464,6 +464,8 @@ describe('the group hears about it', () => {
     expect(f.sent).toBe(1);
     expect(f.stayed).toBe(0);
     expect(f.pending).toBe(1);
+    // Messages are rows, people are people: two services, one person.
+    expect(f.messages).toEqual({ queued: 0, sent: 2, dead: 0, today: 2 });
     expect(await retentionFunnel(db, 'rxa', codeId)).toMatchObject({ sent: 0 });
 
     // An outsider redeems twice: one person outside, not two.
