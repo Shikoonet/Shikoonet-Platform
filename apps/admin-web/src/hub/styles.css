@@ -470,7 +470,10 @@
 
 .payments-shell__surface {
   position: relative;
-  z-index: 1;
+  /* No z-index here. With one, the surface is a stacking context and every
+     fixed modal rendered inside it — the decline and duplicate dialogs — is
+     clipped to z:1 no matter what its own z-index says; on production the
+     sidebar (1002) sat on top of their buttons and swallowed the click. */
   background: var(--surface-1);
   border: 1px solid var(--border-gold);
   border-radius: var(--radius-lg);
