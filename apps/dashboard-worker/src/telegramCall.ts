@@ -142,7 +142,7 @@ export async function reportsGroup(
   const setting = new Map((rows.results ?? []).map((r) => [r.key, String(r.value ?? '').trim()]));
   const rawChat = setting.get('Channel_Report') ?? '';
   const chatId = /^-?[0-9]{1,19}$/.test(rawChat) ? Number(rawChat) : null;
-  if (chatId === null || chatId === 0) return null;
+  if (chatId === null || chatId === 0 || !Number.isSafeInteger(chatId)) return null;
   const rawTopic = Number(setting.get(topicKey) ?? '');
   return { chatId, threadId: Number.isSafeInteger(rawTopic) && rawTopic > 0 ? rawTopic : null };
 }
