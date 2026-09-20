@@ -347,10 +347,12 @@ describe('the monthly statement', () => {
     await json('POST', `/api/v1/transactions/${transfer}/decline-income`, { category: 'TRANSFER' });
     await json('POST', `/api/v1/transactions/${fee}/decline-income`, { category: 'BANK_FEE' });
     await json('POST', `/api/v1/transactions/${loan}/decline-income`, { category: 'PERSONAL', reason: 'قسط' });
+    // The fee came as its own text and is tagged above; the rule on the screen
+    // is «never both», so the expense does not type it again.
     const day = new Date(T(4)).toISOString().slice(0, 10);
     await json('POST', '/api/v1/admin/revenue-adjustments', {
       amountToman: 200_000, kind: 'EXPENSE', note: `${P}server`, financialAccountId: ACCT,
-      feeToman: 720, transactionCandidateId: server, spentOn: day,
+      transactionCandidateId: server, spentOn: day,
     });
 
     const r = await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`);
@@ -378,7 +380,7 @@ describe('the monthly statement', () => {
       { category: 'BANK_FEE', count: 1, amountIrr: 7_200 },
       { category: 'PERSONAL', count: 1, amountIrr: 3_000_000 },
     ]);
-    expect(s.ledger).toMatchObject({ expenseIrr: 2_000_000, feeIrr: 7_200, unlinkedCount: 0 });
+    expect(s.ledger).toMatchObject({ expenseIrr: 2_000_000, feeIrr: 0, unlinkedCount: 0 });
     // opening + credits − debits = closing, exactly: the bank and the books agree.
     expect(s.bankDeltaIrr).toBe(4_480_000 + 5_000_000 - 2_000_000 - 7_200 - 3_000_000 - 400_000);
     expect(10_000_000 + s.bankDeltaIrr).toBe(14_072_800);
@@ -468,6 +470,31 @@ describe('the monthly statement', () => {
       items: Array<{ kind: string; amountIrr: number; direction: string; expense: { id: number } | null }>;
     };
     expect(moves.items.find((m) => m.kind === 'expense')).toMatchObject({ direction: 'DEBIT', amountIrr: 500_000 });
+  });
+
+  it('a fee typed on the expense behind a withdrawal closes the gap, and rides on the SMS row so the page can too', async () => {
+    // گردشگری-سارا, 2026-09-20: the text says 109,000 toman out, the bank took
+    // 110,100. The 1,100 went in the expense's fee field, as the screen says
+    // to; the statement still read «اختلاف با بانک −۱٬۱۰۰» and the list grew a
+    // grey «پیامکش نرسیده» row for it.
+    await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 34_861_550, at: month.start - DAY });
+    await tx({ direction: 'CREDIT', amountIrr: 10_000_000, balanceIrr: 44_861_550, at: T(1) });
+    const paid = await tx({ direction: 'DEBIT', amountIrr: 1_090_000, balanceIrr: 43_760_550, at: T(2) });
+    const r = await json('POST', '/api/v1/admin/revenue-adjustments', {
+      amountToman: 109_000, kind: 'EXPENSE', note: `${P}پیکومو`, financialAccountId: ACCT,
+      feeToman: 1_100, transactionCandidateId: paid, spentOn: new Date(T(2)).toISOString().slice(0, 10),
+    });
+    expect(r.status).toBe(200);
+    const s = ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{ gapIrr: number; ledger: { feeIrr: number; unlinkedCount: number } }>;
+    }).accounts[0]!;
+    expect(s.ledger).toMatchObject({ feeIrr: 11_000, unlinkedCount: 0 });
+    expect(s.gapIrr).toBe(0);
+    const moves = (await (await get(`/api/v1/admin/books/movements?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      items: Array<{ id: string; kind: string; amountIrr: number; feeIrr: number; expense: { id: number } | null }>;
+    };
+    expect(moves.items.find((m) => m.id === paid)).toMatchObject({ amountIrr: 1_090_000, feeIrr: 11_000 });
+    expect(moves.items.find((m) => m.kind === 'sms' && m.id !== paid)).toMatchObject({ feeIrr: 0 });
   });
 
   it('refuses a hand-written movement in the future, on no account, or from anyone but an ADMIN', async () => {

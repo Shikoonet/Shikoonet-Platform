@@ -55,6 +55,17 @@ describe('findHoles', () => {
     expect(findHoles('acct', [...items, expense])).toEqual([]);
   });
 
+  it('a fee on the expense behind a withdrawal SMS is part of what the bank took', () => {
+    // گردشگری-سارا, 2026-09-20: text −1,090,000, balance 44,861,550 → 43,760,550,
+    // the 11,000 in between typed on expense #641. Without the fee the row
+    // under it read «بانک برداشتی دیده که پیامکش نرسیده» for 1,100 toman.
+    const items = [
+      sms('a', 1000, 'CREDIT', 10_000_000, 44_861_550),
+      { ...sms('b', 2000, 'DEBIT', 1_090_000, 43_760_550), feeIrr: 11_000, expense: { id: 641, note: null } },
+    ];
+    expect(findHoles('acct', items)).toEqual([]);
+  });
+
   it('reads the list in any order and skips an SMS the parser found no balance in', () => {
     const items = [
       sms('c', 3000, 'CREDIT', 100_000, 1_300_000),

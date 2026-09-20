@@ -257,8 +257,8 @@ export async function accountStatement(
       `SELECT count(*)::int AS n, COALESCE(SUM(-ra.amount_irr),0) AS expense_irr, COALESCE(SUM(ra.fee_irr),0) AS fee_irr,
               count(*) FILTER (WHERE ra.transaction_candidate_id IS NULL)::int AS unlinked_n,
               COALESCE(SUM(-ra.amount_irr + ra.fee_irr) FILTER (WHERE ra.transaction_candidate_id IS NULL),0) AS unlinked_irr,
-              COALESCE(SUM(-ra.amount_irr + ra.fee_irr)
-                FILTER (WHERE ra.transaction_candidate_id IS NULL AND ra.spent_on <= ?4::date),0) AS unlinked_to_close_irr
+              COALESCE(SUM(CASE WHEN ra.transaction_candidate_id IS NULL THEN -ra.amount_irr + ra.fee_irr ELSE ra.fee_irr END)
+                FILTER (WHERE ra.spent_on <= ?4::date),0) AS untexted_to_close_irr
          FROM revenue_adjustments ra
         WHERE ra.financial_account_id = ?1 AND ra.kind = 'EXPENSE' AND ra.voided_at IS NULL
           AND ra.spent_on >= ?2::date AND ra.spent_on < ?3::date`,
@@ -270,7 +270,7 @@ export async function accountStatement(
       fee_irr: string | number;
       unlinked_n: number;
       unlinked_irr: string | number;
-      unlinked_to_close_irr: string | number;
+      untexted_to_close_irr: string | number;
     }>();
 
   // What the operator wrote down by hand — the whole month for the boxes,
@@ -294,8 +294,13 @@ export async function accountStatement(
       .map((r) => ({ category: r.category, count: r.n, amountIrr: num(r.irr) }));
 
   const bankDeltaIrr = num(delta?.irr);
-  // Everything the books know moved, whether or not the bank texted it.
-  const explainedDeltaIrr = bankDeltaIrr - num(ledger?.unlinked_to_close_irr) + num(manual?.to_close_irr);
+  // Everything the books know moved, whether or not the bank texted it: an
+  // expense with no SMS behind it, and the fee on one that has — the text
+  // names the withdrawal, the balance under it is short by the fee, and the
+  // operator typed that fee on the expense because the screen said to. Until
+  // 2026-09-20 only the first was counted, and a linked fee of 1,100 toman
+  // was the month's «اختلاف با بانک».
+  const explainedDeltaIrr = bankDeltaIrr - num(ledger?.untexted_to_close_irr) + num(manual?.to_close_irr);
   const gapIrr =
     opening && closing && closing.asOf > opening.asOf
       ? closing.balanceIrr - (opening.balanceIrr + explainedDeltaIrr)

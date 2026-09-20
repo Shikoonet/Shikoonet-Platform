@@ -706,6 +706,7 @@ function MovementState({ m }: { m: BankMovement }) {
       <span className="badge badge-info" title={m.expense.note ?? undefined}>
         هزینهٔ #{m.expense.id}
         {m.kind === 'expense' ? ' · بدون پیامک' : ''}
+        {m.feeIrr ? ` · کارمزد ${toman(m.feeIrr)}` : ''}
         {m.expense.note ? ` · ${m.expense.note}` : ''}
       </span>
     );
@@ -752,7 +753,9 @@ export function findHoles(accountId: string, items: BankMovement[], opening: Bal
   const holes: Hole[] = [];
   let expected: number | null = opening?.balanceIrr ?? null;
   for (const m of asc) {
-    const signed = m.direction === 'CREDIT' ? m.amountIrr : -m.amountIrr;
+    // A withdrawal is the text plus the fee the bank folded into it (#641,
+    // 2026-09-20: 1,090,000 texted, 1,101,000 taken, 11,000 on the expense).
+    const signed = m.direction === 'CREDIT' ? m.amountIrr : -(m.amountIrr + (m.feeIrr ?? 0));
     if (m.kind !== 'sms' || m.balanceIrr === null) {
       if (expected !== null) expected += signed;
       continue;
