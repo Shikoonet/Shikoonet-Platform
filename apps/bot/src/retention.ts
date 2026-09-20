@@ -74,7 +74,7 @@ interface DueRow {
  */
 const DUE = `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.remote_username,
                     (${RETENTION_DAY_INDEX_SQL})::int AS day_index,
-                    'retention:' || ?5 || ':' || s.id::text || ':'
+                    'retention:' || ?6 || ':' || s.id::text || ':'
                       || extract(epoch FROM s.expires_at)::bigint::text || ':'
                       || (${RETENTION_DAY_INDEX_SQL})::int::text AS dedupe_key
                FROM subscriptions s
@@ -87,11 +87,11 @@ const ONLY_SERVICE = `
 const TAIL = `
                 AND NOT EXISTS (
                   SELECT 1 FROM bot_notifications n
-                   WHERE n.dedupe_key = 'retention:' || ?5 || ':' || s.id::text || ':'
+                   WHERE n.dedupe_key = 'retention:' || ?6 || ':' || s.id::text || ':'
                                         || extract(epoch FROM s.expires_at)::bigint::text || ':'
                                         || (${RETENTION_DAY_INDEX_SQL})::int::text)
               ORDER BY s.expires_at
-              LIMIT ?6`;
+              LIMIT ?7`;
 
 export async function loadRetentionRules(db: D1Database): Promise<RetentionRule[]> {
   const row = await db
@@ -161,7 +161,7 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
 
     const { results } = await db
       .prepare(DUE + (rule.onlyService ? ONLY_SERVICE : '') + TAIL)
-      .bind(now, rule.providerId, rule.daysBefore, rule.daysAfter, rule.key, BATCH)
+      .bind(now, rule.providerId, rule.daysBefore, rule.daysAfter, rule.panelAdmin, rule.key, BATCH)
       .all<DueRow>();
 
     let sent = 0;

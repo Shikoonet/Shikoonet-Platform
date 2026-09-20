@@ -613,7 +613,7 @@ describe('listing every account on a panel', () => {
     // sending an empty string or the word «unknown» would authorise nothing,
     // and this is where that would be seen. The tests below feed each of them.
     const url = (i: number) => `https://panel.example.com/sub/u_${i}`;
-    const blank = { expiresAtMs: null, status: null, onlineAt: null };
+    const blank = { expiresAtMs: null, status: null, onlineAt: null, admin: null };
     expect(result.ok && result.accounts).toEqual([
       { username: 'u_0', usedBytes: 0, subscriptionUrl: url(0), ...blank },
       { username: 'u_1', usedBytes: 1024, subscriptionUrl: url(1), ...blank },
@@ -638,6 +638,17 @@ describe('listing every account on a panel', () => {
       status: 'limited',
       onlineAt: '2026-08-01T10:00:00Z',
     });
+  });
+
+  it('names the admin who made the account, and null when the panel does not say', async () => {
+    // `UserResponse.admin.username` on PasarGuard — the line «یادآوری تمدید»
+    // draws its audience with (0085). An object without a username, or no
+    // object at all, is «the panel did not say», never an empty string.
+    const panel = listingPanel(3, (i) =>
+      i === 0 ? { admin: { username: 'mirza-first-buy', is_sudo: false } } : i === 1 ? { admin: {} } : {},
+    );
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
+    expect(result.ok && result.accounts.map((a) => a.admin)).toEqual(['mirza-first-buy', null, null]);
   });
 
   /**

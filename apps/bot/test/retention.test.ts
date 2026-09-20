@@ -29,6 +29,8 @@ function nextTelegramId(): number {
 interface Service {
   expiresInDays: number;
   provider?: string;
+  /** The panel admin who made it, as the sync would have written it. */
+  admin?: string | null;
   status?: string;
   /** Written as a TRIAL order's delivery. */
   trial?: boolean;
@@ -53,8 +55,8 @@ async function makeService(userId: number, s: Service): Promise<number> {
     .prepare(
       `INSERT INTO subscriptions
          (public_id, user_id, plan_name_at_sale, price_irr, remote_username, status,
-          purchased_at, expires_at, provider_id, order_id)
-       VALUES (?1, ?2, 'یک‌ماهه-100.000ت', 1000000, ?3, ?4, ?5, ?6, ?7, ?8)
+          purchased_at, expires_at, provider_id, order_id, panel_admin)
+       VALUES (?1, ?2, 'یک‌ماهه-100.000ت', 1000000, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
        RETURNING id`,
     )
     .bind(
@@ -66,6 +68,7 @@ async function makeService(userId: number, s: Service): Promise<number> {
       new Date(NOW_MS + s.expiresInDays * DAY).toISOString(),
       await providerId(s.provider ?? 'sim-vip'),
       orderId,
+      s.admin === undefined ? 'firstbuy' : s.admin,
     )
     .first<{ id: number }>();
   if (!row) throw new Error('retention fixture failed');
@@ -76,7 +79,10 @@ interface RuleInput {
   key?: string;
   name?: string;
   enabled?: boolean;
+  /** A provider-row audience — the shape rules had before the admin picker. */
   provider?: string;
+  /** The panel-admin audience. `null` means «not by admin». */
+  admin?: string | null;
   daysBefore?: number;
   daysAfter?: number;
   onlyService?: boolean;
@@ -91,7 +97,8 @@ async function setRules(rules: RuleInput[]): Promise<void> {
       key: r.key ?? `rule_${i}`,
       name: r.name ?? `قانون ${i}`,
       enabled: r.enabled ?? true,
-      providerId: await providerId(r.provider ?? 'sim-vip'),
+      providerId: r.provider === undefined ? null : await providerId(r.provider),
+      panelAdmin: r.admin === undefined ? (r.provider === undefined ? 'firstbuy' : null) : r.admin,
       daysBefore: r.daysBefore ?? 1,
       daysAfter: r.daysAfter ?? 0,
       onlyService: r.onlyService ?? false,
@@ -176,19 +183,33 @@ describe('nothing to do', () => {
 });
 
 describe('who is due', () => {
-  it('the window before expiry, on the named panel only', async () => {
+  it('the window before expiry, for the named panel admin only', async () => {
     const inWindow = nextTelegramId();
     const tooEarly = nextTelegramId();
-    const otherPanel = nextTelegramId();
+    const otherAdmin = nextTelegramId();
+    const noAdmin = nextTelegramId();
     await makeService(await makeCustomer(inWindow), { expiresInDays: 0.5 });
     await makeService(await makeCustomer(tooEarly), { expiresInDays: 3 });
-    await makeService(await makeCustomer(otherPanel), { expiresInDays: 0.5, provider: 'sim-gold' });
-    await setRules([{ daysBefore: 1 }]);
+    // Same provider row, another admin: the line the rule draws.
+    await makeService(await makeCustomer(otherAdmin), { expiresInDays: 0.5, admin: 'hessam' });
+    // Never synced since 0085: unknown maker, not this rule's.
+    await makeService(await makeCustomer(noAdmin), { expiresInDays: 0.5, admin: null });
+    await setRules([{ daysBefore: 1, admin: 'firstbuy' }]);
 
     expect(await remindToRenew(db)).toBe(1);
     expect(await messagesTo(inWindow)).toHaveLength(1);
     expect(await messagesTo(tooEarly)).toHaveLength(0);
-    expect(await messagesTo(otherPanel)).toHaveLength(0);
+    expect(await messagesTo(otherAdmin)).toHaveLength(0);
+    expect(await messagesTo(noAdmin)).toHaveLength(0);
+  });
+
+  it('a rule from before the picker still reaches its provider row, whoever made the accounts', async () => {
+    const a = nextTelegramId();
+    const b = nextTelegramId();
+    await makeService(await makeCustomer(a), { expiresInDays: 0.5, admin: 'hessam' });
+    await makeService(await makeCustomer(b), { expiresInDays: 0.5, admin: null });
+    await setRules([{ daysBefore: 1, provider: 'sim-vip' }]);
+    expect(await remindToRenew(db)).toBe(2);
   });
 
   it('«days after» reaches a service that already ran out', async () => {
@@ -435,7 +456,7 @@ describe('the group hears about it', () => {
     await makeService(uid, { expiresInDays: 0.7 });
     const codeId = await makeCode('RETFUN');
     // `r_a` and `rxa`: LIKE would fold them, the segment match must not.
-    await setRules([{ key: 'r_a', codeId, onlyService: false }, { key: 'rxa', codeId, onlyService: false, provider: 'sim-gold' }]);
+    await setRules([{ key: 'r_a', codeId, onlyService: false }, { key: 'rxa', codeId, onlyService: false, admin: 'other' }]);
     expect(await remindToRenew(db)).toBe(2);
     await db.prepare(`UPDATE bot_notifications SET status = 'SENT', sent_at = now()`).run();
 

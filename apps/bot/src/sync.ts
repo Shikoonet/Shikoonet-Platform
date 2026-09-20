@@ -222,13 +222,16 @@ async function writeAccounts(
                 -- confirmed.
                 panel_status     = v.panel_status,
                 panel_online_at  = v.panel_online_at,
+                -- Kept when the panel stops naming one, like the link: an
+                -- account does not lose its maker because a row omitted it.
+                panel_admin      = COALESCE(v.panel_admin, s.panel_admin),
                 last_synced_at   = now(),
                 updated_at       = now()
            FROM (SELECT * FROM unnest(?2::text[], ?3::bigint[], ?4::text[],
                                       ?5::bigint[], ?6::text[],
-                                      ?7::timestamptz[])
+                                      ?7::timestamptz[], ?8::text[])
                           AS t(username, used_bytes, url, expires_ms,
-                               panel_status, panel_online_at)) v
+                               panel_status, panel_online_at, panel_admin)) v
           WHERE s.provider_id = ?1
             AND s.status IN ('ACTIVE', 'ON_HOLD')
             AND s.remote_username = v.username`,
@@ -241,6 +244,7 @@ async function writeAccounts(
         chunk.map((a) => a.expiresAtMs),
         chunk.map((a) => a.status),
         chunk.map((a) => a.onlineAt),
+        chunk.map((a) => a.admin),
       )
       .run();
     updated += result.meta.changes;

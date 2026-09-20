@@ -44,7 +44,7 @@ function message(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.code === 'forbidden') return 'برای این کار دسترسی ادمین لازم است.';
     if (e.code === 'invalid_rules') {
-      return 'یکی از قانون‌ها ناقص است — نام، پنل، متن، دست‌کم یکی از دو عدد روز، و برای قانونِ روشنی که در متنش {code} یا {discount} دارد، یک کد تخفیف.';
+      return 'یکی از قانون‌ها ناقص است — نام، یوزرنیم پنل، متن، دست‌کم یکی از دو عدد روز، و برای قانونِ روشنی که در متنش {code} یا {discount} دارد، یک کد تخفیف.';
     }
     if (e.code === 'unknown_panel') return 'پنلی که انتخاب شده دیگر وجود ندارد.';
     if (e.code === 'unusable_code') {
@@ -89,6 +89,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
   const [rows, setRows] = useState<RetentionRuleRow[]>([]);
   const [draft, setDraft] = useState<RetentionRule[] | null>(null);
   const [panels, setPanels] = useState<{ id: number; name: string; baseUrl: string | null }[]>([]);
+  const [admins, setAdmins] = useState<{ admin: string; accounts: number }[]>([]);
   const [codes, setCodes] = useState<RetentionCodeOption[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -103,6 +104,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
       setRows(res.items);
       setDraft(res.items.map(({ lastActed: _l, funnel: _f, ...rule }) => rule));
       setPanels(res.panels);
+      setAdmins(res.admins);
       setCodes(res.codes);
     } catch (e) {
       setErr(message(e));
@@ -132,27 +134,27 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
   // Only the fields the count depends on, as one string, so retyping the
   // text does not re-ask.
   const audienceInputs = JSON.stringify(
-    (draft ?? []).map((r) => [r.key, r.providerId, r.daysBefore, r.daysAfter, r.onlyService]),
+    (draft ?? []).map((r) => [r.key, r.providerId, r.panelAdmin, r.daysBefore, r.daysAfter, r.onlyService]),
   );
 
   // Asked again whenever a rule's panel, window or «only one service»
   // changes, a beat after the last keystroke so «1» → «12» → «120» is one
   // request rather than three.
   useEffect(() => {
-    const rows = JSON.parse(audienceInputs) as [string, number, number, number, boolean][];
+    const rows = JSON.parse(audienceInputs) as [string, number | null, string | null, number, number, boolean][];
     // A slow answer to an OLD question must not land on top of the new one:
     // once the inputs change again this effect is cleaned up, `live` goes
     // false, and whatever the earlier request returns is dropped.
     let live = true;
     const timer = setTimeout(() => {
-      for (const [key, providerId, daysBefore, daysAfter, onlyService] of rows) {
-        if (providerId <= 0 || (daysBefore === 0 && daysAfter === 0)) {
+      for (const [key, providerId, panelAdmin, daysBefore, daysAfter, onlyService] of rows) {
+        if ((providerId === null && panelAdmin === null) || (daysBefore === 0 && daysAfter === 0)) {
           setAudience((a) => ({ ...a, [key]: null }));
           continue;
         }
         setAudience((a) => ({ ...a, [key]: 'loading' }));
         api
-          .retentionAudience({ providerId, daysBefore, daysAfter, onlyService })
+          .retentionAudience({ providerId, panelAdmin, daysBefore, daysAfter, onlyService })
           .then((res) => live && setAudience((a) => ({ ...a, [key]: res.count })))
           .catch(() => live && setAudience((a) => ({ ...a, [key]: null })));
       }
@@ -188,7 +190,8 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
         key: newKey(),
         name: '',
         enabled: false,
-        providerId: panels[0]?.id ?? 0,
+        providerId: null,
+        panelAdmin: admins[0]?.admin ?? null,
         daysBefore: 1,
         daysAfter: 0,
         onlyService: true,
@@ -207,7 +210,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
         <div>
           <h2 className="page-head__title">یادآوری تمدید</h2>
           <div className="page-head__sub">
-            پیام خودتان به مشتری‌های یک پنل، چند روز مانده به انقضا یا بعد از آن — با یک کد تخفیف که
+            پیام خودتان به مشتری‌هایی که یک ادمین مشخصِ پنل ساخته، چند روز مانده به انقضا یا بعد از آن — با یک کد تخفیف که
             روی «کدهای تخفیف» ساخته‌اید. هر سرویس تا وقتی داخل بازه است روزی یک پیام می‌گیرد؛ از بازه
             که بیرون رفت یا تمدید کرد، تمام. گزارش هر ارسال در «📝 گزارش اطلاع رسانی ها» و جمع‌بندی
             هر قانون در گزارش شبانه می‌آید.
@@ -262,22 +265,39 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
               </div>
 
               <div className="cron-number">
-                <label htmlFor={`ret-panel-${rule.key}`}>پنل</label>
+                <label htmlFor={`ret-admin-${rule.key}`}>یوزرنیم پنل (ادمینی که اکانت را ساخته)</label>
                 <select
-                  id={`ret-panel-${rule.key}`}
+                  id={`ret-admin-${rule.key}`}
                   className="form-control"
-                  value={rule.providerId}
+                  value={rule.panelAdmin ?? ''}
                   disabled={disabled}
-                  onChange={(e) => patch(i, { providerId: Number(e.target.value) })}
+                  // Picking an admin retires the provider row: the two are
+                  // different lines through the same customers and a rule
+                  // should draw one.
+                  onChange={(e) =>
+                    patch(i, { panelAdmin: e.target.value === '' ? null : e.target.value, providerId: null })
+                  }
                 >
-                  {panels.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                      {p.baseUrl ? ` — ${p.baseUrl}` : ''}
+                  <option value="">— انتخاب کنید —</option>
+                  {admins.map((a) => (
+                    <option key={a.admin} value={a.admin}>
+                      {a.admin} — {count(a.accounts)} اکانت فعال
                     </option>
                   ))}
                 </select>
+                {admins.length === 0 && (
+                  <span className="page-head__sub">
+                    هنوز هیچ ادمینی از پنل خوانده نشده — بعد از اولین همگام‌سازی ربات با پنل پر می‌شود.
+                  </span>
+                )}
               </div>
+              {rule.providerId !== null && rule.panelAdmin === null && (
+                <p className="cron-note page-head__sub">
+                  این قانون هنوز روی پنل «{panels.find((p) => p.id === rule.providerId)?.name ?? rule.providerId}»
+                  است، از قبل از این‌که مخاطب با یوزرنیم پنل انتخاب شود. همچنان کار می‌کند؛ با انتخاب یک
+                  یوزرنیم از بالا به شکل تازه درمی‌آید.
+                </p>
+              )}
 
               <div className="cron-number">
                 <label htmlFor={`ret-before-${rule.key}`}>چند روز مانده به انقضا</label>

@@ -33,7 +33,8 @@ function rule(change: Record<string, unknown> = {}) {
     key: 'r_test1',
     name: 'خرید اولی‌ها',
     enabled: true,
-    providerId: panelId,
+    providerId: null,
+    panelAdmin: 'firstbuy',
     daysBefore: 1,
     daysAfter: 0,
     onlyService: true,
@@ -106,12 +107,14 @@ describe('reading', () => {
     const body = (await res.json()) as {
       items: { key: string; codeId: number; funnel: { sent: number }; lastActed: unknown }[];
       panels: { id: number }[];
+      admins: { admin: string; accounts: number }[];
       codes: { id: number; firstPurchaseOnly: boolean }[];
     };
     expect(body.items.map((i) => i.key)).toEqual(['r_test1']);
     expect(body.items[0]?.funnel).toEqual({ sent: 0, usedCode: 0, usedOutside: 0, stayed: 0, left: 0, pending: 0 });
     expect(body.items[0]?.lastActed).toBeNull();
     expect(body.panels.some((p) => Number(p.id) === panelId)).toBe(true);
+    expect(Array.isArray(body.admins)).toBe(true);
     expect(body.codes.find((c) => Number(c.id) === firstOnlyCodeId)?.firstPurchaseOnly).toBe(true);
   });
 });
@@ -127,9 +130,9 @@ describe('the audience count', () => {
     ).first<{ id: number }>();
     const mk = (pub: string, days: number) =>
       baseEnv.DB.prepare(
-        `INSERT INTO subscriptions (public_id, user_id, plan_name_at_sale, price_irr, remote_username, status, purchased_at, expires_at, provider_id)
-         VALUES (?1, ?2, 'p', 1, ?1, 'ACTIVE', now(), now() + make_interval(hours => ?3), ?4)
-         ON CONFLICT (public_id) DO UPDATE SET expires_at = excluded.expires_at`,
+        `INSERT INTO subscriptions (public_id, user_id, plan_name_at_sale, price_irr, remote_username, status, purchased_at, expires_at, provider_id, panel_admin)
+         VALUES (?1, ?2, 'p', 1, ?1, 'ACTIVE', now(), now() + make_interval(hours => ?3), ?4, 'aud-admin')
+         ON CONFLICT (public_id) DO UPDATE SET expires_at = excluded.expires_at, panel_admin = 'aud-admin'`,
       ).bind(pub, user!.id, days, panelId).run();
     await mk('zz-aud-1', 12); // half a day left
     await mk('zz-aud-2', 108); // 4.5 days left
@@ -137,14 +140,24 @@ describe('the audience count', () => {
 
     const count = async (q: Record<string, string>) =>
       ((await (await ask(REVIEWER, q)).json()) as { count: number }).count;
-    const base = { providerId: String(panelId), onlyService: 'false' };
+    const base = { panelAdmin: 'aud-admin', onlyService: 'false' };
     expect(await count({ ...base, daysBefore: '1', daysAfter: '0' })).toBe(1);
+    // By the provider row instead — the pre-picker shape — the same three.
+    expect(await count({ providerId: String(panelId), onlyService: 'false', daysBefore: '5', daysAfter: '3' })).toBe(3);
+    // Another admin on the same row: none of them.
+    expect(await count({ panelAdmin: 'somebody-else', onlyService: 'false', daysBefore: '5', daysAfter: '3' })).toBe(0);
+    // And the picker's list knows the admin now.
+    const listed = (await (await app.request('/api/v1/admin/retention', {}, envAs(REVIEWER))).json()) as {
+      admins: { admin: string; accounts: number }[];
+    };
+    expect(listed.admins.find((a) => a.admin === 'aud-admin')?.accounts).toBe(3);
     expect(await count({ ...base, daysBefore: '5', daysAfter: '0' })).toBe(2);
     expect(await count({ ...base, daysBefore: '0', daysAfter: '3' })).toBe(1);
     expect(await count({ ...base, daysBefore: '5', daysAfter: '3' })).toBe(3);
     // «only one service»: this customer owns three, so none of them counts.
     expect(await count({ ...base, daysBefore: '5', daysAfter: '3', onlyService: 'true' })).toBe(0);
     expect((await ask(REVIEWER, { providerId: 'x', daysBefore: '1', daysAfter: '0', onlyService: 'false' })).status).toBe(400);
+    expect((await ask(REVIEWER, { daysBefore: '1', daysAfter: '0', onlyService: 'false' })).status).toBe(400);
 
     await baseEnv.DB.prepare(`DELETE FROM subscriptions WHERE public_id LIKE 'zz-aud-%'`).run();
     await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id = 749901`).run();
@@ -189,8 +202,8 @@ describe('«تست»', () => {
        ON CONFLICT (telegram_id) DO UPDATE SET username = excluded.username RETURNING id`,
     ).first<{ id: number }>();
     await baseEnv.DB.prepare(
-      `INSERT INTO subscriptions (public_id, user_id, plan_name_at_sale, price_irr, remote_username, status, purchased_at, expires_at, provider_id)
-       VALUES ('zz-retw-1', ?1, 'یک‌ماهه-100.000ت', 1000000, 'firstbuy_w1', 'ACTIVE', now(), now() + interval '1 day', ?2)
+      `INSERT INTO subscriptions (public_id, user_id, plan_name_at_sale, price_irr, remote_username, status, purchased_at, expires_at, provider_id, panel_admin)
+       VALUES ('zz-retw-1', ?1, 'یک‌ماهه-100.000ت', 1000000, 'firstbuy_w1', 'ACTIVE', now(), now() + interval '1 day', ?2, 'firstbuy')
        ON CONFLICT (public_id) DO NOTHING`,
     ).bind(user!.id, panelId).run();
 
@@ -264,7 +277,7 @@ describe('writing', () => {
   });
 
   it('refuses a panel that is not there', async () => {
-    const res = await post(ADMIN, [rule({ providerId: 999_999_999 })]);
+    const res = await post(ADMIN, [rule({ providerId: 999_999_999, panelAdmin: null })]);
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe('unknown_panel');
   });
