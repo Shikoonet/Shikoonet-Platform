@@ -167,6 +167,7 @@ export function DiscountsPage() {
     // One at a time, so every delete gets its own audit row in order and a
     // refusal (409 for a code that gained a redemption since the list loaded)
     // skips that code instead of ending the batch.
+    setLoading(true); // load() at the end lifts it; a second click meanwhile is a no-op
     const failed: string[] = [];
     for (const d of picked) {
       try {
@@ -291,6 +292,7 @@ export function DiscountsPage() {
                 <button
                   type="button"
                   className="btn btn-sm btn-danger"
+                  disabled={loading}
                   onClick={() => void removeSelected()}
                   {...w}
                 >
