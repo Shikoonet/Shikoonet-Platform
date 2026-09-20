@@ -299,6 +299,23 @@ describe('the text', () => {
   });
 });
 
+describe('the button', () => {
+  it('opens this service\'s renewal — the rnw callback with the subscription id', async () => {
+    const tg = nextTelegramId();
+    const subId = await makeService(await makeCustomer(tg), { expiresInDays: 0.5 });
+    await setRules([{}]);
+    expect(await remindToRenew(db)).toBe(1);
+    const row = await db
+      .prepare(`SELECT reply_markup FROM bot_notifications WHERE chat_id = ?1`)
+      .bind(tg)
+      // The bare keyboard, as `notify.ts` stores it — the envelope is sendMessage's.
+      .first<{ reply_markup: { text: string; callback_data: string }[][] }>();
+    expect(row?.reply_markup).toHaveLength(1);
+    expect(row?.reply_markup[0]?.[0]?.callback_data).toBe(`rnw:${subId}`);
+    expect(row?.reply_markup[0]?.[0]?.text).not.toBe('');
+  });
+});
+
 describe('the group hears about it', () => {
   const CHANNEL = -1_009_900_770;
 

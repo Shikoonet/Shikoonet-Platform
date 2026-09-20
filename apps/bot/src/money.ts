@@ -76,25 +76,7 @@ export function nameMentionsPrice(name: string, priceIrr: number): boolean {
   return runs !== null && runs.includes(toman);
 }
 
-/**
- * The legacy name minus the price typed into it: «…-280.000ت🚀» → «…🚀».
- *
- * For the screens where the customer is about to pay a DIFFERENT number.
- * Production, 2026-09-16 23:37 UTC: a service sold under «1ماهه-100گیگ-چند
- * کاربر-280.000ت» was renewed onto today's 399,000 plan, and the invoice said
- * «تمدید سرویس: …-280.000ت» two lines above «مبلغ دقیق: ۳۹۹٬۰۰۰ تومان». Two
- * prices on one invoice; the customer paid the one they recognised, and the
- * claim went to manual review 119,000 short.
- *
- * A price here is a dotted thousands group («280.000», «1.300.000», «۱۹۵٫۰۰۰»)
- * after a dash, with or without a «ت»/«تومان» — the only shape the migrated
- * names use. A volume like «1.5» has no three-digit group and is left alone.
- */
-export function withoutQuotedPrice(name: string): string {
-  return name
-    .replace(/\s*[-–]\s*[\d۰-۹٠-٩]{1,3}(?:[.,٫٬،][\d۰-۹٠-٩]{3})+\s*(?:تومان|ت)?(?![\p{L}\d])/u, '')
-    .trim();
-}
+export { withoutQuotedPrice } from '@shikoo/contracts';
 
 export interface Price {
   /** The catalog's list price, before anything is taken off. */

@@ -34,6 +34,7 @@ import {
 } from '@shikoo/contracts';
 import { createLogger } from '@shikoo/domain';
 import { enqueue } from './notify.js';
+import { encode } from './callback.js';
 import { report } from './reports.js';
 import { loadShopSettings } from './settings.js';
 import * as menu from './menu.js';
@@ -165,6 +166,14 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
             code: code ?? '',
             renewButton: menu.renewButtonLabel(),
           }),
+          // One button, and it opens THIS service's renewal — `rnw <id>` is
+          // the same callback the «تمدید سرویس» list uses, so the plans
+          // screen, the discount prompt and the invoice are all the ordinary
+          // ones. Sam, 2026-09-20: the message must not just name the button,
+          // it must be one. An expired service is still renewable (`owned.ts`
+          // RENEWABLE does not ask about the date), so the «days after» case
+          // lands on the same screen.
+          keyboard: [[{ text: menu.renewButtonLabel(), callback_data: encode('rnw', row.id) }]],
         });
         // «📝 گزارش اطلاع رسانی ها», like every other notice a sweep sends.
         if (ok) {

@@ -21,11 +21,31 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
-import { RETENTION_RULES, parseRetentionRules, type EnvName } from '@shikoo/contracts';
+import {
+  RETENTION_RULES,
+  parseRetentionRules,
+  renderRetentionText,
+  reportTopicKey,
+  withoutQuotedPrice,
+  type EnvName,
+} from '@shikoo/contracts';
 import { NOT_A_SHELF, retentionFunnel } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 const Body = z.object({ items: z.array(z.unknown()) });
+const TestBody = z.object({ rule: z.unknown() });
+
+/** A chat id as the settings row holds it — a large negative integer, never zero. */
+function chatOf(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n !== 0 ? n : null;
+}
+
+/** A topic id — a small positive integer. Null is the group's General topic. */
+function topicOf(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
 
 interface ActedRow {
   job: string;
@@ -100,6 +120,76 @@ export function registerRetentionRoutes(
       panels: panels ?? [],
       codes: codes ?? [],
     });
+  });
+
+  /**
+   * «تست» — the sentence a customer would get, sent to the reports group.
+   *
+   * Sam, 2026-09-20: «مطمئن شم که درست کار می‌کنه». Rendered from the DRAFT on
+   * the screen, not the saved row, so an operator can try wording before
+   * saving it; and rendered for a real service where one exists — the newest
+   * ACTIVE service on the rule's panel — so `{service}` and `{username}` show
+   * what they would show, not a placeholder. Goes to «📝 گزارش اطلاع رسانی ها»
+   * under a header that says it is a test and reached no customer. No renew
+   * button: a callback pressed in the group would run as the admin and find
+   * no service of theirs to renew.
+   */
+  app.post('/api/v1/admin/retention/test', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const parsed = TestBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const rule = parseRetentionRules([parsed.data.rule])?.[0];
+    if (!rule) return c.json({ ok: false, error: 'invalid_rules' }, 400);
+
+    const db = c.env.DB;
+    const { results: rows } = await db
+      .prepare(`SELECT key, value FROM settings WHERE scope = 'bot' AND key IN ('Channel_Report', ?1)`)
+      .bind(reportTopicKey('reportcron'))
+      .all<{ key: string; value: unknown }>();
+    const setting = (key: string): unknown => (rows ?? []).find((r) => r.key === key)?.value;
+    const chatId = chatOf(setting('Channel_Report'));
+    if (chatId === null) return c.json({ ok: false, error: 'no_report_group' }, 409);
+
+    const sample = await db
+      .prepare(
+        `SELECT plan_name_at_sale, remote_username FROM subscriptions
+          WHERE provider_id = ?1 AND status = 'ACTIVE'
+          ORDER BY purchased_at DESC LIMIT 1`,
+      )
+      .bind(rule.providerId)
+      .first<{ plan_name_at_sale: string; remote_username: string | null }>();
+    const code = rule.codeId === null
+      ? null
+      : await db.prepare(`SELECT code FROM discount_codes WHERE id = ?1`).bind(rule.codeId).first<{ code: string }>();
+
+    const text = renderRetentionText(rule.text, {
+      days: String(rule.daysBefore > 0 ? rule.daysBefore : rule.daysAfter),
+      service: sample ? withoutQuotedPrice(sample.plan_name_at_sale) : 'نمونه',
+      username: sample?.remote_username ?? 'sample_user',
+      code: code?.code ?? '',
+      renewButton: 'تمدید سرویس',
+    });
+    const body = [
+      `🧪 تست قانون «${rule.name}» — به هیچ مشتری‌ای نرفته. زیر پیام واقعی دکمهٔ «تمدید سرویس» می‌آید.`,
+      '',
+      text,
+    ].join('\n');
+
+    const now = Date.now();
+    await db
+      .prepare(
+        // The same table the bot flushes, as `alert()` writes it. The key
+        // carries the clock on purpose: each press of «تست» is its own event
+        // and the operator expects one message per press.
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, message_thread_id)
+         VALUES (?1, ?2, ?3, ?4) ON CONFLICT (dedupe_key) DO NOTHING`,
+      )
+      .bind(`retention-test:${rule.key}:${now}`, chatId, body, topicOf(setting(reportTopicKey('reportcron'))))
+      .run();
+
+    return c.json({ ok: true, text });
   });
 
   app.post('/api/v1/admin/retention/rules', async (c) => {
