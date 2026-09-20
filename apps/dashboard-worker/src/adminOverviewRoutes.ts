@@ -173,7 +173,9 @@ export function registerAdminOverviewRoutes(
     // `verify.ts` deliberately reads the table instead, because it is asking
     // whether the import landed every Rial rather than what the books say.
     const adjustment = await db
-      .prepare(`SELECT COALESCE(SUM(amount_irr), 0) AS net FROM shop_books`)
+      // Less the bank's fee on each expense: what left the account, the same
+      // arithmetic as the ledger page's «هزینه» (revenueRoutes `TOTALS_SQL`).
+      .prepare(`SELECT COALESCE(SUM(amount_irr - fee_irr), 0) AS net FROM shop_books`)
       .first<{ net: string | number }>();
 
     const recentCustomers = await db

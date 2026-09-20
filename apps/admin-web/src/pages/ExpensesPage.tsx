@@ -89,6 +89,7 @@ function message(e: unknown): string {
 const PAGE_SIZE = 50;
 const ZERO: RevenueTotals = {
   expensesIrr: 0,
+  feesIrr: 0,
   revenueFixIrr: 0,
   manualIncomeIrr: 0,
   netIrr: 0,
@@ -112,7 +113,7 @@ const COLUMN_FA: {
   title: string;
   what: string;
 }[] = [
-  { key: 'expenses', title: 'هزینه', what: 'پولی که فروشگاه خرج کرده' },
+  { key: 'expenses', title: 'هزینه', what: 'پولی که فروشگاه خرج کرده، با کارمزد بانک' },
   { key: 'revenueFix', title: 'اصلاح درآمد', what: 'فیش فیک، عدم واریزی، تکراری' },
   { key: 'manualIncome', title: 'درآمد دستی', what: 'فروشی که دستی ثبت شده' },
   { key: 'net', title: 'خالص', what: 'جمع سه ستون قبل' },
@@ -636,6 +637,13 @@ function Totals({
         <div className="muted" style={{ fontSize: 11 }}>
           از {count(n)} ردیف
         </div>
+        {/* The bank's share of «هزینه», on its own line: Sam, 2026-09-20 —
+            «هر زمان خواستم بتوانم بفهمم چقدر هزینهٔ تراکنش داده‌ایم». */}
+        {key === 'expenses' && t.feesIrr > 0 && (
+          <div className="muted" style={{ fontSize: 11 }}>
+            از این، کارمزد بانک {toman(t.feesIrr)}
+          </div>
+        )}
       </td>
     );
   };
@@ -781,11 +789,10 @@ function Row({
         <td>{row.kind === 'EXPENSE' ? (row.categoryName ?? '—') : '—'}</td>
         <td style={struck}>
           {row.note}
-          {(row.accountName || row.feeIrr > 0) && (
+          {(row.accountName || row.transactionCandidateId) && (
             <div className="muted" style={{ fontSize: 11 }}>
               {row.accountName ? `از ${row.accountName}` : ''}
-              {row.feeIrr > 0 ? `${row.accountName ? ' · ' : ''}کارمزد ${toman(row.feeIrr)}` : ''}
-              {row.transactionCandidateId ? ' · وصل به پیامک' : ''}
+              {row.transactionCandidateId ? `${row.accountName ? ' · ' : ''}وصل به پیامک` : ''}
             </div>
           )}
           {gone && (
@@ -801,9 +808,16 @@ function Row({
           )}
         </td>
         <td>
+          {/* What left the account. The invoice and the bank's cut are split
+              on the line under it; the badge is the figure the statement shows. */}
           <span className={row.amountIrr < 0 ? 'badge badge-block' : 'badge badge-active'}>
-            {toman(row.amountIrr)}
+            {toman(row.amountIrr - row.feeIrr)}
           </span>
+          {row.feeIrr > 0 && (
+            <div className="muted" style={{ fontSize: 11 }}>
+              {toman(-row.amountIrr).replace(' تومان', '')} + کارمزد {toman(row.feeIrr)}
+            </div>
+          )}
           {/* What the invoice said, under what it came to. Testing `currency`
               alone is enough: the schema keeps all three together or none. */}
           {row.currency !== 'IRR' && (

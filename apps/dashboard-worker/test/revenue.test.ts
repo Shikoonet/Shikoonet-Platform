@@ -389,6 +389,41 @@ describe('the totals', () => {
     ).toBe(body.totals.netIrr);
   });
 
+  it('count the bank fee as money spent — in the totals, the breakdown, the overview and the file', async () => {
+    // Sam, 2026-09-20: «۱۰۹٬۰۰۰ تومان و ۱٬۱۰۰ تراکنش، باید این دو تا را با هم جمع
+    // کند، چون در هر صورت جمع این دو تا از حساب کم شده». 0073 gave the fee its
+    // own column so it could be read on its own — and every sum written before
+    // 0073 kept reading `amount_irr` alone, so the page said 109,000.
+    type Overview = { revenueAdjustmentIrr: number };
+    const before = (await (await get('/api/v1/admin/overview')).json()) as Overview;
+    const cat = await baseEnv.DB.prepare(`SELECT id FROM expense_categories WHERE name = 'تبلیغات'`).first<{ id: number }>();
+    await add(109_000, 'EXPENSE', 'fee-a', { feeToman: 1_100, categoryId: Number(cat!.id) });
+    await add(50_000, 'EXPENSE', 'fee-b');
+
+    const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+      items: { note: string; amountIrr: number; feeIrr: number }[];
+      totals: { expensesIrr: number; feesIrr: number; netIrr: number; expensesCount: number };
+      byCategory: { name: string | null; irr: number }[];
+    };
+    // The row keeps the two apart — the invoice says 109,000 — and the totals add them.
+    expect(body.items.find((i) => i.note.endsWith('fee-a'))).toMatchObject({ amountIrr: -1_090_000, feeIrr: 11_000 });
+    expect(body.totals).toMatchObject({ expensesIrr: -1_601_000, feesIrr: 11_000, netIrr: -1_601_000, expensesCount: 2 });
+    expect(body.byCategory.find((b) => b.name === 'تبلیغات')?.irr).toBe(-1_101_000);
+    // What the parts add to is what the whole says — the check an admin does on the screen.
+    expect(body.byCategory.reduce((s, b) => s + b.irr, 0)).toBe(body.totals.expensesIrr);
+
+    const overview = (await (await get('/api/v1/admin/overview')).json()) as Overview;
+    expect(overview.revenueAdjustmentIrr - before.revenueAdjustmentIrr).toBe(-1_601_000);
+
+    const csv = await (await get('/api/v1/admin/revenue-adjustments/export.csv?kind=EXPENSE')).text();
+    const line = csv.split('\r\n').find((l) => l.includes(`${PREFIX}fee-a`))!;
+    // Amount, fee and what left the account — three columns, in Toman, as
+    // `csvCell` writes them (quoted, a leading minus kept out of Excel's
+    // formula parser with an apostrophe).
+    expect(line).toContain(`"'-109000","1100","'-110100"`);
+    expect(csv.split('\r\n')[0]).toContain('کارمزد (تومان)');
+  });
+
   it('cover the whole filter, not the page being looked at', async () => {
     // A running total that changed when you turned the page would be worse than
     // no total at all.

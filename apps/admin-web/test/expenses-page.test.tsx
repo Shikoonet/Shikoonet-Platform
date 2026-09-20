@@ -41,6 +41,32 @@ const CATEGORIES: ExpenseCategory[] = [
  */
 const ODD_IRR = -1_999_995;
 
+const ROWS_BASE: RevenueAdjustmentRow = {
+  id: 0,
+  amountIrr: 0,
+  note: '',
+  kind: 'EXPENSE',
+  categoryId: null,
+  categoryName: null,
+  spentOn: '2026-08-20',
+  createdBy: 'admin@example.com',
+  createdAt: '2026-08-20T09:00:00Z',
+  voidedAt: null,
+  voidedBy: null,
+  voidReason: null,
+  editCount: 0,
+  lastEditedAt: null,
+  lastEditedBy: null,
+  currency: 'IRR',
+  originalAmount: null,
+  fxRateIrr: null,
+  recurrenceId: null,
+  financialAccountId: null,
+  accountName: null,
+  feeIrr: 0,
+  transactionCandidateId: null,
+};
+
 const ROWS: RevenueAdjustmentRow[] = [
   {
     id: 501,
@@ -94,6 +120,18 @@ const ROWS: RevenueAdjustmentRow[] = [
       transactionCandidateId: null,
     },
   },
+  // گردشگری‑۱‑سارا, 2026-09-20: 109,000 on the invoice, 1,100 the bank took on top.
+  {
+    ...ROWS_BASE,
+    id: 641,
+    amountIrr: -1_090_000,
+    note: 'هزینه اشترک VPN پیکومو',
+    spentOn: '2026-09-20',
+    financialAccountId: 'acct-gardeshgari',
+    accountName: 'گردشگری۱-سارا',
+    feeIrr: 11_000,
+    transactionCandidateId: 'tx-641',
+  },
 ];
 
 /** The three kinds and the counts behind them — the shape the card renders. */
@@ -102,6 +140,7 @@ const TOTALS = {
   revenueFixIrr: -293_120_000,
   manualIncomeIrr: 864_800_000,
   netIrr: -6_973_717_500,
+  feesIrr: 11_000,
   expensesCount: 56,
   revenueFixCount: 120,
   manualIncomeCount: 43,
@@ -201,9 +240,19 @@ describe('where the totals come from', () => {
     // «اصلاح درآمد» is the one nobody guesses, and misreading it is what put
     // 35.8 million Toman of fake receipts under «هزینه» on the old screen.
     expect(screen.getByText('فیش فیک، عدم واریزی، تکراری')).toBeTruthy();
-    expect(screen.getByText('پولی که فروشگاه خرج کرده')).toBeTruthy();
+    expect(screen.getByText('پولی که فروشگاه خرج کرده، با کارمزد بانک')).toBeTruthy();
     expect(screen.getByText('فروشی که دستی ثبت شده')).toBeTruthy();
     expect(screen.getByText('جمع سه ستون قبل')).toBeTruthy();
+  });
+
+  it('a row shows what left the account, and says how much of it was the fee', async () => {
+    draw();
+    const row = (await screen.findByText('هزینه اشترک VPN پیکومو')).closest('tr')!;
+    // 109,000 + 1,100: the badge is the money gone, the line under it the split.
+    expect(within(row).getByText(/−۱۱۰٬۱۰۰ تومان/)).toBeTruthy();
+    expect(within(row).getByText(/۱۰۹٬۰۰۰ \+ کارمزد ۱٬۱۰۰/)).toBeTruthy();
+    // And the card says how much of «هزینه» was fees, in this filter and over the ledger.
+    expect(screen.getAllByText(/از این، کارمزد بانک ۱٬۱۰۰ تومان/)).toHaveLength(2);
   });
 
   it('gives every figure the number of rows it was added up from', async () => {
