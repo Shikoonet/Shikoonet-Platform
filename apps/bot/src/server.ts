@@ -55,10 +55,9 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
   const { db, pool } = createPostgresD1({ connectionString: required('DATABASE_URL') });
 
   // Before anything that could fail, so the first thing this process can do is
-  // say why it did not start. `ALERT_CHAT_ID` falls back to the report channel:
-  // a shop that has told us where the nightly report goes has already named an
-  // admin channel, and asking for a second id would leave alerting off on every
-  // box that was configured before this existed.
+  // say why it did not start. The address is the shop's own `Channel_Report`,
+  // read inside `alert()`; these two variables are only the fallback for a
+  // database that has no such row, `ALERT_CHAT_ID` then `REPORT_CHAT_ID`.
   setEventSink(
     createPostgresEventSink(db, {
       alertChatId:

@@ -24,12 +24,21 @@ const SVC = 'e2e-log';
 const ALERT_CHAT = -100_777_000_111;
 const NOW_MS = Date.UTC(2026, 7, 22, 18, 40, 0);
 
+/** The shop's group from the dashboard — where every other report already goes. */
+const REPORT_CHAT = -100_777_000_222;
+
 const TOPIC_KEY = reportTopicKey('errorreport');
 
 async function cleanup(): Promise<void> {
   await db.prepare(`DELETE FROM app_events WHERE svc = ?1`).bind(SVC).run();
-  await db.prepare(`DELETE FROM bot_notifications WHERE chat_id = ?1`).bind(ALERT_CHAT).run();
-  await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = ?1`).bind(TOPIC_KEY).run();
+  await db
+    .prepare(`DELETE FROM bot_notifications WHERE chat_id IN (?1, ?2)`)
+    .bind(ALERT_CHAT, REPORT_CHAT)
+    .run();
+  await db
+    .prepare(`DELETE FROM settings WHERE scope = 'bot' AND key IN (?1, 'Channel_Report')`)
+    .bind(TOPIC_KEY)
+    .run();
 }
 
 beforeEach(async () => {
@@ -247,6 +256,43 @@ describe('alerting', () => {
       .bind(ALERT_CHAT)
       .first<{ message_thread_id: number | null }>();
     expect(row?.message_thread_id).toBe(77);
+  });
+
+  it('goes to the shop\'s own Channel_Report when there is one, and the variable is only a fallback', async () => {
+    // The shape of the 2026-09-20 outage: the group is made in the dashboard,
+    // its topic id is in settings, but no service had ALERT_CHAT_ID set — so
+    // 621 errors reached app_events in three days and not one was queued.
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value)
+         VALUES ('bot', ?1, '77'::jsonb), ('bot', 'Channel_Report', ?2::text::jsonb)`,
+      )
+      .bind(TOPIC_KEY, String(REPORT_CHAT))
+      .run();
+    const record: LogRecord = {
+      ts: new Date(NOW_MS).toISOString(),
+      level: 'error',
+      svc: SVC,
+      evt: 'settle.failed',
+      fields: {},
+    };
+    // With a fallback, and — the workers' shape once the variable is dropped — without one.
+    expect(await alert(db, ALERT_CHAT, record, NOW_MS)).toBe(true);
+    expect(await alert(db, null, { ...record, evt: 'match.failed' }, NOW_MS)).toBe(true);
+    const rows = await db
+      .prepare(
+        `SELECT chat_id, message_thread_id FROM bot_notifications
+          WHERE chat_id IN (?1, ?2) ORDER BY id`,
+      )
+      .bind(ALERT_CHAT, REPORT_CHAT)
+      .all<{ chat_id: number; message_thread_id: number | null }>();
+    expect(rows.results).toEqual([
+      { chat_id: REPORT_CHAT, message_thread_id: 77 },
+      { chat_id: REPORT_CHAT, message_thread_id: 77 },
+    ]);
+    // Nowhere at all: the row is still in app_events, the outbox is untouched.
+    await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
+    expect(await alert(db, null, { ...record, evt: 'x.failed' }, NOW_MS)).toBe(false);
   });
 
   it('survives the HTML escaper: a stack full of angle brackets is markup only where we put it', () => {
