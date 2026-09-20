@@ -67,12 +67,14 @@ function cut(text: string, max: number): string {
 }
 
 /**
- * The four strings `toTelegramHtml` would pass through as markup, made inert.
- * An upstream HTML error body, or a stack cut between such tags, would
- * otherwise unbalance the quote. Angle quotes keep the text readable.
+ * Everything `toTelegramHtml` would pass through as markup, made inert: the
+ * two formatting tags and a custom-emoji tag. An upstream HTML error body, or
+ * a stack cut between such tags, would otherwise unbalance the quote — and a
+ * `<tg-emoji>` in an error would ask Telegram for Premium on an alert. Angle
+ * quotes keep the text readable.
  */
 function inert(text: string): string {
-  return text.replace(/<(\/?(?:code|blockquote))>/g, '‹$1›');
+  return text.replace(/<(\/?(?:code|blockquote|tg-emoji)[^<>]*)>/g, '‹$1›');
 }
 
 function tehranTime(atMs: number): string {

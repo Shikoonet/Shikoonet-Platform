@@ -302,7 +302,10 @@ describe('alerting', () => {
         svc: SVC,
         evt: 'x.failed',
         fields: { body: '<code>upstream</code>' },
-        err: { name: 'Error', message: 'got </blockquote> back' },
+        err: {
+          name: 'Error',
+          message: 'got </blockquote> and <tg-emoji emoji-id="5467566950868082386">⏰</tg-emoji> back',
+        },
       },
       NOW_MS,
     );
@@ -311,6 +314,7 @@ describe('alerting', () => {
     expect(html.match(/<\/blockquote>/g)).toHaveLength(1);
     expect(html.match(/<code>/g)).toHaveLength(1);
     expect(html.match(/<\/code>/g)).toHaveLength(1);
+    expect(html).not.toContain('<tg-emoji');
   });
 
   it('caps the fields and never ends a cut on half an emoji', () => {
