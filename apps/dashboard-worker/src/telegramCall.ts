@@ -271,10 +271,22 @@ export async function makeProductTopic(
     log.warn('reports.product_topic_failed', { product_id: product.id, reason: made.description });
     return null;
   }
-  await db
+  // The topic exists on Telegram only once the row remembers it. A product
+  // deleted between the SELECT and here, or a write that fails, would leave
+  // a topic nothing points at — and the next run would make a second one.
+  const kept = await db
     .prepare(`UPDATE products SET report_thread_id = ?2 WHERE id = ?1`)
     .bind(product.id, threadId)
-    .run();
+    .run()
+    .then((r) => r.meta.changes === 1)
+    .catch(() => false);
+  if (!kept) {
+    log.warn('reports.product_topic_failed', { product_id: product.id, reason: 'row not written' });
+    await call('deleteForumTopic', { chat_id: chatId, message_thread_id: threadId }).catch(
+      () => undefined,
+    );
+    return null;
+  }
   return threadId;
 }
 
@@ -307,11 +319,14 @@ export async function renameProductTopic(
   const bot = await botTelegram(env);
   if (!bot.ok) return;
   try {
-    await bot.call('editForumTopic', {
+    const done = await bot.call('editForumTopic', {
       chat_id: group.chatId,
       message_thread_id: threadId,
       name: stripCustomEmoji(name).slice(0, 128),
     });
+    if (done.ok !== true) {
+      log.warn('reports.product_topic_not_renamed', { thread_id: threadId, reason: done.description });
+    }
   } catch (err) {
     log.warn('reports.product_topic_not_renamed', { thread_id: threadId }, err);
   }

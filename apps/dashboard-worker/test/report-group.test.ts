@@ -322,6 +322,24 @@ describe('pointing the bot at a reports group', () => {
     expect(tg.deleted).toEqual([threadId]);
   });
 
+  it('makes every topic afresh when the shop moves to another group', async () => {
+    // A thread id belongs to the chat that made it; Telegram refuses it from
+    // another. Moving the shop forgets all of them — the ten and the services'.
+    const id = await makeService('🥇سرویس تیتانیوم');
+    await connectBot();
+    telegram();
+    await setup(GROUP);
+    const oldTopic = await topicOf(id);
+
+    const moved = telegram();
+    const res = await setup(GROUP - 1);
+
+    expect(res.status).toBe(200);
+    expect(moved.madeFor.length).toBeGreaterThanOrEqual(REPORT_KINDS.length + 1);
+    expect(await topicOf(id)).not.toBe(oldTopic);
+    expect(String(await settingOf('Channel_Report'))).toBe(String(GROUP - 1));
+  });
+
   it('refuses a group that is not a forum, in the words legacy uses', async () => {
     await connectBot();
     const tg = telegram({ isForum: false });

@@ -372,6 +372,24 @@ export function registerBotRoutes(
       );
     }
 
+    // A DIFFERENT group than the one the shop reports to now: every topic id
+    // on file belongs to the old chat, and Telegram refuses a thread id from
+    // another chat. Forgotten here, so the loops below make them afresh.
+    // Same group again keeps everything — which is the migrated shop's case.
+    const stored = await c.env.DB.prepare(
+      `SELECT value FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`,
+    ).first<{ value: unknown }>();
+    const storedChat = String(stored?.value ?? '').trim();
+    if (storedChat !== '' && storedChat !== '0' && storedChat !== String(chatId)) {
+      await c.env.DB.batch([
+        c.env.DB.prepare(
+          `UPDATE settings SET value = '0'::jsonb, updated_at = now(), updated_by = ?1
+            WHERE scope = 'bot' AND key LIKE 'topic\_%'`,
+        ).bind(ident.email),
+        c.env.DB.prepare(`UPDATE products SET report_thread_id = NULL WHERE report_thread_id IS NOT NULL`),
+      ]);
+    }
+
     const created: Record<string, number> = {};
     for (const kind of REPORT_KINDS) {
       const key = reportTopicKey(kind);
