@@ -203,10 +203,17 @@ describe('making a shelf', () => {
       kind: 'spotify',
       priceIrr: 2_500_000,
       durationDays: 30,
+      userLimit: 2,
       categoryId: await categoryId(),
     });
     expect(res.status).toBe(200);
     const { planId } = (await res.json()) as { planId: number };
+    // «اکانت ۲ کاربره»: the seat count lands on the plan, where the delivery
+    // message reads it.
+    const seats = await baseEnv.DB.prepare(`SELECT user_limit FROM product_plans WHERE id = ?1`)
+      .bind(planId)
+      .first<{ user_limit: number | null }>();
+    expect(seats?.user_limit).toBe(2);
     const providerId = Number(
       (
         await baseEnv.DB.prepare(

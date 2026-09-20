@@ -116,6 +116,10 @@ const ShelfCreate = z
     // fills it and waits for a sale that cannot happen.
     priceIrr: z.number().int().min(1).max(MAX_SINGLE_PAYMENT_IRR),
     durationDays: z.number().int().positive().max(3650).nullable().default(null),
+    // How many may connect at once — «اکانت ۱ کاربره، ۲ کاربره» (Sam,
+    // 2026-09-20). The plan's own `user_limit`, which the delivery message
+    // reads; null is «no limit» and the message says nothing about seats.
+    userLimit: z.number().int().positive().max(10_000).nullable().default(null),
     categoryId: z.number().int().positive(),
   })
   .strict();
@@ -379,10 +383,11 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
         // as one line. A second plan added later is what makes it two.
         const plan = await tx
           .prepare(
-            `INSERT INTO product_plans (product_id, name, price_irr, duration_days, status)
-             VALUES (?1, ?2, ?3, ?4, 'ACTIVE') RETURNING id`,
+            `INSERT INTO product_plans
+               (product_id, name, price_irr, duration_days, user_limit, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE') RETURNING id`,
           )
-          .bind(product!.id, b.name, b.priceIrr, b.durationDays)
+          .bind(product!.id, b.name, b.priceIrr, b.durationDays, b.userLimit)
           .first<{ id: number }>();
         planId = Number(plan!.id);
       });
@@ -422,7 +427,14 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
       'PRODUCT_PLAN',
       String(planId),
       null,
-      { name: b.name, kind: b.kind, price_irr: b.priceIrr, category_id: b.categoryId },
+      {
+        name: b.name,
+        kind: b.kind,
+        price_irr: b.priceIrr,
+        duration_days: b.durationDays,
+        user_limit: b.userLimit,
+        category_id: b.categoryId,
+      },
       null,
     );
     return c.json({ ok: true, planId });
