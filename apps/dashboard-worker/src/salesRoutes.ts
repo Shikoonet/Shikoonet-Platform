@@ -366,7 +366,7 @@ export function registerSalesRoutes(
       const { results } = await c.env.DB.prepare(
         `SELECT o.public_id, o.kind, o.status, o.quantity, o.total_irr, o.created_at,
                 u.telegram_id, u.username,
-                COALESCE(pl.name, sub.plan_name_at_sale) AS plan_name
+                COALESCE(o.plan_name_at_sale, pl.name, sub.plan_name_at_sale) AS plan_name
            ${from}
            LEFT JOIN product_plans pl ON pl.id = o.plan_id
            LEFT JOIN subscriptions sub ON sub.order_id = o.id
@@ -412,7 +412,7 @@ export function registerSalesRoutes(
               EXISTS (SELECT 1 FROM wallet_entries w
                        WHERE w.order_id = o.id AND w.kind = 'REFUND') AS refunded,
               u.id AS user_id, u.telegram_id, u.username,
-              COALESCE(pl.name, s.plan_name_at_sale) AS plan_name,
+              COALESCE(o.plan_name_at_sale, pl.name, s.plan_name_at_sale) AS plan_name,
               -- The account this order made, or — for a renewal or add-on —
               -- the one it was for. Same column either way.
               COALESCE(s.remote_username, ts.remote_username) AS remote_username,
@@ -480,17 +480,22 @@ export function registerSalesRoutes(
         createdAt: r.created_at,
         completedAt: r.completed_at,
         customer: { id: r.user_id, telegramId: r.telegram_id, username: r.username },
-        // Two sources, in this order, because `plan_id` answers for one
-        // kind of order and not the other:
+        // Three sources, in this order:
         //
-        //   * `product_plans.name` — today's catalogue, for an order the
-        //     shop itself took. NULL once a plan is retired, since
+        //   * `orders.plan_name_at_sale` — the name at placement, frozen
+        //     (0089). Every order the shop takes has it, and the migration
+        //     filled it for the rest from the two below.
+        //   * `product_plans.name` — today's catalogue, for an order placed
+        //     before 0089. NULL once a plan is retired, since
         //     `orders.plan_id` is ON DELETE SET NULL.
-        //   * `subscriptions.plan_name_at_sale` — the name the customer
-        //     actually bought under. This is the only one an imported
-        //     order has: legacy plan names are free text with the price
-        //     inside them, so the migration deliberately maps none of them
-        //     to a catalogue row and `plan_id` stays NULL on all 8,909.
+        //   * `subscriptions.plan_name_at_sale` — the name the service is
+        //     sold under NOW, not the name this order bought: a tier
+        //     change rewrites it, and a customer's first purchase read as
+        //     the tier they changed to (Sam, 2026-09-20). Last for that
+        //     reason; it was the only name an imported order had (legacy
+        //     plan names are free text with the price inside them, so the
+        //     migration maps none to a catalogue row and `plan_id` stays
+        //     NULL on all 8,909).
         //
         // Still NULL for a renewal or add-on, which is right: `service_other`
         // carries no product name in the legacy database either, and the

@@ -1542,10 +1542,14 @@ async function renew(
         `UPDATE subscriptions
             SET plan_id           = ?2,
                 plan_name_at_sale = ?3,
-                -- The tier's name, for the «لوکیشن» line: on a sibling row's
+                -- The name of the row the plan lives on, for the «لوکیشن»
+                -- line and the dashboard's «پنل» column: on a sibling row's
                 -- plan (issue #271) the account stays under its own admin but
-                -- was sold as the other tier, and the service screen should
-                -- say so. Same name as before on every other renewal.
+                -- was sold as the other tier, and both screens should say so.
+                -- On the account's own row it is that row's current name —
+                -- which an imported service never had: its text is the legacy
+                -- location, and a renewal is the sale that brings it up to
+                -- date (Sam, 2026-09-20).
                 provider_name_at_sale = COALESCE(?8, provider_name_at_sale),
                 duration_days     = ?4,
                 volume_gb         = ?5,
@@ -1580,7 +1584,7 @@ async function renew(
         result.volumeGb ?? null,
         expiresAt === null ? null : expiresAt.toISOString(),
         mode === 'RESET',
-        tierChange ? row.plan_provider_name : null,
+        row.plan_provider_name,
       )
       .run();
     await complete(tx, row.order_id, shop.commissionPercent);

@@ -504,6 +504,49 @@ describe('the read-only ledgers', () => {
     expect(mine?.planName).toBe('1ماهه-20گیگ-119.000ت');
   });
 
+  it('keeps the name an order was sold under after a tier change renames the service', async () => {
+    // Sam, 2026-09-20: a first purchase in Mordad, changed to «الماس» today,
+    // and the Mordad order on the customer's card read «الماس» too. The
+    // service's `plan_name_at_sale` is the name it is sold under NOW — a
+    // tier change rewrites it, rightly — so the order carries its own (0089).
+    const { id: userId, telegramId } = await makeUser();
+    const orderPublicId = `zzsales-order-${seq}`;
+    await baseEnv.DB.prepare(
+      `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status, plan_id, plan_name_at_sale)
+       VALUES (?1, ?2, 'NEW_PURCHASE', 1000000, 1, 0, 1000000, 'COMPLETED', NULL, '👑 خرید اولی')`,
+    )
+      .bind(orderPublicId, userId)
+      .run();
+    const order = await baseEnv.DB.prepare(`SELECT id FROM orders WHERE public_id = ?1`)
+      .bind(orderPublicId)
+      .first<{ id: number }>();
+    // The row as the tier change leaves it: renamed to what it is now.
+    await baseEnv.DB.prepare(
+      `INSERT INTO subscriptions
+         (public_id, user_id, order_id, plan_name_at_sale, provider_name_at_sale, price_irr, status, purchased_at)
+       VALUES (?1, ?2, ?3, '💎 الماس', 'سرویس الماس', 1000000, 'ACTIVE', now())`,
+    )
+      .bind(`zzsales-sub-${seq}`, userId, order!.id)
+      .run();
+
+    const res = await app.request(`/api/v1/admin/orders?q=${telegramId}`, {}, envAs(ADMIN));
+    const body = (await res.json()) as { items: Array<{ planName: string | null }> };
+    expect(body.items.map((o) => o.planName)).toEqual(['👑 خرید اولی']);
+
+    const csv = await (
+      await app.request(`/api/v1/admin/orders?q=${telegramId}&format=csv`, {}, envAs(ADMIN))
+    ).text();
+    expect(csv).toContain('👑 خرید اولی');
+    expect(csv).not.toContain('💎 الماس');
+
+    const overview = (await (
+      await app.request('/api/v1/admin/overview', {}, envAs(ADMIN))
+    ).json()) as { recentOrders: Array<{ publicId: string; planName: string | null }> };
+    expect(overview.recentOrders.find((o) => o.publicId === orderPublicId)?.planName).toBe(
+      '👑 خرید اولی',
+    );
+  });
+
   it('names the card an order was paid into and the account it made, and links the account to its panel', async () => {
     // What the customer's card asks of these two rows: «به کدام کارت پرداخت
     // شد، اسم اکانتش چیست، و کجای پاسارگارد است». The card is on the

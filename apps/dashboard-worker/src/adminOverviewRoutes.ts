@@ -203,12 +203,14 @@ export function registerAdminOverviewRoutes(
 
     const recentOrders = await db
       .prepare(
-        // `plan_name_at_sale` is the fallback rather than an afterthought:
-        // an imported order has no `plan_id` at all, so without it every row
-        // on this list reads as a dash. Safe to join because
-        // `idx_subscriptions_one_per_order` is UNIQUE on `order_id`.
+        // `o.plan_name_at_sale` first — the name at placement (0089); the
+        // service's name is the fallback for an order placed before it, and
+        // it is a fallback rather than an afterthought: an imported order has
+        // no `plan_id` at all, so without it every such row reads as a dash.
+        // Safe to join because `idx_subscriptions_one_per_order` is UNIQUE on
+        // `order_id`.
         `SELECT o.public_id, u.id AS user_id, u.telegram_id,
-                COALESCE(p.name, s.plan_name_at_sale) AS plan_name,
+                COALESCE(o.plan_name_at_sale, p.name, s.plan_name_at_sale) AS plan_name,
                 o.total_irr, o.status, o.created_at
            FROM orders o
            LEFT JOIN users u ON u.id = o.user_id

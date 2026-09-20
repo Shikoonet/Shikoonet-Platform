@@ -1017,6 +1017,14 @@ describe('applying it', () => {
 
   it('RESET starts the clock now and zeroes the usage', async () => {
     const target = await paidRenewal();
+    // An imported service names its panel in the legacy's words. The
+    // renewal is a sale on this row, so the row's own name replaces them —
+    // the dashboard's «پنل» column read the old location for a service
+    // renewed today (Sam, 2026-09-20).
+    await db
+      .prepare(`UPDATE subscriptions SET provider_name_at_sale = '👑خرید اولی ها🔥' WHERE id = ?1`)
+      .bind(target.subId)
+      .run();
     const panel = fakePanel({
       [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
     });
@@ -1032,6 +1040,7 @@ describe('applying it', () => {
     const sub = await subscriptionRow(target.subId);
     expect(sub?.used_bytes).toBe(0);
     expect(sub?.volume_gb).toBe(50);
+    expect(sub?.provider_name_at_sale).toBe('🥇 سرویس VIP (شبیه‌سازی)');
     expect(Date.parse(sub!.expires_at!)).toBe(NOW_MS + 30 * DAY);
     // The "your service is running out" flag has to be cleared, or the warning
     // never fires again for this service.
