@@ -11,13 +11,17 @@
 --
 -- Nullable: filled by the next sync, absent on providers whose panel does
 -- not say (manual, shelves).
+--
+-- No index, on purpose. The runner wraps every file in a transaction, so a
+-- CREATE INDEX here would take a SHARE lock on `subscriptions` while the
+-- still-running bot writes to it — and the readers narrow on
+-- `idx_subs_expiring` first and then on this column, over a table of a few
+-- thousand rows. An index that saves nothing is not worth a lock that could
+-- stall a sync. (CodeRabbit on #393.)
 BEGIN;
 
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS panel_admin text;
 COMMENT ON COLUMN subscriptions.panel_admin IS
   'The panel admin that owns this account, as the panel reports it on sync. NULL when it does not say.';
-
-CREATE INDEX IF NOT EXISTS idx_subs_panel_admin ON subscriptions(panel_admin)
-  WHERE panel_admin IS NOT NULL;
 
 COMMIT;
