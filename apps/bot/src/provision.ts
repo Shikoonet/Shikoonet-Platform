@@ -93,7 +93,7 @@ interface PendingOrder {
   plan_name: string | null;
   plan_attrs: Record<string, unknown> | null;
   product_attrs: Record<string, unknown> | null;
-  /** The service's own topic in the reports group, or null for the kind's (0090). */
+  /** The service's own topic in the reports group, or null for the kind's (0091). */
   product_thread_id: number | null;
   volume_gb: string | number | null;
   duration_days: number | null;

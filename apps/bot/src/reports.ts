@@ -40,7 +40,7 @@ export interface ReportTarget {
  * so a report and a customer-facing message about the same order cannot
  * collide on one key, which would silently drop whichever came second.
  *
- * `ownTopic` is the service's own topic (`products.report_thread_id`, 0090):
+ * `ownTopic` is the service's own topic (`products.report_thread_id`, 0091):
  * Sam, 2026-09-20, one topic per service and per shelf. An order's report goes
  * there when the service has one, and to the kind's topic otherwise.
  */

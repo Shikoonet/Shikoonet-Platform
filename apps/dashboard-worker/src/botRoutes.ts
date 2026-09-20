@@ -441,7 +441,7 @@ export function registerBotRoutes(
       created[kind] = threadId;
     }
 
-    // Then one per service and per shelf (0090) — after the ten, so the group
+    // Then one per service and per shelf (0091) — after the ten, so the group
     // lists them below the kinds. Only the ones still without a topic, which
     // is also how a service made before the group was set gets its topic:
     // re-run this.

@@ -440,7 +440,7 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
       },
       null,
     );
-    // The shelf's own topic in the reports group, when the shop has one (0090).
+    // The shelf's own topic in the reports group, when the shop has one (0091).
     await openProductTopic(c.env, { id: productId!, name: b.name });
     return c.json({ ok: true, planId });
   });

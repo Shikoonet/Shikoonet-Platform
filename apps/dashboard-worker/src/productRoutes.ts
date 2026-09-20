@@ -1860,7 +1860,7 @@ export function registerProductRoutes(
       { code: p.code, name: p.name, kind: p.kind, status: p.status },
       null,
     );
-    // Its topic in the reports group, when the shop has one (0090).
+    // Its topic in the reports group, when the shop has one (0091).
     await openProductTopic(c.env, { id: Number(row.id), name: p.name });
     return c.json({ ok: true, productId: Number(row.id) }, 201);
   });
@@ -1963,7 +1963,7 @@ export function registerProductRoutes(
       after,
       null,
     );
-    // The topic follows the name (0090): Sam renamed «خرید اولی» to «الماس»
+    // The topic follows the name (0091): Sam renamed «خرید اولی» to «الماس»
     // on 2026-09-20, and a topic still saying the old name is the wrong one.
     if (patch.name !== undefined && patch.name !== before['name']) {
       await renameProductTopic(c.env, before['report_thread_id'] as number | null, patch.name);
@@ -2009,7 +2009,7 @@ export function registerProductRoutes(
       null,
       null,
     );
-    // The service is gone; so is its topic (0090).
+    // The service is gone; so is its topic (0091).
     await closeProductTopic(c.env, before.report_thread_id);
     return c.json({ ok: true });
   });
@@ -2095,7 +2095,7 @@ export function registerProductRoutes(
       { into, code: dst.code, name: dst.name, discount_codes: codes?.results.length ?? 0 },
       null,
     );
-    // A folded service is a gone service: its topic goes too (0090).
+    // A folded service is a gone service: its topic goes too (0091).
     await closeProductTopic(c.env, src.report_thread_id);
     return c.json({ ok: true, moved: moved?.results.length ?? 0 });
   });

@@ -91,7 +91,7 @@ describe('a report about an order', () => {
   };
 
   it('goes to the service’s own topic when it has one', async () => {
-    // Sam, 2026-09-20: one topic per service and per shelf (0090).
+    // Sam, 2026-09-20: one topic per service and per shelf (0091).
     await db.withSession((tx) => report(tx, shop, 'buyreport', 'rt-5', 'sold', 77));
 
     const { sent, api } = recorder();

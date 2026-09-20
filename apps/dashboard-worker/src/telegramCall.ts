@@ -246,7 +246,7 @@ export async function botTelegram(env: BotCallEnv): Promise<BotCall> {
  * topics per KIND, one per service and per shelf — «سرویس تیتانیوم», «قفسهٔ
  * OpenVPN» — and when the service goes, its topic goes with it.
  *
- * The thread id is written onto the product row (0090); the bot reads it
+ * The thread id is written onto the product row (0091); the bot reads it
  * there and sends the order's report to it instead of the kind's topic.
  *
  * Telegram's name limit is 128 characters, and a name may carry a custom-emoji
