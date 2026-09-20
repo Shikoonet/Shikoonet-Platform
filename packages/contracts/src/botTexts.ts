@@ -1986,8 +1986,8 @@ export const TEXTS = {
   },
   REPORT_RETENTION_NIGHT_ROW: {
     default:
-      '🎁 {rule}: فرستاده {sent} · کد {usedCode} · ماند {stayed} · رفت {left} · هنوز {pending}',
-    placeholders: ['rule', 'sent', 'usedCode', 'stayed', 'left', 'pending'],
+      '🎁 {rule}: به {sent} نفر رسید · کد زدند {usedCode} · نزدند {notUsed} · بیرون از فهرست {usedOutside} · ماندند {stayed} · رفتند {left} · هنوز {pending}',
+    placeholders: ['rule', 'sent', 'usedCode', 'notUsed', 'usedOutside', 'stayed', 'left', 'pending'],
     screen: 'warnings',
     hint: 'یک خط به‌ازای هر قانون «یادآوری تمدید»، در گزارش شبانه',
   },

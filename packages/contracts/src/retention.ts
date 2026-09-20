@@ -43,11 +43,55 @@ export interface RetentionRule {
   onlyService: boolean;
   /** `discount_codes.id` printed as `{code}`, or null for a plain message. */
   codeId: number | null;
-  /** The message. Placeholders: {days} {service} {username} {code} {renewButton}. */
+  /** The message before expiry. Placeholders: {days} {service} {username} {code} {discount} {renewButton}. */
   text: string;
+  /**
+   * The message after expiry, for the «days after» side of the window.
+   *
+   * Its own text because «{days} روز دیگر تمام می‌شود» is a lie to somebody
+   * whose service ended on Tuesday. Empty means «use `text`», which is what
+   * every rule saved before this field existed does.
+   */
+  textAfter: string;
 }
 
-export const RETENTION_PLACEHOLDERS = ['days', 'service', 'username', 'code', 'renewButton'] as const;
+export const RETENTION_PLACEHOLDERS = ['days', 'service', 'username', 'code', 'discount', 'renewButton'] as const;
+
+/**
+ * What a new rule says until the operator changes it. Sam's own wording,
+ * 2026-09-20, with the percentage lifted out into `{discount}` so a rule
+ * pointed at a 40% code does not keep saying 30. The code sits on a line of
+ * its own because that is the line a thumb lands on.
+ */
+export const RETENTION_DEFAULT_TEXT =
+  'سرویس «{service}» شما {days} روز دیگر تمام می‌شود.\n\nبا کد زیر می‌توانید از {discount} تخفیف برای تمدید سرویستان استفاده کنید:\n{code}\n\nبرای تمدید روی دکمهٔ «{renewButton}» بزنید.';
+export const RETENTION_DEFAULT_TEXT_AFTER =
+  'سرویس «{service}» شما {days} روز پیش تمام شد.\n\nهنوز می‌توانید با کد زیر از {discount} تخفیف برای تمدید استفاده کنید:\n{code}\n\nبرای تمدید روی دکمهٔ «{renewButton}» بزنید.';
+
+/** «۳۰٪», «۵۰٬۰۰۰ تومان», «۱۰ گیگ حجم اضافه» — the offer in the operator's words. */
+export function discountLabel(code: {
+  kind: string;
+  percent: number | null;
+  amountIrr: number | null;
+  bonusGb: number | null;
+}): string {
+  const pct = code.percent === null ? '' : `${Number(code.percent).toLocaleString('en-US')}٪`;
+  const toman = code.amountIrr === null ? '' : `${Math.round(code.amountIrr / 10).toLocaleString('en-US')} تومان`;
+  switch (code.kind) {
+    case 'PERCENT_OFF':
+      return pct;
+    case 'AMOUNT_OFF':
+      return toman;
+    case 'GIFT_BALANCE':
+      return `${toman} شارژ کیف پول`;
+    case 'BONUS_GB':
+      return `${Number(code.bonusGb ?? 0).toLocaleString('en-US')} گیگ حجم اضافه`;
+    case 'BONUS_PERCENT':
+      return `${pct} حجم اضافه`;
+    default:
+      return pct || toman;
+  }
+}
 
 export const RETENTION_LIMITS = {
   rules: 20,
@@ -58,6 +102,7 @@ export const RETENTION_LIMITS = {
 } as const;
 
 const KEY = /^[a-z0-9_-]{1,40}$/;
+const MENTIONS_CODE = /\{(?:code|discount)\}/;
 
 function isInt(v: unknown, min: number, max: number): v is number {
   return typeof v === 'number' && Number.isSafeInteger(v) && v >= min && v <= max;
@@ -89,6 +134,14 @@ export function parseRetentionRules(value: unknown): RetentionRule[] | null {
     if (r['daysBefore'] === 0 && r['daysAfter'] === 0) return null;
     if (r['codeId'] !== null && !isInt(r['codeId'], 1, Number.MAX_SAFE_INTEGER)) return null;
     if (typeof r['text'] !== 'string' || r['text'].trim().length === 0 || r['text'].length > RETENTION_LIMITS.text) return null;
+    // Optional and absent on every rule saved before 2026-09-20.
+    const textAfter = r['textAfter'] === undefined ? '' : r['textAfter'];
+    if (typeof textAfter !== 'string' || textAfter.length > RETENTION_LIMITS.text) return null;
+    // A text that promises a code needs one. The default text does, so a
+    // rule saved without picking a code would send «با کد  از  تخفیف» — two
+    // blanks where the offer was. Only an ENABLED rule is held to this: a
+    // draft the operator has not finished may be saved off and finished later.
+    if (r['enabled'] && r['codeId'] === null && MENTIONS_CODE.test(`${r['text']}\n${textAfter}`)) return null;
     keys.add(r['key']);
     out.push({
       key: r['key'],
@@ -100,6 +153,7 @@ export function parseRetentionRules(value: unknown): RetentionRule[] | null {
       onlyService: r['onlyService'],
       codeId: r['codeId'] as number | null,
       text: r['text'],
+      textAfter: textAfter.trim() === '' ? '' : textAfter,
     });
   }
   return out;
@@ -119,7 +173,20 @@ export function renderRetentionText(
   );
 }
 
-/** The outbox key for one rule, one service, one expiry. */
-export function retentionDedupeKey(ruleKey: string, subscriptionId: number, expiresEpoch: number): string {
-  return `retention:${ruleKey}:${subscriptionId}:${expiresEpoch}`;
+/**
+ * The outbox key for one rule, one service, one expiry, one DAY of the window.
+ *
+ * `dayIndex` is whole days to expiry: +3 is three days before, −2 is two
+ * days after. It moves once a day, so a service inside a five-day window is
+ * written five times, a day apart — Sam, 2026-09-20: «روزی یک بار» — and a
+ * renewal moves the expiry, which starts the count again. Until that day
+ * the key had no day part and a service heard from a rule once per expiry.
+ */
+export function retentionDedupeKey(
+  ruleKey: string,
+  subscriptionId: number,
+  expiresEpoch: number,
+  dayIndex: number,
+): string {
+  return `retention:${ruleKey}:${subscriptionId}:${expiresEpoch}:${dayIndex}`;
 }

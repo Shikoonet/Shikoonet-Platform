@@ -22,18 +22,26 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import {
+  RETENTION_LIMITS,
   RETENTION_RULES,
+  discountLabel,
   parseRetentionRules,
   renderRetentionText,
   reportTopicKey,
   withoutQuotedPrice,
   type EnvName,
 } from '@shikoo/contracts';
-import { NOT_A_SHELF, retentionFunnel } from '@shikoo/domain';
+import { NOT_A_SHELF, retentionAudienceCount, retentionFunnel } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 const Body = z.object({ items: z.array(z.unknown()) });
 const TestBody = z.object({ rule: z.unknown() });
+const AudienceQuery = z.object({
+  providerId: z.coerce.number().int().positive(),
+  daysBefore: z.coerce.number().int().min(0).max(RETENTION_LIMITS.daysBefore),
+  daysAfter: z.coerce.number().int().min(0).max(RETENTION_LIMITS.daysAfter),
+  onlyService: z.enum(['true', 'false']).transform((v) => v === 'true'),
+});
 
 /** A chat id as the settings row holds it — a large negative integer, never zero. */
 function chatOf(value: unknown): number | null {
@@ -123,6 +131,25 @@ export function registerRetentionRoutes(
   });
 
   /**
+   * «الان چند نفر؟» — the rule's audience as the operator types it.
+   *
+   * Sam, 2026-09-20: typing a panel and two numbers should show how many
+   * people that is. Read-only, so a reviewer may ask; the count uses the
+   * sweep's own predicate from `@shikoo/domain`, so it cannot promise an
+   * audience the sweep would not write to.
+   */
+  app.get('/api/v1/admin/retention/audience', async (c) => {
+    const parsed = AudienceQuery.safeParse({
+      providerId: c.req.query('providerId'),
+      daysBefore: c.req.query('daysBefore') ?? '0',
+      daysAfter: c.req.query('daysAfter') ?? '0',
+      onlyService: c.req.query('onlyService') ?? 'false',
+    });
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
+    return c.json({ ok: true, count: await retentionAudienceCount(c.env.DB, parsed.data) });
+  });
+
+  /**
    * «تست» — the sentence a customer would get, sent to the reports group.
    *
    * Sam, 2026-09-20: «مطمئن شم که درست کار می‌کنه». Rendered from the DRAFT on
@@ -165,16 +192,28 @@ export function registerRetentionRoutes(
       )
       .bind(rule.providerId)
       .first<{ plan_name_at_sale: string; remote_username: string | null }>();
-    const code = rule.codeId === null
-      ? null
-      : await db.prepare(`SELECT code FROM discount_codes WHERE id = ?1`).bind(rule.codeId).first<{ code: string }>();
+    const code =
+      rule.codeId === null
+        ? null
+        : await db
+            .prepare(`SELECT code, kind, percent, amount_irr, bonus_gb FROM discount_codes WHERE id = ?1`)
+            .bind(rule.codeId)
+            .first<{ code: string; kind: string; percent: number | null; amount_irr: number | null; bonus_gb: number | null }>();
 
-    const text = renderRetentionText(rule.text, {
-      days: String(rule.daysBefore > 0 ? rule.daysBefore : rule.daysAfter),
+    // The «before» text when the rule has a before side, else the «after»
+    // one — and the FIRST day of that side, which is the message a customer
+    // actually meets first: «5 روز مانده» before, «1 روز گذشته» after.
+    const after = rule.daysBefore === 0;
+    const text = renderRetentionText(after && rule.textAfter !== '' ? rule.textAfter : rule.text, {
+      days: String(after ? 1 : rule.daysBefore),
       service: sample ? withoutQuotedPrice(sample.plan_name_at_sale) : 'نمونه',
       username: sample?.remote_username ?? 'sample_user',
       // The same `<code>` the bot sends, so the group sees it tap-to-copy.
       code: code === null ? '' : `<code>${code.code}</code>`,
+      discount:
+        code === null
+          ? ''
+          : discountLabel({ kind: code.kind, percent: code.percent, amountIrr: code.amount_irr, bonusGb: code.bonus_gb }),
       renewButton: 'تمدید سرویس',
     });
     const body = [`🧪 تست قانون «${rule.name}» — به هیچ مشتری‌ای نرفته.`, '', text].join('\n');

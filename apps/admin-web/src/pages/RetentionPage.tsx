@@ -32,13 +32,19 @@ import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 import type { PageId } from '../nav.js';
 
-const PLACEHOLDER_HINT = 'جای‌نگهدارها: {days} روز مانده/گذشته · {service} نام سرویس · {username} نام کاربری · {code} کد تخفیف · {renewButton} نام دکمهٔ تمدید — خودِ دکمهٔ سبز «تمدید سرویس» همیشه زیر پیام می‌آید و {code} با یک لمس کپی می‌شود';
+/** The same words as `RETENTION_DEFAULT_TEXT` in contracts — Sam's, 2026-09-20. */
+const DEFAULT_TEXT =
+  'سرویس «{service}» شما {days} روز دیگر تمام می‌شود.\n\nبا کد زیر می‌توانید از {discount} تخفیف برای تمدید سرویستان استفاده کنید:\n{code}\n\nبرای تمدید روی دکمهٔ «{renewButton}» بزنید.';
+const DEFAULT_TEXT_AFTER =
+  'سرویس «{service}» شما {days} روز پیش تمام شد.\n\nهنوز می‌توانید با کد زیر از {discount} تخفیف برای تمدید استفاده کنید:\n{code}\n\nبرای تمدید روی دکمهٔ «{renewButton}» بزنید.';
+
+const PLACEHOLDER_HINT = 'جای‌نگهدارها: {days} روز مانده/گذشته · {service} نام سرویس · {username} نام کاربری · {code} کد تخفیف (با یک لمس کپی می‌شود) · {discount} مقدار تخفیف کد، مثلاً «۳۰٪» · {renewButton} نام دکمه — خودِ دکمهٔ سبز «تمدید سرویس» همیشه زیر پیام می‌آید';
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.code === 'forbidden') return 'برای این کار دسترسی ادمین لازم است.';
     if (e.code === 'invalid_rules') {
-      return 'یکی از قانون‌ها ناقص است — نام، پنل، متن، و دست‌کم یکی از دو عدد روز لازم است.';
+      return 'یکی از قانون‌ها ناقص است — نام، پنل، متن، دست‌کم یکی از دو عدد روز، و برای قانونِ روشنی که در متنش {code} یا {discount} دارد، یک کد تخفیف.';
     }
     if (e.code === 'unknown_panel') return 'پنلی که انتخاب شده دیگر وجود ندارد.';
     if (e.code === 'unusable_code') {
@@ -87,6 +93,8 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** «الان چند نفر»، per rule key, as the operator types. */
+  const [audience, setAudience] = useState<Record<string, number | 'loading' | null>>({});
 
   async function load() {
     setErr(null);
@@ -121,6 +129,40 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
     }
   }
 
+  // Only the fields the count depends on, as one string, so retyping the
+  // text does not re-ask.
+  const audienceInputs = JSON.stringify(
+    (draft ?? []).map((r) => [r.key, r.providerId, r.daysBefore, r.daysAfter, r.onlyService]),
+  );
+
+  // Asked again whenever a rule's panel, window or «only one service»
+  // changes, a beat after the last keystroke so «1» → «12» → «120» is one
+  // request rather than three.
+  useEffect(() => {
+    const rows = JSON.parse(audienceInputs) as [string, number, number, number, boolean][];
+    // A slow answer to an OLD question must not land on top of the new one:
+    // once the inputs change again this effect is cleaned up, `live` goes
+    // false, and whatever the earlier request returns is dropped.
+    let live = true;
+    const timer = setTimeout(() => {
+      for (const [key, providerId, daysBefore, daysAfter, onlyService] of rows) {
+        if (providerId <= 0 || (daysBefore === 0 && daysAfter === 0)) {
+          setAudience((a) => ({ ...a, [key]: null }));
+          continue;
+        }
+        setAudience((a) => ({ ...a, [key]: 'loading' }));
+        api
+          .retentionAudience({ providerId, daysBefore, daysAfter, onlyService })
+          .then((res) => live && setAudience((a) => ({ ...a, [key]: res.count })))
+          .catch(() => live && setAudience((a) => ({ ...a, [key]: null })));
+      }
+    }, 400);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [audienceInputs]);
+
   async function test(rule: RetentionRule) {
     setBusy(true);
     setErr(null);
@@ -151,7 +193,8 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
         daysAfter: 0,
         onlyService: true,
         codeId: null,
-        text: '',
+        text: DEFAULT_TEXT,
+        textAfter: DEFAULT_TEXT_AFTER,
       },
     ]);
   }
@@ -165,9 +208,9 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
           <h2 className="page-head__title">یادآوری تمدید</h2>
           <div className="page-head__sub">
             پیام خودتان به مشتری‌های یک پنل، چند روز مانده به انقضا یا بعد از آن — با یک کد تخفیف که
-            روی «کدهای تخفیف» ساخته‌اید. هر سرویس برای هر انقضا یک بار پیام می‌گیرد؛ اگر تمدید کند و
-            دوباره به پنجره برسد، دوباره می‌گیرد. گزارش هر ارسال در «📝 گزارش اطلاع رسانی ها» و
-            جمع‌بندی هر قانون در گزارش شبانه می‌آید.
+            روی «کدهای تخفیف» ساخته‌اید. هر سرویس تا وقتی داخل بازه است روزی یک پیام می‌گیرد؛ از بازه
+            که بیرون رفت یا تمدید کرد، تمام. گزارش هر ارسال در «📝 گزارش اطلاع رسانی ها» و جمع‌بندی
+            هر قانون در گزارش شبانه می‌آید.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -260,6 +303,13 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
                 />
                 <span className="page-head__sub">روز (۰ = هیچ‌کدام)</span>
               </div>
+              <p className="cron-note page-head__sub" data-testid={`retention-audience-${rule.key}`}>
+                {audience[rule.key] === 'loading'
+                  ? 'در حال شمردن…'
+                  : audience[rule.key] === null || audience[rule.key] === undefined
+                    ? 'دست‌کم یکی از دو عدد باید بزرگ‌تر از صفر باشد.'
+                    : `الان ${count(audience[rule.key] as number)} نفر در این بازه‌اند — هر کدام روزی یک پیام، تا وقتی از بازه بیرون بروند یا تمدید کنند.`}
+              </p>
 
               <div className="cron-number">
                 <label className="cron-switch">
@@ -297,6 +347,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
               </div>
 
               <div className="cron-number">
+                <label htmlFor={`ret-text-${rule.key}`}>متن پیش از انقضا</label>
                 <textarea
                   id={`ret-text-${rule.key}`}
                   className="form-control"
@@ -309,14 +360,31 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
                   style={{ inlineSize: '100%' }}
                 />
               </div>
+              {rule.daysAfter > 0 && (
+                <div className="cron-number">
+                  <label htmlFor={`ret-text-after-${rule.key}`}>متن بعد از انقضا</label>
+                  <textarea
+                    id={`ret-text-after-${rule.key}`}
+                    className="form-control"
+                    rows={5}
+                    maxLength={1000}
+                    placeholder="متن بعد از انقضا — خالی یعنی همان متن بالا. «{days} روز دیگر تمام می‌شود» برای کسی که سرویسش تمام شده درست نیست."
+                    value={rule.textAfter}
+                    disabled={disabled}
+                    onChange={(e) => patch(i, { textAfter: e.target.value })}
+                    style={{ inlineSize: '100%' }}
+                  />
+                </div>
+              )}
               <p className="cron-note page-head__sub">{PLACEHOLDER_HINT}</p>
 
               <footer className="cron-card-foot page-head__sub">
                 <span>
                   {saved ? (
                     <>
-                      {actedLabel(saved)} · فرستاده {count(saved.funnel.sent)} · کد {count(saved.funnel.usedCode)} · ماند{' '}
-                      {count(saved.funnel.stayed)} · رفت {count(saved.funnel.left)} · هنوز {count(saved.funnel.pending)}
+                      {actedLabel(saved)} · به {count(saved.funnel.sent)} نفر رسید · کد زدند {count(saved.funnel.usedCode)} · نزدند{' '}
+                      {count(saved.funnel.sent - saved.funnel.usedCode)} · بیرون از فهرست {count(saved.funnel.usedOutside)} · ماندند{' '}
+                      {count(saved.funnel.stayed)} · رفتند {count(saved.funnel.left)} · هنوز {count(saved.funnel.pending)}
                     </>
                   ) : (
                     'هنوز ذخیره نشده'
