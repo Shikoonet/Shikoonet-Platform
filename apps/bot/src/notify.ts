@@ -41,7 +41,7 @@ import {
 } from './telegram.js';
 import { copyLinkMenu } from './menu.js';
 import { qrPng } from './qr.js';
-import { sendGapMs } from './broadcast.js';
+import { markUnreachable, sendGapMs } from './broadcast.js';
 import { consumeSlot, pauseFor, pausedFor } from './pace.js';
 import { createLogger } from '@shikoo/domain';
 
@@ -393,14 +393,7 @@ export async function flush(
           // the broadcast sweep after it. The row is already DEAD by this
           // point, so losing this flag costs one more silenced sweep for one
           // customer. Losing the batch costs every other customer's message.
-          await db
-            .prepare(
-              `UPDATE users SET notify_enabled = false, updated_at = now()
-                WHERE telegram_id = ?1 AND notify_enabled`,
-            )
-            .bind(row.chat_id)
-            .run()
-            .catch((e: unknown) => {
+          await markUnreachable(db, row.chat_id).catch((e: unknown) => {
               log.warn('notify.silence_unrecorded', { ref: String(row.id) }, e);
             });
         }

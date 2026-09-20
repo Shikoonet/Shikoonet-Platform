@@ -408,6 +408,28 @@ export async function markBroadcastRetryable(
   return row?.status ?? null;
 }
 
+/**
+ * Writes down that Telegram refused this customer for good — blocked, or the
+ * chat deleted — so nothing queues them again.
+ *
+ * `notify_enabled` is the shop's one «reachable» flag: every sweep that sends
+ * to customers filters on it, and `handle.ts` sets it back on any inbound
+ * update, which is the only proof a block is over. The outbox learned to
+ * write it on a 403 first; the broadcast sweep did not, and the broadcast is
+ * where most blocks are discovered — sixteen thousand sends, and every one
+ * that came back 403 was offered a fresh row, and a two-second slot, on the
+ * next announcement (#381).
+ */
+export async function markUnreachable(db: D1Database, telegramId: number): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE users SET notify_enabled = false, updated_at = now()
+        WHERE telegram_id = ?1 AND notify_enabled`,
+    )
+    .bind(telegramId)
+    .run();
+}
+
 /** Records that a claimed message did not get through, with the reason. */
 export async function markBroadcastFailed(
   db: D1Database,

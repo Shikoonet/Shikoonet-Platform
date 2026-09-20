@@ -34,6 +34,7 @@ import {
   markBroadcastFailed,
   markBroadcastRetryable,
   markBroadcastSent,
+  markUnreachable,
   strandedSendingCount,
   SEND_CONCURRENCY,
   sendGapMs,
@@ -41,7 +42,7 @@ import {
 } from './broadcast.js';
 import { sweepDailyReport } from './report.js';
 import { sweepBackup } from './backup.js';
-import { rateLimitedForMs } from './telegram.js';
+import { isPermanentRejection, rateLimitedForMs } from './telegram.js';
 import { heldFor, loadPause, pauseFor, reserveSlot } from './pace.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 import { qrPng } from './qr.js';
@@ -678,6 +679,14 @@ export async function sweepBroadcasts(
             (e: unknown) =>
               log.error('broadcast.failure_unrecorded', { ref: message.broadcastId }, e),
           );
+          // A block is the ordinary failure here, and until #381 nothing wrote
+          // it down: the same customer was queued, and paid a slot, on every
+          // announcement after. The outbox already does this; same helper.
+          if (isPermanentRejection(err)) {
+            await markUnreachable(db, message.chatId).catch((e: unknown) =>
+              log.warn('broadcast.silence_unrecorded', { ref: message.broadcastId }, e),
+            );
+          }
           continue;
         }
 

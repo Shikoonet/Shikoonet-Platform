@@ -221,6 +221,35 @@ describe('a broadcast that Telegram rate-limits', () => {
   });
 
   /**
+   * A 403 is a customer who blocked the bot, and until #381 the sweep failed
+   * the row and forgot: the same customer was snapshotted into the next
+   * announcement and paid a full slot to be refused again. The outbox already
+   * wrote `notify_enabled = false`; the broadcast is where most blocks are
+   * found. A 5xx says nothing about the customer and must not silence them.
+   */
+  it('writes a block down so the next announcement leaves them out', async () => {
+    for (const [label, err, reachable] of [
+      ['a blocked bot', new TelegramRejection('rejected: Forbidden: bot was blocked', 403), false],
+      ['a 5xx', new TelegramRejection('telegram sendMessage rejected: Bad Gateway', 502), true],
+    ] as const) {
+      const { users } = await queue(1);
+      await sweepBroadcasts(
+        db,
+        stubApi({
+          sendMessage: async () => {
+            throw err;
+          },
+        }),
+      );
+      const u = await db
+        .prepare(`SELECT notify_enabled FROM users WHERE id = ?1`)
+        .bind(users[0])
+        .first<{ notify_enabled: boolean }>();
+      expect(u!.notify_enabled, label).toBe(reachable);
+    }
+  });
+
+  /**
    * A shop that stays rate-limited for longer than it is patient.
    *
    * Without a ceiling the broadcast neither finishes nor fails, and no screen

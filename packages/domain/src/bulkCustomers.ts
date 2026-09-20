@@ -175,7 +175,8 @@ export async function activeCustomerCount(
 ): Promise<number> {
   const { sql, params } = audienceSql(audience, 1);
   const stmt = db.prepare(
-    `SELECT count(*)::int AS n FROM users u WHERE u.status = 'ACTIVE' ${sql}`,
+    `SELECT count(*)::int AS n FROM users u
+      WHERE u.status = 'ACTIVE' AND u.notify_enabled ${sql}`,
   );
   const row = await (params.length > 0 ? stmt.bind(...params) : stmt).first<{ n: number }>();
   return row?.n ?? 0;
@@ -342,7 +343,11 @@ export async function queueBroadcast(
   const done = await db
     .prepare(
       `INSERT INTO broadcast_recipients (broadcast_id, user_id, telegram_id)
-       SELECT ?1, u.id, u.telegram_id FROM users u WHERE u.status = 'ACTIVE' ${sql}
+       SELECT ?1, u.id, u.telegram_id FROM users u
+        -- notify_enabled is «reachable»: cleared by a 403, set back by any
+        -- inbound update. A customer who blocked the bot got a row, and a
+        -- two-second slot, on every announcement until #381.
+        WHERE u.status = 'ACTIVE' AND u.notify_enabled ${sql}
        ON CONFLICT (broadcast_id, user_id) DO NOTHING`,
     )
     .bind(broadcastId, ...params)

@@ -45,7 +45,7 @@ const NOW_MS = Date.UTC(2026, 8, 4, 6, 0, 0);
  * and failed on the second run with a duplicate `orders_public_id_key`, which
  * is a test that proves nothing about the run after the one you watched.
  */
-const PEOPLE = ['never', 'tried', 'bought', 'ended', 'both', 'panel-a'] as const;
+const PEOPLE = ['never', 'tried', 'bought', 'ended', 'both', 'panel-a', 'blocked'] as const;
 const tgOf = (tag: (typeof PEOPLE)[number]) => TG + PEOPLE.indexOf(tag);
 
 /** The panel this file's fixtures sell from, and one it does not. */
@@ -144,6 +144,7 @@ let bought = 0;
 let ended = 0;
 let endedButAlsoLive = 0;
 let onPanelA = 0;
+let blocked = 0;
 
 beforeAll(async () => {
   await applySchema();
@@ -201,6 +202,13 @@ beforeAll(async () => {
   onPanelA = await customer('panel-a');
   await completedOrder(onPanelA);
   await service(onPanelA, 'ACTIVE', providerA);
+
+  // Blocked the bot: Telegram answered 403 once and the bot wrote it down.
+  // Still ACTIVE — a block is not a ban — and comes back on their next /start.
+  blocked = await customer('blocked');
+  await baseEnv.DB.prepare(`UPDATE users SET notify_enabled = false WHERE id = ?1`)
+    .bind(blocked)
+    .run();
 });
 
 beforeEach(async () => {
@@ -302,6 +310,28 @@ describe('the audience on a broadcast', () => {
     for (const id of [never, bought, ended, endedButAlsoLive, onPanelA]) {
       expect(await got(broadcastId, id)).toBe(true);
     }
+  });
+
+  /**
+   * Every message to a blocked customer is a two-second slot Telegram refuses
+   * with a 403 — a thousand of them is half an hour of nothing, on every
+   * announcement (#381). The preview must not promise them either.
+   */
+  it('leaves out anybody who has blocked the bot, and does not count them', async () => {
+    const promised = await reach('audience=all');
+    const { queued, broadcastId } = await send({ kind: 'all' });
+    expect(queued).toBe(promised);
+    expect(await got(broadcastId, blocked)).toBe(false);
+    expect(await got(broadcastId, never)).toBe(true);
+
+    // Back on the list the moment they are reachable again.
+    await baseEnv.DB.prepare(`UPDATE users SET notify_enabled = true WHERE id = ?1`)
+      .bind(blocked)
+      .run();
+    expect(await reach('audience=all')).toBe(promised + 1);
+    await baseEnv.DB.prepare(`UPDATE users SET notify_enabled = false WHERE id = ?1`)
+      .bind(blocked)
+      .run();
   });
 
   it('refuses an audience it cannot read rather than counting everybody', async () => {
