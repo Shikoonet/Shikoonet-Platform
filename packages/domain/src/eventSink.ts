@@ -17,7 +17,7 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { alert, ALERTING_EVENTS } from './alert.js';
+import { alert } from './alert.js';
 import type { EventSink, LogRecord } from './log.js';
 
 export interface EventSinkOptions {
@@ -27,14 +27,6 @@ export interface EventSinkOptions {
    * channel, which is every developer machine.
    */
   alertChatId?: number | null;
-  /**
-   * The forum topic alerts go to, asked for at SEND time rather than at boot.
-   *
-   * A function because this sink is created before any settings have been
-   * read, and the topic lives in the database. Returning null is «no topic»,
-   * which is a message in the group's General — where every alert goes today.
-   */
-  alertThreadId?: () => number | null;
 }
 
 /** How long a row lives. Long enough to investigate last month, short enough to stay small. */
@@ -56,7 +48,6 @@ export function parseAlertChatId(raw: string | undefined | null): number | null 
 
 export function createPostgresEventSink(db: D1Database, options: EventSinkOptions = {}): EventSink {
   const alertChatId = options.alertChatId ?? null;
-  const alertThreadId = options.alertThreadId ?? ((): number | null => null);
 
   return (record: LogRecord): void => {
     void (async () => {
@@ -84,8 +75,16 @@ export function createPostgresEventSink(db: D1Database, options: EventSinkOption
       console.error('[log] app_events insert failed', err);
     });
 
-    if (alertChatId !== null && ALERTING_EVENTS.has(record.evt)) {
-      void alert(db, alertChatId, record, Date.now(), alertThreadId()).catch((err: unknown) => {
+    // Every error, not a list of event names — the same rows the «خطا» filter
+    // on `/admin/events` shows (#382). Warnings stay on the screen only.
+    //
+    // Except an alert that itself could not be delivered: `notify.dead` on a
+    // row whose key begins `alert:` would queue a second alert to the same
+    // unreachable chat, which dies and queues a third — one more row per
+    // backoff chain, for ever. That one stays in `app_events` alone.
+    const deadAlert = record.evt === 'notify.dead' && record.fields['kind'] === 'alert';
+    if (alertChatId !== null && record.level === 'error' && !deadAlert) {
+      void alert(db, alertChatId, record).catch((err: unknown) => {
         console.error('[log] alert enqueue failed', record.evt, err);
       });
     }

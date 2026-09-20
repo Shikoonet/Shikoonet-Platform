@@ -11,7 +11,7 @@
  *
  * ## The rate limit is the UNIQUE constraint
  *
- * `dedupe_key = alert:<evt>:<Tehran hour>` means a fault that repeats a
+ * `dedupe_key = alert:<evt>:<ref>:<Tehran hour>` means a fault that repeats a
  * thousand times an hour produces one message, and the enforcement is
  * `ON CONFLICT DO NOTHING` on a column that is already unique. No counter, no
  * timer, no state to get wrong — and it survives a restart, which an in-memory
@@ -24,37 +24,58 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import type { LogRecord } from './log.js';
+import { reportTopicKey } from '@shikoo/contracts';
+import type { LogRecord, SerializedError } from './log.js';
 
 /** Tehran is UTC+3:30 and has no DST — the same constant `historyRange.ts` uses. */
 const TEHRAN_OFFSET_MS = 3.5 * 60 * 60 * 1000;
 
 /**
- * The events worth waking someone for.
+ * The Tehran hour, as the bucket a repeating fault is folded into.
  *
- * Explicitly listed, not «every error». An alert on every error is an alert on
- * nothing: the channel fills with noise, the noise gets muted, and the one
- * message that mattered is muted with it. Each of these means a customer is
- * already worse off — money taken and nothing delivered, an SMS that never
- * became a payment, a message that has stopped being retried.
+ * Every `error` alerts — the list this used to be (#382) meant a customer's
+ * failed order reached Telegram only if its event name had been added here, and
+ * `/admin/events` showed the rest to nobody. The list is gone; the level is the
+ * filter, the same one the events page has.
  */
-export const ALERTING_EVENTS: ReadonlySet<string> = new Set([
-  'ingest.sms.failed',
-  'match.failed',
-  'settle.failed',
-  'provision.failed',
-  'notify.dead',
-  'webhook.dead',
-  'boot.schema_behind',
-]);
-
-/** `alert:<evt>:<YYYY-MM-DDTHH in Tehran>` — the hour bucket that is also the rate limit. */
-export function alertDedupeKey(evt: string, atMs: number): string {
-  return `alert:${evt}:${new Date(atMs + TEHRAN_OFFSET_MS).toISOString().slice(0, 13)}`;
+export function alertDedupeKey(evt: string, ref: string | undefined, atMs: number): string {
+  const hour = new Date(atMs + TEHRAN_OFFSET_MS).toISOString().slice(0, 13);
+  // `ref` is in the key so that ten orders failing in one hour are ten
+  // messages, and one order failing ten times is one. Without it the second
+  // order was silently the first one's duplicate.
+  return `alert:${evt}:${ref ?? '-'}:${hour}`;
 }
 
-/** How much of an error message travels to Telegram. The rest is in `app_events`. */
-const MAX_ERROR_CHARS = 400;
+/**
+ * How much of the stack and of the fields travel. Telegram's cap is 4096 on
+ * the visible text; these two plus the header stay under it, because the bot's
+ * `clamp()` runs before the HTML conversion and would otherwise cut through a
+ * closing tag — a 400, a plain re-send, and a spurious `markup_refused`.
+ */
+const MAX_STACK_CHARS = 3000;
+const MAX_FIELDS_CHARS = 600;
+
+/**
+ * `slice` that never ends on half an emoji — the same rule as `cutTo` in the
+ * bot. A lone high surrogate is not valid UTF-8, and Telegram refuses the body
+ * on both the rich and the plain send, which makes the row DEAD on attempt one.
+ */
+function cut(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const end = (text.charCodeAt(max - 1) & 0xfc00) === 0xd800 ? max - 1 : max;
+  return `${text.slice(0, end)}\n…`;
+}
+
+/**
+ * Everything `toTelegramHtml` would pass through as markup, made inert: the
+ * two formatting tags and a custom-emoji tag. An upstream HTML error body, or
+ * a stack cut between such tags, would otherwise unbalance the quote — and a
+ * `<tg-emoji>` in an error would ask Telegram for Premium on an alert. Angle
+ * quotes keep the text readable.
+ */
+function inert(text: string): string {
+  return text.replace(/<(\/?(?:code|blockquote|tg-emoji)[^<>]*)>/g, '‹$1›');
+}
 
 function tehranTime(atMs: number): string {
   return new Intl.DateTimeFormat('fa-IR', {
@@ -65,12 +86,29 @@ function tehranTime(atMs: number): string {
 }
 
 /**
+ * The error as `/admin/events` prints it: the stack, which on V8 already
+ * begins with «Name: message», and the cause under it. The same rule as
+ * `ErrorBlock` in `EventsPage.tsx` — a headline printed above a stack that
+ * starts with the same sentence reads as two errors that happen to match.
+ */
+function errorBlock(err: SerializedError): string {
+  const headline = `${err.name}: ${err.message}`;
+  const body = err.stack?.startsWith(headline)
+    ? err.stack
+    : `${headline}${err.stack ? `\n${err.stack}` : ''}`;
+  const cause = err.cause ? `\ncause: ${errorBlock(err.cause)}` : '';
+  return cut(inert(body.trimEnd() + cause), MAX_STACK_CHARS);
+}
+
+/**
  * The message body.
  *
- * Plain text with no `parse_mode`, matching the rest of this bot (`menu.ts`):
- * an alert whose own formatting can make `sendMessage` fail is an alert that
- * arrives as a 400 in a log nobody is reading — which is the situation this
- * whole feature exists to end.
+ * The bot's own `<blockquote>` and `<code>` — the two tags `toTelegramHtml`
+ * knows — and nothing else. Everything between them is escaped by the sender,
+ * so a stack full of `<anonymous>` cannot become a 400; and if Telegram refuses
+ * the markup anyway, `withEmojiFallback` sends the same text plain. Sam,
+ * 2026-09-20 (#382): the error quoted, with its detail, not a 400-character
+ * summary of it.
  */
 export function alertText(record: LogRecord, atMs: number): string {
   const lines = [
@@ -81,22 +119,23 @@ export function alertText(record: LogRecord, atMs: number): string {
     ...(record.trace ? [`ردیابی: ${record.trace}`] : []),
     `زمان: ${tehranTime(atMs)}`,
   ];
-  if (record.err) {
-    lines.push('', `${record.err.name}: ${record.err.message}`.slice(0, MAX_ERROR_CHARS));
-  }
+  if (record.err) lines.push('', `<blockquote>${errorBlock(record.err)}</blockquote>`);
   // The fields are already redacted — this is the same record that was
   // written to stdout, not a second serialisation with its own rules.
   const fields = Object.entries(record.fields);
   if (fields.length > 0) {
-    lines.push(
-      '',
-      fields
-        .map(([k, v]) => `${k}=${String(v)}`)
-        .join(' · ')
-        .slice(0, 300),
-    );
+    const text = fields
+      .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+      .join('\n');
+    lines.push('', `<code>${cut(inert(text), MAX_FIELDS_CHARS)}</code>`);
   }
   return lines.join('\n');
+}
+
+/** A topic id as the settings row holds it — a small positive integer, or nothing. */
+function topicOf(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 /**
@@ -106,15 +145,22 @@ export function alertText(record: LogRecord, atMs: number): string {
  *
  * Takes `db` rather than a transaction: an alert is about something that has
  * already gone wrong, and it must not be able to roll back the handling of it.
+ *
+ * The topic is «❌ گزارش خطا ها», read from `settings` here rather than
+ * handed in: the workers have no settings cache, so until #382 their alerts
+ * landed in the group's General while the bot's went to the topic. One read
+ * on a path that is already writing a row is the same cost as before.
  */
 export async function alert(
   db: D1Database | D1DatabaseSession,
   chatId: number,
   record: LogRecord,
   atMs: number = Date.now(),
-  /** «❌ گزارش خطاها», or null for the group's General topic. */
-  threadId: number | null = null,
 ): Promise<boolean> {
+  const topic = await db
+    .prepare(`SELECT value FROM settings WHERE scope = 'bot' AND key = ?1`)
+    .bind(reportTopicKey('errorreport'))
+    .first<{ value: unknown }>();
   const written = await db
     .prepare(
       // The same table `apps/bot/src/notify.ts` enqueues into and flushes.
@@ -124,7 +170,16 @@ export async function alert(
        VALUES (?1, ?2, ?3, ?4)
        ON CONFLICT (dedupe_key) DO NOTHING`,
     )
-    .bind(alertDedupeKey(record.evt, atMs), chatId, alertText(record, atMs), threadId)
+    .bind(
+      // A dead outbox row's `ref` is its own id, so with it in the key a nudge
+      // sweep that meets three hundred customers who blocked the bot is three
+      // hundred messages in the hour. That one folds to one, as it always did;
+      // `/admin/events` still has every row.
+      alertDedupeKey(record.evt, record.evt === 'notify.dead' ? undefined : record.ref, atMs),
+      chatId,
+      alertText(record, atMs),
+      topicOf(topic?.value),
+    )
     .run();
   return written.meta.changes > 0;
 }
