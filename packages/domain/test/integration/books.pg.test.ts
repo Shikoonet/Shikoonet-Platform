@@ -149,9 +149,12 @@ describe('accountStatement', () => {
     await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 10_000_000, at: month.start - 2 * DAY });
     await tx({ direction: 'CREDIT', amountIrr: 1_990_000, balanceIrr: 11_990_000, at: T(1) });
     const transfer = await tx({ direction: 'CREDIT', amountIrr: 5_000_000, balanceIrr: 16_990_000, at: T(2) });
-    const server = await tx({ direction: 'DEBIT', amountIrr: 2_000_000, balanceIrr: 14_990_000, at: T(4) });
-    const loan = await tx({ direction: 'DEBIT', amountIrr: 3_000_000, balanceIrr: 11_990_000, at: T(5) });
-    await tx({ direction: 'DEBIT', amountIrr: 400_000, balanceIrr: 11_590_000, at: T(6) });
+    // The server's withdrawal texts 2,000,000 and the bank takes 2,007,200: the
+    // fee is in the balance, not in the SMS. Until 2026-09-20 this fixture had
+    // the bank dropping by the text alone, which is a fee that costs nothing.
+    const server = await tx({ direction: 'DEBIT', amountIrr: 2_000_000, balanceIrr: 14_982_800, at: T(4) });
+    const loan = await tx({ direction: 'DEBIT', amountIrr: 3_000_000, balanceIrr: 11_982_800, at: T(5) });
+    await tx({ direction: 'DEBIT', amountIrr: 400_000, balanceIrr: 11_582_800, at: T(6) });
     // Refused rows are not the bank's word.
     await tx({ direction: 'CREDIT', amountIrr: 9_999_999, balanceIrr: null, at: T(6, 13), status: 'REJECTED' });
 
@@ -163,7 +166,7 @@ describe('accountStatement', () => {
     const s = (await accountStatement(db, ACCT, month))!;
     expect(s.beforeStart).toBe(false);
     expect(s.opening).toMatchObject({ balanceIrr: 10_000_000, source: 'sms' });
-    expect(s.closing).toMatchObject({ balanceIrr: 11_590_000, source: 'sms' });
+    expect(s.closing).toMatchObject({ balanceIrr: 11_582_800, source: 'sms' });
     expect(s.customerIncome).toEqual({ count: 1, amountIrr: 1_990_000 });
     expect(s.offBooksCredits).toEqual([{ category: 'TRANSFER', count: 1, amountIrr: 5_000_000 }]);
     expect(s.explainedWithdrawals).toEqual({ count: 1, amountIrr: 2_000_000 });
@@ -172,6 +175,24 @@ describe('accountStatement', () => {
     expect(s.ledger).toEqual({ expenseCount: 2, expenseIrr: 2_500_000, feeIrr: 7_200, unlinkedCount: 1, unlinkedIrr: 500_000 });
     expect(s.bankDeltaIrr).toBe(1_990_000 + 5_000_000 - 2_000_000 - 3_000_000 - 400_000);
     expect(s.gapIrr).toBe(0);
+  });
+
+  it('a fee typed on a linked expense is money the bank took that no SMS carries', async () => {
+    // گردشگری-سارا, 2026-09-20: the text says 1,090,000 out, the balance goes
+    // from 44,861,550 to 43,760,550 — 11,000 more. The operator linked the
+    // expense to the text and wrote 11,000 in its fee field, and the month
+    // still showed «اختلاف با بانک −۱٬۱۰۰». The fee was read by the boxes
+    // and by nothing that checks the bank.
+    await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 34_861_550, at: month.start - DAY });
+    await tx({ direction: 'CREDIT', amountIrr: 10_000_000, balanceIrr: 44_861_550, at: T(1) });
+    const paid = await tx({ direction: 'DEBIT', amountIrr: 1_090_000, balanceIrr: 43_760_550, at: T(2) });
+    await expense(paid, 1_090_000, 11_000, T(2));
+    const s = (await accountStatement(db, ACCT, month))!;
+    expect(s.ledger).toMatchObject({ expenseCount: 1, feeIrr: 11_000, unlinkedCount: 0 });
+    expect(s.gapIrr).toBe(0);
+    // The same month with the fee left off the expense is short by exactly it.
+    await db.prepare(`UPDATE revenue_adjustments SET fee_irr = 0 WHERE transaction_candidate_id = ?1`).bind(paid).run();
+    expect((await accountStatement(db, ACCT, month))!.gapIrr).toBe(-11_000);
   });
 
   it('is null for an account that does not exist, and «؟» for one the bank never priced', async () => {

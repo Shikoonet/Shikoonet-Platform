@@ -772,6 +772,8 @@ export interface BankMovement {
   kind: 'sms' | 'manual' | 'expense';
   direction: 'CREDIT' | 'DEBIT';
   amountIrr: number;
+  /** On an `sms` row: the fee typed on the expense linked to it — money the bank took that the text does not name. */
+  feeIrr?: number;
   balanceIrr: number | null;
   bankTimestamp: number;
   matched: boolean;

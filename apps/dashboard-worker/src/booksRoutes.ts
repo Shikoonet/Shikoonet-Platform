@@ -354,7 +354,7 @@ export function registerBooksRoutes(
     const rows = await c.env.DB.prepare(
       `SELECT t.id, t.direction, t.amount_irr, t.balance_irr, t.bank_timestamp, t.status,
               idt.category AS off_books_category, idt.reason AS off_books_note,
-              ra.id AS expense_id, ra.note AS expense_note,
+              ra.id AS expense_id, ra.note AS expense_note, COALESCE(ra.fee_irr, 0) AS fee_irr,
               EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.transaction_candidate_id = t.id
                         AND m.status IN ('CONFIRMED','AUTO_VERIFIED')) AS matched
          FROM transaction_candidates t
@@ -379,6 +379,7 @@ export function registerBooksRoutes(
         off_books_note: string | null;
         expense_id: number | null;
         expense_note: string | null;
+        fee_irr: string | number;
         matched: boolean;
       }>();
     const manual = await c.env.DB.prepare(
@@ -426,6 +427,9 @@ export function registerBooksRoutes(
         kind: 'sms' as const,
         direction: r.direction,
         amountIrr: Number(r.amount_irr),
+        // What the bank took beyond the text — typed on the linked expense,
+        // as the tag form says to. The hole finder adds it to the debit.
+        feeIrr: Number(r.fee_irr),
         balanceIrr: r.balance_irr == null ? null : Number(r.balance_irr),
         bankTimestamp: Number(r.bank_timestamp),
         matched: r.matched === true,
