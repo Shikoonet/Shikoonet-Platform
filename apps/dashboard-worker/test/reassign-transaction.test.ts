@@ -215,6 +215,47 @@ describe('transaction reassignment', () => {
     expect(j.consumedBy?.orderId).toBeTruthy();
   });
 
+  it('says whose money it is on the approve route too — the button the operator actually presses', async () => {
+    // 2026-09-20, production: a customer placed two orders and paid once; the
+    // credit auto-verified against the second, and approving it on the first
+    // answered a bare `transaction_already_consumed`. The consumer's order and
+    // customer are on the reply now, so the panel can say «same customer,
+    // duplicate order» instead of a code.
+    await seedClaim('c-first');
+    await seedClaim('c-second', { status: 'VERIFIED', order: 'shikoo:c5e4e79fc1' });
+    await seedTx('t-once');
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT INTO reconciliation_matches
+         (id, transaction_candidate_id, payment_claim_id, score, matching_reasons_json,
+          mismatch_reasons_json, status, reviewed_at, created_at, updated_at)
+       VALUES ('m-auto', 't-once', 'c-second', 1.0, '[]', '[]', 'AUTO_VERIFIED', ?1, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+
+    const r = await app.request(
+      '/api/v1/suspects/c-first/approve',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transactionId: 't-once' }),
+      },
+      envAs(),
+    );
+    expect(r.status).toBe(409);
+    const j = (await r.json()) as {
+      error: string;
+      consumedBy?: { orderId: string; telegramUserId: string | null; matchStatus: string };
+    };
+    expect(j.error).toBe('transaction_already_consumed');
+    expect(j.consumedBy).toMatchObject({
+      orderId: 'shikoo:c5e4e79fc1',
+      telegramUserId: '560573543',
+      matchStatus: 'AUTO_VERIFIED',
+    });
+  });
+
   it('writes an audit log for reassignment', async () => {
     await seedClaim('c-audit');
     await seedTx('t-audit');

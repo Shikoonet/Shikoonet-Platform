@@ -18,6 +18,7 @@ import {
   activateContinuityMode,
   deactivateContinuityMode,
   reassignMirzabotTransaction,
+  consumerOf,
   revertMirzabotManualVerification,
   reopenMirzabotManualVerification,
   isManualVerificationReopenEligible,
@@ -2032,7 +2033,18 @@ export function registerMirzabotRoutes(
     });
     if (!verified.ok) {
       const status = verified.error === 'TRANSACTION_NOT_FOUND' ? 404 : 409;
-      return c.json({ ok: false, error: verified.error.toLowerCase() }, status);
+      // Say WHOSE it is, as the reassign route does: the operator's next move
+      // is different when the consumer is this same customer's other order
+      // (a duplicate to reject) and when it is a stranger's (a wrong match to
+      // revert first).
+      const consumedBy =
+        verified.error === 'TRANSACTION_ALREADY_CONSUMED'
+          ? await consumerOf(c.env.DB as unknown as DomainD1Database, parsed.data.transactionId)
+          : null;
+      return c.json(
+        { ok: false, error: verified.error.toLowerCase(), ...(consumedBy ? { consumedBy } : {}) },
+        status,
+      );
     }
     const now = Date.now();
     await c.env.DB.prepare(SQL.insertAudit)

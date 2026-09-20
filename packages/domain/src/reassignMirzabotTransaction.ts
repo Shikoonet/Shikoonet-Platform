@@ -77,6 +77,43 @@ function parseTelegram(metaJson: string, customerRef: string | null) {
 }
 
 /**
+ * The claim whose confirmed or auto-verified match holds this transaction —
+ * the answer to «already consumed, by whom?». Exported so the approve route
+ * can say it too: on 2026-09-20 an operator read a bare
+ * `transaction_already_consumed` on a claim whose customer had simply placed
+ * two orders and paid once, and the panel could not tell them that.
+ */
+export async function consumerOf(db: D1Database, transactionId: string): Promise<ConsumedBy | null> {
+  const consuming = await db
+    .prepare(
+      `SELECT m.id, m.payment_claim_id, m.status, c.external_order_id, c.metadata_json, c.customer_reference
+       FROM reconciliation_matches m
+       JOIN payment_claims c ON c.id = m.payment_claim_id
+       WHERE m.transaction_candidate_id = ?1
+         AND m.status IN ${CONSUMING_MATCH_STATUSES}
+       LIMIT 1`,
+    )
+    .bind(transactionId)
+    .first<{
+      id: string;
+      payment_claim_id: string;
+      status: string;
+      external_order_id: string;
+      metadata_json: string;
+      customer_reference: string | null;
+    }>();
+  if (!consuming) return null;
+  const tg = parseTelegram(consuming.metadata_json, consuming.customer_reference);
+  return {
+    claimId: consuming.payment_claim_id,
+    orderId: orderId(consuming.external_order_id),
+    telegramUserId: tg.telegramUserId ?? null,
+    telegramUsername: tg.telegramUsername,
+    matchStatus: consuming.status,
+  };
+}
+
+/**
  * Reassign `transactionId` to `targetClaimId`.
  *
  * When `verifyAfterAssign` is true the write continues through
@@ -126,37 +163,9 @@ export async function reassignMirzabotTransaction(
     return { ok: false, error: 'CLAIM_NOT_ELIGIBLE' };
   }
 
-  const consuming = await db
-    .prepare(
-      `SELECT m.id, m.payment_claim_id, m.status, c.external_order_id, c.metadata_json, c.customer_reference
-       FROM reconciliation_matches m
-       JOIN payment_claims c ON c.id = m.payment_claim_id
-       WHERE m.transaction_candidate_id = ?1
-         AND m.status IN ${CONSUMING_MATCH_STATUSES}
-       LIMIT 1`,
-    )
-    .bind(args.transactionId)
-    .first<{
-      id: string;
-      payment_claim_id: string;
-      status: string;
-      external_order_id: string;
-      metadata_json: string;
-      customer_reference: string | null;
-    }>();
-  if (consuming && consuming.payment_claim_id !== args.targetClaimId) {
-    const tg = parseTelegram(consuming.metadata_json, consuming.customer_reference);
-    return {
-      ok: false,
-      error: 'TRANSACTION_ALREADY_CONSUMED',
-      consumedBy: {
-        claimId: consuming.payment_claim_id,
-        orderId: orderId(consuming.external_order_id),
-        telegramUserId: tg.telegramUserId ?? null,
-        telegramUsername: tg.telegramUsername,
-        matchStatus: consuming.status,
-      },
-    };
+  const consuming = await consumerOf(db, args.transactionId);
+  if (consuming && consuming.claimId !== args.targetClaimId) {
+    return { ok: false, error: 'TRANSACTION_ALREADY_CONSUMED', consumedBy: consuming };
   }
 
   const suggested = await db
