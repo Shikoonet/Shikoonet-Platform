@@ -16,7 +16,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv, fixtureCategory } from './helpers/env.js';
 import { app } from '../src/index.js';
-import { REPORT_KINDS } from '@shikoo/contracts';
+import { REPORT_KINDS, REPORT_TOPIC_TITLES } from '@shikoo/contracts';
 
 const ADMIN = 'admin-rg@example.com';
 const REVIEWER = 'reviewer-rg@example.com';
@@ -331,12 +331,18 @@ describe('pointing the bot at a reports group', () => {
     await setup(GROUP);
     const oldTopic = await topicOf(id);
 
-    const moved = telegram();
+    // Ids the other group never handed out, so «remade» is told apart from
+    // «kept» — the stub counts from 100 on every run.
+    const moved = telegram({ topics: Array.from({ length: 40 }, (_, i) => 900 + i) });
     const res = await setup(GROUP - 1);
 
     expect(res.status).toBe(200);
-    expect(moved.madeFor.length).toBeGreaterThanOrEqual(REPORT_KINDS.length + 1);
+    expect(moved.madeFor.slice(0, REPORT_KINDS.length)).toEqual(
+      REPORT_KINDS.map((k) => REPORT_TOPIC_TITLES[k]),
+    );
+    expect(moved.madeFor).toContain('🥇سرویس تیتانیوم');
     expect(await topicOf(id)).not.toBe(oldTopic);
+    expect(Number(await settingOf('topic_buyreport'))).toBe(900);
     expect(String(await settingOf('Channel_Report'))).toBe(String(GROUP - 1));
   });
 
