@@ -32,7 +32,7 @@ import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 import type { PageId } from '../nav.js';
 
-const PLACEHOLDER_HINT = 'جای‌نگهدارها: {days} روز مانده/گذشته · {service} نام سرویس · {username} نام کاربری · {code} کد تخفیف · {renewButton} نام دکمهٔ تمدید';
+const PLACEHOLDER_HINT = 'جای‌نگهدارها: {days} روز مانده/گذشته · {service} نام سرویس · {username} نام کاربری · {code} کد تخفیف · {renewButton} نام دکمهٔ تمدید — خودِ دکمهٔ سبز «تمدید سرویس» همیشه زیر پیام می‌آید و {code} با یک لمس کپی می‌شود';
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -43,6 +43,9 @@ function message(e: unknown): string {
     if (e.code === 'unknown_panel') return 'پنلی که انتخاب شده دیگر وجود ندارد.';
     if (e.code === 'unusable_code') {
       return 'کد انتخاب‌شده برای تمدید قابل استفاده نیست — غیرفعال است یا «فقط خرید اول» دارد.';
+    }
+    if (e.code === 'no_bot_username') {
+      return 'نام کاربری ربات تنظیم نشده — در «ربات تلگرام» بگذارید تا دکمهٔ تمدید لینک داشته باشد.';
     }
     if (e.code === 'no_report_group') {
       return 'گروه گزارش‌ها تنظیم نشده — در «تنظیمات»، Channel_Report را بگذارید.';

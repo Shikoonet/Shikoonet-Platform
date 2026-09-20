@@ -161,12 +161,15 @@ describe('«تست»', () => {
     expect(text).toBe('سرویس یک‌ماهه · firstbuy_w1 · 1 روز · کد RETW30 · تمدید سرویس');
 
     const queued = await baseEnv.DB.prepare(
-      `SELECT chat_id, message_thread_id, body FROM bot_notifications WHERE dedupe_key LIKE 'retention-test:r_test1:%' ORDER BY id DESC LIMIT 1`,
-    ).first<{ chat_id: number; message_thread_id: number; body: string }>();
+      `SELECT chat_id, message_thread_id, body, reply_markup FROM bot_notifications WHERE dedupe_key LIKE 'retention-test:r_test1:%' ORDER BY id DESC LIMIT 1`,
+    ).first<{ chat_id: number; message_thread_id: number; body: string; reply_markup: { url: string; style: string }[][] }>();
     expect(Number(queued?.chat_id)).toBe(-1009900110);
     expect(Number(queued?.message_thread_id)).toBe(77);
     expect(queued?.body).toContain('🧪 تست');
-    expect(queued?.body).toContain(text);
+    // The group gets the code tap-to-copy, exactly as the customer would.
+    expect(queued?.body).toContain('کد <code>RETW30</code>');
+    expect(queued?.reply_markup[0]?.[0]?.url).toBe('https://t.me/Test_Shikoo_bot?start=renew');
+    expect(queued?.reply_markup[0]?.[0]?.style).toBe('success');
     const toCustomer = await baseEnv.DB.prepare(
       `SELECT count(*)::int AS n FROM bot_notifications WHERE chat_id = 749900`,
     ).first<{ n: number }>();

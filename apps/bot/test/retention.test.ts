@@ -10,6 +10,8 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { remindToRenew } from '../src/retention.js';
+import { handleUpdate } from '../src/handle.js';
+import * as menu from '../src/menu.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { invalidateShopSettings, loadShopSettings, setReportChatIdFallback } from '../src/settings.js';
 import { buildDailyReport } from '../src/report.js';
@@ -276,7 +278,7 @@ describe('the text', () => {
     expect(parts[0]).toBe('یک‌ماهه');
     expect(parts[1]).toBe('1');
     expect(parts[2]).toMatch(/^u_ret_/);
-    expect(parts[3]).toBe('RET30');
+    expect(parts[3]).toBe('<code>RET30</code>');
     expect(parts[4]).not.toBe('');
     expect(parts[5]).toBe('{nope}');
   });
@@ -300,19 +302,63 @@ describe('the text', () => {
 });
 
 describe('the button', () => {
-  it('opens this service\'s renewal — the rnw callback with the subscription id', async () => {
+  it('is a green deep link into the bot naming this service, and the code is tap-to-copy', async () => {
     const tg = nextTelegramId();
     const subId = await makeService(await makeCustomer(tg), { expiresInDays: 0.5 });
-    await setRules([{}]);
+    const codeId = await makeCode('RETBTN');
+    await setRules([{ codeId, text: 'کد {code}' }]);
     expect(await remindToRenew(db)).toBe(1);
     const row = await db
-      .prepare(`SELECT reply_markup FROM bot_notifications WHERE chat_id = ?1`)
+      .prepare(`SELECT body, reply_markup FROM bot_notifications WHERE chat_id = ?1`)
       .bind(tg)
       // The bare keyboard, as `notify.ts` stores it — the envelope is sendMessage's.
-      .first<{ reply_markup: { text: string; callback_data: string }[][] }>();
+      .first<{ body: string; reply_markup: { text: string; url: string; style: string }[][] }>();
+    expect(row?.body).toBe('کد <code>RETBTN</code>');
     expect(row?.reply_markup).toHaveLength(1);
-    expect(row?.reply_markup[0]?.[0]?.callback_data).toBe(`rnw:${subId}`);
-    expect(row?.reply_markup[0]?.[0]?.text).not.toBe('');
+    const button = row?.reply_markup[0]?.[0];
+    expect(button?.url).toBe(`https://t.me/Test_Shikoo_bot?start=rnw_${subId}`);
+    expect(button?.style).toBe('success');
+    expect(button?.text).not.toBe('');
+  });
+
+  it('sends nothing without a bot username — a button that goes nowhere is worse than silence', async () => {
+    const tg = nextTelegramId();
+    await makeService(await makeCustomer(tg), { expiresInDays: 0.5 });
+    await setRules([{}]);
+    await db.prepare(`UPDATE settings SET value = '""'::jsonb WHERE scope = 'bot' AND key = 'username'`).run();
+    try {
+      expect(await remindToRenew(db)).toBe(0);
+    } finally {
+      await db.prepare(`UPDATE settings SET value = '"Test_Shikoo_bot"'::jsonb WHERE scope = 'bot' AND key = 'username'`).run();
+    }
+  });
+
+  it('/start rnw_<id> lands on that service\'s renewal; a stranger\'s id lands on «gone», never on theirs', async () => {
+    const tg = nextTelegramId();
+    const other = nextTelegramId();
+    const subId = await makeService(await makeCustomer(tg), { expiresInDays: 0.5 });
+    await makeCustomer(other);
+    let n = 0;
+    // A fresh update id each time: the dedupe on `telegram_updates` answers a
+    // repeat with «duplicate» and no replies, which is right and not what
+    // this test is about.
+    const start = (id: number, text: string) => ({
+      update_id: 990_000 + id * 10 + n,
+      message: { message_id: 990_000 + id * 10 + n++, from: { id, username: `r${id}` }, chat: { id }, text },
+    });
+
+    const mine = await handleUpdate(db, start(tg, `/start rnw_${subId}`));
+    expect(mine.status).toBe('processed');
+    // Welcome, then the renewal screen — not the main menu.
+    expect(mine.replies).toHaveLength(2);
+    expect(mine.replies[1]?.text).not.toBe(menu.MENU_TITLE);
+    expect(mine.replies[1]?.text).not.toBe(menu.RENEWAL_GONE);
+
+    const theirs = await handleUpdate(db, start(other, `/start rnw_${subId}`));
+    expect(theirs.replies[1]?.text).toBe(menu.RENEWAL_GONE);
+
+    const plain = await handleUpdate(db, start(tg, '/start'));
+    expect(plain.replies[1]?.text).toBe(menu.MENU_TITLE);
   });
 });
 

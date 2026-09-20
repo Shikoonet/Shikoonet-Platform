@@ -943,8 +943,24 @@ async function handleStart(
   // untrusted and is only ever used as a row id: `claimReferrer` refuses it
   // unless it names a real, different customer, and refuses it outright if this
   // customer already has a referrer — the first link wins, always.
-  const referrer = referrerFromPayload(message.text!.trim().split(/\s+/)[1]);
+  const payload = message.text!.trim().split(/\s+/)[1];
+  const referrer = referrerFromPayload(payload);
   const claimed = referrer === null ? false : await claimReferrer(tx, user.id, referrer);
+  // `/start rnw_42` is the button under a «یادآوری تمدید» message: a deep
+  // link, because Sam wanted the press to open the bot and start it (a
+  // callback cannot wake a chat the customer has closed). The id is untrusted
+  // and goes through `handleCallback` like a real press, so ownership, the
+  // block check and the closed sign are all the ones a button gets. Read here,
+  // acted on after the welcome below.
+  // `/start renew` alone opens the list — the dashboard's «تست» message
+  // carries that link, so whoever presses it in the group lands on their own
+  // services rather than on a stranger's id.
+  const renewTo =
+    payload === 'renew'
+      ? encode('renew')
+      : /^rnw_([1-9][0-9]{0,18})$/.test(payload ?? '')
+        ? encode('rnw', Number(payload!.slice(4)))
+        : null;
 
   // «🎉یک کاربر جدید ربات را استارت کرد» — `index.php:68`, into «سایر
   // گزارشات». Once, on the /start that made the row; the dedupe key is the
@@ -987,6 +1003,17 @@ async function handleStart(
   // upgrade path for existing chats and the repair path when Telegram has lost
   // or replaced a keyboard. After this message Telegram keeps it until another
   // reply keyboard replaces it; this bot never does.
+  // The renewal screen instead of the main menu when the link named a
+  // service: the customer pressed «تمدید سرویس», and a menu they then have to
+  // navigate is the tap the button existed to save. No `message` on the
+  // synthetic query, so the screen is a fresh message rather than an edit —
+  // the same shape `handleMenuAction` uses and for the same reason.
+  const landing =
+    renewTo === null
+      ? [reply(message.chat.id, menu.MENU_TITLE, menu.mainMenu(user))]
+      : (await handleCallback(tx, { id: `start:${renewTo}`, from: { id: from.id }, data: renewTo }))
+          .replies;
+
   return {
     status: 'processed',
     replies: [
@@ -999,7 +1026,7 @@ async function handleStart(
       // above installs the chat-wide navigation bar; this second message is
       // deliberately last, so the live screen at the bottom of the chat is the
       // shop's main menu rather than the setup message.
-      reply(message.chat.id, menu.MENU_TITLE, menu.mainMenu(user)),
+      ...landing,
     ],
     // Sam, 2026-09-04: «می‌خوام داخل چت خیلی تمیز باشه و چت‌های قدیمی پاک بشه».
     //
