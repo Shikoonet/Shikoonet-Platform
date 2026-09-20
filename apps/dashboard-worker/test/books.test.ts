@@ -412,6 +412,37 @@ describe('the monthly statement', () => {
     expect(s.gapIrr).toBe(0);
   });
 
+  /**
+   * Production, 2026-09-20: Melli re-sent a text and both copies became a
+   * deposit. «رد» (off the books) kept the copy in the bank's arithmetic and
+   * the account read 1,200,000 over; only rejecting the transaction itself —
+   * «تکراری» on the row — takes it out of the statement and the queue.
+   */
+  it('a re-sent deposit leaves the statement only when rejected as a duplicate, not when tagged off the books', async () => {
+    await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 1_000_000, at: month.start - DAY });
+    const real = await tx({ direction: 'CREDIT', amountIrr: 1_200_000, balanceIrr: 2_200_000, at: T(2) });
+    const copy = await tx({ direction: 'CREDIT', amountIrr: 1_200_000, balanceIrr: 2_200_000, at: T(2, 4) });
+    const read = async () =>
+      ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+        accounts: Array<{ gapIrr: number; customerIncome: { count: number }; offBooksCredits: unknown[] }>;
+      }).accounts[0]!;
+    expect((await read()).gapIrr).toBe(-1_200_000);
+
+    // «رد»: out of customer income, still in the bank's delta — the gap stays.
+    expect((await json('POST', `/api/v1/transactions/${copy}/decline-income`, { category: 'MISTAKE_RETURNED' })).status).toBe(200);
+    const tagged = await read();
+    expect(tagged.customerIncome.count).toBe(1);
+    expect(tagged.gapIrr).toBe(-1_200_000);
+
+    // «تکراری»: the transaction is rejected; the tag stops counting with it.
+    expect((await json('POST', `/api/v1/transactions/${copy}/reject`, { reason: 'duplicate' })).status).toBe(200);
+    const gone = await read();
+    expect(gone.gapIrr).toBe(0);
+    expect(gone.customerIncome.count).toBe(1);
+    expect(gone.offBooksCredits).toEqual([]);
+    expect(real).not.toBe(copy);
+  });
+
   it('says by how much the bank disagrees when an SMS is missing', async () => {
     await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 1_000_000, at: month.start - DAY });
     // The bank says 1.5M after a 200k deposit — 300k moved without an SMS.
