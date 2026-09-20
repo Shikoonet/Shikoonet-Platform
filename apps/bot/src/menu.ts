@@ -3130,6 +3130,10 @@ export function renewalReport(f: {
   username: string | null;
   config: string;
   panel: string;
+  /** The account as it was before this renewal — null when the row never said. */
+  previousPlan: string | null;
+  previousVolumeGb: number | null;
+  previousExpiresAtMs: number | null;
   plan: string;
   volumeGb: number | null;
   days: number | null;
@@ -3142,6 +3146,9 @@ export function renewalReport(f: {
     username: handle(f.username),
     config: f.config,
     panel: f.panel,
+    previousPlan: f.previousPlan ?? '—',
+    previousVolume: f.previousVolumeGb ?? 0,
+    previousExpiry: f.previousExpiresAtMs === null ? '—' : jalaliStamp(f.previousExpiresAtMs),
     plan: f.plan,
     volume: f.volumeGb ?? 0,
     days: f.days ?? 0,

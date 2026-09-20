@@ -1799,6 +1799,12 @@ async function reportFor(
           username: row.telegram_username,
           config,
           panel,
+          // `row` was read before renew() rewrote the subscription, so the
+          // target_* columns are still the account the customer renewed FROM.
+          previousPlan: row.target_name,
+          previousVolumeGb: numberOrNull(row.target_volume_gb),
+          previousExpiresAtMs:
+            row.target_expires_at === null ? null : Date.parse(row.target_expires_at),
           plan: row.plan_name ?? row.target_name ?? row.product_name ?? '',
           volumeGb: numberOrNull(row.volume_gb),
           days: row.duration_days,
