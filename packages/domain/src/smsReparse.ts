@@ -158,11 +158,15 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
       continue;
     }
     let redeliveryOf: string | null = null;
-    if (p.balanceIrr !== null) {
-      const key = [r.device_id, r.sender, r.normalized_body].join('\u0000');
+    if (p.balanceIrr !== null && p.amountIrr !== null) {
+      // The same facts `findRedelivery` keys on, for a re-send whose first
+      // copy is still only in this batch.
+      const key = [r.device_id, p.direction, p.amountIrr, p.balanceIrr].join('\u0000');
       const earlier = seen.get(key);
       if (earlier && smsTs >= earlier.at && smsTs - earlier.at <= REDELIVERY_WINDOW_MS) redeliveryOf = earlier.id;
-      else redeliveryOf = (await findRedelivery(db, r.device_id, r.sender, r.normalized_body, r.id, smsTs))?.id ?? null;
+      else
+        redeliveryOf =
+          (await findRedelivery(db, r.device_id, { direction: p.direction, amountIrr: p.amountIrr, balanceIrr: p.balanceIrr }, r.id, smsTs))?.id ?? null;
       if (!redeliveryOf) seen.set(key, { id: r.id, at: smsTs });
     }
     candidates.push({
@@ -298,8 +302,8 @@ async function applyOne(
     }
     // The bank's re-send, exactly as ingest treats it: the earlier copy — made
     // a row a moment ago in this same batch, or long ago — owns the movement.
-    if (p.balanceIrr !== null) {
-      const first = await findRedelivery(db, r.device_id, r.sender, r.normalized_body, r.id, smsTs);
+    if (p.balanceIrr !== null && p.amountIrr !== null) {
+      const first = await findRedelivery(db, r.device_id, { direction: p.direction, amountIrr: p.amountIrr, balanceIrr: p.balanceIrr }, r.id, smsTs);
       if (first) {
         await db.prepare(`UPDATE raw_sms_events SET duplicate_of = ?1 WHERE id = ?2`).bind(first.id, r.id).run();
         skipped.push({ eventId, why: 'redelivery' });

@@ -228,14 +228,21 @@ export async function ingest(
   const bankTimestamp = bankClockOf(result, smsTimestamp);
 
   // A bank sometimes sends one text twice, minutes apart (Melli, the same
-  // night: 20:46 and 21:12, byte-identical down to «0627-20:45»). The
-  // fingerprint is per delivery — it carries the phone's timestamp — so the
-  // second copy is a new raw event and is kept as one; but it must not become
-  // a second transaction. An identical balance means the money moved once,
-  // and a second CREDIT row of the same amount could verify a second claim.
-  // `duplicate_of` has existed since 0004 for exactly this and was never set.
-  if (!wasDuplicate && !isRedactable && result.balanceIrr !== null) {
-    const first = await findRedelivery(db, device.id, raw.sender, bodyToStore, eventId, smsTimestamp);
+  // night: 20:46 and 21:12, byte-identical down to «0627-20:45»; and on
+  // 09-20 again, from two different numbers). The fingerprint is per delivery
+  // — it carries the phone's timestamp — so the second copy is a new raw
+  // event and is kept as one; but it must not become a second transaction.
+  // An identical balance means the money moved once, and a second CREDIT row
+  // of the same amount could verify a second claim. `duplicate_of` has
+  // existed since 0004 for exactly this and was never set.
+  if (!wasDuplicate && !isRedactable && result.balanceIrr !== null && result.amountIrr !== null) {
+    const first = await findRedelivery(
+      db,
+      device.id,
+      { direction: result.direction, amountIrr: result.amountIrr, balanceIrr: result.balanceIrr },
+      eventId,
+      smsTimestamp,
+    );
     if (first) {
       await db
         .prepare(`UPDATE raw_sms_events SET duplicate_of = ?1 WHERE id = ?2`)
