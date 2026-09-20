@@ -201,6 +201,7 @@ export function IncomeRow({
   onAssign,
   onMarkReseller,
   onDecline,
+  onDuplicate,
 }: {
   item: IncomeItem;
   isNew?: boolean;
@@ -210,6 +211,7 @@ export function IncomeRow({
   onAssign: () => void;
   onMarkReseller: () => void;
   onDecline: () => void;
+  onDuplicate: () => void;
 }) {
   const masked = maskAccountHint(item.accountHint);
   const amountLabel =
@@ -270,6 +272,11 @@ export function IncomeRow({
         <button type="button" className="ghost hub-list-row__action" onClick={onDecline}>
           رد
         </button>
+        {/* Not «رد»: that tags real money as not-a-sale and leaves it in the
+            bank's arithmetic. A re-sent text is not money at all. */}
+        <button type="button" className="ghost hub-list-row__action" onClick={onDuplicate}>
+          تکراری
+        </button>
       </div>
     </li>
   );
@@ -304,11 +311,13 @@ export function DeclinedIncomeRow({
   selected,
   onSelect,
   onRestore,
+  onDuplicate,
 }: {
   item: import('./paymentReview.js').DeclinedIncomeItem;
   selected?: boolean;
   onSelect?: (checked: boolean) => void;
   onRestore: () => void;
+  onDuplicate: () => void;
 }) {
   return (
     <li
@@ -350,6 +359,9 @@ export function DeclinedIncomeRow({
       <div className="hub-list-row__actions" onClick={(e) => e.stopPropagation()}>
         <button type="button" className="primary hub-list-row__action" onClick={onRestore}>
           بازگردانی
+        </button>
+        <button type="button" className="ghost hub-list-row__action" onClick={onDuplicate}>
+          تکراری
         </button>
       </div>
     </li>

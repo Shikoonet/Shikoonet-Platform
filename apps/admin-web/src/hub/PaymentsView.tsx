@@ -300,6 +300,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const [incomeAction, setIncomeAction] = useState<IncomeItem | null>(null);
   const [assignIncome, setAssignIncome] = useState<IncomeItem | null>(null);
   const [declineTarget, setDeclineTarget] = useState<IncomeItem | null>(null);
+  const [duplicateTarget, setDuplicateTarget] = useState<{ id: string; amountIrr: number | null } | null>(null);
   const [bulkDeclineOpen, setBulkDeclineOpen] = useState(false);
   const [selectedIncome, setSelectedIncome] = useState<Set<string>>(new Set());
   const [selectedDeclined, setSelectedDeclined] = useState<Set<string>>(new Set());
@@ -977,6 +978,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                       setIncomeAction(item);
                     }}
                     onDecline={() => setDeclineTarget(item)}
+                    onDuplicate={() => setDuplicateTarget(item)}
                   />
                 ))}
               </ul>
@@ -1005,6 +1007,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                         setError(e instanceof Error ? e.message : 'restore_failed');
                       }
                     }}
+                    onDuplicate={() => setDuplicateTarget(item)}
                   />
                 ))}
               </ul>
@@ -1225,6 +1228,19 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 onDone={() => {
                   setDeclineTarget(null);
                   setSelectedIncome(new Set());
+                  cache.refetch(queryKey);
+                }}
+                onError={setError}
+              />
+            )}
+            {duplicateTarget && (
+              <DuplicateDepositModal
+                item={duplicateTarget}
+                onClose={() => setDuplicateTarget(null)}
+                onDone={() => {
+                  setDuplicateTarget(null);
+                  setSelectedIncome(new Set());
+                  setSelectedDeclined(new Set());
                   cache.refetch(queryKey);
                 }}
                 onError={setError}
@@ -3055,6 +3071,63 @@ function DeclineIncomeModal({
           </button>
           <button type="button" className="danger" disabled={busy} onClick={() => void submit()}>
             رد
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The bank sent one text twice and both became a deposit. Ingest folds a
+ * re-send as it arrives (`findRedelivery`); this is the door for one that got
+ * through before the rule knew its shape — production, 2026-09-20, Melli from
+ * two numbers. It goes through the transaction's own «reject» with reason
+ * `duplicate`: status IGNORED, so it leaves «واریز مشتری‌ها», «دفتر بانک» and
+ * the matcher at once. «رد» would not do: an off-books tag keeps the row in
+ * the bank's arithmetic, and the account read 1,200,000 over all day.
+ */
+function DuplicateDepositModal({
+  item,
+  onClose,
+  onDone,
+  onError,
+}: {
+  item: { id: string; amountIrr: number | null };
+  onClose: () => void;
+  onDone: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  async function submit() {
+    setBusy(true);
+    try {
+      await api.rejectTransaction(item.id, { reason: 'duplicate', comment: 'پیامک بانک دو بار رسیده' });
+      onDone();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'duplicate_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal">
+        <h2>این واریزی تکراری است؟</h2>
+        <p>
+          مبلغ: <strong>{item.amountIrr == null ? '—' : formatTomanFromIrr(item.amountIrr)}</strong>
+        </p>
+        <p className="muted">
+          یعنی بانک یک پیامک را دو بار فرستاده و این نسخهٔ دوم است — پولی جابه‌جا نشده. از «واریز
+          مشتری‌ها» و از حرکت‌های «دفتر بانک» بیرون می‌رود و به هیچ پرداختی نمی‌چسبد. پیامک بانک دست
+          نمی‌خورد. از پنل برنمی‌گردد؛ اگر شک داری «رد» بزن، نه این.
+        </p>
+        <div className="modal__actions">
+          <button type="button" className="ghost" disabled={busy} onClick={onClose}>
+            انصراف
+          </button>
+          <button type="button" className="danger" disabled={busy} onClick={() => void submit()}>
+            تکراری است
           </button>
         </div>
       </div>
