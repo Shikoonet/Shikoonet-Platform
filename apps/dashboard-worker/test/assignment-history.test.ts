@@ -564,4 +564,37 @@ describe('POST /api/v1/payment-claims/:id/change-account', () => {
       .first();
     expect(audit).toBeTruthy();
   });
+
+  it('moves the card with the account, and drops it when the account has none or several', async () => {
+    const a1 = await seedAccount({ displayName: 'A1', bank: 'PARSIAN' });
+    const a2 = await seedAccount({ displayName: 'A2', bank: 'MELLI' });
+    const a3 = await seedAccount({ displayName: 'A3', bank: 'SHAHR' });
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO payment_cards (id, financial_account_id, card_digits, created_at)
+         VALUES ('pc-a1', ?1, '6221061234567890', 0), ('pc-a2', ?2, '6037991234567890', 0),
+                ('pc-a3', ?3, '5047061234567890', 0), ('pc-a3b', ?3, '5047069876543210', 0)`,
+      ).bind(a1, a2, a3),
+    ]);
+    const claim = await seedPaymentClaim(a1);
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET card_digits = '6221061234567890' WHERE id = ?1`)
+      .bind(claim)
+      .run();
+    const cardOf = async () =>
+      (
+        await baseEnv.DB.prepare('SELECT card_digits FROM payment_claims WHERE id = ?1')
+          .bind(claim)
+          .first<{ card_digits: string | null }>()
+      )?.card_digits;
+    const move = (accountId: string | null) =>
+      app.fetch(req('POST', `/api/v1/payment-claims/${claim}/change-account`, { accountId }), ENV);
+
+    expect((await move(a2)).status).toBe(200);
+    expect(await cardOf()).toBe('6037991234567890');
+    expect((await move(a3)).status).toBe(200);
+    expect(await cardOf()).toBeNull();
+    expect((await move(a2)).status).toBe(200);
+    expect((await move(null)).status).toBe(200);
+    expect(await cardOf()).toBeNull();
+  });
 });
