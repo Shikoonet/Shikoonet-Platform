@@ -324,7 +324,12 @@ export async function flush(
       )
       .bind(now, limit, LEASE_MS)
       .all<DueRow>();
-    rows = results ?? [];
+    // The CTE picks the batch in order; the UPDATE's RETURNING gives it back
+    // in whatever order the plan touched the rows — CI showed a shelf's file
+    // ahead of the message it belongs under (#377). Ids are issued in the
+    // order rows were queued, and a retried row is older than a fresh one,
+    // so this is the CTE's own order, restated where it actually holds.
+    rows = (results ?? []).sort((a, b) => Number(a.id) - Number(b.id));
   } catch (err) {
     log.error('notify.claim_failed', { will_retry: true }, err);
     return result;
