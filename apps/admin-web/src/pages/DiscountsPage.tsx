@@ -22,7 +22,7 @@
 import { useEffect, useState } from 'react';
 import { CustomerLink } from '../CustomerLink.js';
 import { BulkSelectionToolbar } from '../hub/historyRangeNav.js';
-import { api, ApiError, type DiscountItem, type RedemptionRow } from '../api.js';
+import { api, ApiError, type DiscountItem, type RedemptionRow, type ServiceRow } from '../api.js';
 import { count, dateTime, endOfTehranDay, toman } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -494,6 +494,22 @@ function CreateForm({ onDone }: { onDone: () => void }) {
    */
   const [expiresOn, setExpiresOn] = useState('');
   const [appliesTo, setAppliesTo] = useState('ALL');
+  /**
+   * Which service the code is for; blank is every service.
+   *
+   * `discount_codes.product_id` has existed since 0002 and the bot has refused
+   * a code on the wrong service the whole time — the form simply never asked.
+   * Sam, 2026-09-20: «میخوام بگم این کد تخفیف روی کدوم سرویس‌ها اعمال بشه».
+   */
+  const [productId, setProductId] = useState('');
+  const [services, setServices] = useState<ServiceRow[]>([]);
+  useEffect(() => {
+    // ponytail: one page of 100 — the shop has a few dozen services, not a thousand.
+    api
+      .catalog({ pageSize: 100 })
+      .then((d) => setServices(d.items))
+      .catch(() => setServices([]));
+  }, []);
   const [firstPurchaseOnly, setFirst] = useState(false);
   const [resellersOnly, setResellers] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -524,7 +540,14 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         ...(expiresOn ? { expiresAt: endOfTehranDay(expiresOn) } : {}),
         // A gift credits a wallet and is never applied to a purchase, so the
         // server refuses these on one; the form does not offer them either.
-        ...(isGift ? {} : { appliesTo, firstPurchaseOnly, resellersOnly }),
+        ...(isGift
+          ? {}
+          : {
+              appliesTo,
+              firstPurchaseOnly,
+              resellersOnly,
+              ...(productId ? { productId: Number(productId) } : {}),
+            }),
       });
       onDone();
     } catch (e) {
@@ -685,6 +708,26 @@ function CreateForm({ onDone }: { onDone: () => void }) {
               <option value="ALL">خرید و تمدید</option>
               <option value="BUY">فقط خرید</option>
               <option value="RENEW">فقط تمدید</option>
+            </select>
+          </div>
+        )}
+        {!isGift && (
+          <div>
+            <label className="form-label" htmlFor="new-product">
+              فقط برای این سرویس
+            </label>
+            <select
+              id="new-product"
+              className="form-control"
+              value={productId}
+              onChange={(e) => setProductId(e.target.value)}
+            >
+              <option value="">همهٔ سرویس‌ها</option>
+              {services.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
             </select>
           </div>
         )}

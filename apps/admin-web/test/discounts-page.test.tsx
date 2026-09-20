@@ -149,3 +149,59 @@ describe('bulk delete (#383)', () => {
     expect(screen.getByText(/حذف نشد/).textContent).toContain('۱ کد حذف شد؛ ۱ کد حذف نشد: C2');
   });
 });
+
+describe('a code can be for one service', () => {
+  it('the form lists the services and sends the picked one as productId', async () => {
+    const posts: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        if (init?.method === 'POST') {
+          posts.push(String(init.body));
+          return json({ ok: true, discount: ROWS[0] });
+        }
+        if (url.includes('/catalog?')) {
+          return json({
+            ok: true,
+            total: 2,
+            items: [
+              { id: 7, name: 'آلمان', configs: [] },
+              { id: 9, name: 'فرانسه', configs: [] },
+            ],
+          });
+        }
+        return json({ ok: true, total: ROWS.length, items: ROWS });
+      }),
+    );
+    render(
+      <RoleProvider role="ADMIN">
+        <DiscountsPage />
+      </RoleProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'کد جدید' }));
+    const select = (await screen.findByLabelText('فقط برای این سرویس')) as HTMLSelectElement;
+    await screen.findByRole('option', { name: 'فرانسه' });
+    expect([...select.options].map((o) => o.textContent)).toEqual([
+      'همهٔ سرویس‌ها',
+      'آلمان',
+      'فرانسه',
+    ]);
+
+    // A gift code charges a wallet; the service question is not asked.
+    fireEvent.change(screen.getByLabelText('نوع'), { target: { value: 'GIFT_BALANCE' } });
+    expect(screen.queryByLabelText('فقط برای این سرویس')).toBeNull();
+    fireEvent.change(screen.getByLabelText('نوع'), { target: { value: 'PERCENT_OFF' } });
+
+    fireEvent.change(screen.getByLabelText('کد'), { target: { value: 'FR10' } });
+    fireEvent.change(screen.getByLabelText('درصد'), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText('فقط برای این سرویس'), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'ساخت' }));
+    await vi.waitFor(() => expect(posts).toHaveLength(1));
+    expect(JSON.parse(posts[0]!)).toMatchObject({ code: 'FR10', productId: 9 });
+  });
+});
