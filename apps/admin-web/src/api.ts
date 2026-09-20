@@ -3067,6 +3067,13 @@ export const api = {
     }>('/retention');
   },
 
+  testRetentionRule(rule: RetentionRule) {
+    return req<{ ok: boolean; text: string }>('/retention/test', {
+      method: 'POST',
+      body: JSON.stringify({ rule }),
+    });
+  },
+
   updateRetentionRules(items: RetentionRule[]) {
     return req<{ ok: boolean; items: RetentionRule[] }>('/retention/rules', {
       method: 'POST',

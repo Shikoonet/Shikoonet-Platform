@@ -44,6 +44,9 @@ function message(e: unknown): string {
     if (e.code === 'unusable_code') {
       return 'کد انتخاب‌شده برای تمدید قابل استفاده نیست — غیرفعال است یا «فقط خرید اول» دارد.';
     }
+    if (e.code === 'no_report_group') {
+      return 'گروه گزارش‌ها تنظیم نشده — در «تنظیمات»، Channel_Report را بگذارید.';
+    }
     return e.detail ?? e.code;
   }
   return e instanceof Error ? e.message : String(e);
@@ -79,6 +82,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
   const [panels, setPanels] = useState<{ id: number; name: string; baseUrl: string | null }[]>([]);
   const [codes, setCodes] = useState<RetentionCodeOption[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function load() {
@@ -107,6 +111,20 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
     try {
       await api.updateRetentionRules(draft);
       await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function test(rule: RetentionRule) {
+    setBusy(true);
+    setErr(null);
+    setNote(null);
+    try {
+      await api.testRetentionRule(rule);
+      setNote(`پیام تست قانون «${rule.name || 'بی‌نام'}» به «📝 گزارش اطلاع رسانی ها» فرستاده شد.`);
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -166,6 +184,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
       </div>
 
       {err && <div className="alert alert-error">{err}</div>}
+      {note && <div className="alert alert-info">{note}</div>}
 
       <section className="cron-list">
         {(draft ?? []).length === 0 && (
@@ -300,14 +319,25 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
                     'هنوز ذخیره نشده'
                   )}
                 </span>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-danger"
-                  disabled={disabled}
-                  onClick={() => setDraft((d) => (d ? d.filter((_, j) => j !== i) : d))}
-                >
-                  حذف
-                </button>
+                <span style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={disabled || rule.text.trim() === ''}
+                    title="همین متن، برای یک سرویس واقعی این پنل، به گروه گزارش‌ها — نه به مشتری"
+                    onClick={() => void test(rule)}
+                  >
+                    🧪 تست
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger"
+                    disabled={disabled}
+                    onClick={() => setDraft((d) => (d ? d.filter((_, j) => j !== i) : d))}
+                  >
+                    حذف
+                  </button>
+                </span>
               </footer>
             </article>
           );

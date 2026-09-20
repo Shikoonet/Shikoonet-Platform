@@ -527,6 +527,13 @@ describe('every write route, asked directly', () => {
     // like `POST /cron`; the body is refused unless the bot's own reader
     // accepts it, a named panel exists and a named code is usable for a
     // renewal. Audited with reason `retention`; `retention.test.ts` pins it.
-    expect(writeRoutes().length).toBe(175);
+    //
+    // 176, 2026-09-20: `POST /admin/retention/test`. Renders one rule's text
+    // as a customer would get it and queues it to the reports group — never
+    // to a customer — so an operator can read the wording before saving.
+    // ADMIN-only like the write beside it: it puts a message in the bot's
+    // outbox. Not audited: it changes nothing, and the message itself is
+    // the record. `retention.test.ts` pins where it goes.
+    expect(writeRoutes().length).toBe(176);
   });
 });

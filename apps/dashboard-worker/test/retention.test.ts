@@ -6,7 +6,7 @@
  * code the customer could not use for the renewal the rule is selling.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -77,11 +77,20 @@ beforeAll(async () => {
   firstOnlyCodeId = Number(firstOnly!.id);
 });
 
-beforeEach(async () => {
+// Empty before AND after: the row is shared with the bot's suites on this
+// database, and a rule left enabled here is a fourth message in the bot's
+// nightly report test (`report.test.ts` counts three).
+async function emptyRules(): Promise<void> {
   await baseEnv.DB.prepare(
     `INSERT INTO settings (scope, key, value) VALUES ('bot', 'retention_rules', '[]'::jsonb)
      ON CONFLICT (scope, key) DO UPDATE SET value = '[]'::jsonb`,
   ).run();
+}
+
+afterAll(emptyRules);
+
+beforeEach(async () => {
+  await emptyRules();
   await baseEnv.DB.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'retention:r_test%'`).run();
 });
 
@@ -100,6 +109,80 @@ describe('reading', () => {
     expect(body.items[0]?.lastActed).toBeNull();
     expect(body.panels.some((p) => Number(p.id) === panelId)).toBe(true);
     expect(body.codes.find((c) => Number(c.id) === firstOnlyCodeId)?.firstPurchaseOnly).toBe(true);
+  });
+});
+
+describe('«تست»', () => {
+  // The sim carries the shop's own group and topics; put them back afterwards
+  // or `report.test.ts` in the bot loses its channel.
+  let saved: { key: string; value: unknown }[] = [];
+  beforeAll(async () => {
+    saved = (
+      await baseEnv.DB.prepare(
+        `SELECT key, value FROM settings WHERE scope = 'bot' AND key IN ('Channel_Report', 'topic_reportcron')`,
+      ).all<{ key: string; value: unknown }>()
+    ).results ?? [];
+  });
+  afterAll(async () => {
+    await baseEnv.DB.prepare(
+      `DELETE FROM settings WHERE scope = 'bot' AND key IN ('Channel_Report', 'topic_reportcron')`,
+    ).run();
+    for (const r of saved) {
+      await baseEnv.DB.prepare(`INSERT INTO settings (scope, key, value) VALUES ('bot', ?1, ?2::jsonb)`)
+        .bind(r.key, JSON.stringify(r.value))
+        .run();
+    }
+  });
+  const testPost = (email: string, r: unknown) =>
+    app.request(
+      '/api/v1/admin/retention/test',
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rule: r }) },
+      envAs(email),
+    );
+
+  it('renders the draft for a real service on that panel and queues it to the reports topic, never to a customer', async () => {
+    await baseEnv.DB.prepare(
+      `INSERT INTO settings (scope, key, value) VALUES ('bot', 'Channel_Report', '"-1009900110"'::jsonb), ('bot', 'topic_reportcron', '"77"'::jsonb)
+       ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+    ).run();
+    const user = await baseEnv.DB.prepare(
+      `INSERT INTO users (telegram_id, username, registered_at) VALUES (749900, 'ret_w', now())
+       ON CONFLICT (telegram_id) DO UPDATE SET username = excluded.username RETURNING id`,
+    ).first<{ id: number }>();
+    await baseEnv.DB.prepare(
+      `INSERT INTO subscriptions (public_id, user_id, plan_name_at_sale, price_irr, remote_username, status, purchased_at, expires_at, provider_id)
+       VALUES ('zz-retw-1', ?1, 'یک‌ماهه-100.000ت', 1000000, 'firstbuy_w1', 'ACTIVE', now(), now() + interval '1 day', ?2)
+       ON CONFLICT (public_id) DO NOTHING`,
+    ).bind(user!.id, panelId).run();
+
+    const res = await testPost(ADMIN, rule({ codeId, text: 'سرویس {service} · {username} · {days} روز · کد {code} · {renewButton}' }));
+    expect(res.status).toBe(200);
+    const { text } = (await res.json()) as { text: string };
+    expect(text).toBe('سرویس یک‌ماهه · firstbuy_w1 · 1 روز · کد RETW30 · تمدید سرویس');
+
+    const queued = await baseEnv.DB.prepare(
+      `SELECT chat_id, message_thread_id, body FROM bot_notifications WHERE dedupe_key LIKE 'retention-test:r_test1:%' ORDER BY id DESC LIMIT 1`,
+    ).first<{ chat_id: number; message_thread_id: number; body: string }>();
+    expect(Number(queued?.chat_id)).toBe(-1009900110);
+    expect(Number(queued?.message_thread_id)).toBe(77);
+    expect(queued?.body).toContain('🧪 تست');
+    expect(queued?.body).toContain(text);
+    const toCustomer = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM bot_notifications WHERE chat_id = 749900`,
+    ).first<{ n: number }>();
+    expect(toCustomer?.n).toBe(0);
+
+    await baseEnv.DB.prepare(`DELETE FROM subscriptions WHERE public_id = 'zz-retw-1'`).run();
+    await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id = 749900`).run();
+  });
+
+  it('says so when there is no reports group, and refuses a reviewer and a bad rule', async () => {
+    expect((await testPost(REVIEWER, rule())).status).toBe(403);
+    expect((await testPost(ADMIN, rule({ daysBefore: 0, daysAfter: 0 }))).status).toBe(400);
+    await baseEnv.DB.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
+    const res = await testPost(ADMIN, rule());
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe('no_report_group');
   });
 });
 
