@@ -246,7 +246,7 @@ function buttonLabel(menuId: MenuId, action: string, shipped: string): string {
   return MENU_ACTIONS.find((a) => a.action === action)?.label ?? shipped;
 }
 
-const renewButtonLabel = (): string => buttonLabel('main', 'renew', 'تمدید سرویس');
+export const renewButtonLabel = (): string => buttonLabel('main', 'renew', 'تمدید سرویس');
 const joinedButtonLabel = (): string => buttonLabel('gateChannels', 'chk', 'عضو شدم');
 
 /**
@@ -3278,6 +3278,27 @@ export function cronVolumeNotice(f: { config: string; status: string; remaining:
     t.render('REPORT_CRON_STATUS', { status: f.status }) +
     t.render('REPORT_CRON_REMAINING_VOLUME', { volume: f.remaining })
   );
+}
+
+/** One line in the group per «یادآوری تمدید» message sent. */
+export function retentionNotice(f: { rule: string; config: string; days: number; code: string }): string {
+  return TEXTS_NOW.render('REPORT_RETENTION_NOTICE', {
+    rule: f.rule,
+    config: f.config,
+    when: f.days >= 0 ? `${f.days} روز مانده به انقضا` : `${-f.days} روز از انقضا گذشته`,
+    code: f.code,
+  });
+}
+
+export function retentionNightRow(f: {
+  rule: string;
+  sent: number;
+  usedCode: number;
+  stayed: number;
+  left: number;
+  pending: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_RETENTION_NIGHT_ROW', f);
 }
 
 export function cronTimeNotice(f: { config: string; status: string; days: number }): string {

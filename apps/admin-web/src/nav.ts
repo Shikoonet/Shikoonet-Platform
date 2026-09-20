@@ -65,6 +65,7 @@ export type PageId =
   | 'texts'
   | 'keyboard'
   | 'cron'
+  | 'retention'
   | 'resellers'
   | 'content'
   | 'access'
@@ -175,6 +176,8 @@ export const NAV: NavGroup[] = [
       // Last in its group: it is the only screen here that is about what the
       // bot does when nobody is looking, rather than what it says when they are.
       { id: 'cron', label: 'کرون‌جاب‌ها', icon: 'list' },
+      // The one sweep the operator writes rules for, so it has its own screen.
+      { id: 'retention', label: 'یادآوری تمدید', icon: 'ticket' },
     ],
   },
   {
@@ -252,6 +255,9 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   // Reading which sweeps are on is shop operation, like «تنظیمات» below it.
   // The write is ADMIN-only in the route.
   'cron',
+  // Same line as «کرون‌جاب‌ها»: reading the rules and their counts is shop
+  // operation, and the write is ADMIN-only in the route.
+  'retention',
   // What a franchise bought and what its meter says. Not customer data in the
   // sense this list draws the line at, and the strongest reason is structural:
   // a reseller's customers never reach this database at all, so there is no

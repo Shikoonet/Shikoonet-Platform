@@ -1679,6 +1679,42 @@ export interface ImportRun {
  * could not be read as a switch or a number», which the screen shows as the
  * bot's default rather than as something the admin chose.
  */
+/** One «یادآوری تمدید» rule, as the server stores and reads it. */
+export interface RetentionRule {
+  key: string;
+  name: string;
+  enabled: boolean;
+  providerId: number;
+  daysBefore: number;
+  daysAfter: number;
+  onlyService: boolean;
+  codeId: number | null;
+  text: string;
+}
+
+export interface RetentionFunnel {
+  sent: number;
+  usedCode: number;
+  stayed: number;
+  left: number;
+  pending: number;
+}
+
+export interface RetentionRuleRow extends RetentionRule {
+  lastActed: { at: string; count: number } | null;
+  funnel: RetentionFunnel;
+}
+
+export interface RetentionCodeOption {
+  id: number;
+  code: string;
+  kind: string;
+  appliesTo: string;
+  status: string;
+  firstPurchaseOnly: boolean;
+  expired: boolean;
+}
+
 export interface CronJobRow {
   key: string;
   name: string;
@@ -3020,6 +3056,22 @@ export const api = {
       items: CronJobRow[];
       dryRun: { key: string; on: boolean | null };
     }>('/cron');
+  },
+
+  retention() {
+    return req<{
+      ok: boolean;
+      items: RetentionRuleRow[];
+      panels: { id: number; name: string; baseUrl: string | null; status: string }[];
+      codes: RetentionCodeOption[];
+    }>('/retention');
+  },
+
+  updateRetentionRules(items: RetentionRule[]) {
+    return req<{ ok: boolean; items: RetentionRule[] }>('/retention/rules', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    });
   },
 
   resellers() {

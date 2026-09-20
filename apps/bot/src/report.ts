@@ -28,9 +28,15 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { tehranAdjacentDay, tehranDateStringFromMs, tehranDayBoundsFromDate } from '@shikoo/domain';
+import {
+  retentionFunnel,
+  tehranAdjacentDay,
+  tehranDateStringFromMs,
+  tehranDayBoundsFromDate,
+} from '@shikoo/domain';
 import { enqueue } from './notify.js';
 import { loadShopSettings } from './settings.js';
+import { loadRetentionRules } from './retention.js';
 import * as menu from './menu.js';
 
 /** How many resellers the ranking names, matching the legacy's `LIMIT 3`. */
@@ -221,6 +227,13 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
     topResellers(db, start, end),
   ]);
   const volumeGb = panels.reduce((sum, p) => sum + (p.gb ?? 0), 0);
+  // A fourth message when the shop has retention rules on: one line per
+  // rule with its funnel to date. Absent — not empty — when there is none,
+  // so the group keeps reading exactly like mirzabot's three.
+  const rules = (await loadRetentionRules(db)).filter((r) => r.enabled);
+  const retention = await Promise.all(
+    rules.map(async (r) => menu.retentionNightRow({ rule: r.name, ...(await retentionFunnel(db, r.key, r.codeId)) })),
+  );
   return [
     menu.nightlyAgentsReport(
       resellers.map((r) => ({ telegramId: r.telegramId, username: r.username, totalIrr: r.irr })),
@@ -237,6 +250,7 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
     menu.nightlyPanelsReport(
       panels.map((p) => ({ name: p.name, orders: p.count, ordersIrr: p.irr, volumeGb: p.gb ?? 0 })),
     ),
+    ...(retention.length > 0 ? [retention.join('\n')] : []),
   ];
 }
 

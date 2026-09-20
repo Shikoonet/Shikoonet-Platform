@@ -98,8 +98,14 @@ const WITHHELD = [
 /*
  * Twenty on 2026-09-13. «محصولات» is a view of «سرویس‌ها» now — the reader
  * lost a sidebar item, not a screen.
+ *
+ * Twenty-one on 2026-09-20. «یادآوری تمدید» (#387) is readable for the
+ * reason «کرون‌جاب‌ها» beside it is: which rules are on and how many people
+ * each reached is shop operation, not customer data — the screen shows
+ * counts, never a name — and the write behind it is ADMIN-only in the route;
+ * `write-roles.test.ts` counts it separately.
  */
-const OFFERED_TO_A_READER = 20;
+const OFFERED_TO_A_READER = 21;
 
 async function signInAsReader(page: Page): Promise<void> {
   await page.goto(`${BASE}/admin/`);
@@ -109,7 +115,7 @@ async function signInAsReader(page: Page): Promise<void> {
   await expect(page.locator('.sidebar-link.active')).toBeVisible();
 }
 
-test('a reader is offered twenty sections of thirty, and the count is read off the screen', async ({
+test('a reader is offered twenty-one sections of thirty-three, and the count is read off the screen', async ({
   page,
 }) => {
   await signInAsReader(page);
