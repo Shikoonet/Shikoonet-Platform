@@ -4759,8 +4759,19 @@ app.post('/api/v1/payment-claims/:id/change-account', async (c) => {
     if (!account.active) return c.json({ ok: false, error: 'account_inactive' }, 409);
   }
   const now = Date.now();
+  // The card follows the account — the review screen shows `card_digits`
+  // beside the account, and a card left over from the previous account
+  // was read as the card of the new one (Sam, 2026-09-20). One ACTIVE card
+  // on the new account names it; none or several, and the claim names no
+  // card rather than a guessed one.
   await c.env.DB.prepare(
-    `UPDATE payment_claims SET target_financial_account_id = ?2, updated_at = ?3 WHERE id = ?1`,
+    `UPDATE payment_claims
+        SET target_financial_account_id = ?2,
+            card_digits = (SELECT min(card_digits) FROM payment_cards
+                            WHERE financial_account_id = ?2 AND status = 'ACTIVE'
+                           HAVING count(*) = 1),
+            updated_at = ?3
+      WHERE id = ?1`,
   )
     .bind(claimId, body.accountId, now)
     .run();
