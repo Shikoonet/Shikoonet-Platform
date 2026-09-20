@@ -34,9 +34,8 @@ import {
 } from '@shikoo/contracts';
 import { createLogger } from '@shikoo/domain';
 import { enqueue } from './notify.js';
-import { encode } from './callback.js';
 import { report } from './reports.js';
-import { loadShopSettings } from './settings.js';
+import { loadShopSettings, settingText } from './settings.js';
 import * as menu from './menu.js';
 import { withoutQuotedPrice } from './money.js';
 
@@ -134,6 +133,15 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
   const rules = (await loadRetentionRules(db)).filter((r) => r.enabled);
   if (rules.length === 0) return 0;
   const shop = await loadShopSettings(db);
+  // The bot's own handle, for the deep link under every message — the same
+  // row the referral link reads. Without it there is no link to press, so
+  // the sweep says so once and sends nothing: a retention message whose
+  // button does nothing is worse than no message.
+  const botUsername = await settingText(db, 'bot', 'username');
+  if (botUsername === null) {
+    log.warn('retention.no_bot_username', {});
+    return 0;
+  }
 
   let total = 0;
   for (const rule of rules) {
@@ -163,17 +171,22 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
             days: String(Math.abs(days)),
             service: withoutQuotedPrice(row.plan_name_at_sale),
             username: row.remote_username ?? '',
-            code: code ?? '',
+            // Tap-to-copy, like the card number on an invoice (#322). Only the
+            // bot's own `<code>` passes `toTelegramHtml`; the operator's text
+            // around it is escaped like any other, so nothing they type can
+            // open a tag.
+            code: code === null ? '' : `<code>${code}</code>`,
             renewButton: menu.renewButtonLabel(),
           }),
-          // One button, and it opens THIS service's renewal — `rnw <id>` is
-          // the same callback the «تمدید سرویس» list uses, so the plans
-          // screen, the discount prompt and the invoice are all the ordinary
-          // ones. Sam, 2026-09-20: the message must not just name the button,
-          // it must be one. An expired service is still renewable (`owned.ts`
-          // RENEWABLE does not ask about the date), so the «days after» case
-          // lands on the same screen.
-          keyboard: [[{ text: menu.renewButtonLabel(), callback_data: encode('rnw', row.id) }]],
+          // One green button, and it is a LINK, not a callback. Sam,
+          // 2026-09-20: pressing it must open the bot and start it — a
+          // callback only works inside a chat the customer already has open,
+          // and the customer this message is for may have closed it weeks ago.
+          // `/start rnw_<id>` lands on this service's renewal screen through
+          // `handleCallback`, so ownership and every other guard are a real
+          // press's. `success` is Telegram's green (Bot API 9.4); an old client
+          // draws its default and the label is the same.
+          keyboard: [[renewLink(botUsername, row.id)]],
         });
         // «📝 گزارش اطلاع رسانی ها», like every other notice a sweep sends.
         if (ok) {
@@ -198,6 +211,15 @@ export async function remindToRenew(db: D1Database, now: number = Date.now()): P
     total += sent;
   }
   return total;
+}
+
+/** «تمدید سرویس», green, opening the bot on this service's renewal. */
+export function renewLink(botUsername: string, subscriptionId: number) {
+  return {
+    text: menu.renewButtonLabel(),
+    url: `https://t.me/${botUsername}?start=rnw_${subscriptionId}`,
+    style: 'success' as const,
+  };
 }
 
 /**

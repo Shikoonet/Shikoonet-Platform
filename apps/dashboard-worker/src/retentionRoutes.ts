@@ -151,6 +151,11 @@ export function registerRetentionRoutes(
     const setting = (key: string): unknown => (rows ?? []).find((r) => r.key === key)?.value;
     const chatId = chatOf(setting('Channel_Report'));
     if (chatId === null) return c.json({ ok: false, error: 'no_report_group' }, 409);
+    const botUsername = await db
+      .prepare(`SELECT value FROM settings WHERE scope = 'bot' AND key = 'username'`)
+      .first<{ value: unknown }>();
+    const handle = typeof botUsername?.value === 'string' ? botUsername.value.trim() : '';
+    if (handle === '') return c.json({ ok: false, error: 'no_bot_username' }, 409);
 
     const sample = await db
       .prepare(
@@ -168,14 +173,15 @@ export function registerRetentionRoutes(
       days: String(rule.daysBefore > 0 ? rule.daysBefore : rule.daysAfter),
       service: sample ? withoutQuotedPrice(sample.plan_name_at_sale) : 'نمونه',
       username: sample?.remote_username ?? 'sample_user',
-      code: code?.code ?? '',
+      // The same `<code>` the bot sends, so the group sees it tap-to-copy.
+      code: code === null ? '' : `<code>${code.code}</code>`,
       renewButton: 'تمدید سرویس',
     });
-    const body = [
-      `🧪 تست قانون «${rule.name}» — به هیچ مشتری‌ای نرفته. زیر پیام واقعی دکمهٔ «تمدید سرویس» می‌آید.`,
-      '',
-      text,
-    ].join('\n');
+    const body = [`🧪 تست قانون «${rule.name}» — به هیچ مشتری‌ای نرفته.`, '', text].join('\n');
+    // The same green link the customer gets, minus the service id: `/start
+    // renew` opens the presser's own list, so an admin trying it in the group
+    // sees the screen rather than «سرویس پیدا نشد» about somebody else's.
+    const keyboard = [[{ text: 'تمدید سرویس', url: `https://t.me/${handle}?start=renew`, style: 'success' }]];
 
     const now = Date.now();
     await db
@@ -183,13 +189,19 @@ export function registerRetentionRoutes(
         // The same table the bot flushes, as `alert()` writes it. The key
         // carries the clock on purpose: each press of «تست» is its own event
         // and the operator expects one message per press.
-        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, message_thread_id)
-         VALUES (?1, ?2, ?3, ?4) ON CONFLICT (dedupe_key) DO NOTHING`,
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, message_thread_id, reply_markup)
+         VALUES (?1, ?2, ?3, ?4, ?5::jsonb) ON CONFLICT (dedupe_key) DO NOTHING`,
       )
-      .bind(`retention-test:${rule.key}:${now}`, chatId, body, topicOf(setting(reportTopicKey('reportcron'))))
+      .bind(
+        `retention-test:${rule.key}:${now}`,
+        chatId,
+        body,
+        topicOf(setting(reportTopicKey('reportcron'))),
+        JSON.stringify(keyboard),
+      )
       .run();
 
-    return c.json({ ok: true, text });
+    return c.json({ ok: true, text: text.replace(/<\/?code>/g, '') });
   });
 
   app.post('/api/v1/admin/retention/rules', async (c) => {
