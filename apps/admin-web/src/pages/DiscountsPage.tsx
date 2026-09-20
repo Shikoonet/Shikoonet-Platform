@@ -12,11 +12,16 @@
  * refuses that with a 409. For those, «باطل کردن» sets the expiry to now, which
  * is what the bot already treats as spent.
  *
+ * Bulk delete (#383) is the same rule, many times: only unused codes get a
+ * checkbox, one confirm covers the batch, and a code the server still refuses
+ * is reported, not fatal — the rest of the batch goes through.
+ *
  * Amounts are typed and shown in Toman; the API speaks integer Rial.
  */
 
 import { useEffect, useState } from 'react';
 import { CustomerLink } from '../CustomerLink.js';
+import { BulkSelectionToolbar } from '../hub/historyRangeNav.js';
 import { api, ApiError, type DiscountItem, type RedemptionRow } from '../api.js';
 import { count, dateTime, endOfTehranDay, toman } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
@@ -96,6 +101,7 @@ export function DiscountsPage() {
   const [loading, setLoading] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   async function load(toPage = page) {
     setLoading(true);
@@ -109,6 +115,7 @@ export function DiscountsPage() {
       });
       setRows(d.items);
       setTotal(d.total);
+      setSelected(new Set());
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -147,6 +154,35 @@ export function DiscountsPage() {
     }
   }
 
+  async function removeSelected() {
+    const picked = rows.filter((r) => selected.has(String(r.id)));
+    if (picked.length === 0) return;
+    if (
+      !window.confirm(
+        `${count(picked.length)} کد حذف شود؟ هیچ‌کدام استفاده نشده‌اند و برنمی‌گردند.`,
+      )
+    ) {
+      return;
+    }
+    // One at a time, so every delete gets its own audit row in order and a
+    // refusal (409 for a code that gained a redemption since the list loaded)
+    // skips that code instead of ending the batch.
+    const failed: string[] = [];
+    for (const d of picked) {
+      try {
+        await api.deleteDiscount(d.id);
+      } catch (e) {
+        failed.push(`${d.code} (${message(e)})`);
+      }
+    }
+    await load();
+    if (failed.length > 0) {
+      setErr(
+        `${count(picked.length - failed.length)} کد حذف شد؛ ${count(failed.length)} کد حذف نشد: ${failed.join('، ')}`,
+      );
+    }
+  }
+
   async function toggle(d: DiscountItem) {
     // No confirm. Pausing is the reversible one — it is the button somebody
     // reaches for BECAUSE they are unsure — and a dialog in front of it would
@@ -161,6 +197,8 @@ export function DiscountsPage() {
 
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const open = rows.find((r) => r.id === openId) ?? null;
+  // Only what the server would accept — see the file header.
+  const deletableIds = rows.filter((r) => r.used === 0).map((r) => String(r.id));
 
   return (
     <>
@@ -243,10 +281,33 @@ export function DiscountsPage() {
           </p>
         )}
 
+        {deletableIds.length > 0 && (
+          <BulkSelectionToolbar
+            itemIds={deletableIds}
+            selectedIds={selected}
+            onChangeSelected={setSelected}
+            actions={
+              selected.size > 0 ? (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger"
+                  onClick={() => void removeSelected()}
+                  {...w}
+                >
+                  حذف انتخاب‌شده‌ها ({count(selected.size)})
+                </button>
+              ) : (
+                <span className="muted">فقط کدهایی که کسی استفاده نکرده انتخاب می‌شوند.</span>
+              )
+            }
+          />
+        )}
+
         <div className="table-wrap">
           <table className="app-table">
             <thead>
               <tr>
+                <th />
                 <th>کد</th>
                 <th>نوع</th>
                 <th>مقدار</th>
@@ -261,13 +322,28 @@ export function DiscountsPage() {
             <tbody>
               {rows.length === 0 && !loading && (
                 <tr>
-                  <td className="empty" colSpan={9}>
+                  <td className="empty" colSpan={10}>
                     کدی با این جست‌وجو پیدا نشد.
                   </td>
                 </tr>
               )}
               {rows.map((d) => (
                 <tr key={d.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      aria-label={`انتخاب ${d.code}`}
+                      checked={selected.has(String(d.id))}
+                      disabled={d.used > 0}
+                      title={d.used > 0 ? 'استفاده شده — به‌جای حذف، باطل کن.' : undefined}
+                      onChange={(e) => {
+                        const next = new Set(selected);
+                        if (e.target.checked) next.add(String(d.id));
+                        else next.delete(String(d.id));
+                        setSelected(next);
+                      }}
+                    />
+                  </td>
                   <td className="ltr">{d.code}</td>
                   <td>{KIND_FA[d.kind] ?? d.kind}</td>
                   <td>{value(d)}</td>

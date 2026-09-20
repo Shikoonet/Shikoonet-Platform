@@ -91,3 +91,61 @@ describe('a code says which family it belongs to', () => {
     expect(screen.getByTestId('kind-hint').textContent).toContain('۱۲ گیگ');
   });
 });
+
+describe('bulk delete (#383)', () => {
+  it('one confirm, one DELETE per picked code, a refusal is reported not fatal', async () => {
+    const rows = [
+      code(1, 'PERCENT_OFF', { percent: 10 }),
+      code(2, 'PERCENT_OFF', { percent: 20 }),
+      code(3, 'PERCENT_OFF', { percent: 30, used: 4, state: 'USED_UP' }),
+    ];
+    const deletes: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') {
+          deletes.push(url);
+          // The second one gained a redemption since the list loaded.
+          if (url.endsWith('/discounts/2')) {
+            return new Response(
+              JSON.stringify({ ok: false, error: 'has_redemptions', detail: '1' }),
+              { status: 409, headers: { 'content-type': 'application/json' } },
+            );
+          }
+          return new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ ok: true, total: rows.length, items: rows }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+
+    render(
+      <RoleProvider role="ADMIN">
+        <DiscountsPage />
+      </RoleProvider>,
+    );
+    await screen.findByText('C1');
+
+    // A used code cannot be picked; «select all» skips it.
+    const box = (c: string) => screen.getByLabelText(`انتخاب ${c}`) as HTMLInputElement;
+    expect(box('C3').disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText('انتخاب همهٔ ردیف‌ها'));
+    expect(box('C1').checked).toBe(true);
+    expect(box('C2').checked).toBe(true);
+    expect(box('C3').checked).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'حذف انتخاب‌شده‌ها (۲)' }));
+    await screen.findByText(/حذف نشد/);
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(deletes.map((u) => u.slice(u.lastIndexOf('/') + 1))).toEqual(['1', '2']);
+    expect(screen.getByText(/حذف نشد/).textContent).toContain('۱ کد حذف شد؛ ۱ کد حذف نشد: C2');
+  });
+});
