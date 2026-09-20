@@ -3061,7 +3061,6 @@ export const api = {
   retention() {
     return req<{
       ok: boolean;
-      installed: boolean;
       items: RetentionRuleRow[];
       panels: { id: number; name: string; baseUrl: string | null; status: string }[];
       codes: RetentionCodeOption[];

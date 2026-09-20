@@ -96,7 +96,6 @@ export function registerRetentionRoutes(
 
     return c.json({
       ok: true,
-      installed: row !== null,
       items,
       panels: panels ?? [],
       codes: codes ?? [],
@@ -142,16 +141,21 @@ export function registerRetentionRoutes(
       .prepare(`SELECT value FROM settings WHERE scope = ?1 AND key = ?2`)
       .bind(RETENTION_RULES.scope, RETENTION_RULES.key)
       .first<{ value: unknown }>();
-    // Migration 0084 inserts the row. Its absence is worth saying rather than
-    // hiding behind an INSERT.
-    if (!before) return c.json({ ok: false, error: 'setting_not_installed' }, 404);
 
+    // Upsert, like `saveMessageTemplates` and unlike `cronRoutes`. A cron key
+    // is one of a fixed registry the bot reads by name, so a missing row means
+    // a missing migration and the route says so. This row is the whole list:
+    // absent and empty read the same to the bot (`loadRetentionRules`), and
+    // `seed:sim` truncates `settings` to three keys, so the browser walk in
+    // CI would otherwise open this screen to an error box on every run.
     await db
       .prepare(
-        `UPDATE settings SET value = ?1::jsonb, updated_at = now(), updated_by = ?2
-          WHERE scope = ?3 AND key = ?4`,
+        `INSERT INTO settings (scope, key, value, updated_by)
+         VALUES (?1, ?2, ?3::jsonb, ?4)
+         ON CONFLICT (scope, key) DO UPDATE
+           SET value = excluded.value, updated_at = now(), updated_by = excluded.updated_by`,
       )
-      .bind(JSON.stringify(items), ident.email, RETENTION_RULES.scope, RETENTION_RULES.key)
+      .bind(RETENTION_RULES.scope, RETENTION_RULES.key, JSON.stringify(items), ident.email)
       .run();
 
     await audit(
@@ -160,7 +164,7 @@ export function registerRetentionRoutes(
       'settings.update',
       'setting',
       `${RETENTION_RULES.scope}:${RETENTION_RULES.key}`,
-      before.value,
+      before?.value ?? null,
       items,
       'retention',
     );

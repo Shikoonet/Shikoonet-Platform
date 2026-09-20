@@ -44,9 +44,6 @@ function message(e: unknown): string {
     if (e.code === 'unusable_code') {
       return 'کد انتخاب‌شده برای تمدید قابل استفاده نیست — غیرفعال است یا «فقط خرید اول» دارد.';
     }
-    if (e.code === 'setting_not_installed') {
-      return 'این بخش روی این دیتابیس نصب نشده — مهاجرت ۰۰۸۴ اجرا نشده است.';
-    }
     return e.detail ?? e.code;
   }
   return e instanceof Error ? e.message : String(e);
@@ -81,7 +78,6 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
   const [draft, setDraft] = useState<RetentionRule[] | null>(null);
   const [panels, setPanels] = useState<{ id: number; name: string; baseUrl: string | null }[]>([]);
   const [codes, setCodes] = useState<RetentionCodeOption[]>([]);
-  const [installed, setInstalled] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -93,7 +89,6 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
       setDraft(res.items.map(({ lastActed: _l, funnel: _f, ...rule }) => rule));
       setPanels(res.panels);
       setCodes(res.codes);
-      setInstalled(res.installed);
     } catch (e) {
       setErr(message(e));
     }
@@ -155,7 +150,7 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button type="button" className="btn" onClick={add} disabled={disabled || !installed} title={w.title}>
+          <button type="button" className="btn" onClick={add} disabled={disabled} title={w.title}>
             + افزودن قانون
           </button>
           <button
@@ -171,12 +166,9 @@ export function RetentionPage({ onGo }: { onGo?: (page: PageId) => void }) {
       </div>
 
       {err && <div className="alert alert-error">{err}</div>}
-      {!installed && (
-        <div className="alert alert-error">این بخش روی این دیتابیس نصب نشده — مهاجرت ۰۰۸۴ اجرا نشده است.</div>
-      )}
 
       <section className="cron-list">
-        {(draft ?? []).length === 0 && installed && (
+        {(draft ?? []).length === 0 && (
           <div className="card page-head__sub">هنوز قانونی ندارید. با «افزودن قانون» شروع کنید.</div>
         )}
         {(draft ?? []).map((rule, i) => {

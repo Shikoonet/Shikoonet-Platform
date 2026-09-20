@@ -7,8 +7,11 @@
 -- JSON array here, the same shape as ('shop','review_messages') in 0076: a
 -- small list, edited whole on one screen, read once a cycle by the bot.
 --
--- Inserted empty, because the settings route refuses to invent rows (0057)
--- and an absent row must read as «migration not run», not as «no rules».
+-- Inserted empty so a fresh database shows the screen with its row in
+-- place. The route upserts rather than refusing an absent row (unlike the
+-- cron switches in 0057): the bot reads absent and empty the same way, and
+-- `seed:sim` truncates `settings` to three keys, so a refusal would put an
+-- error box on the screen in every CI browser walk.
 BEGIN;
 
 INSERT INTO settings (scope, key, value, updated_at, updated_by)

@@ -91,12 +91,10 @@ describe('reading', () => {
     const res = await app.request('/api/v1/admin/retention', {}, envAs(REVIEWER));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      installed: boolean;
       items: { key: string; codeId: number; funnel: { sent: number }; lastActed: unknown }[];
       panels: { id: number }[];
       codes: { id: number; firstPurchaseOnly: boolean }[];
     };
-    expect(body.installed).toBe(true);
     expect(body.items.map((i) => i.key)).toEqual(['r_test1']);
     expect(body.items[0]?.funnel).toEqual({ sent: 0, usedCode: 0, stayed: 0, left: 0, pending: 0 });
     expect(body.items[0]?.lastActed).toBeNull();
@@ -146,10 +144,16 @@ describe('writing', () => {
     expect(missing.status).toBe(400);
   });
 
-  it('says so when the migration has not run', async () => {
+  it('creates the row when nothing installed it — an absent list is an empty one', async () => {
+    // `seed:sim` truncates `settings`; the browser walk opens this screen on
+    // that database. The bot reads absent and empty the same way.
     await baseEnv.DB.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'retention_rules'`).run();
-    const res = await post(ADMIN, [rule()]);
-    expect(res.status).toBe(404);
-    expect(((await res.json()) as { error: string }).error).toBe('setting_not_installed');
+    const read = await app.request('/api/v1/admin/retention', {}, envAs(REVIEWER));
+    expect(((await read.json()) as { items: unknown[] }).items).toEqual([]);
+    expect((await post(ADMIN, [rule()])).status).toBe(200);
+    const row = await baseEnv.DB.prepare(
+      `SELECT value FROM settings WHERE scope = 'bot' AND key = 'retention_rules'`,
+    ).first<{ value: unknown[] }>();
+    expect(row?.value).toHaveLength(1);
   });
 });
