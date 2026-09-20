@@ -22,9 +22,10 @@ import type { EventSink, LogRecord } from './log.js';
 
 export interface EventSinkOptions {
   /**
-   * Where alerts go. Unset means no Telegram alerting — the rows are still
-   * written, and that is the correct behaviour for a box with no admin
-   * channel, which is every developer machine.
+   * Where alerts go when the shop has not set `Channel_Report` — a fallback,
+   * not the address. Unset AND no row means no Telegram alerting — the events
+   * are still written, and that is the correct behaviour for a box with no
+   * admin channel, which is every developer machine.
    */
   alertChatId?: number | null;
 }
@@ -83,7 +84,7 @@ export function createPostgresEventSink(db: D1Database, options: EventSinkOption
     // unreachable chat, which dies and queues a third — one more row per
     // backoff chain, for ever. That one stays in `app_events` alone.
     const deadAlert = record.evt === 'notify.dead' && record.fields['kind'] === 'alert';
-    if (alertChatId !== null && record.level === 'error' && !deadAlert) {
+    if (record.level === 'error' && !deadAlert) {
       void alert(db, alertChatId, record).catch((err: unknown) => {
         console.error('[log] alert enqueue failed', record.evt, err);
       });

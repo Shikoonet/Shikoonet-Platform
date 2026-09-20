@@ -138,29 +138,42 @@ function topicOf(value: unknown): number | null {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
+/** A chat id as the settings row holds it — a large negative integer, never zero. */
+function chatOf(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n !== 0 ? n : null;
+}
+
 /**
  * Queue one alert. Returns whether a row was written — `false` means an
- * identical alert is already queued for this hour, which is the intended
- * outcome, not a failure.
+ * identical alert is already queued for this hour, or there is nowhere to
+ * send it, which are both the intended outcome, not a failure.
  *
  * Takes `db` rather than a transaction: an alert is about something that has
  * already gone wrong, and it must not be able to roll back the handling of it.
  *
- * The topic is «❌ گزارش خطا ها», read from `settings` here rather than
- * handed in: the workers have no settings cache, so until #382 their alerts
- * landed in the group's General while the bot's went to the topic. One read
- * on a path that is already writing a row is the same cost as before.
+ * Where it goes is the shop's own `Channel_Report` — the group every other
+ * report goes to — with `fallbackChatId` (`ALERT_CHAT_ID`) only for a database
+ * that has no row. Both, and the «❌ گزارش خطا ها» topic, are read from
+ * `settings` here rather than handed in: the workers have no settings cache,
+ * and until 2026-09-20 the chat came from the environment alone, so a shop
+ * that had made its group in the dashboard kept getting the topic id of that
+ * group attached to the owner's private chat from the boot-time variable —
+ * which Telegram refuses, so the outbox row died and no error reached anyone.
  */
 export async function alert(
   db: D1Database | D1DatabaseSession,
-  chatId: number,
+  fallbackChatId: number | null,
   record: LogRecord,
   atMs: number = Date.now(),
 ): Promise<boolean> {
-  const topic = await db
-    .prepare(`SELECT value FROM settings WHERE scope = 'bot' AND key = ?1`)
+  const rows = await db
+    .prepare(`SELECT key, value FROM settings WHERE scope = 'bot' AND key IN ('Channel_Report', ?1)`)
     .bind(reportTopicKey('errorreport'))
-    .first<{ value: unknown }>();
+    .all<{ key: string; value: unknown }>();
+  const setting = (key: string): unknown => rows.results.find((r) => r.key === key)?.value;
+  const chatId = chatOf(setting('Channel_Report')) ?? fallbackChatId;
+  if (chatId === null) return false;
   const written = await db
     .prepare(
       // The same table `apps/bot/src/notify.ts` enqueues into and flushes.
@@ -178,7 +191,7 @@ export async function alert(
       alertDedupeKey(record.evt, record.evt === 'notify.dead' ? undefined : record.ref, atMs),
       chatId,
       alertText(record, atMs),
-      topicOf(topic?.value),
+      topicOf(setting(reportTopicKey('errorreport'))),
     )
     .run();
   return written.meta.changes > 0;
