@@ -65,7 +65,8 @@ function startUpdate(updateId: number, telegramId: number): TelegramUpdate {
 async function orderRows(userId: number) {
   const rows = await db
     .prepare(
-      `SELECT public_id, kind, plan_id, quantity, unit_price_irr, discount_irr, total_irr, status
+      `SELECT public_id, kind, plan_id, plan_name_at_sale, quantity, unit_price_irr, discount_irr,
+              total_irr, status
          FROM orders WHERE user_id = ?1 ORDER BY id`,
     )
     .bind(userId)
@@ -73,6 +74,7 @@ async function orderRows(userId: number) {
       public_id: string;
       kind: string;
       plan_id: number;
+      plan_name_at_sale: string | null;
       quantity: number;
       unit_price_irr: number;
       discount_irr: number;
@@ -162,6 +164,10 @@ describe('walking from /start to an order', () => {
     expect(orders[0]).toMatchObject({
       kind: 'NEW_PURCHASE',
       plan_id: plan,
+      // The plan's name, copied onto the order: a tier change later renames
+      // the service and a catalogue edit renames the plan, and this row must
+      // go on saying what was bought (0089).
+      plan_name_at_sale: '۱ماهه - ۵۰ گیگ - چند کاربر',
       quantity: 1,
       unit_price_irr: 1_950_000,
       discount_irr: 0,

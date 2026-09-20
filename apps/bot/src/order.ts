@@ -466,11 +466,16 @@ async function place(
   // they were printed with.
   const row = await tx
     .prepare(
+      // `plan_name_at_sale` is the plan's name as of this moment, and the
+      // order keeps it: a tier change rewrites the SERVICE's name and a
+      // catalogue edit rewrites the plan's, and the customer's card must
+      // still say what this order bought (0089).
       `INSERT INTO orders
-         (public_id, user_id, kind, plan_id, target_subscription_id, quantity,
+         (public_id, user_id, kind, plan_id, plan_name_at_sale, target_subscription_id, quantity,
           unit_price_irr, discount_irr, total_irr, status, expires_at, username_text,
           bonus_volume_gb)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8, 'AWAITING_PAYMENT',
+       VALUES (?1, ?2, ?3, ?4, (SELECT name FROM product_plans WHERE id = ?4), ?5, ?9, ?6, ?7, ?8,
+               'AWAITING_PAYMENT',
                now() + make_interval(mins => ${CARD_HOLD_MINUTES_SQL}), ?10, ?11)
        RETURNING id, public_id, total_irr, expires_at`,
     )

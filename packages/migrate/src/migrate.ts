@@ -1108,6 +1108,7 @@ async function migrateInvoiceOrders(ctx: Ctx): Promise<number> {
       'public_id',
       'user_id',
       'kind',
+      'plan_name_at_sale',
       'quantity',
       'unit_price_irr',
       'discount_irr',
@@ -1141,6 +1142,9 @@ async function migrateInvoiceOrders(ctx: Ctx): Promise<number> {
           `inv-${r.id_invoice}`,
           u,
           'NEW_PURCHASE',
+          // The invoice's own name, on the order itself: the service made
+          // from it is renamed by a tier change, the order is not (0089).
+          r.name_product || null,
           1,
           amount,
           0,
