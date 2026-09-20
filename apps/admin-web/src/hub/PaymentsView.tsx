@@ -76,6 +76,7 @@ import {
   type ResellerItem,
   type AccountRefLike,
   reconcileNote,
+  actionErrorText,
 } from './paymentReview.js';
 import { FulfilWithoutPaymentModal } from './FulfilWithoutPaymentModal.js';
 
@@ -579,8 +580,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
       body: JSON.stringify(body),
     });
     if (!r.ok) {
-      const j = (await r.json().catch(() => ({}))) as { error?: string };
-      throw new Error(j.error ?? `${r.status}`);
+      const j = (await r.json().catch(() => ({}))) as Parameters<typeof actionErrorText>[0];
+      throw new Error(j.error === undefined ? `${r.status}` : actionErrorText(j, reviewing));
     }
     closeReview();
     cache.refetch(queryKey, QK.suggested, QK.today);

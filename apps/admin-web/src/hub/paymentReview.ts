@@ -613,6 +613,34 @@ export function reopenBlockedReason(item: PaymentItem): string | null {
  * auto-match window refuses them by construction (#134). The row says so
  * instead of leaving the operator to guess.
  */
+/**
+ * What a refused action means, in a sentence the operator can act on.
+ *
+ * The routes answer with a code, and until 2026-09-20 the panel showed the
+ * code: an operator read `transaction_already_consumed` on a claim whose
+ * customer had placed two orders and paid once, and could not tell that from
+ * the screen. The consumer's order is on the reply now, so the sentence can
+ * say whose money it is — and the next move is different when it is this
+ * same customer's other order (a duplicate to reject) and when it is a
+ * stranger's (a wrong match to revert first).
+ */
+export function actionErrorText(
+  body: { error?: string; consumedBy?: { orderId: string; telegramUserId: string | null } },
+  item: Pick<PaymentItem, 'telegramUserId'> | null,
+): string {
+  const code = body.error ?? 'action_failed';
+  if (code === 'transaction_already_consumed') {
+    const by = body.consumedBy;
+    if (!by) return 'این واریزی قبلاً خرج سفارش دیگری شده — یک واریزی فقط یک سفارش را تایید می‌کند.';
+    const sameCustomer =
+      item?.telegramUserId != null && by.telegramUserId != null && item.telegramUserId === by.telegramUserId;
+    return sameCustomer
+      ? `این واریزی قبلاً خرج سفارش ${by.orderId} از همین مشتری شده — سرویسش را روی آن گرفته؛ این سفارش تکراری است، «بدون واریز بانکی» ردش کن.`
+      : `این واریزی قبلاً خرج سفارش ${by.orderId} (مشتری ${by.telegramUserId ?? 'نامشخص'}) شده — اگر آن تایید اشتباه بوده، اول آن سفارش را برگردان، بعد این‌جا تخصیص بده.`;
+  }
+  return code;
+}
+
 export function reconcileNote(item: PaymentItem): string | null {
   if (item.fulfilledAt == null || item.reconciledAt != null) return null;
   switch (item.suspectReason) {
