@@ -309,6 +309,16 @@ export async function ingest(
   // by shape. This line is what makes a new bank, or a new withdrawal shape
   // from an old one, visible the day it arrives instead of from the ledger a
   // week later (Keshavarzi, 2026-09-19).
+  // The bank saying its SMS service is running out — Melli, 2026-09-21, at
+  // 80% of a 300-text package, «با اتمام بسته فعلی سیستم ارسال پیامکی شما
+  // غیرفعال خواهد شد». When that package ends, every deposit on the account
+  // goes unseen and nothing here would notice. An error, so it reaches the
+  // reports group like any other fault (#382); the fields are the parser's
+  // evidence — bank, percent, package — never the body.
+  if (!wasDuplicate && result.parserId === 'bank-service-notice') {
+    log.error('sms.service_notice', { ref: finalEventId, sender: raw.sender, ...result.evidence });
+  }
+
   if (!wasDuplicate && !isRedactable) {
     const parserId = result.parserId ?? null;
     const generic = parserId !== null && parserId.startsWith('generic-');

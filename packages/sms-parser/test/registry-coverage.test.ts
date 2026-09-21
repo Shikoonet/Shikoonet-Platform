@@ -102,6 +102,17 @@ const FIXTURES: readonly Fixture[] = [
     digitVariants: false,
   },
   {
+    parserId: 'bank-service-notice',
+    label: 'Melli SMS-package quota notice (2026-09-21)',
+    body: [
+      'بانک ملی ایران',
+      'مشتری گرامی سرویس پیام کوتاه شماره حساب 0123456789012 شما تا تاریخ 1405/06/30 16:36:15 به میزان 80.0 درصد از حجم بسته پیامکی "شارژ 300 پیامکی" خود را استفاده کرده اید.',
+      'شما دارای بسته رزرو نیستید و گزینه شارژ اتوماتیک را نیز انتخاب نکرده اید و با اتمام بسته فعلی سیستم ارسال پیامکی شما غیرفعال خواهد شد',
+    ].join('\n'),
+    expect: { classification: 'IGNORED', amountIrr: null },
+    digitVariants: false,
+  },
+  {
     parserId: 'shahr-credit-v1',
     label: 'Bank Shahr credit',
     body: [
@@ -280,13 +291,16 @@ describe('every registered parser has a fixture', () => {
     // is checked, rather than being recounted by hand into a document.
     // Fifteen since 2026-08-29: `mellat-credit-v1` joined the named banks.
     // Sixteen since 2026-09-19: `keshavarzi-v1`, for the same reason as Mellat.
-    expect(REGISTRY.length).toBe(16);
+    // Seventeen since 2026-09-21: `bank-service-notice`, the bank talking
+    // about its own SMS service — filed, not read for money, and raised.
+    expect(REGISTRY.length).toBe(17);
 
     // And the ids in order, so a reordering — which changes which parser wins
     // a body both could claim — is a visible diff rather than a silent one.
     expect(REGISTRY.map((p) => p.id)).toEqual([
       'generic-otp',
       'generic-promo',
+      'bank-service-notice',
       'shahr-credit-v1',
       'saman-credit-v1',
       'melli-transfer-v1',
