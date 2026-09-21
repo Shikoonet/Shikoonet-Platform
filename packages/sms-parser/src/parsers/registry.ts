@@ -2,6 +2,7 @@ import type { Classification, NormalizedSms, ParseResult } from '@shikoo/contrac
 import { type SmsParser, unmatched } from './types.js';
 import { otpParser } from './otp.js';
 import { promoParser } from './promo.js';
+import { serviceNoticeParser } from './notice.js';
 import { parsianParser } from './parsian.js';
 import { gardeshgariCreditParser } from './gardeshgari.js';
 import { shahrCreditParser } from './shahr.js';
@@ -22,6 +23,10 @@ import { normalizeText } from '../normalize.js';
 const ORDER: SmsParser[] = [
   otpParser, // OTP MUST win — redact before any other classifier touches the body.
   promoParser,
+  // A bank's notice about its own SMS service (quota, deactivation) — before
+  // the named banks, whose headers it shares, and before anything that could
+  // read «300 پیامکی» as a number worth recording.
+  serviceNoticeParser,
   // Explicit bank parsers — run before the generic regex parsers so a known
   // bank's exact layout is recognised even when the generic keyword search
   // would also fire. Order: shahr → saman → melli → gardeshgari (per
