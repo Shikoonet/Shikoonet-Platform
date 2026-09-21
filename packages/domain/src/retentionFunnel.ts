@@ -46,6 +46,11 @@ export async function retentionFunnel(
   db: D1Database,
   ruleKey: string,
   codeId: number | null,
+  // «Left» and «still pending» are decided against THIS clock, not Postgres's
+  // `now()`: the sweeps that wrote the expiries read `Date.now()`, the tests
+  // pin it, and a funnel on the wall clock passed on 2026-09-20 and went red
+  // at midnight when the fixtures' expiries slipped into the past (rule 5).
+  nowMs: number = Date.now(),
 ): Promise<RetentionFunnel> {
   const row = await db
     .prepare(
@@ -87,16 +92,16 @@ export async function retentionFunnel(
                   AND r.user_id NOT IN (SELECT user_id FROM people))::int AS used_outside,
               (SELECT count(*) FROM people WHERE expires_now > expires_epoch)::int AS stayed,
               (SELECT count(*) FROM people
-                WHERE expires_now <= expires_epoch AND expires_at < now())::int AS left_,
+                WHERE expires_now <= expires_epoch AND expires_at < to_timestamp(?3 / 1000.0))::int AS left_,
               (SELECT count(*) FROM people
-                WHERE expires_now <= expires_epoch AND expires_at >= now())::int AS pending,
+                WHERE expires_now <= expires_epoch AND expires_at >= to_timestamp(?3 / 1000.0))::int AS pending,
               (SELECT count(*) FROM rows WHERE status IN ('PENDING', 'FAILED'))::int AS queued,
               (SELECT count(*) FROM rows WHERE status = 'SENT')::int AS msg_sent,
               (SELECT count(*) FROM rows WHERE status = 'DEAD')::int AS dead,
               (SELECT count(*) FROM rows
                 WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Tehran') AT TIME ZONE 'Asia/Tehran')::int AS today`,
     )
-    .bind(ruleKey, codeId)
+    .bind(ruleKey, codeId, nowMs)
     .first<{
       sent: number;
       used_code: number;
