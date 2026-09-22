@@ -55,7 +55,6 @@ test.use({ baseURL: BASE });
 const READER_SECTIONS = [
   'dashboard',
   'payments',
-  'statistics',
   'today',
   'accounts',
   'banks',

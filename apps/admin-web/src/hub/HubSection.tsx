@@ -1,5 +1,5 @@
 /**
- * The six finance screens, inside the panel.
+ * The five finance screens, inside the panel.
  *
  * This was the payment hub's own `App.tsx` — its own build, its own document,
  * its own tab bar and mobile drawer. All three are gone: the panel's sidebar
@@ -24,7 +24,6 @@ import { TodayView } from './TodayView.js';
 import { DevicesView } from './DevicesView.js';
 import { AccountsView } from './AccountsView.js';
 import { PaymentsView } from './PaymentsView.js';
-import { StatisticsView } from './StatisticsView.js';
 import { BanksView } from './BanksView.js';
 
 /*
@@ -47,7 +46,6 @@ export function HubSection({ section, cache }: { section: HubPageId; cache: Cach
       {section === 'devices' && <DevicesView cache={cache} />}
       {section === 'accounts' && <AccountsView cache={cache} />}
       {section === 'payments' && <PaymentsView cache={cache} />}
-      {section === 'statistics' && <StatisticsView cache={cache} />}
       {section === 'banks' && <BanksView />}
     </div>
   );

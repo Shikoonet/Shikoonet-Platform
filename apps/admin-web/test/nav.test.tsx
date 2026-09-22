@@ -67,9 +67,9 @@ describe('navigation', () => {
     for (const id of ['panels', 'catalog', 'categories', 'discounts', 'stock'] as const) {
       expect(groupOf(id), `${id} belongs with the catalogue`).toBe('کاتالوگ');
     }
-    // The two «آمار» screens name different subjects and must be read side by
-    // side, or the second one reads as a duplicate of the first.
-    expect(groupOf('stats')).toBe(groupOf('statistics'));
+    // «آمار فروشگاه» is a report, so it belongs with the reports — and it is
+    // the only «آمار» left since «آمار مالی» went on 2026-09-21.
+    expect(groupOf('stats')).toBe(groupOf('dashboard'));
 
     // داشبورد still opens the panel.
     expect(NAV[0]!.items[0]!.id).toBe('dashboard');
@@ -90,11 +90,11 @@ describe('navigation', () => {
     // bot has read since «آموزش» was built and nobody could edit: `help_articles`
     // and `client_apps` were changed in the legacy admin panel until 2026-08-16.
     const implemented: PageId[] = [
-      // The six that came from the payment hub on 2026-08-16. They are listed
-      // here for the same reason as the rest: a screen `App` can draw but `NAV`
-      // does not name is a screen nobody can reach, and it looks fine.
+      // The six that came from the payment hub on 2026-08-16, less «آمار مالی»
+      // which left on 2026-09-21. They are listed here for the same reason as
+      // the rest: a screen `App` can draw but `NAV` does not name is a screen
+      // nobody can reach, and it looks fine.
       'payments',
-      'statistics',
       'today',
       'accounts',
       'banks',
@@ -113,8 +113,8 @@ describe('navigation', () => {
       'referrals',
       // «آمار فروشگاه», 2026-08-29. The eighteen figures the PHP bot draws
       // under «آمار کلی ربات», of which the dashboard home had five and none
-      // of its seven periods. Distinct from «آمار مالی» in the پول group:
-      // that one counts bank transactions, this one counts the shop's trade.
+      // of its seven periods. It was the shop-side twin of «آمار مالی», which
+      // counted bank transactions and left the sidebar on 2026-09-21.
       'stats',
       // «ارسال گروهی» — the two actions that reach every customer at once, and
       // the last two of the bot admin panel's twelve permissions to get a web
@@ -251,7 +251,7 @@ describe('the shell', () => {
  * nobody runs while they work.
  */
 describe('a section and its page agree on the name', () => {
-  const HUB: PageId[] = ['payments', 'statistics', 'today', 'accounts', 'banks', 'devices'];
+  const HUB: PageId[] = ['payments', 'today', 'accounts', 'banks', 'devices'];
   const PANEL = ALL.filter((id) => !HUB.includes(id));
 
   const signedIn = () =>

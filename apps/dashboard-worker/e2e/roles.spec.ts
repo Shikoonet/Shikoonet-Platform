@@ -105,7 +105,7 @@ const WITHHELD = [
  * counts, never a name — and the write behind it is ADMIN-only in the route;
  * `write-roles.test.ts` counts it separately.
  */
-const OFFERED_TO_A_READER = 21;
+const OFFERED_TO_A_READER = 20;
 
 async function signInAsReader(page: Page): Promise<void> {
   await page.goto(`${BASE}/admin/`);
@@ -115,7 +115,7 @@ async function signInAsReader(page: Page): Promise<void> {
   await expect(page.locator('.sidebar-link.active')).toBeVisible();
 }
 
-test('a reader is offered twenty-one sections of thirty-three, and the count is read off the screen', async ({
+test('a reader is offered twenty sections of thirty-two, and the count is read off the screen', async ({
   page,
 }) => {
   await signInAsReader(page);
@@ -140,7 +140,7 @@ test('the six payment screens are all there, because reviewing payments is the j
   // reviewer with an account that reviews nothing.
   await signInAsReader(page);
   const sidebar = page.locator('.sidebar-link');
-  for (const label of ['پرداخت‌ها', 'آمار مالی', 'امروز', 'حساب‌ها', 'بانک‌ها', 'دستگاه‌ها']) {
+  for (const label of ['پرداخت‌ها', 'امروز', 'حساب‌ها', 'بانک‌ها', 'دستگاه‌ها']) {
     await expect(sidebar.filter({ hasText: new RegExp(`^${label}$`) })).toHaveCount(1);
   }
 });

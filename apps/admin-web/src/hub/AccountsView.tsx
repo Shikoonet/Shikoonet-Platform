@@ -261,7 +261,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
         // account out of «آمار مالی», stop the bot handing out its cards, and
         // drop it from the review queue, and that last one is why the old
         // wording mattered: an operator looking for it there would not find it.
-        `«${name}» غیرفعال شود؟ از «آمار مالی» بیرون می‌رود، ربات دیگر کارت‌های آن را ` +
+        `«${name}» غیرفعال شود؟ از آمار و ترازها بیرون می‌رود، ربات دیگر کارت‌های آن را ` +
           `به مشتری نمی‌دهد، و از صف بررسی هم برداشته می‌شود. در همین فهرست می‌ماند و ` +
           `با «فعال‌کردن» برمی‌گردد.\n\n` +
           // The third place in this file «امروز» was left bare, and the same
@@ -310,7 +310,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
     const name = acc?.display_name ?? id;
     if (
       !window.confirm(
-        `«${name}» دوباره فعال شود؟ به فهرست حساب‌ها و به «آمار مالی» برمی‌گردد، ` +
+        `«${name}» دوباره فعال شود؟ به فهرست حساب‌ها و به آمار و ترازها برمی‌گردد، ` +
           `و ربات می‌تواند دوباره کارت‌های همین حساب را به مشتری بدهد.`,
       )
     ) {
