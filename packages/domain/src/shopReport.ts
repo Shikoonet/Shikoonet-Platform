@@ -432,16 +432,22 @@ export async function shopReport(
  * From an order `o` to the service it sold, as `p` — shared by every screen
  * that breaks money down by service, so they cannot attribute one order two
  * ways. In order: the order's own plan; for an add-on, the plan of the
- * subscription it was bought for; the plan of the subscription the order
- * created; and last, the one service on that subscription's panel — only
- * when the panel has exactly one. See `salesByService`.
+ * subscription it was bought for; and last, the one service on the panel of
+ * the subscription the order created — only when the panel has exactly one.
+ * See `salesByService`.
+ *
+ * Never the plan of the subscription the order created: a renewal rewrites
+ * `subscriptions.plan_id`, and a tier change (#271) points it at another
+ * service. On production, 2026-09-23, an August Titanium sale was counted
+ * under «وایرگارد ترید» because the customer renewed onto it a month later.
+ * The panel (`provider_id`) is what a renewal leaves alone.
  */
 export const ORDER_PRODUCT_JOINS = `
   LEFT JOIN subscriptions ts ON ts.id = o.target_subscription_id
   LEFT JOIN LATERAL (
-    SELECT s.plan_id, s.provider_id FROM subscriptions s
+    SELECT s.provider_id FROM subscriptions s
      WHERE s.order_id = o.id ORDER BY s.id LIMIT 1) os ON true
-  LEFT JOIN product_plans pl ON pl.id = COALESCE(o.plan_id, ts.plan_id, os.plan_id)
+  LEFT JOIN product_plans pl ON pl.id = COALESCE(o.plan_id, ts.plan_id)
   LEFT JOIN LATERAL (
     SELECT min(p1.id) AS id FROM products p1
      WHERE p1.provider_id = COALESCE(os.provider_id, ts.provider_id)
