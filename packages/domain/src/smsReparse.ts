@@ -163,7 +163,9 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
       // copy is still only in this batch.
       const key = [r.device_id, p.direction, p.amountIrr, p.balanceIrr].join('\u0000');
       const earlier = seen.get(key);
-      if (earlier && smsTs >= earlier.at && smsTs - earlier.at <= REDELIVERY_WINDOW_MS) redeliveryOf = earlier.id;
+      // Either side, like `findRedelivery`: this list is ordered by arrival,
+      // and a re-send can carry an earlier bank clock than the copy before it.
+      if (earlier && Math.abs(smsTs - earlier.at) <= REDELIVERY_WINDOW_MS) redeliveryOf = earlier.id;
       else
         redeliveryOf =
           (await findRedelivery(db, r.device_id, { direction: p.direction, amountIrr: p.amountIrr, balanceIrr: p.balanceIrr }, r.id, smsTs))?.id ?? null;

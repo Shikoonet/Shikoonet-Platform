@@ -43,6 +43,19 @@ async function genericRow(eventId: string, account: string, direction: 'CREDIT' 
   return id;
 }
 
+/** A row a named parser already made — what a re-send must find, whichever side of it arrived first. */
+async function namedRow(eventId: string, account: string, direction: 'CREDIT' | 'DEBIT', amountIrr: number, balanceIrr: number, at: number): Promise<string> {
+  const id = `${P}tx-${++seq}`;
+  await db
+    .prepare(
+      `INSERT INTO transaction_candidates (id, raw_sms_event_id, financial_account_id, direction, amount_irr, balance_irr, status, bank_timestamp, confidence, parser_id, parser_version, parser_evidence_json, processing_disposition, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'APPROVED', ?7, 0.95, 'melli-transfer-v1', '1.0.0', '{}', 'ACTIONABLE', ?7, ?7)`,
+    )
+    .bind(id, eventId, account, direction, amountIrr, balanceIrr, at)
+    .run();
+  return id;
+}
+
 async function purge(): Promise<void> {
   await db.prepare(`DELETE FROM account_opening_balances WHERE financial_account_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM reconciliation_matches WHERE id LIKE ?1`).bind(`${P}%`).run();
@@ -122,6 +135,19 @@ describe('dryRunReparse', () => {
     expect(r.candidates.find((c) => c.eventId === resent)?.redeliveryOf).toBe(first);
   });
 
+  // Production, 2026-09-22: Maskan's copy arrived at 11:19 and nobody read it;
+  // its twin arrived at 12:22 and made the row. Reading the 11:19 text later
+  // must still find that row — a re-send is one movement, not a direction.
+  it('finds the twin even when the row was made by a copy that arrived later', async () => {
+    const unread = NOW - 3 * 3_600_000;
+    const earlier = await raw('Bank Melli', MELLI_BILL, 'generic-balance', 'BALANCE', unread);
+    const later = await raw('+98700717', MELLI_BILL, 'melli-transfer-v1', 'BANK_TRANSACTION', unread + 63 * 60_000);
+    await namedRow(later, MELLI, 'DEBIT', 107_000_000, 26_481_206, unread + 63 * 60_000);
+
+    const r = await dryRunReparse(db, SINCE);
+    expect(r.candidates.find((c) => c.eventId === earlier)?.redeliveryOf).toBe(later);
+  });
+
   it('offers to upgrade a row a generic parser guessed — same movement only', async () => {
     const at = NOW - 3_600_000;
     const guessed = await raw('KESHAVARZI', KESHAVARZI, 'generic-credit', 'BANK_CREDIT', at);
@@ -174,6 +200,23 @@ describe('applyReparse', () => {
     ]);
     const dup = await db.prepare(`SELECT duplicate_of FROM raw_sms_events WHERE id = ?1`).bind(resent).first<{ duplicate_of: string | null }>();
     expect(dup?.duplicate_of).toBe(first);
+  });
+
+  // The half that cost money: the dry-run offers the row, and apply makes it.
+  it('makes no second row when the twin that owns the movement arrived later', async () => {
+    const unread = NOW - 3 * 3_600_000;
+    const earlier = await raw('Bank Melli', MELLI_BILL, 'generic-balance', 'BALANCE', unread);
+    const later = await raw('+98700717', MELLI_BILL, 'melli-transfer-v1', 'BANK_TRANSACTION', unread + 63 * 60_000);
+    await namedRow(later, MELLI, 'DEBIT', 107_000_000, 26_481_206, unread + 63 * 60_000);
+
+    const a = await applyReparse(db, [earlier]);
+    expect(a.made).toEqual([]);
+    expect(a.skipped).toEqual([{ eventId: earlier, why: 'redelivery' }]);
+    const rows = await db
+      .prepare(`SELECT COUNT(*)::int AS n FROM transaction_candidates WHERE financial_account_id = ?1`)
+      .bind(MELLI)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
   });
 
   it('upgrades a guessed row in place: balance and the bank\'s clock, same id, same account, same review', async () => {
