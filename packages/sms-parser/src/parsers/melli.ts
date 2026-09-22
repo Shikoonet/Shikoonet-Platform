@@ -26,12 +26,15 @@ import { maskIdentifier } from '../identifier.js';
 const DAY_MS = 86_400_000;
 const FALLBACK_THRESHOLD_DAYS = 2;
 
-// The label before the signed amount names what the bank did: انتقال, قبض
-// (a bill), خرید / خریداینترنتی (a purchase), برداشت, واریز. Until 2026-09-19
-// only «انتقال» was accepted and every bill or purchase fell to the generic
-// parsers, which made no row of it — two bills and a purchase in one
-// fortnight on production, each a hole in «دفتر بانک».
-const AMOUNT_RE = /^(انتقال|قبض|خرید(?:\s*اینترنتی)?|برداشت|واریز)\s*:?\s*([+-]?)\s*([\d,،\s]+?)\s*([+-]?)\s*$/;
+// The label before the signed amount names what the bank did: انتقال /
+// انتقالی, پایا and ساتنا (the two interbank rails), قبض (a bill), خرید /
+// خریداینترنتی (a purchase), برداشت, واریز. Until 2026-09-19 only «انتقال»
+// was accepted and every bill or purchase fell to the generic parsers, which
+// made no row of it — two bills and a purchase in one fortnight on
+// production, each a hole in «دفتر بانک». On 2026-09-22 the same gap showed
+// again in the words for a transfer out: «پایا:96,000,000-» and two
+// «انتقالی:461,200-». The layout was never the problem; the vocabulary was.
+const AMOUNT_RE = /^(انتقالی|انتقال|پایا|ساتنا|قبض|خرید(?:\s*اینترنتی)?|برداشت|واریز)\s*:?\s*([+-]?)\s*([\d,،\s]+?)\s*([+-]?)\s*$/;
 const ACCOUNT_RE = /^حساب\s*:?\s*(.+)$/;
 const BALANCE_RE = /^مانده\s*:?\s*([\d,،\s]+?)\s*$/;
 // Accept both MM/DD-HH:mm (slash-separated) and MMDD-HH:mm (concatenated).

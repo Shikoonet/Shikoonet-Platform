@@ -35,7 +35,10 @@ const FALLBACK_THRESHOLD_DAYS = 2;
 // or «قبض: -…» — same four lines, only the header word changes. The header is
 // optional-«اینترنت» since 2026-09-19; before that the withdrawals fell to
 // `generic-balance`, which makes no row.
-const AMOUNT_HEADER_RE = /^(?:انتقال(?:\s+اینترنت)?|قبض)\s*:?\s*([+-]?)\s*([\d,،\s]+?)\s*([+-]?)\s*$/;
+// «انتقال خودپرداز» — money moved at an ATM — joined «انتقال اینترنت» on
+// 2026-09-22: a 2,500,000 IRR deposit read as a bare balance and matched to
+// no claim, because only the word in front of the amount was different.
+const AMOUNT_HEADER_RE = /^(?:انتقال(?:\s+(?:اینترنت|خودپرداز))?|قبض)\s*:?\s*([+-]?)\s*([\d,،\s]+?)\s*([+-]?)\s*$/;
 const ACCOUNT_RE = /^حساب\s*:?\s*(.+)$/;
 const BALANCE_RE = /^مانده\s*:?\s*([\d,،\s]+?)\s*$/;
 // MMDD-HH:mm  (Jalali M/D with no slash separator)
