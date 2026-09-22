@@ -295,6 +295,18 @@ describe('«سود و زیان» over one day', () => {
     expect(r.partners.some((p) => p.name === `${P}host`)).toBe(false);
   });
 
+  it('gives an archived partner his draws and no share, so the percents never pass 100', async () => {
+    // Review of #426: archiving kept his 60%, and a new partner could then
+    // take 60% more — the screen would have divided 160% of the profit.
+    await db.prepare(`UPDATE parties SET active = false WHERE id = ?1`).bind(ids.hesam).run();
+    try {
+      const hesam = (await profit()).partners.find((p) => p.partyId === ids.hesam)!;
+      expect([hesam.sharePercent, hesam.shareIrr, hesam.drawnIrr, hesam.balanceIrr]).toEqual([null, 0, 1_000_000, -1_000_000]);
+    } finally {
+      await db.prepare(`UPDATE parties SET active = true WHERE id = ?1`).bind(ids.hesam).run();
+    }
+  });
+
   it('is withheld from a READ_ONLY operator', async () => {
     expect((await call('GET', `${BASE}/profit?range=day&day=${DAY}`, undefined, READER)).status).toBe(403);
     expect((await call('GET', `${BASE}/parties`, undefined, READER)).status).toBe(403);

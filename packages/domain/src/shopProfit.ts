@@ -326,7 +326,10 @@ export async function shopProfit(
 
   const partnerRows = (partners.results ?? [])
     .map((p) => {
-      const sharePercent = p.share_percent === null ? null : Number(p.share_percent);
+      // An archived partner keeps his history, not his cut: `sharesOver` in
+      // the routes lets a new partner take the percent he left, so counting
+      // his too would divide more than all of the profit.
+      const sharePercent = p.share_percent === null || !p.active ? null : Number(p.share_percent);
       const shareIrr = sharePercent === null ? 0 : Math.round((profitIrr * sharePercent) / 100);
       const drawnIrr = Number(p.drawn_irr);
       return { partyId: Number(p.id), name: p.name, sharePercent, shareIrr, drawnIrr, balanceIrr: shareIrr - drawnIrr, active: p.active };
