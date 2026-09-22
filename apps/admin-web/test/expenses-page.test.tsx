@@ -193,7 +193,7 @@ const expenseScopes = vi.fn(async () => ({
     { id: 21, name: 'تیتانیوم', categoryId: 10, providerId: 30, active: true },
     { id: 22, name: 'OPENVPN', categoryId: 11, providerId: 31, active: true },
   ],
-  providers: [{ id: 30, name: 'پنل آلمان' }, { id: 31, name: 'openvpn' }],
+  providers: [{ id: 30, name: 'پنل آلمان' }, { id: 31, name: 'openvpn' }, { id: 32, name: 'سرویس الماس' }],
 }));
 
 vi.mock('../src/api.js', async () => {
@@ -420,6 +420,22 @@ describe('who and what for', () => {
       scope: { level: 'CATEGORY', id: 10 },
       partyId: null,
     });
+  });
+
+  it('says how many services are under each panel, and that a cost on an empty one is spread nowhere', async () => {
+    // Production, 2026-09-22: two panels are both «سرویس الماس» and only one
+    // carries the service. By name alone the two cannot be told apart.
+    await openNew();
+    fireEvent.change(screen.getByLabelText('مالِ کدام'), { target: { value: 'PROVIDER' } });
+    const panel = (await screen.findByLabelText('پنل', { selector: '#entry-scope-id' })) as HTMLSelectElement;
+    expect([...panel.options].map((o) => o.textContent)).toEqual([
+      '— انتخاب کن —',
+      'پنل آلمان (۲ سرویس)',
+      'openvpn (۱ سرویس)',
+      'سرویس الماس (بدون سرویس)',
+    ]);
+    fireEvent.change(panel, { target: { value: '32' } });
+    expect(screen.getByText(/زیر این هیچ سرویسی نیست/)).toBeTruthy();
   });
 
   it('will not send a partner draw without a partner, and offers only partners for one', async () => {

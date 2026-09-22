@@ -2110,9 +2110,17 @@ function RefsFields({
   const choices = parties.filter(
     (p) => (p.active || p.id === refs.partyId) && (!draw || p.roles.includes('PARTNER')),
   );
+  // A category or a panel says how many services are under it. Production,
+  // 2026-09-22: two panels are both named «سرویس الماس» and only one carries
+  // the service, and five panels carry none — picked by name alone, a cost
+  // would land on a panel it cannot be spread from.
+  const under = (n: number) => (n === 0 ? ' (بدون سرویس)' : ` (${count(n)} سرویس)`);
   const options =
     refs.level === 'CATEGORY'
-      ? scopes.categories.map((c) => ({ id: c.id, name: c.name }))
+      ? scopes.categories.map((c) => ({
+          id: c.id,
+          name: `${c.name}${under(scopes.products.filter((p) => p.categoryId === c.id).length)}`,
+        }))
       : refs.level === 'PRODUCT'
         ? scopes.products
             .filter((p) => p.active || p.id === refs.scopeId)
@@ -2121,7 +2129,10 @@ function RefsFields({
               name: `${p.name}${p.categoryId ? ` — ${scopes.categories.find((c) => c.id === p.categoryId)?.name ?? ''}` : ''}`,
             }))
         : refs.level === 'PROVIDER'
-          ? scopes.providers.map((p) => ({ id: p.id, name: p.name }))
+          ? scopes.providers.map((v) => ({
+              id: v.id,
+              name: `${v.name}${under(scopes.products.filter((p) => p.providerId === v.id).length)}`,
+            }))
           : [];
   const spreadOver =
     refs.scopeId === ''
@@ -2202,7 +2213,9 @@ function RefsFields({
               ? 'هزینهٔ کل فروشگاه (مثل حسابداری) — در «سود و زیان» جدا نشان داده می‌شود و روی سرویس‌ها پخش نمی‌شود.'
               : refs.level === 'PRODUCT'
                 ? 'همهٔ این هزینه به حساب همین سرویس نوشته می‌شود.'
-                : spreadOver.length > 0
+                : refs.scopeId !== '' && spreadOver.length === 0
+                  ? 'زیر این هیچ سرویسی نیست، پس روی هیچ سرویسی پخش نمی‌شود — در «سود و زیان» جدا نشان داده می‌شود.'
+                  : spreadOver.length > 0
                   ? `بین ${
                       spreadOver.length <= 4
                         ? spreadOver.map((p) => p.name).join('، ')
