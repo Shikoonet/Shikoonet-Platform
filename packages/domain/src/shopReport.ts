@@ -62,6 +62,23 @@ export interface GatewayTotal {
   irr: number;
 }
 
+/**
+ * One service and what it sold in the window.
+ *
+ * «سرویس» is a `products` row — what the customer picks first, «الماس» or
+ * «OpenVPN». `productId` null is the one bucket for orders that name no
+ * product: every Mirzabot-era import (8,909 of them on production carry a
+ * plan name and nothing else).
+ */
+export interface ServiceTotal {
+  productId: number | null;
+  name: string;
+  newCount: number;
+  renewalCount: number;
+  addonCount: number;
+  irr: number;
+}
+
 export interface ShopReport {
   range: StatsRange;
   /** The window actually measured. `null` on both means everything. */
@@ -129,6 +146,9 @@ export interface ShopReport {
 
   /* ---- per payment method, over the range ---- */
   gateways: GatewayTotal[];
+
+  /* ---- per service, over the range. Sums to `earnedIrr`. ---- */
+  byService: ServiceTotal[];
 }
 
 /**
@@ -171,7 +191,7 @@ export async function shopReport(
   // moves again. For a PAID row the two are minutes apart.
   const pays = rangeClause('created_at', bounds, 1);
 
-  const [stats, flows, people, gateways, subs] = await Promise.all([
+  const [stats, flows, people, gateways, subs, services] = await Promise.all([
     // Every «now» figure, from the one place that already defines them.
     shopStats(db),
 
@@ -272,6 +292,59 @@ export async function shopReport(
              WHERE status = 'ACTIVE')                                         AS active_irr`,
       )
       .first<{ resellers: number; panels: number; active_irr: string | number }>(),
+
+    /**
+     * The same money as `earned_irr`, one row per service.
+     *
+     * Sam, 2026-09-21: «سرویس الماس چقدر فروختیم؟ یا سرویس open vpn؟». The
+     * answer has to come from the order, and an order names its service by
+     * three different routes:
+     *
+     *   - a purchase or a renewal names its plan, and a plan names its product;
+     *   - an add-on (`ADD_VOLUME`, `ADD_TIME`) names no plan at all, only the
+     *     subscription it was added to — so it is attributed to the service
+     *     that subscription is on, which is where the customer thinks the
+     *     money went;
+     *   - an imported order names neither. `plan_name_at_sale` is free text
+     *     the importer copied out of MySQL and matches no catalogue row, so
+     *     every one of them falls to `p.id IS NULL` — one row, which the page
+     *     labels «سفارش‌های قدیمی» rather than pretending to a breakdown the
+     *     old data cannot give.
+     *
+     * Restricted to the four kinds that are a sale, which is what makes the
+     * rows add up to `earned_irr` exactly: a top-up is money moving into a
+     * wallet, a TRANSFER is zero by construction, and a TRIAL is free.
+     */
+    // ponytail: a plan deleted from the catalogue takes its orders to the
+    // legacy row with it (`plan_id` is ON DELETE SET NULL). Today the routes
+    // refuse to delete a plan that any order references, so this cannot
+    // happen; resolve through `subscriptions.order_id` if it ever does.
+    db
+      .prepare(
+        `SELECT p.id                                                            AS product_id,
+                p.name,
+                count(*) FILTER (WHERE o.kind = 'NEW_PURCHASE')::int            AS new_count,
+                count(*) FILTER (WHERE o.kind = 'RENEWAL')::int                 AS renewal_count,
+                count(*) FILTER (WHERE o.kind IN ('ADD_VOLUME','ADD_TIME'))::int AS addon_count,
+                COALESCE(sum(o.total_irr), 0)                                   AS irr
+           FROM orders o
+           LEFT JOIN subscriptions ts ON ts.id = o.target_subscription_id
+           LEFT JOIN product_plans pl ON pl.id = COALESCE(o.plan_id, ts.plan_id)
+           LEFT JOIN products p       ON p.id = pl.product_id
+          WHERE o.status = 'COMPLETED'
+            AND o.kind IN ('NEW_PURCHASE','RENEWAL','ADD_VOLUME','ADD_TIME')${orders.sql}
+          GROUP BY p.id, p.name
+          ORDER BY sum(o.total_irr) DESC, p.id`,
+      )
+      .bind(...orders.binds)
+      .all<{
+        product_id: number | null;
+        name: string | null;
+        new_count: number;
+        renewal_count: number;
+        addon_count: number;
+        irr: string | number;
+      }>(),
   ]);
 
   const salesIrr = Number(flows?.sales_irr ?? 0);
@@ -399,6 +472,15 @@ export async function shopReport(
       method: g.method,
       count: g.n,
       irr: Number(g.irr),
+    })),
+
+    byService: (services.results ?? []).map((s) => ({
+      productId: s.product_id,
+      name: s.name ?? 'سفارش‌های قدیمی',
+      newCount: s.new_count,
+      renewalCount: s.renewal_count,
+      addonCount: s.addon_count,
+      irr: Number(s.irr),
     })),
   };
 }

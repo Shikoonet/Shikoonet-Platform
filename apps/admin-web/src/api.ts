@@ -556,6 +556,18 @@ export interface ShopStatsResponse {
   claimsWaiting: number;
 
   gateways: Array<{ method: string; count: number; irr: number }>;
+  /**
+   * One row per service sold in the window, largest first; the rows add up to
+   * `earnedIrr`. `productId` null is the imported-orders bucket.
+   */
+  byService: Array<{
+    productId: number | null;
+    name: string;
+    newCount: number;
+    renewalCount: number;
+    addonCount: number;
+    irr: number;
+  }>;
   /** Figures the legacy screen has and this one will not invent. */
   notMeasured: Array<{ label: string; reason: string }>;
 }

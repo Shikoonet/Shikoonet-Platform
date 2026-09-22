@@ -15,7 +15,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { statsRangeBounds } from '@shikoo/domain';
-import { applySchema, env as baseEnv } from './helpers/env.js';
+import { applySchema, env as baseEnv, fixtureCategory } from './helpers/env.js';
 import { app } from '../src/index.js';
 
 const ADMIN = 'admin-stats@example.com';
@@ -28,6 +28,16 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** `NOW_MS - 61 days`, in Tehran. See the fixture note for why it is that far back. */
 const RENEWAL_ONLY_DAY = '?range=day&day=2026-06-29';
+
+/**
+ * `NOW_MS - 64 days`, in Tehran: the day the per-service fixture owns.
+ *
+ * A day of its own for the same reason `RENEWAL_ONLY_DAY` has one, and one
+ * step further: a breakdown cannot be expressed as a delta — rows do not
+ * subtract — so this window's figures are read absolutely, and the baseline
+ * below asserts the window is empty before anything is written into it.
+ */
+const SERVICE_DAY = '?range=day&day=2026-06-26';
 
 /** Everything this file writes is prefixed so the purge can find it all. */
 const PREFIX = 'zz-stats-';
@@ -55,7 +65,16 @@ interface Report {
   panels: number;
   activeSubscriptions: number;
   walletHeldIrr: number;
+  earnedIrr: number;
   gateways: { method: string; count: number; irr: number }[];
+  byService: {
+    productId: number | null;
+    name: string;
+    newCount: number;
+    renewalCount: number;
+    addonCount: number;
+    irr: number;
+  }[];
   notMeasured: { label: string; reason: string }[];
   startMs: number | null;
   endMs: number | null;
@@ -102,23 +121,62 @@ async function user(tag: string, registeredAtMs: number, isReseller = false): Pr
   return row!.id;
 }
 
-/** A completed order of a given kind, at a given instant. */
+/**
+ * A completed order of a given kind, at a given instant.
+ *
+ * `extra` is what the per-service breakdown reads: the plan a purchase names,
+ * the subscription an add-on was put on, the free-text name an imported order
+ * carries instead of either, and the panel a trial came from.
+ */
 async function order(
   userId: number,
-  kind: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP',
+  kind: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP' | 'ADD_VOLUME' | 'TRIAL',
   totalIrr: number,
   completedAtMs: number,
   tag: string,
+  extra: { planId?: number; subscriptionId?: number; planName?: string; providerId?: number } = {},
 ): Promise<void> {
   await db
     .prepare(
       `INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr,
-                           discount_irr, total_irr, status, created_at, completed_at)
+                           discount_irr, total_irr, status, created_at, completed_at,
+                           plan_id, target_subscription_id, plan_name_at_sale, provider_id)
             VALUES (?1, ?2, ?3, 1, ?4, 0, ?4, 'COMPLETED',
-                    to_timestamp(?5 / 1000.0), to_timestamp(?5 / 1000.0))`,
+                    to_timestamp(?5 / 1000.0), to_timestamp(?5 / 1000.0),
+                    ?6, ?7, ?8, ?9)`,
     )
-    .bind(`${PREFIX}${tag}`, userId, kind, totalIrr, completedAtMs)
+    .bind(
+      `${PREFIX}${tag}`,
+      userId,
+      kind,
+      totalIrr,
+      completedAtMs,
+      extra.planId ?? null,
+      extra.subscriptionId ?? null,
+      extra.planName ?? null,
+      extra.providerId ?? null,
+    )
     .run();
+}
+
+/** A service with one config on it, as the catalogue holds them. */
+async function service(tag: string, priceIrr: number): Promise<{ productId: number; planId: number }> {
+  const categoryId = await fixtureCategory();
+  const product = await db
+    .prepare(
+      `INSERT INTO products (code, name, kind, category_id, status)
+            VALUES (?1, ?2, 'vpn', ?3, 'ACTIVE') RETURNING id`,
+    )
+    .bind(`${PREFIX}${tag}`, `${PREFIX}${tag}`, categoryId)
+    .first<{ id: number }>();
+  const plan = await db
+    .prepare(
+      `INSERT INTO product_plans (product_id, name, price_irr, duration_days, status)
+            VALUES (?1, ?2, ?3, 30, 'ACTIVE') RETURNING id`,
+    )
+    .bind(product!.id, `${PREFIX}${tag}-30`, priceIrr)
+    .first<{ id: number }>();
+  return { productId: product!.id, planId: plan!.id };
 }
 
 async function payment(
@@ -144,8 +202,14 @@ function hash(s: string): number {
 }
 
 async function purge(): Promise<void> {
+  // In FK order: an order points at a subscription and a plan, a subscription
+  // points at a user, a plan belongs to a product. Reversed, the deletes are
+  // refused rather than ignored and every later file inherits the leftovers.
   await db.prepare(`DELETE FROM payments WHERE public_id LIKE '${PREFIX}%'`).run();
   await db.prepare(`DELETE FROM orders   WHERE public_id LIKE '${PREFIX}%'`).run();
+  await db.prepare(`DELETE FROM subscriptions WHERE public_id LIKE '${PREFIX}%'`).run();
+  await db.prepare(`DELETE FROM products WHERE code LIKE '${PREFIX}%'`).run();
+  await db.prepare(`DELETE FROM provisioning_providers WHERE code LIKE '${PREFIX}%'`).run();
   await db.prepare(`DELETE FROM users    WHERE username  LIKE '${PREFIX}%'`).run();
 }
 
@@ -213,6 +277,7 @@ beforeAll(async () => {
     '?range=month',
     '?range=day&day=2026-08-28',
     RENEWAL_ONLY_DAY,
+    SERVICE_DAY,
   ]) {
     before.set(q, await report(q));
   }
@@ -233,6 +298,41 @@ beforeAll(async () => {
 
   const eve = await user('eve', NOW_MS - 40 * DAY_MS);
   await order(eve, 'RENEWAL', 700_000, NOW_MS - 61 * DAY_MS, 'o7');
+
+  // The per-service fixture, on a day of its own 64 days back. Two services,
+  // an add-on that names only the subscription it was put on, an imported
+  // order that names neither, and two rows that are not sales at all.
+  const serviceAt = NOW_MS - 64 * DAY_MS;
+  const alpha = await service('alpha', 1_000_000);
+  const beta = await service('beta', 400_000);
+  const gus = await user('gus', NOW_MS - 70 * DAY_MS);
+  const subscription = await db
+    .prepare(
+      `INSERT INTO subscriptions (public_id, user_id, plan_id, plan_name_at_sale,
+                                  price_irr, status, purchased_at)
+            VALUES (?1, ?2, ?3, ?4, 1000000, 'ACTIVE', to_timestamp(?5 / 1000.0))
+         RETURNING id`,
+    )
+    .bind(`${PREFIX}sub`, gus, alpha.planId, `${PREFIX}alpha-30`, serviceAt)
+    .first<{ id: number }>();
+  const panel = await db
+    .prepare(
+      `INSERT INTO provisioning_providers (code, name, kind, status)
+            VALUES (?1, ?1, 'manual', 'ACTIVE') RETURNING id`,
+    )
+    .bind(`${PREFIX}panel`)
+    .first<{ id: number }>();
+
+  await order(gus, 'NEW_PURCHASE', 1_000_000, serviceAt, 's1', { planId: alpha.planId });
+  await order(gus, 'RENEWAL', 200_000, serviceAt, 's2', {
+    planId: alpha.planId,
+    subscriptionId: subscription!.id,
+  });
+  await order(gus, 'ADD_VOLUME', 50_000, serviceAt, 's3', { subscriptionId: subscription!.id });
+  await order(gus, 'NEW_PURCHASE', 400_000, serviceAt, 's4', { planId: beta.planId });
+  await order(gus, 'NEW_PURCHASE', 300_000, serviceAt, 's5', { planName: 'خرید اولی' });
+  await order(gus, 'WALLET_TOPUP', 999_000, serviceAt, 's6');
+  await order(gus, 'TRIAL', 0, serviceAt, 's7', { providerId: panel!.id });
 
   await payment(ann, 'CARD_TO_CARD', 1_000_000, NOW_MS - 5 * HOUR_MS, 'p1');
   await payment(bob, 'CARD_TO_CARD', 500_000, NOW_MS - 6 * HOUR_MS, 'p2');
@@ -273,7 +373,9 @@ describe('the window decides what is counted', () => {
       );
     }
     expect(await delta('?range=all', 'salesIrr')).toBe(
-      1_000_000 + 500_000 + 2_000_000 + 9_000_000,
+      // Today's two, yesterday's, the two-month-old one, and the three
+      // purchases the per-service fixture puts 64 days back.
+      1_000_000 + 500_000 + 2_000_000 + 9_000_000 + 1_000_000 + 400_000 + 300_000,
     );
   });
 
@@ -400,5 +502,36 @@ describe('who may read it', () => {
   it('answers a read-only operator — every field is an aggregate', async () => {
     const res = await get('/api/v1/admin/stats?range=today', READER);
     expect(res.status).toBe(200);
+  });
+});
+
+describe('sales by service', () => {
+  it('starts from a day nothing else wrote into', async () => {
+    // The assertions below are absolute, which is only honest if this window
+    // held nothing before the fixture. The seed places its rows at offsets
+    // from the REAL clock and reaches thirty days back; if it ever reaches
+    // sixty-four, this fails here instead of quietly inflating a sum.
+    expect(before.get(SERVICE_DAY)!.byService).toEqual([]);
+  });
+
+  it('attributes by plan, then by the service the add-on was put on, else the old bucket', async () => {
+    const r = await report(SERVICE_DAY);
+    expect(
+      r.byService.map((s) => [s.name, s.newCount, s.renewalCount, s.addonCount, s.irr]),
+    ).toEqual([
+      // 1,000,000 bought + 200,000 renewed + 50,000 added on the subscription.
+      [`${PREFIX}alpha`, 1, 1, 1, 1_250_000],
+      [`${PREFIX}beta`, 1, 0, 0, 400_000],
+      // Names a plan that never existed here, so it is history, not a service.
+      ['سفارش‌های قدیمی', 1, 0, 0, 300_000],
+    ]);
+    expect(r.byService.at(-1)!.productId).toBeNull();
+  });
+
+  it('counts the same money «درآمد» does — no top-up, no trial', async () => {
+    const r = await report(SERVICE_DAY);
+    // 999,000 of top-up and a free trial are in the window and in neither sum.
+    expect(r.byService.reduce((sum, s) => sum + s.irr, 0)).toBe(r.earnedIrr);
+    expect(r.earnedIrr).toBe(1_950_000);
   });
 });

@@ -56,6 +56,17 @@ const BASE: ShopStatsResponse = {
   claimsWaiting: 3,
 
   gateways: [{ method: 'CARD_TO_CARD', count: 5352, irr: 9_662_580_180 }],
+  byService: [
+    { productId: 3, name: 'الماس', newCount: 4000, renewalCount: 400, addonCount: 30, irr: 3_000_000_000 },
+    {
+      productId: null,
+      name: 'سفارش‌های قدیمی',
+      newCount: 994,
+      renewalCount: 80,
+      addonCount: 7,
+      irr: 1_000_000_000,
+    },
+  ],
   notMeasured: [
     { label: 'نمایندگان نوع N و N2', reason: 'این‌جا نمایندگی یک وضعیت است، نه دو نوع.' },
     { label: 'اکانت‌های تست', reason: 'ربات قدیمی آن‌ها را از روی نام محصول می‌شمارد.' },
@@ -460,5 +471,28 @@ describe('the payment gateway table', () => {
     const row = (await screen.findByText('کارت به کارت')).closest('tr')!;
     expect(row.textContent).toContain('۵٬۳۵۲');
     expect(row.textContent).toContain('۹۶۶٬۲۵۸٬۰۱۸');
+  });
+});
+
+describe('the per-service table', () => {
+  it('gives each service its counts, its money and its share of the table', async () => {
+    draw();
+    const row = (await screen.findByText('الماس')).closest('tr')!;
+    expect(row.textContent).toContain('۴٬۰۰۰');
+    expect(row.textContent).toContain('۴۰۰');
+    expect(row.textContent).toContain('۳۰۰٬۰۰۰٬۰۰۰');
+    // 3,000,000,000 of 4,000,000,000 — the share is of the TABLE, so it has to
+    // read the other row too. A percentage computed against one row is 100%.
+    expect(row.textContent).toContain('۷۵٪');
+  });
+
+  it('keeps the imported orders as one row, last and told apart', async () => {
+    draw();
+    const row = (await screen.findByText('سفارش‌های قدیمی')).closest('tr')!;
+    expect(row.textContent).toContain('۲۵٪');
+    const rows = [...row.closest('tbody')!.querySelectorAll('tr')];
+    expect(rows.at(-1)).toBe(row);
+    // Not a service anybody can sell, and the row says so without a sentence.
+    expect(row.querySelector('.muted')?.textContent).toBe('سفارش‌های قدیمی');
   });
 });
