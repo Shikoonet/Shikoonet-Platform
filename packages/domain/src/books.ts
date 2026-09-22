@@ -30,6 +30,13 @@ import { jalaliMonthBounds, tehranDateStringFromMs } from './historyRange.js';
 import { BANK_INCOME_TX_WHERE, BANK_OUTFLOW_TX_WHERE, TX_OFF_BOOKS } from './incomeEligibility.js';
 import type { OffBooksCategory } from './declineIncomeTransaction.js';
 
+/**
+ * The ledger kinds that are money leaving an account: an expense, and since
+ * 0092 a partner's draw. The bank sees both the same way — a withdrawal — so
+ * a statement explains both, whatever the profit screen calls them.
+ */
+export const LEDGER_OUTFLOW_KINDS_SQL = `('EXPENSE','PARTNER_DRAW')`;
+
 export interface JalaliMonth {
   year: number;
   month: number;
@@ -299,7 +306,7 @@ export async function accountStatement(
               COALESCE(SUM(CASE WHEN ra.transaction_candidate_id IS NULL THEN -ra.amount_irr + ra.fee_irr ELSE ra.fee_irr END)
                 FILTER (WHERE ra.spent_on <= ?4::date),0) AS untexted_to_close_irr
          FROM revenue_adjustments ra
-        WHERE ra.financial_account_id = ?1 AND ra.kind = 'EXPENSE' AND ra.voided_at IS NULL
+        WHERE ra.financial_account_id = ?1 AND ra.kind IN ${LEDGER_OUTFLOW_KINDS_SQL} AND ra.voided_at IS NULL
           AND ra.spent_on >= ?2::date AND ra.spent_on < ?3::date`,
     )
     .bind(accountId, tehranDateStringFromMs(from), tehranDateStringFromMs(month.end), closeDay)

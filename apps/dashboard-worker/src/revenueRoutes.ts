@@ -83,7 +83,7 @@ import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import type { EnvName } from '@shikoo/contracts';
 import { jalaliPeriodLabel, nextJalaliDue } from '@shikoo/contracts';
-import { TX_OFF_BOOKS, parseStatsDay, parseStatsRange, statsRangeBounds } from '@shikoo/domain';
+import { TX_OFF_BOOKS, parseStatsDay, parseStatsRange, shopProfit, statsRangeBounds } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 /**
@@ -101,8 +101,100 @@ export const IRR_PER_TOMAN = 10;
 /** How many rows one export may carry. A ledger, not a data dump. */
 const EXPORT_MAX = 5_000;
 
-const KIND = z.enum(['EXPENSE', 'REVENUE_FIX', 'MANUAL_INCOME']);
+/**
+ * `PARTNER_DRAW` since 0092: a partner taking his share of the profit. It is
+ * money out, like an expense, and it is NOT an expense — every sum that says
+ * `kind = 'EXPENSE'` must not see it, and the profit screen subtracts it only
+ * after the profit is known.
+ */
+const KIND = z.enum(['EXPENSE', 'REVENUE_FIX', 'MANUAL_INCOME', 'PARTNER_DRAW']);
 type Kind = z.infer<typeof KIND>;
+
+/**
+ * What part of the catalogue an expense was for (0092). `SHOP` is none — the
+ * whole shop's, like rent. The profit screen spreads a category's or a
+ * panel's cost over its services by sales.
+ */
+const SCOPE_LEVEL = z.enum(['SHOP', 'CATEGORY', 'PRODUCT', 'PROVIDER']);
+type ScopeLevel = z.infer<typeof SCOPE_LEVEL>;
+const SCOPE = z
+  .object({ level: SCOPE_LEVEL, id: z.number().int().positive().optional() })
+  .strict()
+  .refine((s) => (s.level === 'SHOP') === (s.id === undefined), 'a scope names an id unless it is SHOP');
+type Scope = z.infer<typeof SCOPE>;
+
+/** The three columns a scope is stored in — at most one set, `revenue_adjustments_one_scope`. */
+function scopeColumns(s: Scope) {
+  return {
+    product_category_id: s.level === 'CATEGORY' ? s.id! : null,
+    product_id: s.level === 'PRODUCT' ? s.id! : null,
+    provider_id: s.level === 'PROVIDER' ? s.id! : null,
+  };
+}
+type ScopeColumns = ReturnType<typeof scopeColumns>;
+const NO_SCOPE: ScopeColumns = { product_category_id: null, product_id: null, provider_id: null };
+
+/** Who a row was paid to or came from (0092). `null` clears it. */
+const PARTY_FIELDS = {
+  partyId: z.number().int().positive().nullable().optional(),
+  scope: SCOPE.optional(),
+};
+
+type RefError = 'party_not_found' | 'draw_needs_a_partner' | 'scope_not_found';
+
+/**
+ * The person and the scope a row will carry, checked against what exists.
+ *
+ * A foreign key would refuse a missing id too, but as a 500; this is a 400
+ * the form can name. A draw must name a PARTNER — the CHECK only knows there
+ * is a person, not what he is. A scope is kept only on spending, and the
+ * schema says the same (`revenue_adjustments_scope_is_spending`), so a row
+ * turned from EXPENSE into a correction drops its scope instead of failing.
+ */
+async function refsFor(
+  db: Pick<D1Database, 'prepare'>,
+  kind: Kind,
+  body: { partyId?: number | null | undefined; scope?: Scope | undefined },
+  prev: { party_id: number | null } & ScopeColumns,
+): Promise<{ ok: true; party_id: number | null; scope: ScopeColumns } | { ok: false; error: RefError }> {
+  const partyId = body.partyId === undefined ? prev.party_id : body.partyId;
+  if (partyId !== null) {
+    const party = await db
+      .prepare(`SELECT 'PARTNER' = ANY(roles) AS partner FROM parties WHERE id = ?1`)
+      .bind(partyId)
+      .first<{ partner: boolean }>();
+    if (!party) return { ok: false, error: 'party_not_found' };
+    if (kind === 'PARTNER_DRAW' && !party.partner) return { ok: false, error: 'draw_needs_a_partner' };
+  } else if (kind === 'PARTNER_DRAW') {
+    return { ok: false, error: 'draw_needs_a_partner' };
+  }
+
+  if (kind !== 'EXPENSE') return { ok: true, party_id: partyId, scope: NO_SCOPE };
+  const scope: ScopeColumns =
+    body.scope === undefined
+      ? { product_category_id: prev.product_category_id, product_id: prev.product_id, provider_id: prev.provider_id }
+      : scopeColumns(body.scope);
+  const [table, id] =
+    scope.product_category_id !== null
+      ? ['product_categories', scope.product_category_id]
+      : scope.product_id !== null
+        ? ['products', scope.product_id]
+        : scope.provider_id !== null
+          ? ['provisioning_providers', scope.provider_id]
+          : [null, null];
+  if (table && body.scope !== undefined) {
+    const hit = await db.prepare(`SELECT 1 AS x FROM ${table} WHERE id = ?1`).bind(id).first<{ x: number }>();
+    if (!hit) return { ok: false, error: 'scope_not_found' };
+  }
+  return { ok: true, party_id: partyId, scope };
+}
+
+/** Thrown inside a session to roll it back with a person/scope reason. */
+class RefRefused extends Error {
+  constructor(public readonly reason: RefError) {
+    super(reason);
+  }
+}
 
 /**
  * The currencies a bill may arrive in — the three Sam named, plus the one the
@@ -133,7 +225,7 @@ const ISO_DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
  * a wrong row.
  */
 function signedIrr(kind: Kind, magnitude: number, direction: 'expense' | 'credit'): number {
-  if (kind === 'EXPENSE') return -magnitude;
+  if (kind === 'EXPENSE' || kind === 'PARTNER_DRAW') return -magnitude;
   if (kind === 'MANUAL_INCOME') return magnitude;
   return direction === 'expense' ? -magnitude : magnitude;
 }
@@ -266,6 +358,7 @@ const AdjustmentBody = z
     // one thing nobody can reconstruct later.
     note: z.string().trim().min(1).max(500),
     ...ACCOUNT_FIELDS,
+    ...PARTY_FIELDS,
   })
   .strict()
   .refine(
@@ -291,6 +384,7 @@ const EditBody = z
     /** Goes to `audit_logs.reason`, so the history says why and not only what. */
     reason: z.string().trim().max(200).optional(),
     ...ACCOUNT_FIELDS,
+    ...PARTY_FIELDS,
   })
   .strict()
   .refine(
@@ -318,6 +412,8 @@ const AdjustmentQuery = z.object({
   categoryId: z.coerce.number().int().positive().optional(),
   /** The backlog the classifier could not label. Wins over `categoryId`. */
   uncategorised: z.coerce.boolean().optional(),
+  /** One person's rows — the statement behind «اشخاص». */
+  partyId: z.coerce.number().int().positive().optional(),
   from: ISO_DAY.optional(),
   to: ISO_DAY.optional(),
   q: z.string().trim().max(100).optional(),
@@ -351,6 +447,7 @@ const RecurrenceBody = z
     period: PERIOD.default('MONTHLY'),
     nextDueOn: ISO_DAY,
     note: z.string().trim().max(500).default(''),
+    ...PARTY_FIELDS,
   })
   .strict();
 
@@ -363,6 +460,7 @@ const RecurrencePatch = z
     nextDueOn: ISO_DAY.optional(),
     note: z.string().trim().max(500).optional(),
     active: z.boolean().optional(),
+    ...PARTY_FIELDS,
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'nothing to change');
@@ -377,12 +475,62 @@ const RecurrencePostBody = z
     spentOn: ISO_DAY.optional(),
     note: z.string().trim().min(1).max(500).optional(),
     ...ACCOUNT_FIELDS,
+    ...PARTY_FIELDS,
   })
   .strict()
   .refine(
     (b) => !moneyTouched(b) || moneyComplete(b),
     'an amount is given whole: amountToman, or currency with originalAmount and fxRateToman',
   );
+
+/** «شریک، تأمین‌کننده، همکار، نماینده، سایر» — the same list as `parties_roles_check`. */
+const PARTY_ROLE = z.enum(['PARTNER', 'SUPPLIER', 'CONTRACTOR', 'AGENT', 'OTHER']);
+
+const PartyBody = z
+  .object({
+    name: z.string().trim().min(1).max(60),
+    roles: z.array(PARTY_ROLE).max(5).default([]),
+    /** His cut of the profit. Ignored unless PARTNER is among the roles. */
+    sharePercent: z.number().gt(0).max(100).nullable().optional(),
+    note: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
+const PartyPatch = z
+  .object({
+    name: z.string().trim().min(1).max(60).optional(),
+    roles: z.array(PARTY_ROLE).max(5).optional(),
+    sharePercent: z.number().gt(0).max(100).nullable().optional(),
+    active: z.boolean().optional(),
+    note: z.string().trim().max(500).optional(),
+  })
+  .strict()
+  .refine((b) => Object.keys(b).length > 0, 'nothing to change');
+
+/**
+ * The partners' percents, with this one changed, if they would pass 100.
+ *
+ * Returns the total that would result, or null when it is fine. Only active
+ * partners count: one who left keeps his history, not his cut.
+ */
+// ponytail: read-then-write, so two admins raising two shares at once could
+// both pass. Three partners and one admin; a trigger if that ever changes.
+async function sharesOver(
+  db: Pick<D1Database, 'prepare'>,
+  id: number | null,
+  share: number | null,
+  active: boolean,
+): Promise<number | null> {
+  const others = await db
+    .prepare(
+      `SELECT COALESCE(SUM(share_percent), 0) AS total FROM parties
+        WHERE active AND 'PARTNER' = ANY(roles) AND id IS DISTINCT FROM ?1::bigint`,
+    )
+    .bind(id)
+    .first<{ total: string | number }>();
+  const total = Number(others?.total ?? 0) + (active && share !== null ? share : 0);
+  return total > 100 ? total : null;
+}
 
 const CategoryPatch = z
   .object({
@@ -409,6 +557,12 @@ interface AdjustmentRow {
   account_name: string | null;
   fee_irr: string | number;
   transaction_candidate_id: string | null;
+  party_id: number | null;
+  party_name: string | null;
+  product_category_id: number | null;
+  product_id: number | null;
+  provider_id: number | null;
+  scope_name: string | null;
   created_by: string | null;
   created_at: string;
   voided_at: string | null;
@@ -417,6 +571,17 @@ interface AdjustmentRow {
   edit_count: number;
   last_edited_at: string | number | null;
   last_edited_by: string | null;
+}
+
+function scopeOf(r: Pick<AdjustmentRow, 'product_category_id' | 'product_id' | 'provider_id' | 'scope_name'>): {
+  level: ScopeLevel;
+  id: number | null;
+  name: string | null;
+} {
+  if (r.product_id !== null) return { level: 'PRODUCT', id: Number(r.product_id), name: r.scope_name };
+  if (r.product_category_id !== null) return { level: 'CATEGORY', id: Number(r.product_category_id), name: r.scope_name };
+  if (r.provider_id !== null) return { level: 'PROVIDER', id: Number(r.provider_id), name: r.scope_name };
+  return { level: 'SHOP', id: null, name: null };
 }
 
 function shape(r: AdjustmentRow) {
@@ -445,6 +610,11 @@ function shape(r: AdjustmentRow) {
     feeIrr: Number(r.fee_irr ?? 0),
     /** The withdrawal SMS this row is, when the operator linked one. */
     transactionCandidateId: r.transaction_candidate_id,
+    /** Who it was paid to or came from (0092). */
+    partyId: r.party_id === null ? null : Number(r.party_id),
+    partyName: r.party_name,
+    /** What part of the catalogue it was for; `SHOP` is none. */
+    scope: scopeOf(r),
     createdBy: r.created_by,
     createdAt: r.created_at,
     voidedAt: r.voided_at,
@@ -483,6 +653,7 @@ function ledgerWhere(q: z.infer<typeof AdjustmentQuery>): { sql: string; binds: 
   if (q.kind) where.push(`ra.kind = ${p(q.kind)}`);
   if (q.uncategorised) where.push(`ra.category_id IS NULL AND ra.kind = 'EXPENSE'`);
   else if (q.categoryId !== undefined) where.push(`ra.category_id = ${p(q.categoryId)}`);
+  if (q.partyId !== undefined) where.push(`ra.party_id = ${p(q.partyId)}`);
 
   // On `spent_on`, never on `created_at`: «چقدر در مرداد خرج کردم» asks when
   // the money left, not when somebody got round to typing it.
@@ -514,10 +685,12 @@ const TOTALS_SQL = `
   COALESCE(SUM(ra.fee_irr) FILTER (WHERE ra.kind = 'EXPENSE'), 0)                 AS fees_irr,
   COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'REVENUE_FIX'), 0)          AS revenue_fix_irr,
   COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'MANUAL_INCOME'), 0)        AS manual_income_irr,
+  COALESCE(SUM(ra.amount_irr - ra.fee_irr) FILTER (WHERE ra.kind = 'PARTNER_DRAW'), 0) AS partner_draws_irr,
   COALESCE(SUM(ra.amount_irr - ra.fee_irr), 0)                                    AS net_irr,
   count(*) FILTER (WHERE ra.kind = 'EXPENSE')::int                         AS expenses_n,
   count(*) FILTER (WHERE ra.kind = 'REVENUE_FIX')::int                     AS revenue_fix_n,
   count(*) FILTER (WHERE ra.kind = 'MANUAL_INCOME')::int                   AS manual_income_n,
+  count(*) FILTER (WHERE ra.kind = 'PARTNER_DRAW')::int                    AS partner_draws_n,
   count(*)::int                                                            AS net_n`;
 
 type TotalsRow = {
@@ -525,10 +698,12 @@ type TotalsRow = {
   fees_irr: string | number;
   revenue_fix_irr: string | number;
   manual_income_irr: string | number;
+  partner_draws_irr: string | number;
   net_irr: string | number;
   expenses_n: number;
   revenue_fix_n: number;
   manual_income_n: number;
+  partner_draws_n: number;
   net_n: number;
 };
 
@@ -537,10 +712,12 @@ const totals = (r: TotalsRow | null) => ({
   feesIrr: Number(r?.fees_irr ?? 0),
   revenueFixIrr: Number(r?.revenue_fix_irr ?? 0),
   manualIncomeIrr: Number(r?.manual_income_irr ?? 0),
+  partnerDrawsIrr: Number(r?.partner_draws_irr ?? 0),
   netIrr: Number(r?.net_irr ?? 0),
   expensesCount: Number(r?.expenses_n ?? 0),
   revenueFixCount: Number(r?.revenue_fix_n ?? 0),
   manualIncomeCount: Number(r?.manual_income_n ?? 0),
+  partnerDrawsCount: Number(r?.partner_draws_n ?? 0),
   netCount: Number(r?.net_n ?? 0),
 });
 
@@ -567,6 +744,9 @@ const SELECT_COLUMNS = `
   ra.spent_on::text AS spent_on, ra.created_by, ra.created_at,
   ra.currency, ra.original_amount, ra.fx_rate_irr, ra.recurrence_id,
   ra.financial_account_id, fa.display_name AS account_name, ra.fee_irr, ra.transaction_candidate_id,
+  ra.party_id, pa.name AS party_name,
+  ra.product_category_id, ra.product_id, ra.provider_id,
+  COALESCE(sp.name, spc.name, spv.name) AS scope_name,
   ra.voided_at, ra.voided_by, ra.void_reason,
   edits.n AS edit_count,
   -- Epoch milliseconds, because that is what audit_logs.created_at is: the
@@ -580,6 +760,10 @@ const FROM_LEDGER = `
   FROM revenue_adjustments ra
   LEFT JOIN expense_categories ec ON ec.id = ra.category_id
   LEFT JOIN financial_accounts fa ON fa.id = ra.financial_account_id
+  LEFT JOIN parties pa ON pa.id = ra.party_id
+  LEFT JOIN products sp ON sp.id = ra.product_id
+  LEFT JOIN product_categories spc ON spc.id = ra.product_category_id
+  LEFT JOIN provisioning_providers spv ON spv.id = ra.provider_id
   ${EDIT_HISTORY_JOIN}`;
 
 /**
@@ -610,6 +794,14 @@ const KIND_FA: Record<Kind, string> = {
   EXPENSE: 'هزینه',
   REVENUE_FIX: 'اصلاح درآمد',
   MANUAL_INCOME: 'درآمد دستی',
+  PARTNER_DRAW: 'برداشت شریک',
+};
+
+const SCOPE_FA: Record<ScopeLevel, string> = {
+  SHOP: 'همهٔ فروشگاه',
+  CATEGORY: 'دستهٔ سرویس',
+  PRODUCT: 'سرویس',
+  PROVIDER: 'پنل',
 };
 
 /**
@@ -778,6 +970,198 @@ export function registerRevenueRoutes(
   // to keep. `active = false` takes it out of the form and leaves every past
   // expense still saying what it was for.
 
+  // --- people (0092) ------------------------------------------------------
+  //
+  // «حسام، خودم، پویان» — and the server company, the designer, an agent.
+  // Under `/revenue-adjustments` for the same reason categories are: the
+  // prefix is what keeps a READ_ONLY operator out.
+
+  /**
+   * Every person, with what the books say about him.
+   *
+   * Lifetime, over live rows: what he took as a partner, what the shop paid
+   * him as an expense, and what came in from him by hand. Three sums rather
+   * than one balance, because a wage and a profit draw are different money —
+   * the whole reason this screen exists. His share of the profit is on «سود و
+   * زیان», which has a window; a lifetime share of a lifetime profit would be
+   * a figure nobody asked for.
+   */
+  app.get('/api/v1/admin/revenue-adjustments/parties', async (c) => {
+    const rows = await c.env.DB.prepare(
+      `SELECT pa.id, pa.name, pa.roles, pa.share_percent, pa.active, pa.note,
+              COALESCE(SUM(b.fee_irr - b.amount_irr) FILTER (WHERE b.kind = 'PARTNER_DRAW'), 0) AS drawn_irr,
+              COALESCE(SUM(b.fee_irr - b.amount_irr) FILTER (WHERE b.kind = 'EXPENSE'), 0)      AS paid_irr,
+              COALESCE(SUM(b.amount_irr) FILTER (WHERE b.kind = 'MANUAL_INCOME'), 0)             AS received_irr,
+              count(b.id)::int AS row_count,
+              max(b.spent_on)::text AS last_on
+         FROM parties pa
+         LEFT JOIN shop_books b ON b.party_id = pa.id
+        GROUP BY pa.id
+        ORDER BY pa.active DESC, pa.name`,
+    ).all<{
+      id: number;
+      name: string;
+      roles: string[];
+      share_percent: string | number | null;
+      active: boolean;
+      note: string;
+      drawn_irr: string | number;
+      paid_irr: string | number;
+      received_irr: string | number;
+      row_count: number;
+      last_on: string | null;
+    }>();
+    return c.json({
+      ok: true,
+      items: (rows.results ?? []).map((r) => ({
+        id: Number(r.id),
+        name: r.name,
+        roles: r.roles,
+        sharePercent: r.share_percent === null ? null : Number(r.share_percent),
+        active: r.active,
+        note: r.note,
+        drawnIrr: Number(r.drawn_irr),
+        paidIrr: Number(r.paid_irr),
+        receivedIrr: Number(r.received_irr),
+        rowCount: Number(r.row_count),
+        lastOn: r.last_on,
+      })),
+    });
+  });
+
+  app.post('/api/v1/admin/revenue-adjustments/parties', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const body = PartyBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+    }
+    const roles = [...new Set(body.data.roles)];
+    const share = roles.includes('PARTNER') ? (body.data.sharePercent ?? null) : null;
+    const over = await sharesOver(c.env.DB, null, share, true);
+    if (over !== null) return c.json({ ok: false, error: 'shares_over_100', detail: String(over) }, 400);
+
+    const row = await c.env.DB.prepare(
+      `INSERT INTO parties (name, roles, share_percent, note, created_by)
+       VALUES (?1, ?2::text[], ?3, ?4, ?5)
+       ON CONFLICT (name) DO NOTHING RETURNING id`,
+    )
+      .bind(body.data.name, roles, share, body.data.note ?? '', ident.email)
+      .first<{ id: number }>();
+    if (!row) return c.json({ ok: false, error: 'duplicate_name' }, 409);
+
+    await audit(c.env.DB, ident, 'party.added', 'PARTY', String(row.id), null,
+      { name: body.data.name, roles, share_percent: share }, null);
+    return c.json({ ok: true, id: Number(row.id) });
+  });
+
+  app.patch('/api/v1/admin/revenue-adjustments/parties/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    const body = PartyPatch.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+    }
+
+    const before = await c.env.DB.prepare(
+      `SELECT name, roles, share_percent, active, note FROM parties WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ name: string; roles: string[]; share_percent: string | number | null; active: boolean; note: string }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const roles = body.data.roles ? [...new Set(body.data.roles)] : before.roles;
+    const prevShare = before.share_percent === null ? null : Number(before.share_percent);
+    const next = {
+      name: body.data.name ?? before.name,
+      roles,
+      // A person who stops being a partner stops having a share; the CHECK
+      // `parties_share_is_a_partners` would refuse it anyway.
+      share_percent: roles.includes('PARTNER')
+        ? body.data.sharePercent !== undefined
+          ? body.data.sharePercent
+          : prevShare
+        : null,
+      active: body.data.active ?? before.active,
+      note: body.data.note ?? before.note,
+    };
+    // A draw names a partner; taking the role from someone who drew would
+    // leave rows the CHECK is not there to see.
+    if (before.roles.includes('PARTNER') && !roles.includes('PARTNER')) {
+      const drew = await c.env.DB.prepare(
+        `SELECT 1 AS x FROM revenue_adjustments
+          WHERE party_id = ?1 AND kind = 'PARTNER_DRAW' AND voided_at IS NULL LIMIT 1`,
+      )
+        .bind(id)
+        .first<{ x: number }>();
+      if (drew) return c.json({ ok: false, error: 'partner_has_draws' }, 409);
+    }
+    const over = await sharesOver(c.env.DB, id, next.share_percent, next.active);
+    if (over !== null) return c.json({ ok: false, error: 'shares_over_100', detail: String(over) }, 400);
+
+    try {
+      await c.env.DB.prepare(
+        `UPDATE parties SET name = ?2, roles = ?3::text[], share_percent = ?4, active = ?5, note = ?6 WHERE id = ?1`,
+      )
+        .bind(id, next.name, next.roles, next.share_percent, next.active, next.note)
+        .run();
+    } catch (err) {
+      if (/parties_name_key/.test(String(err))) return c.json({ ok: false, error: 'duplicate_name' }, 409);
+      throw err;
+    }
+    await audit(c.env.DB, ident, 'party.edited', 'PARTY', String(id),
+      { ...before, share_percent: prevShare }, next, null);
+    return c.json({ ok: true });
+  });
+
+  // No DELETE: a row paid to someone must always be able to say who. The
+  // foreign key is RESTRICT for the same reason; «بایگانی» is `active = false`.
+
+  /**
+   * What an expense can be «for»: every category, service and panel.
+   *
+   * One fetch for the form's picker, under the protected prefix, so the form
+   * does not need three catalogue endpoints.
+   */
+  app.get('/api/v1/admin/revenue-adjustments/scopes', async (c) => {
+    const [cats, prods, provs] = await Promise.all([
+      c.env.DB.prepare(`SELECT id, name FROM product_categories ORDER BY sort_order, name`).all<{
+        id: number;
+        name: string;
+      }>(),
+      c.env.DB.prepare(
+        `SELECT id, name, category_id, provider_id, status FROM products ORDER BY sort_order, name`,
+      ).all<{ id: number; name: string; category_id: number | null; provider_id: number | null; status: string }>(),
+      c.env.DB.prepare(`SELECT id, name FROM provisioning_providers ORDER BY name`).all<{ id: number; name: string }>(),
+    ]);
+    return c.json({
+      ok: true,
+      categories: (cats.results ?? []).map((r) => ({ id: Number(r.id), name: r.name })),
+      products: (prods.results ?? []).map((r) => ({
+        id: Number(r.id),
+        name: r.name,
+        categoryId: r.category_id === null ? null : Number(r.category_id),
+        providerId: r.provider_id === null ? null : Number(r.provider_id),
+        active: r.status === 'ACTIVE',
+      })),
+      providers: (provs.results ?? []).map((r) => ({ id: Number(r.id), name: r.name })),
+    });
+  });
+
+  /** «سود و زیان» over the same windows «آمار فروشگاه» offers — see `shopProfit`. */
+  app.get('/api/v1/admin/revenue-adjustments/profit', async (c) => {
+    const report = await shopProfit(
+      c.env.DB,
+      parseStatsRange(c.req.query('range') ?? 'month'),
+      Date.now(),
+      parseStatsDay(c.req.query('day')),
+      parseStatsDay(c.req.query('to')),
+    );
+    return c.json({ ok: true, ...report });
+  });
+
   // --- recurring costs ----------------------------------------------------
   //
   // Registered before `/:id` for the same reason `/categories` is, and nested
@@ -791,12 +1175,19 @@ export function registerRevenueRoutes(
       `SELECT er.id, er.label, er.category_id, ec.name AS category_name,
               er.amount_irr, er.period, er.next_due_on::text AS next_due_on,
               er.active, er.note,
+              er.party_id, pa.name AS party_name,
+              er.product_category_id, er.product_id, er.provider_id,
+              COALESCE(sp.name, spc.name, spv.name) AS scope_name,
               -- Answered by Postgres in Tehran, not by the browser's clock. A
               -- laptop in another timezone would otherwise show a bill as due a
               -- day early, and «due» is the whole reason this screen exists.
               (er.next_due_on <= (now() AT TIME ZONE 'Asia/Tehran')::date) AS due
          FROM expense_recurrences er
          LEFT JOIN expense_categories ec ON ec.id = er.category_id
+         LEFT JOIN parties pa ON pa.id = er.party_id
+         LEFT JOIN products sp ON sp.id = er.product_id
+         LEFT JOIN product_categories spc ON spc.id = er.product_category_id
+         LEFT JOIN provisioning_providers spv ON spv.id = er.provider_id
         ORDER BY er.active DESC, er.next_due_on ASC, er.id ASC`,
     ).all<{
       id: number;
@@ -809,6 +1200,12 @@ export function registerRevenueRoutes(
       active: boolean;
       note: string;
       due: boolean;
+      party_id: number | null;
+      party_name: string | null;
+      product_category_id: number | null;
+      product_id: number | null;
+      provider_id: number | null;
+      scope_name: string | null;
     }>();
 
     return c.json({
@@ -825,6 +1222,9 @@ export function registerRevenueRoutes(
         note: r.note,
         /** Owed today or earlier, in Tehran. An inactive template is never due. */
         due: r.active && r.due,
+        partyId: r.party_id === null ? null : Number(r.party_id),
+        partyName: r.party_name,
+        scope: scopeOf(r),
       })),
     });
   });
@@ -838,10 +1238,14 @@ export function registerRevenueRoutes(
       return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
     }
 
+    const refs = await refsFor(c.env.DB, 'EXPENSE', body.data, { party_id: null, ...NO_SCOPE });
+    if (!refs.ok) return c.json({ ok: false, error: refs.error }, 400);
+
     const row = await c.env.DB.prepare(
       `INSERT INTO expense_recurrences
-         (label, category_id, amount_irr, period, next_due_on, note, created_by)
-       VALUES (?1, ?2, ?3, ?4, ?5::date, ?6, ?7) RETURNING id`,
+         (label, category_id, amount_irr, period, next_due_on, note, created_by,
+          party_id, product_category_id, product_id, provider_id)
+       VALUES (?1, ?2, ?3, ?4, ?5::date, ?6, ?7, ?8, ?9, ?10, ?11) RETURNING id`,
     )
       .bind(
         body.data.label,
@@ -855,6 +1259,10 @@ export function registerRevenueRoutes(
         body.data.nextDueOn,
         body.data.note,
         ident.email,
+        refs.party_id,
+        refs.scope.product_category_id,
+        refs.scope.product_id,
+        refs.scope.provider_id,
       )
       .first<{ id: number }>();
     if (!row) return c.json({ ok: false, error: 'insert_failed' }, 500);
@@ -878,7 +1286,7 @@ export function registerRevenueRoutes(
 
     const before = await c.env.DB.prepare(
       `SELECT label, category_id, amount_irr, period, next_due_on::text AS next_due_on,
-              note, active
+              note, active, party_id, product_category_id, product_id, provider_id
          FROM expense_recurrences WHERE id = ?1`,
     )
       .bind(id)
@@ -890,8 +1298,15 @@ export function registerRevenueRoutes(
         next_due_on: string;
         note: string;
         active: boolean;
+        party_id: number | null;
+        product_category_id: number | null;
+        product_id: number | null;
+        provider_id: number | null;
       }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const refs = await refsFor(c.env.DB, 'EXPENSE', body.data, before);
+    if (!refs.ok) return c.json({ ok: false, error: refs.error }, 400);
 
     const next = {
       label: body.data.label ?? before.label,
@@ -909,16 +1324,20 @@ export function registerRevenueRoutes(
       next_due_on: body.data.nextDueOn ?? before.next_due_on,
       note: body.data.note ?? before.note,
       active: body.data.active ?? before.active,
+      party_id: refs.party_id,
+      ...refs.scope,
     };
 
     await c.env.DB.prepare(
       `UPDATE expense_recurrences
           SET label = ?2, category_id = ?3, amount_irr = ?4, period = ?5,
-              next_due_on = ?6::date, note = ?7, active = ?8
+              next_due_on = ?6::date, note = ?7, active = ?8,
+              party_id = ?9, product_category_id = ?10, product_id = ?11, provider_id = ?12
         WHERE id = ?1`,
     )
       .bind(id, next.label, next.category_id, next.amount_irr, next.period,
-        next.next_due_on, next.note, next.active)
+        next.next_due_on, next.note, next.active,
+        next.party_id, next.product_category_id, next.product_id, next.provider_id)
       .run();
 
     await audit(c.env.DB, ident, 'expense_recurrence.edited', 'EXPENSE_RECURRENCE', String(id),
@@ -960,7 +1379,8 @@ export function registerRevenueRoutes(
       const tpl = await tx
         .prepare(
           `SELECT label, category_id, amount_irr, period,
-                  next_due_on::text AS next_due_on, active
+                  next_due_on::text AS next_due_on, active,
+                  party_id, product_category_id, product_id, provider_id
              FROM expense_recurrences WHERE id = ?1 FOR UPDATE`,
         )
         .bind(id)
@@ -971,6 +1391,10 @@ export function registerRevenueRoutes(
           period: Period;
           next_due_on: string;
           active: boolean;
+          party_id: number | null;
+          product_category_id: number | null;
+          product_id: number | null;
+          provider_id: number | null;
         }>();
       if (!tpl) return { status: 404 as const, error: 'not_found' };
       // Archived. 409 rather than 400: the request was well formed and the
@@ -995,14 +1419,19 @@ export function registerRevenueRoutes(
         transaction_candidate_id: null,
       });
       if (!linked.ok) return { status: 400 as const, error: linked.error };
+      // The template's person and scope, unless this month's body says otherwise.
+      const refs = await refsFor(tx, 'EXPENSE', given, tpl);
+      if (!refs.ok) return { status: 400 as const, error: refs.error };
 
       const row = await tx
         .prepare(
           `INSERT INTO revenue_adjustments
              (amount_irr, note, created_by, created_at, kind, category_id, spent_on,
               recurrence_id, currency, original_amount, fx_rate_irr,
-              financial_account_id, fee_irr, transaction_candidate_id)
-           VALUES (?1, ?2, ?3, now(), 'EXPENSE', ?4, ?5::date, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+              financial_account_id, fee_irr, transaction_candidate_id,
+              party_id, product_category_id, product_id, provider_id)
+           VALUES (?1, ?2, ?3, now(), 'EXPENSE', ?4, ?5::date, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                   ?13, ?14, ?15, ?16)
            RETURNING id`,
         )
         .bind(
@@ -1018,6 +1447,10 @@ export function registerRevenueRoutes(
           linked.link.financial_account_id,
           (given.feeToman ?? 0) * IRR_PER_TOMAN,
           linked.link.transaction_candidate_id,
+          refs.party_id,
+          refs.scope.product_category_id,
+          refs.scope.product_id,
+          refs.scope.provider_id,
         )
         .first<{ id: number }>();
       if (!row) return { status: 500 as const, error: 'insert_failed' };
@@ -1217,6 +1650,8 @@ export function registerRevenueRoutes(
       'کارمزد (تومان)',
       'از حساب رفت (تومان)',
       'از حساب',
+      'شخص',
+      'مالِ کدام',
       // The invoice, so a euro bill can be checked against the paperwork it came
       // from rather than only against the Toman figure it produced.
       'ارز',
@@ -1237,6 +1672,8 @@ export function registerRevenueRoutes(
         r.feeIrr / IRR_PER_TOMAN,
         (r.amountIrr - r.feeIrr) / IRR_PER_TOMAN,
         r.accountName ?? '',
+        r.partyName ?? '',
+        r.scope.level === 'SHOP' ? (r.kind === 'EXPENSE' ? SCOPE_FA.SHOP : '') : `${SCOPE_FA[r.scope.level]}: ${r.scope.name ?? ''}`,
         r.currency === 'IRR' ? '' : r.currency,
         r.originalAmount ?? '',
         r.fxRateIrr === null ? '' : r.fxRateIrr / IRR_PER_TOMAN,
@@ -1330,14 +1767,17 @@ export function registerRevenueRoutes(
           transaction_candidate_id: null,
         });
         if (!linked.ok) throw new LinkRefused(linked.error);
+        const refs = await refsFor(tx, body.data.kind, body.data, { party_id: null, ...NO_SCOPE });
+        if (!refs.ok) throw new RefRefused(refs.error);
         return tx.prepare(
         `INSERT INTO revenue_adjustments
            (amount_irr, note, created_by, created_at, kind, category_id, spent_on,
             currency, original_amount, fx_rate_irr,
-            financial_account_id, fee_irr, transaction_candidate_id)
+            financial_account_id, fee_irr, transaction_candidate_id,
+            party_id, product_category_id, product_id, provider_id)
          VALUES (?1, ?2, ?3, now(), ?4, ?5,
                  COALESCE(?6::date, (now() AT TIME ZONE 'Asia/Tehran')::date),
-                 ?7, ?8, ?9, ?10, ?11, ?12)
+                 ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          RETURNING id`,
       )
         .bind(
@@ -1355,13 +1795,17 @@ export function registerRevenueRoutes(
           linked.link.financial_account_id,
           (body.data.feeToman ?? 0) * IRR_PER_TOMAN,
           linked.link.transaction_candidate_id,
+          refs.party_id,
+          refs.scope.product_category_id,
+          refs.scope.product_id,
+          refs.scope.provider_id,
         )
         .first<{ id: number }>();
       });
     } catch (err) {
       if (isWithdrawalTaken(err)) return c.json({ ok: false, error: 'withdrawal_taken' }, 409);
       if (err instanceof LinkRefused) return c.json({ ok: false, error: err.reason }, 400);
-      if (isWithdrawalTaken(err)) return c.json({ ok: false, error: 'withdrawal_taken' }, 409);
+      if (err instanceof RefRefused) return c.json({ ok: false, error: err.reason }, 400);
       throw err;
     }
     if (!row) return c.json({ ok: false, error: 'insert_failed' }, 500);
@@ -1373,7 +1817,13 @@ export function registerRevenueRoutes(
       'REVENUE_ADJUSTMENT',
       String(row.id),
       null,
-      { amount_irr: amountIrr, note: body.data.note, kind: body.data.kind },
+      {
+        amount_irr: amountIrr,
+        note: body.data.note,
+        kind: body.data.kind,
+        ...(body.data.partyId ? { party_id: body.data.partyId } : {}),
+        ...(body.data.scope && body.data.scope.level !== 'SHOP' ? { scope: body.data.scope } : {}),
+      },
       null,
     );
     return c.json({ ok: true, id: Number(row.id), amountIrr });
@@ -1412,7 +1862,8 @@ export function registerRevenueRoutes(
           .prepare(
             `SELECT amount_irr, note, kind, category_id, spent_on::text AS spent_on,
                     currency, original_amount, fx_rate_irr, voided_at,
-                    financial_account_id, fee_irr, transaction_candidate_id
+                    financial_account_id, fee_irr, transaction_candidate_id,
+                    party_id, product_category_id, product_id, provider_id
                FROM revenue_adjustments WHERE id = ?1 FOR UPDATE`,
           )
           .bind(id)
@@ -1429,6 +1880,10 @@ export function registerRevenueRoutes(
             financial_account_id: string | null;
             fee_irr: string | number;
             transaction_candidate_id: string | null;
+            party_id: number | null;
+            product_category_id: number | null;
+            product_id: number | null;
+            provider_id: number | null;
           }>();
         if (!before) return { status: 404 as const, error: 'not_found' };
         // A voided row exists; it is simply not editable. 409, not 400 — the
@@ -1452,12 +1907,18 @@ export function registerRevenueRoutes(
           financial_account_id: before.financial_account_id,
           fee_irr: Number(before.fee_irr ?? 0),
           transaction_candidate_id: before.transaction_candidate_id,
+          party_id: before.party_id === null ? null : Number(before.party_id),
+          product_category_id: before.product_category_id === null ? null : Number(before.product_category_id),
+          product_id: before.product_id === null ? null : Number(before.product_id),
+          provider_id: before.provider_id === null ? null : Number(before.provider_id),
         };
 
         const linked = await withdrawalFor(tx, patch, prev);
         if (!linked.ok) return { status: 400 as const, error: linked.error };
 
         const kind = patch.kind ?? prev.kind;
+        const refs = await refsFor(tx, kind, patch, prev);
+        if (!refs.ok) return { status: 400 as const, error: refs.error };
         // The magnitude is unchanged unless the caller restated it whole, but
         // the KIND may have changed and a kind decides a sign. Re-applying it
         // keeps EXPENSE → MANUAL_INCOME from leaving a negative row under a kind
@@ -1493,6 +1954,8 @@ export function registerRevenueRoutes(
           ...fx,
           ...linked.link,
           fee_irr: patch.feeToman === undefined ? prev.fee_irr : patch.feeToman * IRR_PER_TOMAN,
+          party_id: refs.party_id,
+          ...refs.scope,
         };
 
         const was: Record<string, unknown> = {};
@@ -1514,7 +1977,8 @@ export function registerRevenueRoutes(
             `UPDATE revenue_adjustments
                 SET amount_irr = ?2, note = ?3, kind = ?4, category_id = ?5, spent_on = ?6::date,
                     currency = ?7, original_amount = ?8, fx_rate_irr = ?9,
-                    financial_account_id = ?10, fee_irr = ?11, transaction_candidate_id = ?12
+                    financial_account_id = ?10, fee_irr = ?11, transaction_candidate_id = ?12,
+                    party_id = ?13, product_category_id = ?14, product_id = ?15, provider_id = ?16
               WHERE id = ?1`,
           )
           .bind(
@@ -1530,6 +1994,10 @@ export function registerRevenueRoutes(
             next.financial_account_id,
             next.fee_irr,
             next.transaction_candidate_id,
+            next.party_id,
+            next.product_category_id,
+            next.product_id,
+            next.provider_id,
           )
           .run();
 

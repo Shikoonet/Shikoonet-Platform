@@ -29,6 +29,7 @@ export * from './accountDeviceInference.js';
 export * from './cardBalancing.js';
 export * from './cardQueue.js';
 export * from './shopStats.js';
+export * from './shopProfit.js';
 export * from './customerAdmin.js';
 export * from './bulkCustomers.js';
 export * from './bought.js';

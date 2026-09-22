@@ -57,6 +57,8 @@ export type PageId =
   | 'subscriptions'
   | 'transactions'
   | 'expenses'
+  | 'parties'
+  | 'profit'
   | 'books'
   | 'requests'
   | 'panels'
@@ -95,6 +97,10 @@ export const NAV: NavGroup[] = [
     items: [
       { id: 'dashboard', label: 'داشبورد', icon: 'home' },
       { id: 'stats', label: 'آمار فروشگاه', icon: 'grid' },
+      // Sam, 2026-09-22: «هر سرویس چقدر فروخت، چقدر خرج برداشت، چقدر سود
+      // ساخت» and «هر شریک چقدر برداشته». A report, so it sits with the other
+      // two rather than beside the ledger it is added up from.
+      { id: 'profit', label: 'سود و زیان', icon: 'bars' },
     ],
   },
   {
@@ -148,6 +154,10 @@ export const NAV: NavGroup[] = [
       // «هزینه‌ها», not «هزینه‌ها و تعدیل‌ها»: the ledger now names each row's
       // kind in a column of its own, so the title no longer has to list them.
       { id: 'expenses', label: 'هزینه‌ها', icon: 'wallet' },
+      // The people the ledger pays and is paid by — partners first among
+      // them. Right under «هزینه‌ها», because every figure on it is a filter
+      // of those rows.
+      { id: 'parties', label: 'اشخاص', icon: 'users' },
       // «دفتر بانک» — the statement per account and month, what is off the
       // books, and the fresh start. Beside «هزینه‌ها» because it is the other
       // half of the same question: where did the money go.

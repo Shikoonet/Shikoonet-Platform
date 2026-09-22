@@ -29,6 +29,7 @@ import type { D1Database } from '@shikoo/database';
 import type { EnvName } from '@shikoo/contracts';
 import { formatJalali } from '@shikoo/contracts';
 import {
+  LEDGER_OUTFLOW_KINDS_SQL,
   OFF_BOOKS_CATEGORIES,
   accountStatement,
   addManualMovement,
@@ -66,7 +67,7 @@ async function expensesWithoutAccount(db: D1Database, month: { start: number; en
     .prepare(
       `SELECT count(*)::int AS n, COALESCE(SUM(-amount_irr + fee_irr),0) AS irr
          FROM revenue_adjustments
-        WHERE kind = 'EXPENSE' AND voided_at IS NULL AND financial_account_id IS NULL
+        WHERE kind IN ${LEDGER_OUTFLOW_KINDS_SQL} AND voided_at IS NULL AND financial_account_id IS NULL
           AND spent_on >= ?1::date AND spent_on < ?2::date`,
     )
     .bind(tehranDateStringFromMs(month.start), tehranDateStringFromMs(month.end))
@@ -404,7 +405,7 @@ export function registerBooksRoutes(
     const unlinked = await c.env.DB.prepare(
       `SELECT ra.id, ra.note, ra.spent_on::text AS spent_on, (-ra.amount_irr + ra.fee_irr) AS irr
          FROM revenue_adjustments ra
-        WHERE ra.financial_account_id = ?1 AND ra.kind = 'EXPENSE' AND ra.voided_at IS NULL
+        WHERE ra.financial_account_id = ?1 AND ra.kind IN ${LEDGER_OUTFLOW_KINDS_SQL} AND ra.voided_at IS NULL
           AND ra.transaction_candidate_id IS NULL
           AND ra.spent_on >= ?2::date AND ra.spent_on < ?3::date`,
     )

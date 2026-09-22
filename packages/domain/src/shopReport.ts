@@ -66,9 +66,9 @@ export interface GatewayTotal {
  * One service and what it sold in the window.
  *
  * «سرویس» is a `products` row — what the customer picks first, «الماس» or
- * «OpenVPN». `productId` null is the one bucket for orders that name no
- * product: every Mirzabot-era import (8,909 of them on production carry a
- * plan name and nothing else).
+ * «OpenVPN». `productId` null is the one bucket for orders the catalogue
+ * cannot place — imported orders with no subscription, or one on no panel
+ * (see `salesByService` for how the rest of the import is placed).
  */
 export interface ServiceTotal {
   productId: number | null;
@@ -293,58 +293,8 @@ export async function shopReport(
       )
       .first<{ resellers: number; panels: number; active_irr: string | number }>(),
 
-    /**
-     * The same money as `earned_irr`, one row per service.
-     *
-     * Sam, 2026-09-21: «سرویس الماس چقدر فروختیم؟ یا سرویس open vpn؟». The
-     * answer has to come from the order, and an order names its service by
-     * three different routes:
-     *
-     *   - a purchase or a renewal names its plan, and a plan names its product;
-     *   - an add-on (`ADD_VOLUME`, `ADD_TIME`) names no plan at all, only the
-     *     subscription it was added to — so it is attributed to the service
-     *     that subscription is on, which is where the customer thinks the
-     *     money went;
-     *   - an imported order names neither. `plan_name_at_sale` is free text
-     *     the importer copied out of MySQL and matches no catalogue row, so
-     *     every one of them falls to `p.id IS NULL` — one row, which the page
-     *     labels «سفارش‌های قدیمی» rather than pretending to a breakdown the
-     *     old data cannot give.
-     *
-     * Restricted to the four kinds that are a sale, which is what makes the
-     * rows add up to `earned_irr` exactly: a top-up is money moving into a
-     * wallet, a TRANSFER is zero by construction, and a TRIAL is free.
-     */
-    // ponytail: a plan deleted from the catalogue takes its orders to the
-    // legacy row with it (`plan_id` is ON DELETE SET NULL). Today the routes
-    // refuse to delete a plan that any order references, so this cannot
-    // happen; resolve through `subscriptions.order_id` if it ever does.
-    db
-      .prepare(
-        `SELECT p.id                                                            AS product_id,
-                p.name,
-                count(*) FILTER (WHERE o.kind = 'NEW_PURCHASE')::int            AS new_count,
-                count(*) FILTER (WHERE o.kind = 'RENEWAL')::int                 AS renewal_count,
-                count(*) FILTER (WHERE o.kind IN ('ADD_VOLUME','ADD_TIME'))::int AS addon_count,
-                COALESCE(sum(o.total_irr), 0)                                   AS irr
-           FROM orders o
-           LEFT JOIN subscriptions ts ON ts.id = o.target_subscription_id
-           LEFT JOIN product_plans pl ON pl.id = COALESCE(o.plan_id, ts.plan_id)
-           LEFT JOIN products p       ON p.id = pl.product_id
-          WHERE o.status = 'COMPLETED'
-            AND o.kind IN ('NEW_PURCHASE','RENEWAL','ADD_VOLUME','ADD_TIME')${orders.sql}
-          GROUP BY p.id, p.name
-          ORDER BY sum(o.total_irr) DESC, p.id`,
-      )
-      .bind(...orders.binds)
-      .all<{
-        product_id: number | null;
-        name: string | null;
-        new_count: number;
-        renewal_count: number;
-        addon_count: number;
-        irr: string | number;
-      }>(),
+    // The same money as `earned_irr`, one row per service.
+    salesByService(db, bounds),
   ]);
 
   const salesIrr = Number(flows?.sales_irr ?? 0);
@@ -474,13 +424,104 @@ export async function shopReport(
       irr: Number(g.irr),
     })),
 
-    byService: (services.results ?? []).map((s) => ({
-      productId: s.product_id,
-      name: s.name ?? 'سفارش‌های قدیمی',
-      newCount: s.new_count,
-      renewalCount: s.renewal_count,
-      addonCount: s.addon_count,
-      irr: Number(s.irr),
-    })),
+    byService: services,
   };
+}
+
+/**
+ * From an order `o` to the service it sold, as `p` — shared by every screen
+ * that breaks money down by service, so they cannot attribute one order two
+ * ways. In order: the order's own plan; for an add-on, the plan of the
+ * subscription it was bought for; the plan of the subscription the order
+ * created; and last, the one service on that subscription's panel — only
+ * when the panel has exactly one. See `salesByService`.
+ */
+export const ORDER_PRODUCT_JOINS = `
+  LEFT JOIN subscriptions ts ON ts.id = o.target_subscription_id
+  LEFT JOIN LATERAL (
+    SELECT s.plan_id, s.provider_id FROM subscriptions s
+     WHERE s.order_id = o.id ORDER BY s.id LIMIT 1) os ON true
+  LEFT JOIN product_plans pl ON pl.id = COALESCE(o.plan_id, ts.plan_id, os.plan_id)
+  LEFT JOIN LATERAL (
+    SELECT min(p1.id) AS id FROM products p1
+     WHERE p1.provider_id = COALESCE(os.provider_id, ts.provider_id)
+    HAVING count(*) = 1) solo ON pl.id IS NULL
+  LEFT JOIN products p ON p.id = COALESCE(pl.product_id, solo.id)`;
+
+/** The name the page gives the one bucket of orders that name no service. */
+export const LEGACY_SERVICE_NAME = 'سفارش‌های قدیمی';
+
+/**
+ * The same money as `earnedIrr`, one row per service.
+ *
+ * Sam, 2026-09-21: «سرویس الماس چقدر فروختیم؟ یا سرویس open vpn؟». The
+ * answer has to come from the order, and an order names its service by
+ * three different routes:
+ *
+ *   - a purchase or a renewal names its plan, and a plan names its product;
+ *   - an add-on (`ADD_VOLUME`, `ADD_TIME`) names no plan at all, only the
+ *     subscription it was added to — so it is attributed to the service
+ *     that subscription is on, which is where the customer thinks the
+ *     money went;
+ *   - an imported order names no plan — `plan_name_at_sale` is free text
+ *     like «1ماهه-50گیگ-249.000ت🚀» that names no service — but the
+ *     subscription it created names its PANEL, and every panel the old bot
+ *     sold from carries exactly one service today. So an order is attributed
+ *     through its subscription's panel when that panel has one service and
+ *     only then. On production, 2026-09-22, that placed 7,533 of 8,413
+ *     imported orders (1.19 of 1.37 billion Toman: تیتانیوم 590.8M, الماس
+ *     383.9M, نامحدود 154.2M, طلایی 58.3M). What still names nothing — no
+ *     subscription, or a subscription with no panel — falls to
+ *     `p.id IS NULL`, one row the page labels «سفارش‌های قدیمی» rather than
+ *     pretending to a breakdown the old data cannot give. A panel with two
+ *     services (وایرگارد, openvpn) is never guessed at.
+ *
+ * Restricted to the four kinds that are a sale, which is what makes the
+ * rows add up to `earned_irr` exactly: a top-up is money moving into a
+ * wallet, a TRANSFER is zero by construction, and a TRIAL is free.
+ *
+ * Shared with `shopProfit`, so «فروش» on the stats screen and «فروش» on the
+ * profit screen are one query and cannot disagree.
+ */
+// ponytail: a plan deleted from the catalogue takes its orders to the
+// legacy row with it (`plan_id` is ON DELETE SET NULL). Today the routes
+// refuse to delete a plan that any order references, so this cannot
+// happen; resolve through `subscriptions.order_id` if it ever does.
+export async function salesByService(
+  db: Db,
+  bounds: { start: number | null; end: number | null },
+): Promise<ServiceTotal[]> {
+  const orders = rangeClause('o.completed_at', bounds, 1);
+  const rows = await db
+    .prepare(
+      `SELECT p.id                                                            AS product_id,
+              p.name,
+              count(*) FILTER (WHERE o.kind = 'NEW_PURCHASE')::int            AS new_count,
+              count(*) FILTER (WHERE o.kind = 'RENEWAL')::int                 AS renewal_count,
+              count(*) FILTER (WHERE o.kind IN ('ADD_VOLUME','ADD_TIME'))::int AS addon_count,
+              COALESCE(sum(o.total_irr), 0)                                   AS irr
+         FROM orders o
+         ${ORDER_PRODUCT_JOINS}
+        WHERE o.status = 'COMPLETED'
+          AND o.kind IN ('NEW_PURCHASE','RENEWAL','ADD_VOLUME','ADD_TIME')${orders.sql}
+        GROUP BY p.id, p.name
+        ORDER BY sum(o.total_irr) DESC, p.id`,
+    )
+    .bind(...orders.binds)
+    .all<{
+      product_id: number | null;
+      name: string | null;
+      new_count: number;
+      renewal_count: number;
+      addon_count: number;
+      irr: string | number;
+    }>();
+  return (rows.results ?? []).map((s) => ({
+    productId: s.product_id === null ? null : Number(s.product_id),
+    name: s.name ?? LEGACY_SERVICE_NAME,
+    newCount: s.new_count,
+    renewalCount: s.renewal_count,
+    addonCount: s.addon_count,
+    irr: Number(s.irr),
+  }));
 }
