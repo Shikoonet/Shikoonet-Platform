@@ -52,7 +52,7 @@ import { actionsFor, tierFor } from './serviceActions.js';
 import { deliverFromStock, failingSinceMs, STOCK_GRACE_MS, type StockDelivery } from './stock.js';
 import { balanceFor, creditRenewalCashback, refundOrder, walletPaidOnOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
-import { payReferralCommission } from './referral.js';
+import { payReferralCommission, type CommissionRates } from './referral.js';
 import { report } from './reports.js';
 import { createLogger } from '@shikoo/domain';
 
@@ -981,7 +981,7 @@ async function deliver(
       volumeGb,
       durationDays,
       expiresAt,
-      shop.commissionPercent,
+      referralRates(shop),
       result.held === true,
     );
   } catch (err) {
@@ -1037,7 +1037,7 @@ async function writeSubscription(
   volumeGb: number | null,
   durationDays: number | null,
   expiresAt: Date | null,
-  commissionPercent: number,
+  commission: CommissionRates,
   /**
    * The account was created `on_hold` (#325): the row is ON_HOLD, has no
    * `activated_at`, and — the part that matters — no `expires_at`. The date
@@ -1097,7 +1097,7 @@ async function writeSubscription(
         )
         .run();
     }
-    await complete(tx, row.order_id, commissionPercent);
+    await complete(tx, row.order_id, commission);
   });
 }
 
@@ -1373,7 +1373,7 @@ async function renew(
   if (!adapter.renew) {
     // A manual product, or a panel type nobody automated. The money is real and
     // the sale happened; what is outstanding is somebody's action.
-    await complete(db, row.order_id, shop.commissionPercent);
+    await complete(db, row.order_id, referralRates(shop));
     return say(menu.serviceBeingPrepared(row.order_public_id));
   }
 
@@ -1534,7 +1534,7 @@ async function renew(
         )
         .first<{ expires_at: string | null }>();
       storedExpiry = kept?.expires_at == null ? null : new Date(kept.expires_at);
-      await complete(tx, row.order_id, shop.commissionPercent);
+      await complete(tx, row.order_id, referralRates(shop));
     });
     return say(menu.addonApplied(addon.kind, addon.quantity, serviceName, storedExpiry));
   }
@@ -1592,7 +1592,7 @@ async function renew(
         row.plan_provider_name,
       )
       .run();
-    await complete(tx, row.order_id, shop.commissionPercent);
+    await complete(tx, row.order_id, referralRates(shop));
     // In the same transaction as COMPLETED, so a renewal that ends up rolled
     // back cannot leave a customer credited for a service they did not get.
     cashbackIrr = await creditRenewalCashback(tx, row.order_id, renewCashbackPercent);
@@ -1846,6 +1846,14 @@ async function reportFor(
   }
 }
 
+/** The shop's two referral rates, in the shape `payReferralCommission` takes. */
+function referralRates(shop: {
+  commissionPercent: number;
+  renewalCommissionPercent: number;
+}): CommissionRates {
+  return { first: shop.commissionPercent, renewal: shop.renewalCommissionPercent };
+}
+
 function numberOrNull(v: string | number | null | undefined): number | null {
   return v === null || v === undefined ? null : Number(v);
 }
@@ -1853,7 +1861,7 @@ function numberOrNull(v: string | number | null | undefined): number | null {
 async function complete(
   tx: D1Database | D1DatabaseSession,
   orderId: number,
-  commissionPercent: number,
+  commission: CommissionRates,
 ): Promise<void> {
   const done = await tx
     .prepare(
@@ -1863,7 +1871,7 @@ async function complete(
     .bind(orderId)
     .run();
   if (done.meta.changes !== 1) throw new LostTheClaim(orderId);
-  const paid = await payReferralCommission(tx as D1DatabaseSession, orderId, commissionPercent);
+  const paid = await payReferralCommission(tx as D1DatabaseSession, orderId, commission);
   if (paid === null) return;
   // «🎁 گزارش پورسانت ها» — `function.php:1083`, the two Telegram ids and
   // the clock, in the transaction that paid it.

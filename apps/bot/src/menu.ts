@@ -1482,23 +1482,25 @@ export function helpArticleScreen(title: string, body: string): string {
 /**
  * The referral screen.
  *
- * The percentage and the "first purchase" limit are stated because they are the
- * whole deal: production pays ten percent of a referred customer's FIRST
- * purchase and nothing after it, and a screen that said "commission on your
- * friends' purchases" would be selling something that does not exist.
+ * Both rates are stated because they are the whole deal: the referred
+ * customer's FIRST purchase pays one, each of their renewals pays the other,
+ * and nothing else pays at all (Sam, 2026-09-22). A screen that said
+ * "commission on your friends' purchases" would be selling something that
+ * does not exist.
  */
 export function referralScreen(
   link: string,
   invited: number,
   earnedIrr: number,
   percent: number,
+  renewPercent: number,
 ): string {
   const t = TEXTS_NOW;
   return [
     t.raw('REFERRAL_TITLE'),
     '',
     // No parse_mode anywhere in this bot, so emphasis is quotation marks.
-    t.render('REFERRAL_TERMS', { percent }),
+    t.render('REFERRAL_TERMS', { percent, renewPercent }),
     '',
     t.render('REFERRAL_INVITED', { count: invited.toLocaleString('en-US') }),
     t.render('REFERRAL_EARNED', { amount: formatToman(earnedIrr) }),

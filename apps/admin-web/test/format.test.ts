@@ -193,9 +193,12 @@ describe('the ledger, in Persian', () => {
     // The percentage is the only thing the note adds to `kind`, so it survives
     // — in Persian digits, like every other number on the screen.
     expect(entryNoteFa('RENEWAL_CASHBACK', '5% of a renewal')).toBe('۵٪ هدیهٔ تمدید');
-    expect(entryNoteFa('REFERRAL_BONUS', '10% of a first purchase')).toBe(
-      '۱۰٪ پورسانت اولین خرید زیرمجموعه',
+    expect(entryNoteFa('REFERRAL_BONUS', '30% of a first purchase')).toBe(
+      '۳۰٪ پورسانت اولین خرید زیرمجموعه',
     );
+    // The same note on a different kind means something else: a renewal's
+    // commission to the referrer, not the customer's own cashback.
+    expect(entryNoteFa('REFERRAL_BONUS', '10% of a renewal')).toBe('۱۰٪ پورسانت تمدید زیرمجموعه');
   });
 
   it('leaves a note an operator typed alone', () => {

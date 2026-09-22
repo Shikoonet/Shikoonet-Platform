@@ -250,10 +250,16 @@ describe('reading the shop settings', () => {
     // row, not an instruction to pay ten times the purchase.
     for (const bad of ['1000', '-5', 'ten', '']) {
       await put('bot', 'affiliatespercentage', bad);
-      expect((await loadShopSettings(db)).commissionPercent, bad).toBe(10);
+      expect((await loadShopSettings(db)).commissionPercent, bad).toBe(30);
+      await put('bot', 'affiliatespercentage_renewal', bad);
+      expect((await loadShopSettings(db)).renewalCommissionPercent, bad).toBe(10);
     }
     await put('bot', 'affiliatespercentage', '15');
-    expect((await loadShopSettings(db)).commissionPercent).toBe(15);
+    await put('bot', 'affiliatespercentage_renewal', '0');
+    const shop = await loadShopSettings(db);
+    expect(shop.commissionPercent).toBe(15);
+    // Zero is a real answer, not a broken row: it switches the renewal half off.
+    expect(shop.renewalCommissionPercent).toBe(0);
   });
 
   it('converts the Toman limits to Rial exactly once', async () => {
@@ -833,7 +839,7 @@ describe('a settings read that fails', () => {
   const staleRead = () => loadShopSettings(db, Date.now() + 60_000);
 
   it('serves the last good read rather than the shipped defaults', async () => {
-    // The shipped default is 10. The admin's number here is 5, and it is the
+    // The shipped default is 30. The admin's number here is 5, and it is the
     // one that must survive: a single connection reset used to pay every
     // referrer double, commit it, and leave one line in the log.
     await put('bot', 'affiliatespercentage', '5');

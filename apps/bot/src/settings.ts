@@ -176,6 +176,8 @@ export interface ShopSettings {
   reportTopics: Record<ReportKind, number | null>;
   /** Referral commission on a referred customer's first purchase, in percent. */
   commissionPercent: number;
+  /** Referral commission on each of their renewals, in percent. 0 is off. */
+  renewalCommissionPercent: number;
   /**
    * What a renewal pays back into the customer's wallet, in percent —
    * `shopSetting.chashbackextend`, which is 5 in production.
@@ -343,7 +345,8 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
     ReportKind,
     number | null
   >,
-  commissionPercent: 10,
+  commissionPercent: 30,
+  renewalCommissionPercent: 10,
   renewCashbackPercent: 0,
   topupMinIrr: 800_000,
   topupMaxIrr: 100_000_000,
@@ -714,6 +717,10 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       commissionPercent: percent(
         num('affiliatespercentage'),
         DEFAULT_SHOP_SETTINGS.commissionPercent,
+      ),
+      renewalCommissionPercent: percent(
+        num('affiliatespercentage_renewal'),
+        DEFAULT_SHOP_SETTINGS.renewalCommissionPercent,
       ),
       // `chashbackextend_agent` holds a per-reseller override — `{"n":"5","n2":0}`
       // in production — and is deliberately not read: the reseller panel is a
