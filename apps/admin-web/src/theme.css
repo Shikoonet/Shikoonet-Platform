@@ -2008,6 +2008,13 @@ details[open] > .retention-row {
   width: 120px;
   accent-color: var(--success);
 }
+/* Inside a table the column sets the width, and a flex item shrinks to
+   nothing: on a phone the share bar vanished and left a bare percentage that
+   read as a missing element. It shrinks now instead of disappearing, and the
+   percentage beside it carries the figure at any width. */
+.table .broadcast-progress progress {
+  width: clamp(2.5rem, 8vw, 120px);
+}
 .app-header__center {
   display: flex;
   align-items: center;
