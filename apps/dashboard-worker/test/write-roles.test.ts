@@ -543,6 +543,13 @@ describe('every write route, asked directly', () => {
     // send every customer who buys from that shelf, so ADMIN-only like the
     // rest of «قفسهٔ انبار», and audited; `shelf-attachments.test.ts` pins
     // the round trip and that the `file_id` never reaches the browser.
-    expect(writeRoutes().length).toBe(179);
+    //
+    // 180–181, 2026-09-22: «اشخاص» (0092). `POST /admin/revenue-adjustments/
+    // parties` and `PATCH …/parties/:id` name the people the ledger pays —
+    // partners and their profit share among them. Under the revenue-adjustments
+    // prefix, so a READ_ONLY operator never reaches them; ADMIN-only in the
+    // handler like the rest of the ledger, and audited as `party.added` /
+    // `party.edited`. `people-and-profit.test.ts` pins both.
+    expect(writeRoutes().length).toBe(181);
   });
 });

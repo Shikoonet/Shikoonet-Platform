@@ -14,7 +14,12 @@
  *     database is the only participant that agrees with it.
  *   * **revenue** is `COMPLETED` orders only. An order that is merely `PAID`
  *     has money against it and nothing delivered; counting it is how a later
- *     refund makes the headline retroactively wrong.
+ *     refund makes the headline retroactively wrong. And never a
+ *     `WALLET_TOPUP` or a `TRANSFER`: a top-up is the customer's own money
+ *     moving into the shop's hands, counted again when it is spent. Until
+ *     2026-09-22 this query had no kind filter while `shopReport`'s
+ *     `earned_irr` did, so the dashboard read 1,570,901,395 Toman and «آمار
+ *     فروشگاه» 1,565,138,350 — the 5,763,045 between them was 22 top-ups.
  *   * **wallet** is summed as it stands, negative balances included. Netting
  *     them out would hide exactly the accounts worth looking at.
  *
@@ -82,7 +87,7 @@ export async function shopStats(db: Db): Promise<ShopStats> {
         `SELECT COALESCE(SUM(total_irr), 0)::bigint AS irr,
                 COALESCE(SUM(total_irr) FILTER (WHERE created_at >= ${SINCE_TODAY}), 0)::bigint
                   AS irr_today
-           FROM orders WHERE status = 'COMPLETED'`,
+           FROM orders WHERE status = 'COMPLETED' AND kind NOT IN ('WALLET_TOPUP','TRANSFER')`,
       )
       .first<{ irr: number; irr_today: number }>(),
     db

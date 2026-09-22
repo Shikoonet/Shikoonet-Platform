@@ -95,6 +95,54 @@ const serviceTotalIrr = (rows: ReadonlyArray<{ irr: number }>) =>
  */
 const share = (irr: number, total: number) => (total > 0 ? (irr / total) * 100 : 0);
 
+/**
+ * The period buttons and their date fields — shared with «سود و زیان», so the
+ * two screens offer the same windows and a month means the same month on both.
+ */
+export function RangeBar(p: {
+  range: StatsRange;
+  onRange: (r: StatsRange) => void;
+  jDay: JalaliDate;
+  onDay: (d: JalaliDate) => void;
+  jFrom: JalaliDate;
+  onFrom: (d: JalaliDate) => void;
+  jTo: JalaliDate;
+  onTo: (d: JalaliDate) => void;
+}) {
+  return (
+    // Two rows, not one. Eight buttons and two date fields on a single
+    // wrapping line put «تا» alone on a second row flush to the left, which
+    // read as a broken layout rather than as the other half of a pair.
+    <div className="toolbar statsbar">
+      <div className="statsbar__ranges">
+        {RANGES.map((r) => (
+          <button
+            key={r.id}
+            type="button"
+            className={`btn ${p.range === r.id ? 'btn-primary' : ''}`}
+            onClick={() => p.onRange(r.id)}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+
+      {(p.range === 'day' || p.range === 'between') && (
+        <div className="statsbar__dates">
+          {p.range === 'day' ? (
+            <DateField label="تاریخ" value={p.jDay} onChange={p.onDay} />
+          ) : (
+            <>
+              <DateField label="از" value={p.jFrom} onChange={p.onFrom} />
+              <DateField label="تا" value={p.jTo} onChange={p.onTo} />
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function StatsPage() {
   const [range, setRange] = useState<StatsRange>('all');
   // Held as a Jalali date because that is what the operator picks. The wire
@@ -187,36 +235,16 @@ export function StatsPage() {
         </div>
       </div>
 
-      {/* Two rows, not one. Eight buttons and two date fields on a single
-          wrapping line put «تا» alone on a second row flush to the left, which
-          read as a broken layout rather than as the other half of a pair. */}
-      <div className="toolbar statsbar">
-        <div className="statsbar__ranges">
-          {RANGES.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              className={`btn ${range === r.id ? 'btn-primary' : ''}`}
-              onClick={() => setRange(r.id)}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-
-        {(range === 'day' || range === 'between') && (
-          <div className="statsbar__dates">
-            {range === 'day' ? (
-              <DateField label="تاریخ" value={jDay} onChange={setJDay} />
-            ) : (
-              <>
-                <DateField label="از" value={jFrom} onChange={setJFrom} />
-                <DateField label="تا" value={jTo} onChange={setJTo} />
-              </>
-            )}
-          </div>
-        )}
-      </div>
+      <RangeBar
+        range={range}
+        onRange={setRange}
+        jDay={jDay}
+        onDay={setJDay}
+        jFrom={jFrom}
+        onFrom={setJFrom}
+        jTo={jTo}
+        onTo={setJTo}
+      />
 
       {err && <div className="alert alert-error">{err}</div>}
       {!data && !err && <p className="muted">در حال بارگذاری…</p>}
@@ -289,6 +317,18 @@ export function StatsPage() {
                       label="درآمد دستی"
                       foot="فروش ریسلری که دستی ثبت شده"
                     />
+                    {/* Its own card, because it is not spending: the «مانده»
+                        beside it is after the partners took their share, and
+                        «سود و زیان» is where the profit before that lives. */}
+                    {Boolean(books.partnerDrawsIrr) && (
+                      <Stat
+                        tone="tone-blue"
+                        icon="wallet"
+                        value={tomanCompact(books.partnerDrawsIrr)}
+                        label="برداشت شرکا"
+                        foot="سهم سودی که شرکا برداشته‌اند — هزینه نیست"
+                      />
+                    )}
                     <Stat
                       tone={net < 0 ? 'tone-orange' : 'tone-green'}
                       icon="bars"
