@@ -10,8 +10,15 @@
  *     Discount           offDiscountaffiliates the joining gift is OFF
  *     scorestatus        0                     the points system is OFF
  *
- * So one rule is live: **ten percent of what a referred customer pays for their
- * first purchase goes to whoever referred them.** The joining gift that credits
+ * So one rule was live: ten percent of what a referred customer paid for their
+ * first purchase went to whoever referred them.
+ *
+ * **Sam, 2026-09-22, changed the rule.** Two rates now, both editable in the
+ * dashboard's settings: `bot/affiliatespercentage` on the referred customer's
+ * FIRST purchase (30 from migration 0093), and `bot/affiliatespercentage_renewal`
+ * on EVERY renewal they make, of any of their services, as often as they renew
+ * (10). A second or third new purchase pays nothing, and neither does an
+ * add-on («فعلاً نداریم»). The joining gift that credits
  * both sides half of `price_Discount` is switched off, so it is not built —
  * building a disabled feature is how you get a second, untested money path.
  *
@@ -31,7 +38,7 @@ import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 type Db = D1Database | D1DatabaseSession;
 
 /**
- * The rate when the setting cannot be read.
+ * The first-purchase rate when the setting cannot be read.
  *
  * The live rate is `bot/affiliatespercentage` in `settings`, which the
  * migration filled with production's own 10 and nothing read until now. It is
@@ -39,7 +46,23 @@ type Db = D1Database | D1DatabaseSession;
  * beyond the transaction it is handed, and so a test can state the rate it is
  * asserting instead of importing the constant it is checking.
  */
-export const COMMISSION_PERCENT = 10;
+export const COMMISSION_PERCENT = 30;
+
+/** The renewal rate when the setting cannot be read. */
+export const RENEWAL_COMMISSION_PERCENT = 10;
+
+/** The two rates `payReferralCommission` chooses between, by order kind. */
+export interface CommissionRates {
+  /** Percent of the referred customer's first purchase. */
+  first: number;
+  /** Percent of each of their renewals. */
+  renewal: number;
+}
+
+export const DEFAULT_COMMISSION_RATES: CommissionRates = {
+  first: COMMISSION_PERCENT,
+  renewal: RENEWAL_COMMISSION_PERCENT,
+};
 
 /** `t.me/<bot>?start=<userId>` — the payload is the referrer's own row id. */
 export function referralLink(botUsername: string, userId: number): string {
@@ -106,21 +129,26 @@ export async function referralSummary(db: Db, userId: number): Promise<ReferralS
 }
 
 /**
- * Pays the referrer, if this order is the referred customer's first purchase.
+ * Pays the referrer for this order, if it is one that earns a commission.
  *
  * Called from the one place an order becomes real. Everything it needs is read
  * inside the caller's transaction, and the write is guarded by the wallet's
  * unique key, so calling it twice for one order pays once.
  *
- * "First purchase" is counted the way `function.php:939` counts it: the
- * customer's orders that are past AWAITING_PAYMENT, this one included. A
- * deposit is not a purchase and is excluded — paying commission on a wallet
- * top-up would pay it again on whatever the top-up then buys.
+ * Which orders earn, and at which rate, is decided by kind alone:
+ *
+ *   - `RENEWAL` — always, at `rates.renewal`. Every renewal of every service.
+ *   - `NEW_PURCHASE` — at `rates.first`, and only when it is the customer's
+ *     only new purchase past AWAITING_PAYMENT, this one included. Counted
+ *     over `NEW_PURCHASE` alone: a deposit, a trial or a renewal before it
+ *     must not make the first purchase look like a second.
+ *   - anything else — a top-up (paying on it would pay again on whatever it
+ *     then buys), a trial, an add-on, a transfer — nothing.
  */
 export async function payReferralCommission(
   tx: D1DatabaseSession,
   orderId: number,
-  commissionPercent: number = COMMISSION_PERCENT,
+  rates: CommissionRates = DEFAULT_COMMISSION_RATES,
 ): Promise<number | null> {
   const order = await tx
     .prepare(
@@ -137,29 +165,36 @@ export async function payReferralCommission(
       referred_by: number | null;
     }>();
   if (!order || order.referred_by === null) return null;
-  if (order.kind === 'WALLET_TOPUP') return null;
   if (order.total_irr <= 0) return null;
 
-  const counted = await tx
-    .prepare(
-      // TRIAL is excluded for the same reason WALLET_TOPUP is: neither is a
-      // purchase. A trial order is written PAID with `total_irr = 0`
-      // (`order.ts`'s `placeTrialOrder`), so counting it made the referred
-      // customer's FIRST REAL purchase their second order — and this function
-      // pays only on the first. The ordinary funnel is trial then buy, so the
-      // commission was being withheld from most of the people who earned it,
-      // silently and with no row anywhere saying so.
-      `SELECT count(*)::int AS n FROM orders
-        WHERE user_id = ?1 AND kind NOT IN ('WALLET_TOPUP', 'TRIAL')
-          AND status IN ('PAID', 'PROVISIONING', 'COMPLETED')`,
-    )
-    .bind(order.user_id)
-    .first<{ n: number }>();
-  if ((counted?.n ?? 0) > 1) return null;
+  let percent: number;
+  let what: string;
+  if (order.kind === 'RENEWAL') {
+    percent = rates.renewal;
+    what = 'a renewal';
+  } else if (order.kind === 'NEW_PURCHASE') {
+    const counted = await tx
+      .prepare(
+        // Only NEW_PURCHASE is counted. Until 2026-09-22 this counted every
+        // kind but WALLET_TOPUP and TRIAL — and before that TRIAL too, which
+        // withheld the commission from every customer who tried first.
+        `SELECT count(*)::int AS n FROM orders
+          WHERE user_id = ?1 AND kind = 'NEW_PURCHASE'
+            AND status IN ('PAID', 'PROVISIONING', 'COMPLETED')`,
+      )
+      .bind(order.user_id)
+      .first<{ n: number }>();
+    if ((counted?.n ?? 0) > 1) return null;
+    percent = rates.first;
+    what = 'a first purchase';
+  } else {
+    return null;
+  }
 
   // Rounded down: a commission is money leaving, and the half Rial that
-  // rounding up would invent has to come from somewhere.
-  const amountIrr = Math.floor((order.total_irr * commissionPercent) / 100);
+  // rounding up would invent has to come from somewhere. A rate of 0 is how
+  // the dashboard switches one of the two off.
+  const amountIrr = Math.floor((order.total_irr * percent) / 100);
   if (amountIrr <= 0) return null;
 
   const done = await tx
@@ -172,7 +207,7 @@ export async function payReferralCommission(
       order.referred_by,
       amountIrr,
       order.id,
-      `${commissionPercent}% of a first purchase`,
+      `${percent}% of ${what}`,
       `referral:${order.id}`,
     )
     .run();

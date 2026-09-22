@@ -2837,6 +2837,7 @@ async function handleCallback(
           summary.invited,
           summary.earnedIrr,
           SHOP.commissionPercent,
+          SHOP.renewalCommissionPercent,
         ),
         menu.referralMenu(),
       );

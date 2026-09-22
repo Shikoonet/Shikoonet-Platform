@@ -130,7 +130,7 @@ export function ReferralsPage() {
             icon="wallet"
             value={tomanCompact(totals.commissionIrr)}
             label="پورسانت پرداخت‌شده"
-            foot="۱۰٪ اولین خرید هر زیرمجموعه"
+            foot="از خرید اول و تمدیدهای زیرمجموعه‌ها"
           />
         </div>
       )}

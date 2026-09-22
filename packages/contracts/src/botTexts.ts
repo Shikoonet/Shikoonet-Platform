@@ -1739,10 +1739,10 @@ export const TEXTS = {
   },
   REFERRAL_TERMS: {
     default:
-      'هر کسی با لینک شما وارد شود، از «اولین خرید» او {percent}٪ به کیف پول شما اضافه می‌شود.',
-    placeholders: ['percent'],
+      'هر کسی با لینک شما وارد شود، از «اولین خرید» او {percent}٪ و از «هر تمدید» او {renewPercent}٪ به کیف پول شما اضافه می‌شود.',
+    placeholders: ['percent', 'renewPercent'],
     screen: 'referral',
-    hint: 'شرح پورسانت — «اولین خرید» عمداً گفته می‌شود',
+    hint: 'شرح پورسانت — {percent} درصد خرید اول، {renewPercent} درصد هر تمدید',
   },
   REFERRAL_INVITED: {
     default: '👤 دعوت‌شده‌ها: {count}',
