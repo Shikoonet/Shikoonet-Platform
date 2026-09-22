@@ -793,29 +793,28 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
   });
 
   /**
-   * A plan the shelf screen lists — one on a panel with no automated adapter,
-   * which is what «قفسهٔ تازه» builds and what an account shop is. Nothing
-   * stops the bot sending a panel-delivered plan's papers; this only keeps
-   * the route to the plans the screen shows.
+   * A plan that exists — any plan, shelf or panel.
+   *
+   * Until 2026-09-22 this was «a plan the shelf screen lists»: one with no
+   * automated adapter. The bot never cared — `tell()` sends a plan's papers
+   * whoever delivered it — so the rule only kept the route to the one screen
+   * that showed it. Then Sam wanted a WireGuard service's install video and
+   * client downloads sent the same way, and a WireGuard service is a panel
+   * plan: «سرویس‌ها» now opens the same card from any config's drawer.
    */
-  async function shelfPlan(db: D1Database, planId: number): Promise<boolean> {
+  async function knownPlan(db: D1Database, planId: number): Promise<boolean> {
     if (!Number.isInteger(planId) || planId <= 0) return false;
     const row = await db
-      .prepare(
-        `SELECT pr.kind FROM product_plans pl
-           JOIN products p ON p.id = pl.product_id
-           LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
-          WHERE pl.id = ?1`,
-      )
+      .prepare(`SELECT 1 AS ok FROM product_plans WHERE id = ?1`)
       .bind(planId)
-      .first<{ kind: string | null }>();
-    return row !== null && !isAutomated(row.kind ?? '');
+      .first<{ ok: number }>();
+    return row !== null;
   }
 
   app.get('/api/v1/admin/stock/shelves/:planId/attachments', async (c) => {
     if (c.get('identity').role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
     const planId = Number(c.req.param('planId'));
-    if (!(await shelfPlan(c.env.DB, planId))) return c.json({ ok: false, error: 'not_found' }, 404);
+    if (!(await knownPlan(c.env.DB, planId))) return c.json({ ok: false, error: 'not_found' }, 404);
 
     // The plan's own words over the service's, as `planAttrsFor` reads them
     // at delivery — and the plan's is what «ذخیره» on this card writes.
@@ -921,7 +920,7 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
     const planId = Number(c.req.param('planId'));
-    if (!(await shelfPlan(c.env.DB, planId))) return c.json({ ok: false, error: 'not_found' }, 404);
+    if (!(await knownPlan(c.env.DB, planId))) return c.json({ ok: false, error: 'not_found' }, 404);
     const q = AttachmentQuery.safeParse(Object.fromEntries(new URL(c.req.url).searchParams));
     if (!q.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
 
@@ -962,7 +961,7 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
     const planId = Number(c.req.param('planId'));
-    if (!(await shelfPlan(c.env.DB, planId))) return c.json({ ok: false, error: 'not_found' }, 404);
+    if (!(await knownPlan(c.env.DB, planId))) return c.json({ ok: false, error: 'not_found' }, 404);
     const body = AttachmentLink.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const post = parseChannelPostLink(body.data.postLink);

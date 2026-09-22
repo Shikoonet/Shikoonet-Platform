@@ -67,6 +67,7 @@ import { LayoutEditor } from './LayoutEditor.js';
 import { BadgeField, badgeValue, STYLES } from './BadgeField.js';
 import { anyHosted, GroupForm, InboundCount, InboundPicker } from '../groups.js';
 import { useAdminWriteProps } from '../role.js';
+import { ShelfPapers } from './StockPage.js';
 
 const PAGE_SIZE = 25;
 
@@ -863,6 +864,7 @@ function ServiceCard({
              gets wrong. */
           key={editing.id}
           config={editing}
+          serviceName={service.name}
           kind={kind}
           onClose={() => setEditing(null)}
           onChanged={onChanged}
@@ -1089,6 +1091,7 @@ function ConfigTable({
         <ConfigDrawer
           key={editing.config.id}
           config={editing.config}
+          serviceName={editing.service.name}
           kind={kindOf(editing.service)}
           onClose={() => setEditing(null)}
           onChanged={onChanged}
@@ -1354,12 +1357,15 @@ function NewConfigCard({
 
 function ConfigDrawer({
   config,
+  serviceName,
   kind,
   onClose,
   onChanged,
   onGone,
 }: {
   config: ConfigRow;
+  /** For the heading of the papers card — «سرویس / کانفیگ». */
+  serviceName: string;
   /** The service's kind — which fields this config has. */
   kind: ProductKind;
   onClose: () => void;
@@ -1375,6 +1381,7 @@ function ConfigDrawer({
   const [badge, setBadge] = useState(config.badge ?? '');
   const [buttonStyle, setButtonStyle] = useState<ButtonStyle | null>(config.buttonStyle ?? null);
   const [deliveryNote, setDeliveryNote] = useState(config.deliveryNote ?? '');
+  const [papers, setPapers] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [refused, setRefused] = useState<Refused>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -1499,7 +1506,28 @@ function ConfigDrawer({
           onChange={(e) => setDeliveryNote(e.target.value)}
           placeholder="خالی: متن تحویل سرویس"
         />
+        {/* The files, beside the words they go out with (Sam, 2026-09-22):
+            an install video, a client's installer, a guide as a PDF — sent
+            after every NEW purchase of this config, in the order filed. The
+            card is the stock page's, which had them for shelves alone. */}
+        <button
+          type="button"
+          className="btn btn-sm"
+          style={{ marginBlockStart: 8 }}
+          aria-expanded={papers}
+          onClick={() => setPapers((open) => !open)}
+        >
+          {papers ? 'بستن فایل‌ها و ویدیوها' : 'فایل و ویدیوی همراه تحویل…'}
+        </button>
       </div>
+      {papers && (
+        <ShelfPapers
+          shelf={{ planId: config.id, planName: config.name, productName: serviceName }}
+          withNote={false}
+          onClose={() => setPapers(false)}
+          onChanged={onChanged}
+        />
+      )}
       <div className="filters">
         <div>
           <label className="form-label" htmlFor="cf-order">

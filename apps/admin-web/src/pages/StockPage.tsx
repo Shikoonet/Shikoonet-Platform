@@ -65,7 +65,7 @@ const MAX_SHELF_PRICE_TOMAN = MAX_SINGLE_PAYMENT_IRR / 10;
  * different services all read «یک‌ماهه», which tells an operator nothing about
  * which one to go and fill.
  */
-function shelfLabel(s: ShelfCount): string {
+function shelfLabel(s: Pick<ShelfCount, 'planName' | 'productName'>): string {
   return planLabel(s.productName, s.planName);
 }
 
@@ -692,6 +692,12 @@ function kindOf(file: File): ShelfAttachment['kind'] {
 /**
  * The papers on one shelf (#377): what the bot sends after every sale from it.
  *
+ * Any plan's, since 2026-09-22 — «سرویس‌ها» opens this same card from a
+ * config's drawer, so a WireGuard or OpenVPN panel plan carries its install
+ * video the way a shelf does. `withNote={false}` there, because the drawer
+ * already edits the same `delivery_note` a few lines above it; two fields for
+ * one value in one view is a stale overwrite waiting for its save button.
+ *
  * The note is the plan's `delivery_note` — the same words `provision.ts` has
  * appended to every delivery since before this card existed — shown here
  * because this is where an operator setting up an OpenVPN shelf looks for it.
@@ -702,14 +708,16 @@ function kindOf(file: File): ShelfAttachment['kind'] {
  * server's 48 MiB (nginx) is added by its channel link instead; the page
  * refuses the big file before sending a byte of it.
  */
-function ShelfPapers({
+export function ShelfPapers({
   shelf,
   onClose,
   onChanged,
+  withNote = true,
 }: {
-  shelf: ShelfCount;
+  shelf: Pick<ShelfCount, 'planId' | 'planName' | 'productName'>;
   onClose: () => void;
   onChanged: () => void;
+  withNote?: boolean;
 }) {
   const w = useAdminWriteProps();
   const [items, setItems] = useState<ShelfAttachment[]>([]);
@@ -760,7 +768,7 @@ function ShelfPapers({
     setUploadPct(0);
     await run(async () => {
       await api.uploadShelfAttachment(shelf.planId, f, kindOf(f), setUploadPct);
-      return `«${f.name}» به ربات داده شد و به قفسه پیوست شد.`;
+      return `«${f.name}» به ربات داده شد و پیوست شد.`;
     });
     setUploadPct(null);
     // So picking the same file again fires `onChange`.
@@ -780,41 +788,45 @@ function ShelfPapers({
       {done && <div className="alert alert-info">{done}</div>}
 
       <p className="muted">
-        بعد از تحویل هر خرید از این قفسه، ربات اول توضیح را زیر پیام تحویل می‌نویسد و بعد این
+        بعد از تحویل هر خرید، ربات اول توضیح را زیر پیام تحویل می‌نویسد و بعد این
         فایل‌ها را به همان ترتیب می‌فرستد. هر فایل یک بار به گروه گزارش فرستاده می‌شود تا ربات
         آن را داشته باشد.
       </p>
 
-      <label className="form-label" htmlFor="papers-note">
-        توضیح — زیر پیام تحویل
-      </label>
-      <textarea
-        id="papers-note"
-        className="form-control"
-        rows={3}
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        placeholder="مثلاً: فایل کانفیگ را در OpenVPN Connect وارد کن؛ ویدیو نصب را ببین."
-        {...w}
-      />
-      <div style={{ marginBlockStart: 8 }}>
-        <button
-          type="button"
-          className="btn btn-sm btn-primary"
-          disabled={busy || note.trim() === savedNote.trim()}
-          onClick={() =>
-            void run(async () => {
-              await api.updatePlan(shelf.planId, {
-                deliveryNote: note.trim() === '' ? null : note.trim(),
-              });
-              return 'توضیح ذخیره شد.';
-            })
-          }
-          {...w}
-        >
-          ذخیرهٔ توضیح
-        </button>
-      </div>
+      {withNote && (
+        <>
+          <label className="form-label" htmlFor="papers-note">
+            توضیح — زیر پیام تحویل
+          </label>
+          <textarea
+            id="papers-note"
+            className="form-control"
+            rows={3}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="مثلاً: فایل کانفیگ را در OpenVPN Connect وارد کن؛ ویدیو نصب را ببین."
+            {...w}
+          />
+          <div style={{ marginBlockStart: 8 }}>
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              disabled={busy || note.trim() === savedNote.trim()}
+              onClick={() =>
+                void run(async () => {
+                  await api.updatePlan(shelf.planId, {
+                    deliveryNote: note.trim() === '' ? null : note.trim(),
+                  });
+                  return 'توضیح ذخیره شد.';
+                })
+              }
+              {...w}
+            >
+              ذخیرهٔ توضیح
+            </button>
+          </div>
+        </>
+      )}
 
       <div className="table-wrap" style={{ marginBlockStart: 16 }}>
         <table className="app-table">
@@ -912,7 +924,7 @@ function ShelfPapers({
                 void run(async () => {
                   await api.linkShelfAttachment(shelf.planId, postLink.trim());
                   setPostLink('');
-                  return 'فایلِ پست به قفسه پیوست شد.';
+                  return 'فایلِ پست پیوست شد.';
                 })
               }
               {...w}
