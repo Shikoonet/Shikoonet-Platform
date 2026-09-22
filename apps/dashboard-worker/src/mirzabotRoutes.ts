@@ -696,7 +696,10 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
   // rows led the list and LIMIT 30 would have spent itself on them first:
   // the exact fault this function is being changed to fix, inverted. The
   // mapper's `=== 1` hid it, because NULL is not 1 either and the flag still
-  // read false.
+  // read false. `bank_timestamp` is nullable too, hence NULLS LAST on the
+  // ORDER BY: a row with no timestamp reaches this list through the matcher
+  // ids or the exact-amount branch, neither of which mentions the clock, and
+  // it would otherwise head its group and eat the LIMIT the same way.
   const inScope = `COALESCE((t.id IN (${idList})) OR ${ownDay}, FALSE)`;
   const result = await db
     .prepare(
@@ -713,7 +716,7 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
                                           AND m.status IN ('AUTO_VERIFIED','CONFIRMED')))))
        ORDER BY in_scope DESC,
                 (t.financial_account_id = ?${n + 1}) DESC NULLS LAST,
-                t.bank_timestamp DESC
+                t.bank_timestamp DESC NULLS LAST
        LIMIT 30`,
     )
     .bind(

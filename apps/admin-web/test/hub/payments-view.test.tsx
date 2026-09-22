@@ -934,6 +934,52 @@ describe('review drawer', () => {
     expect(defaultCandidateId(ambiguous)).toBeNull();
     expect(defaultCandidateId(item({ id: 'p8', candidates: [candidate('t8', 12)] }))).toBeNull();
   });
+
+  /*
+   * The preselect counts what the panel draws, not what the payload holds. A
+   * folded candidate sits behind a closed <details>, so preselecting one arms
+   * «تایید انتخاب‌شده‌ها» over a transaction the operator never saw and never
+   * chose — the button reads enabled because `selected` is set, and approving
+   * posts that id.
+   */
+  it('never preselects a folded candidate', () => {
+    const onlyFolded = item({
+      id: 'p7',
+      suspectReason: 'OUTSIDE_AUTO_MATCH_WINDOW',
+      candidates: [{ ...candidate('t7', 92), inScope: false }],
+    });
+    expect(defaultCandidateId(onlyFolded)).toBeNull();
+
+    // And the mirror: one visible candidate is still the only one, however
+    // many are folded underneath it.
+    const oneVisible = item({
+      id: 'p6',
+      suspectReason: 'OUTSIDE_AUTO_MATCH_WINDOW',
+      candidates: [
+        { ...candidate('t6a', 92), inScope: true },
+        { ...candidate('t6b', -86_400 * 3), inScope: false },
+      ],
+    });
+    expect(defaultCandidateId(oneVisible)).toBe('t6a');
+  });
+
+  it('leaves the approve button disabled when the only candidate is folded', async () => {
+    mockApi({
+      needs_review: [
+        item({
+          id: 'p1',
+          suspectReason: 'OUTSIDE_AUTO_MATCH_WINDOW',
+          candidates: [{ ...candidate('t7', 92), inScope: false }],
+        }),
+      ],
+    });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
+    await openReviewPanel();
+    const approve = await screen.findByRole('button', { name: 'تایید انتخاب‌شده‌ها' });
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
+  });
 });
 
 describe('the receipt in the review panel', () => {

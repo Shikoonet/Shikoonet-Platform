@@ -5,7 +5,7 @@
  * from what the matcher already wrote to payment_claims / reconciliation_matches.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -45,6 +45,10 @@ beforeAll(async () => {
     .run();
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(async () => {
   await baseEnv.DB.prepare(`DELETE FROM reconciliation_matches`).run();
   await baseEnv.DB.prepare(`DELETE FROM payment_claims`).run();
@@ -78,6 +82,23 @@ interface ClaimSeed {
    * since #307 it lists only claims that have one.
    */
   receipt?: boolean;
+}
+
+/**
+ * 12:30 Tehran on a fixed day, pinned so the *code* reads it too.
+ *
+ * The candidate list is scoped to the claim's Tehran day, so every assertion
+ * about it is really an assertion about which day a timestamp lands on. Left
+ * on the live clock, a run starting at 23:59:50 moves rows across midnight;
+ * hardcoded without pinning, `seedClaim` still stamps `created_at` from the
+ * real clock and drifts further from the fixture every day that passes. Pin
+ * it, and both sides agree forever (rule 5).
+ */
+const PINNED_MIDDAY = Date.parse('2026-09-20T09:00:00Z');
+
+function pinClock(): number {
+  vi.spyOn(Date, 'now').mockReturnValue(PINNED_MIDDAY);
+  return PINNED_MIDDAY;
 }
 
 async function seedClaim(id: string, seed: ClaimSeed = {}) {
@@ -472,7 +493,7 @@ describe('GET /api/v1/payments', () => {
    * nothing (rule 5).
    */
   it('scopes candidates to the claim account on the claim day, and folds the rest in', async () => {
-    const midday = Date.parse('2026-09-20T09:00:00Z'); // 12:30 Tehran
+    const midday = pinClock();
     const now = Date.now();
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO financial_accounts
@@ -540,13 +561,37 @@ describe('GET /api/v1/payments', () => {
   });
 
   /*
+   * `bank_timestamp` is nullable (migrations/0004_payment_hub.sql:145) and a
+   * dateless row reaches this list through the matcher ids or the
+   * exact-amount branch — neither mentions the clock. Postgres sorts NULLs
+   * first under DESC, so such a row would head its group and eat the LIMIT,
+   * the same way the NULL flag did.
+   */
+  it('sorts a candidate with no bank timestamp last, not first', async () => {
+    const midday = pinClock();
+    await seedTx('t-dated', midday + 30_000);
+    await seedTx('t-undated', midday + 40_000);
+    await baseEnv.DB.prepare(
+      `UPDATE transaction_candidates SET bank_timestamp = NULL WHERE id = 't-undated'`,
+    ).run();
+    await seedClaim('c-undated', {
+      suspectReason: 'AMBIGUOUS_TRANSACTIONS',
+      paidClickedAt: midday,
+      suspectMeta: { candidateTransactionIds: ['t-undated'] },
+    });
+
+    const ids = (await get('tab=needs_review')).items[0]!.candidates.map((c) => c.id);
+    expect(ids).toEqual(['t-dated', 't-undated']);
+  });
+
+  /*
    * A FULFILLED_UNRECONCILED claim reconciles over 24 hours, so the matcher's
    * own pick can sit on the far side of midnight. Whatever the matcher
    * weighed is in scope by definition — the panel must not fold away the one
    * row the machine already pointed at.
    */
   it('keeps a matcher candidate in scope even when it fell on another day', async () => {
-    const midday = Date.parse('2026-09-20T09:00:00Z');
+    const midday = pinClock();
     await seedTx('t-next-day', midday + 20 * 3_600_000); // 08:30 Tehran, the day after
     await seedClaim('c-late', {
       suspectReason: 'OUTSIDE_AUTO_MATCH_WINDOW',
@@ -568,7 +613,7 @@ describe('GET /api/v1/payments', () => {
    * «قبلاً…», so it told the operator a spent transaction was free.
    */
   it('marks a candidate that already settled another claim as consumed', async () => {
-    const midday = Date.parse('2026-09-20T09:00:00Z');
+    const midday = pinClock();
     await seedTx('t-spent', midday + 30_000);
     await seedClaim('c-owner', { paidClickedAt: midday - 5_000, status: 'VERIFIED' });
     await seedMatch('c-owner', 't-spent', 'CONFIRMED');

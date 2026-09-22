@@ -447,7 +447,12 @@ export const ALL_TAB_STATES: ReviewState[] = [
 ];
 
 export function defaultCandidateId(item: PaymentItem): string | null {
-  const only = item.candidates.length === 1 ? item.candidates[0] : undefined;
+  // Only what the panel actually draws. A folded candidate is behind a closed
+  // <details>, so preselecting one arms «تایید انتخاب‌شده‌ها» over a
+  // transaction the operator cannot see and never chose — the button reads
+  // enabled because `selected` is set, and approving sends that id.
+  const visible = item.candidates.filter((c) => c.inScope !== false);
+  const only = visible.length === 1 ? visible[0] : undefined;
   if (!only) return null;
   // RECEIPT_MISSING has the same shape: the matcher named exactly one
   // transaction and only the customer's picture is absent.
