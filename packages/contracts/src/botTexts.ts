@@ -778,6 +778,13 @@ export const TEXTS = {
     screen: 'delivery',
     hint: 'خط آخر پیام تحویل',
   },
+  WIREGUARD_CONFIG_CAPTION: {
+    default:
+      '🔐 کانفیگ وایرگارد شما\n\nدر برنامهٔ WireGuard این کد را با دوربین اسکن کنید، یا فایل زیر را وارد (Import) کنید.',
+    placeholders: [],
+    screen: 'delivery',
+    hint: 'زیر عکس QR کانفیگ وایرگارد، بالای فایل .conf — فقط برای سرویسی که وایرگارد دارد',
+  },
   SERVICE_READY_PASSWORD: {
     default: '🔑 گذرواژه: {password}',
     placeholders: ['password'],

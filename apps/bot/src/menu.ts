@@ -2392,6 +2392,11 @@ export function copyLinkMenu(url: string): InlineKeyboard | undefined {
   return [[{ text: '📋 کپی لینک اشتراک', copy_text: { text: url } }]];
 }
 
+/** The caption on a WireGuard config's QR picture, above the .conf file itself. */
+export function wireguardConfigCaption(): string {
+  return TEXTS_NOW.raw('WIREGUARD_CONFIG_CAPTION');
+}
+
 /**
  * The keyboard under a QR picture: copy the link, and get back to the service.
  *
