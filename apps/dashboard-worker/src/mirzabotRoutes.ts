@@ -613,9 +613,10 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
     SELECT t.id, t.amount_irr, t.bank_timestamp, t.financial_account_id,
            fa.display_name AS account_display, fa.bank_name AS account_bank,
            fa.account_hint,
-           EXISTS (SELECT 1 FROM reconciliation_matches m
-                    WHERE m.transaction_candidate_id = t.id
-                      AND m.status IN ('AUTO_VERIFIED','CONFIRMED')) AS consumed
+           (EXISTS (SELECT 1 FROM reconciliation_matches m
+                     WHERE m.transaction_candidate_id = t.id
+                       AND m.status IN ('AUTO_VERIFIED','CONFIRMED')))::int AS consumed`;
+  const from = `
     FROM transaction_candidates t
     LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id`;
 
@@ -628,63 +629,118 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
     account_bank: string | null;
     account_hint: string | null;
     consumed: number;
+    in_scope: number;
   };
 
-  // One list, three sources, and the matcher's own ids no longer hide the
+  // One list, four sources, and the matcher's own ids no longer hide the
   // rest. Until 2026-09-17 a matcher candidate set (usually one credit, just
   // outside the 5-minute window) was the whole list, and everything else on
   // the account — or on any other account — needed «تغییر بانک/حساب» and a
   // reload to even appear. Sam: the panel should bring them itself.
   //
   //   1. whatever the matcher considered, verbatim;
-  //   2. the claim's own account: the exact amount at any time, OR anything
-  //      unspent within half an hour of the click — the customer who typed 120
-  //      for a 119-toman order;
-  //   3. every other account: anything unspent within the same half hour —
-  //      the customer who paid the previous card, or the one the bot rotated
-  //      to a moment later. Approving one of these moves the claim onto that
-  //      account (the approve route below), which is what the manual switch
-  //      did by hand.
+  //   2. the claim's own account, anywhere in the claim's own Tehran day, at
+  //      any amount — «the deposits into this account on the day he says he
+  //      paid», which is what the operator actually scans. Source 3 only ever
+  //      brought the exact figure, so a 71,000 deposit against a 70,000 order
+  //      on the same day was invisible here;
+  //   3. the claim's own account: the exact amount at any time — the deposit
+  //      that landed days late, or days early;
+  //   4. every other account: anything unspent within half an hour of the
+  //      click — the customer who paid the previous card, or the one the bot
+  //      rotated to a moment later. Approving one of these moves the claim
+  //      onto that account (the approve route below), which is what the
+  //      manual switch did by hand.
+  //
+  // `in_scope` is sources 1 and 2: this account, this day, plus whatever the
+  // matcher itself weighed. Source 1 is folded in rather than filtered
+  // because a FULFILLED_UNRECONCILED claim reconciles over 24 hours, so the
+  // matcher's own pick can sit on the far side of midnight and must not be
+  // the thing the panel hides.
+  //
+  // Sources 3 and 4 are what Sam saw crowding the panel on 2026-09-22: six
+  // exact-amount deposits from three days earlier, and two on other accounts
+  // entirely. They stay in the payload — issue #419 proved a deposit can land
+  // on the wrong account and the operator needs a way to reach it — but the
+  // panel folds them away, and `in_scope` first in the ORDER BY stops LIMIT
+  // 30 from ever spending itself on them. Before this, the SQL ordered newest
+  // first, took 30, and then a JS sort flipped it to oldest first: the cut
+  // and the reading order disagreed, so on a busy account the row the
+  // operator wanted could be dropped before it was ever sorted.
   //
   // The half hour is the same default the search page opens with.
+  //
+  // `::int` on both booleans, and it is not cosmetic. SQLite has no boolean
+  // and answers 0/1; Postgres answers a real boolean, so `consumed === 1` had
+  // been false for every row since the move — `alreadyConsumed` never fired,
+  // the radio for a transaction that had already settled another claim stayed
+  // enabled, and «already used» never rendered. The partial unique index
+  // still refused the second settle, so nothing was ever paid twice; the
+  // panel just told the operator a transaction was free when it was not.
+  // `cleanup-debits.ts` hit the same thing and fixed it the same way.
   const anchor = row.paid_clicked_at ?? row.receipt_submitted_at ?? row.created_at;
+  // ponytail: the day is the day. A click at 23:58 whose bank text lands at
+  // 00:03 falls out of scope and into the fold — source 1 catches it whenever
+  // the matcher weighed it. Give the window a ±30m spill over the midnight
+  // boundary if that turns out to bite.
+  const { start: dayStart, end: dayEnd } = tehranDayFromUtc(anchor);
   const n = candidateIds.length;
   const idList = n > 0 ? candidateIds.map((_, i) => `?${i + 1}`).join(',') : 'NULL';
+  const ownDay = `(t.financial_account_id = ?${n + 1}
+                   AND t.bank_timestamp >= ?${n + 4}::bigint
+                   AND t.bank_timestamp < ?${n + 5}::bigint)`;
+  // COALESCE, and it is load-bearing. With no matcher ids `idList` is the
+  // literal NULL, so `t.id IN (NULL)` is NULL rather than false, and
+  // `NULL OR false` is NULL — as is `ownDay` for a row whose account is
+  // unmapped. `ORDER BY … DESC` puts NULLs first in Postgres, so the folded
+  // rows led the list and LIMIT 30 would have spent itself on them first:
+  // the exact fault this function is being changed to fix, inverted. The
+  // mapper's `=== 1` hid it, because NULL is not 1 either and the flag still
+  // read false. `bank_timestamp` is nullable too, hence NULLS LAST on the
+  // ORDER BY: a row with no timestamp reaches this list through the matcher
+  // ids or the exact-amount branch, neither of which mentions the clock, and
+  // it would otherwise head its group and eat the LIMIT the same way.
+  const inScope = `COALESCE((t.id IN (${idList})) OR ${ownDay}, FALSE)`;
   const result = await db
     .prepare(
-      `${select}
+      `${select}, ${inScope}::int AS in_scope
+       ${from}
        WHERE t.id IN (${idList})
           OR (t.direction = 'CREDIT'
               AND t.processing_disposition = 'ACTIONABLE'
-              AND ((t.financial_account_id = ?${n + 1} AND t.amount_irr = ?${n + 2})
+              AND (${ownDay}
+                   OR (t.financial_account_id = ?${n + 1} AND t.amount_irr = ?${n + 2})
                    OR (t.bank_timestamp BETWEEN ?${n + 3}::bigint - 1800000 AND ?${n + 3}::bigint + 1800000
                        AND NOT EXISTS (SELECT 1 FROM reconciliation_matches m
                                         WHERE m.transaction_candidate_id = t.id
                                           AND m.status IN ('AUTO_VERIFIED','CONFIRMED')))))
-       ORDER BY (t.financial_account_id = ?${n + 1}) DESC NULLS LAST, t.bank_timestamp DESC
+       ORDER BY in_scope DESC,
+                (t.financial_account_id = ?${n + 1}) DESC NULLS LAST,
+                t.bank_timestamp DESC NULLS LAST
        LIMIT 30`,
     )
-    .bind(...candidateIds, row.target_financial_account_id, row.expected_amount_irr, anchor)
+    .bind(
+      ...candidateIds,
+      row.target_financial_account_id,
+      row.expected_amount_irr,
+      anchor,
+      dayStart,
+      dayEnd,
+    )
     .all<Row>();
 
-  return (result.results ?? [])
-    .map((t) => ({
-      id: t.id,
-      amountIrr: t.amount_irr,
-      bankTimestamp: t.bank_timestamp,
-      timeDeltaSeconds: deltaSeconds(row.paid_clicked_at, t.bank_timestamp),
-      accountId: t.financial_account_id,
-      accountDisplay: t.account_display,
-      accountBank: t.account_bank,
-      accountHint: t.account_hint,
-      alreadyConsumed: t.consumed === 1,
-    }))
-    .sort(
-      (a, b) =>
-        Number(b.accountId === row.target_financial_account_id) -
-          Number(a.accountId === row.target_financial_account_id) ||
-        (a.bankTimestamp ?? 0) - (b.bankTimestamp ?? 0),
-    );
+  return (result.results ?? []).map((t) => ({
+    id: t.id,
+    amountIrr: t.amount_irr,
+    bankTimestamp: t.bank_timestamp,
+    timeDeltaSeconds: deltaSeconds(row.paid_clicked_at, t.bank_timestamp),
+    accountId: t.financial_account_id,
+    accountDisplay: t.account_display,
+    accountBank: t.account_bank,
+    accountHint: t.account_hint,
+    alreadyConsumed: t.consumed === 1,
+    inScope: t.in_scope === 1,
+  }));
 }
 
 /** Tab badges + the "today" header, counted over the whole population. */

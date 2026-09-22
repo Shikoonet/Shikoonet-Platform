@@ -155,6 +155,17 @@ export interface CandidateTransaction {
   accountBank: string | null;
   accountHint: string | null;
   alreadyConsumed: boolean;
+  /**
+   * On the claim's own account, inside the claim's own Tehran day — or picked
+   * by the matcher itself. The rest of the list is real and stays in the
+   * payload, but folds away behind a disclosure: it is the exact-amount
+   * deposit from three days earlier and the credit that landed on another
+   * account, which is what made this panel unreadable.
+   *
+   * Optional so a payload from a worker that predates this field still reads
+   * as «everything is in scope» rather than folding the whole list away.
+   */
+  inScope?: boolean;
 }
 
 export interface PaymentItem {
@@ -436,7 +447,12 @@ export const ALL_TAB_STATES: ReviewState[] = [
 ];
 
 export function defaultCandidateId(item: PaymentItem): string | null {
-  const only = item.candidates.length === 1 ? item.candidates[0] : undefined;
+  // Only what the panel actually draws. A folded candidate is behind a closed
+  // <details>, so preselecting one arms «تایید انتخاب‌شده‌ها» over a
+  // transaction the operator cannot see and never chose — the button reads
+  // enabled because `selected` is set, and approving sends that id.
+  const visible = item.candidates.filter((c) => c.inScope !== false);
+  const only = visible.length === 1 ? visible[0] : undefined;
   if (!only) return null;
   // RECEIPT_MISSING has the same shape: the matcher named exactly one
   // transaction and only the customer's picture is absent.

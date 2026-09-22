@@ -806,8 +806,78 @@ describe('review drawer', () => {
     expect(within(drawer).getByRole('link', { name: '42' })).toBeTruthy();
     expect(within(drawer).getByText('تراکنش')).toBeTruthy();
     expect(within(drawer).getAllByRole('radio')).toHaveLength(2);
-    expect(within(drawer).getByText(/Δ 21 sec/)).toBeTruthy();
-    expect(within(drawer).getByText(/Δ 37 sec/)).toBeTruthy();
+    // «Δ 21 sec» until 2026-09-22: Latin digits and an English unit on a
+    // Persian screen, and unsigned, so a deposit before the click and one
+    // after it read the same. Both candidates here landed after it.
+    expect(within(drawer).getByText('۲۱ ثانیه پس از پرداخت')).toBeTruthy();
+    expect(within(drawer).getByText('۳۷ ثانیه پس از پرداخت')).toBeTruthy();
+  });
+
+  it('says which side of «پرداخت کردم» a deposit fell on', async () => {
+    const early = item({
+      id: 'p1',
+      suspectReason: 'AMBIGUOUS_TRANSACTIONS',
+      candidates: [candidate('t1', -21), candidate('t2', 86_400 * 6)],
+    });
+    mockApi({ needs_review: [early] });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
+    const drawer = await openReviewPanel();
+    expect(within(drawer).getByText('۲۱ ثانیه پیش از پرداخت')).toBeTruthy();
+    // The six-day gap Sam was looking at; it used to read «Δ 532273 sec».
+    expect(within(drawer).getByText('۶ روز پس از پرداخت')).toBeTruthy();
+  });
+
+  /*
+   * Sam, 2026-09-22, looking at a live claim: six deposits from three days
+   * earlier and two on «سامان پویان» and «گردشگری» — none of them this
+   * order's. The server marks those `inScope: false` now and the panel folds
+   * them, but folded is not gone: issue #419 was seven credits recorded on an
+   * account their own text did not name, and the operator has to be able to
+   * reach one of those from here.
+   */
+  it('folds the other-account and other-day candidates behind a count, and keeps them', async () => {
+    const mixed = item({
+      id: 'p1',
+      suspectReason: 'AMBIGUOUS_TRANSACTIONS',
+      candidates: [
+        { ...candidate('t-today', 21), inScope: true },
+        { ...candidate('t-old', -86_400 * 3), inScope: false },
+        { ...candidate('t-other', 90), accountId: 'acc-9', inScope: false },
+      ],
+    });
+    mockApi({ needs_review: [mixed] });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
+    const drawer = await openReviewPanel();
+
+    const fold = within(drawer).getByText('۲ تراکنش روی حساب یا روز دیگر');
+    expect(fold).toBeTruthy();
+    expect((fold.closest('details') as HTMLDetailsElement).open).toBe(false);
+
+    // Folded, not dropped — all three are still selectable radios.
+    expect(within(drawer).getAllByRole('radio')).toHaveLength(3);
+    const values = within(drawer)
+      .getAllByRole('radio')
+      .map((r) => (r as HTMLInputElement).value);
+    expect(values).toEqual(['t-today', 't-old', 't-other']);
+  });
+
+  /*
+   * A missing `inScope` is what a worker that predates the field sends. It
+   * must read as «in scope», or a dashboard deployed ahead of its worker
+   * folds every candidate on every claim away and looks empty.
+   */
+  it('treats a candidate with no inScope flag as in scope', async () => {
+    mockApi({ needs_review: [ambiguous] });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
+    const drawer = await openReviewPanel();
+    expect(within(drawer).queryByText(/تراکنش روی حساب یا روز دیگر/)).toBeNull();
+    expect(within(drawer).getAllByRole('radio')).toHaveLength(2);
   });
 
   it('cannot verify manually until the operator picks a transaction', async () => {
@@ -863,6 +933,52 @@ describe('review drawer', () => {
     expect(defaultCandidateId(late)).toBe('t9');
     expect(defaultCandidateId(ambiguous)).toBeNull();
     expect(defaultCandidateId(item({ id: 'p8', candidates: [candidate('t8', 12)] }))).toBeNull();
+  });
+
+  /*
+   * The preselect counts what the panel draws, not what the payload holds. A
+   * folded candidate sits behind a closed <details>, so preselecting one arms
+   * «تایید انتخاب‌شده‌ها» over a transaction the operator never saw and never
+   * chose — the button reads enabled because `selected` is set, and approving
+   * posts that id.
+   */
+  it('never preselects a folded candidate', () => {
+    const onlyFolded = item({
+      id: 'p7',
+      suspectReason: 'OUTSIDE_AUTO_MATCH_WINDOW',
+      candidates: [{ ...candidate('t7', 92), inScope: false }],
+    });
+    expect(defaultCandidateId(onlyFolded)).toBeNull();
+
+    // And the mirror: one visible candidate is still the only one, however
+    // many are folded underneath it.
+    const oneVisible = item({
+      id: 'p6',
+      suspectReason: 'OUTSIDE_AUTO_MATCH_WINDOW',
+      candidates: [
+        { ...candidate('t6a', 92), inScope: true },
+        { ...candidate('t6b', -86_400 * 3), inScope: false },
+      ],
+    });
+    expect(defaultCandidateId(oneVisible)).toBe('t6a');
+  });
+
+  it('leaves the approve button disabled when the only candidate is folded', async () => {
+    mockApi({
+      needs_review: [
+        item({
+          id: 'p1',
+          suspectReason: 'OUTSIDE_AUTO_MATCH_WINDOW',
+          candidates: [{ ...candidate('t7', 92), inScope: false }],
+        }),
+      ],
+    });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
+    await openReviewPanel();
+    const approve = await screen.findByRole('button', { name: 'تایید انتخاب‌شده‌ها' });
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

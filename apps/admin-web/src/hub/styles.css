@@ -2354,6 +2354,69 @@
 
 .payment-candidates label:has(input:checked) {
   border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.payment-candidates label:hover {
+  border-color: rgba(148, 163, 184, 0.5);
+}
+
+/* The card's three lines. The figure leads at reading size; the clock, the
+   gap and the account sit under it one step down, so a column of candidates
+   scans by amount first. Before this they were one run of text separated by
+   «·» and every part competed with every other. */
+.payment-candidate__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.payment-candidate__headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.payment-candidate__amount {
+  font-size: 1.05rem;
+}
+
+.payment-candidate__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted, #94a3b8);
+}
+
+.payment-candidate__delta::before {
+  content: '·';
+  margin-inline-end: 0.5rem;
+}
+
+/* Closed by default; the count is the whole point of the summary, so an
+   operator can tell «nothing else exists» from «two more, elsewhere» without
+   opening it. */
+.payment-candidates__more {
+  margin: 0 0 1rem;
+}
+
+.payment-candidates__more > summary {
+  cursor: pointer;
+  padding: 0.4rem 0.2rem;
+  font-size: 0.85rem;
+  color: var(--text-muted, #94a3b8);
+}
+
+.payment-candidates__more > summary:hover {
+  color: var(--text-main);
+}
+
+.payment-candidates__more > .payment-candidates {
+  margin-top: 0.4rem;
 }
 
 .payment-review__actions {
