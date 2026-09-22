@@ -626,3 +626,103 @@ describe('copying the subscription link', () => {
     expect(menu.copyLinkMenu(`https://x/${'a'.repeat(MAX_COPY_TEXT_LENGTH)}`)).toBeUndefined();
   });
 });
+
+/*
+ * A WireGuard config the bot built from the panel's links (0094): its text
+ * leaves as a .conf file, after a QR picture of the same text. There is no
+ * `file_id` for it — the file exists nowhere until this row sends it.
+ */
+describe('a row whose text leaves as a file', () => {
+  const CONF = [
+    '[Interface]',
+    'PrivateKey = aB+c/dE=fGhIjKlMnOpQrStUvWxYz0123456789+/AB=',
+    'Address = 10.8.0.7/32',
+    '',
+    '[Peer]',
+    'PublicKey = Pv+/ServerKey0123456789abcdefghijklmnopqrs=',
+    'AllowedIPs = 0.0.0.0/0',
+    'Endpoint = de1.example.com:51820',
+  ].join('\n');
+
+  interface Call {
+    kind: 'photo' | 'document' | 'text';
+    caption?: string | undefined;
+    keyboard?: unknown;
+    name?: string;
+    content?: string;
+  }
+
+  function recorder(opts: { documentFails?: boolean } = {}): { api: TelegramApi; calls: Call[] } {
+    const calls: Call[] = [];
+    const api = {
+      sendMessage: async () => {
+        calls.push({ kind: 'text' });
+      },
+      sendPhotoBytes: async (_chat: number, _png: Uint8Array, caption?: string, keyboard?: unknown) => {
+        calls.push({ kind: 'photo', caption, keyboard });
+      },
+      sendDocumentBytes: async (_chat: number, bytes: Uint8Array, name: string) => {
+        if (opts.documentFails) throw new Error('telegram sendDocument failed: 500');
+        calls.push({ kind: 'document', name, content: new TextDecoder().decode(bytes) });
+      },
+    } as unknown as TelegramApi;
+    return { api, calls };
+  }
+
+  async function queueConfig(key: string) {
+    await db.withSession((tx) =>
+      enqueue(tx, { dedupeKey: key, chatId: CHAT, text: CONF, qrPayload: CONF, document: { name: 'Germany.conf' } }),
+    );
+  }
+
+  it('sends the QR picture, then the config as a file — and never as a message', async () => {
+    await queueConfig('wg1');
+    const { api, calls } = recorder();
+    expect((await flush(db, api, { now: NOW })).sent).toBe(1);
+
+    expect(calls.map((c) => c.kind)).toEqual(['photo', 'document']);
+    expect(calls[1]).toMatchObject({ name: 'Germany.conf', content: CONF });
+    expect(await rowOf('wg1')).toMatchObject({ status: 'SENT' });
+  });
+
+  // A link's picture is captioned with the link and offers to copy it. A
+  // config's would repeat the whole config — the key material a second time,
+  // straight above the file — and offer to «copy the subscription link».
+  it('captions the picture as a config and offers no «copy link»', async () => {
+    await queueConfig('wg2');
+    const { api, calls } = recorder();
+    await flush(db, api, { now: NOW });
+
+    expect(calls[0]!.caption).toBe(menu.wireguardConfigCaption());
+    expect(calls[0]!.caption).not.toContain('PrivateKey');
+    expect(calls[0]!.keyboard).toBeUndefined();
+  });
+
+  // Two Telegram calls, one row: the picture is marked sent before the file
+  // goes, so a refused file is retried without a second picture.
+  it('retries a refused file without sending the picture again', async () => {
+    await queueConfig('wg3');
+    const first = recorder({ documentFails: true });
+    await flush(db, first.api, { now: NOW });
+    expect(first.calls.map((c) => c.kind)).toEqual(['photo']);
+
+    const second = recorder();
+    await flush(db, second.api, { now: NOW + 24 * 3_600_000 });
+    expect(second.calls.map((c) => c.kind)).toEqual(['document']);
+    expect(await rowOf('wg3')).toMatchObject({ status: 'SENT' });
+  });
+
+  it('refuses a row that is both a Telegram file and a generated one', async () => {
+    await expect(
+      db.withSession((tx) =>
+        enqueue(tx, {
+          dedupeKey: 'wg4',
+          chatId: CHAT,
+          text: CONF,
+          file: { kind: 'document', fileId: 'BQACAgQAAx' },
+          document: { name: 'Germany.conf' },
+        }),
+      ),
+    ).rejects.toThrow(/notification_one_attachment/);
+  });
+});

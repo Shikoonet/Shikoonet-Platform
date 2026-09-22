@@ -39,7 +39,7 @@ import {
   type InlineKeyboard,
   type TelegramApi,
 } from './telegram.js';
-import { copyLinkMenu } from './menu.js';
+import { copyLinkMenu, wireguardConfigCaption } from './menu.js';
 import { qrPng } from './qr.js';
 import { markUnreachable, sendGapMs } from './broadcast.js';
 import { consumeSlot, pauseFor, pausedFor } from './pace.js';
@@ -98,6 +98,18 @@ export interface PendingNotification {
    * are distinct and Telegram refuses one given to another's method.
    */
   file?: { kind: AttachmentKind; fileId: string } | null;
+  /**
+   * Send `text` AS a file with this name instead of as a message — a
+   * WireGuard config the bot built from the panel's links (0094). There is
+   * no `file_id` for it: the file exists nowhere until this row sends it.
+   *
+   * With `qrPayload`, the picture goes first under a caption of its own and
+   * without the «copy link» button. A link's picture is captioned with the
+   * link itself; a config's would be captioned with the whole config — the
+   * key material a second time, directly above the file that carries it —
+   * and its button would offer to «copy the subscription link».
+   */
+  document?: { name: string } | null;
 }
 
 export type AttachmentKind = 'document' | 'video' | 'photo';
@@ -139,8 +151,8 @@ export async function enqueue(tx: D1DatabaseSession, note: PendingNotification):
     .prepare(
       `INSERT INTO bot_notifications
          (dedupe_key, chat_id, body, reply_markup, qr_payload, message_thread_id,
-          edit_message_id, file_kind, file_id)
-       VALUES (?1, ?2, ?3, ?4::jsonb, ?5, ?6, ?7, ?8, ?9)
+          edit_message_id, file_kind, file_id, doc_name)
+       VALUES (?1, ?2, ?3, ?4::jsonb, ?5, ?6, ?7, ?8, ?9, ?10)
        ON CONFLICT (dedupe_key) DO NOTHING`,
     )
     .bind(
@@ -155,6 +167,7 @@ export async function enqueue(tx: D1DatabaseSession, note: PendingNotification):
       note.editMessageId ?? null,
       note.file?.kind ?? null,
       note.file?.fileId ?? null,
+      note.document?.name ?? null,
     )
     .run();
   return written.meta.changes > 0;
@@ -179,6 +192,7 @@ interface DueRow {
   edit_message_id: number | null;
   file_kind: AttachmentKind | null;
   file_id: string | null;
+  doc_name: string | null;
 }
 
 /**
@@ -251,6 +265,11 @@ async function deliver(db: D1Database, api: TelegramApi, row: DueRow): Promise<v
     else await api.sendDocument(row.chat_id, row.file_id);
     return;
   }
+  // A document row is its body, as a file: no text, no edit, no keyboard.
+  if (row.doc_name !== null) {
+    await api.sendDocumentBytes(row.chat_id, new TextEncoder().encode(row.body), row.doc_name);
+    return;
+  }
   if (row.edit_message_id !== null && !(await isLiveInvoice(db, row.chat_id, row.edit_message_id))) {
     try {
       await api.editMessageText(row.chat_id, row.edit_message_id, row.body, keyboardOf(row));
@@ -320,7 +339,7 @@ export async function flush(
            WHERE id IN (SELECT id FROM due)
           RETURNING id, dedupe_key, chat_id, body, attempt_count,
                     reply_markup, qr_payload, qr_sent_at, message_thread_id,
-                    edit_message_id, file_kind, file_id`,
+                    edit_message_id, file_kind, file_id, doc_name`,
       )
       .bind(now, limit, LEASE_MS)
       .all<DueRow>();
@@ -365,11 +384,14 @@ export async function flush(
       // carries the same link in full.
       if (row.qr_payload !== null && row.qr_sent_at === null) {
         try {
+          // A config's picture says what it is and offers no «copy link»:
+          // it is not a link, and the file under it is the thing to keep.
+          const config = row.doc_name !== null;
           await api.sendPhotoBytes(
             row.chat_id,
             await qrPng(row.qr_payload),
-            row.qr_payload,
-            copyLinkMenu(row.qr_payload),
+            config ? wireguardConfigCaption() : row.qr_payload,
+            config ? undefined : copyLinkMenu(row.qr_payload),
           );
           await markQrSent(db, row.id);
         } catch (err) {

@@ -12,6 +12,7 @@ export * from './types.js';
 export * from './schemaCheck.js';
 export { marzbanAdapter, groupIdsFor } from './marzban.js';
 export { manualAdapter } from './manual.js';
+export { wireguardConfsFromLinks, type WireguardConf } from './wireguard.js';
 
 /**
  * The kinds we can actually deliver.

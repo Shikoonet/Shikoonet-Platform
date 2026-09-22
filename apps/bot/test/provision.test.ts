@@ -174,6 +174,110 @@ beforeAll(async () => {
     .run();
 });
 
+/*
+ * A WireGuard buyer gets the config itself, not only the link (Sam,
+ * 2026-09-22): the bot reads `<subscription>/links` straight after delivery
+ * and queues each `wireguard://` host as a file with its QR code. The link is
+ * PasarGuard 5.2.1's own shape — see `packages/domain/test/wireguard-conf.test.ts`,
+ * where the converter is held against the panel's renderer.
+ */
+describe('the WireGuard config after a purchase', () => {
+  const WG_LINK =
+    'wireguard://aB%2Bc%2FdE%3DfGhIjKlMnOpQrStUvWxYz0123456789%2B%2FAB%3D@de1.example.com:51820/' +
+    '?publickey=Pv%2B%2FServerKey0123456789abcdefghijklmnopqrs%3D&address=10.8.0.7%2F32' +
+    '&allowedips=0.0.0.0%2F0#Germany';
+  const VLESS = 'vless://11111111-2222-3333-4444-555555555555@de1.example.com:443?security=tls#Germany';
+
+  /** `fakePanel`, plus a subscription that answers `/links` with `body`. */
+  function panelWithLinks(body: string | { status: number }) {
+    const panel = fakePanel();
+    const asked: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/sub/') && url.endsWith('/links')) {
+        asked.push(url);
+        return typeof body === 'string'
+          ? new Response(body, { status: 200 })
+          : new Response('', { status: body.status });
+      }
+      return panel.fetchImpl(input, init);
+    }) as unknown as typeof globalThis.fetch;
+    return { ...panel, fetchImpl, asked };
+  }
+
+  async function rowsFor(publicId: string) {
+    const { results } = await db
+      .prepare(
+        `SELECT dedupe_key, body, qr_payload, doc_name, file_id FROM bot_notifications
+          WHERE dedupe_key LIKE ?1 ORDER BY id`,
+      )
+      .bind(`provision:${publicId}%`)
+      .all<{ dedupe_key: string; body: string; qr_payload: string | null; doc_name: string | null; file_id: string | null }>();
+    return results ?? [];
+  }
+
+  it('sends each config as a file with its QR code, after the service message', async () => {
+    const order = await paidOrder();
+    const panel = panelWithLinks([VLESS, WG_LINK].join('\n'));
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    // The subscription the customer was just given, and nothing else.
+    const user = remoteUsernameFor(order.telegramId, order.publicId);
+    expect(panel.asked).toEqual([`https://panel.test/sub/${user}/links`]);
+
+    const rows = await rowsFor(order.publicId);
+    expect(rows.map((r) => r.dedupe_key)).toEqual([
+      `provision:${order.publicId}`,
+      `provision:${order.publicId}:wg:0`,
+    ]);
+    const wg = rows[1]!;
+    expect(wg.doc_name).toBe('Germany.conf');
+    expect(wg.file_id).toBeNull();
+    expect(wg.body).toBe(
+      [
+        '[Interface]',
+        'PrivateKey = aB+c/dE=fGhIjKlMnOpQrStUvWxYz0123456789+/AB=',
+        'Address = 10.8.0.7/32',
+        '',
+        '[Peer]',
+        'PublicKey = Pv+/ServerKey0123456789abcdefghijklmnopqrs=',
+        'AllowedIPs = 0.0.0.0/0',
+        'Endpoint = de1.example.com:51820',
+      ].join('\n'),
+    );
+    // The QR is of the config itself — what the WireGuard app's camera
+    // imports — not of the subscription link.
+    expect(wg.qr_payload).toBe(wg.body);
+  });
+
+  // The gate is the panel's answer, not a setting: a plan with no WireGuard
+  // host is simply not a WireGuard sale.
+  it('sends nothing more for a subscription with no WireGuard host', async () => {
+    const order = await paidOrder();
+    const panel = panelWithLinks(VLESS);
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
+    expect((await rowsFor(order.publicId)).map((r) => r.dedupe_key)).toEqual([`provision:${order.publicId}`]);
+  });
+
+  // A decoration never costs the sale: the service is already delivered, and
+  // the subscription page still offers the same config for download.
+  it('delivers the service untouched when the panel will not give the links', async () => {
+    const order = await paidOrder();
+    const panel = panelWithLinks({ status: 502 });
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
+    const rows = await rowsFor(order.publicId);
+    expect(rows.map((r) => r.dedupe_key)).toEqual([`provision:${order.publicId}`]);
+    expect(rows[0]!.body).toContain(`https://panel.test/sub/`);
+  });
+});
+
 describe('delivering a paid order', () => {
   it('creates the account, records the subscription, and completes the order', async () => {
     const order = await paidOrder();

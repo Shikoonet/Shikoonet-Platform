@@ -42,6 +42,7 @@ import {
   splitCredential,
   type ProviderContext,
   type ProvisionRequest,
+  wireguardConfsFromLinks,
 } from '@shikoo/domain';
 import { renewalPanelsFor } from './catalog.js';
 import * as menu from './menu.js';
@@ -353,6 +354,93 @@ async function tell(db: D1Database, row: PendingOrder, note: Delivered): Promise
       });
     }
   });
+}
+
+/** Long enough for a panel under load, short enough not to hold the sweep. */
+const WIREGUARD_FETCH_MS = 10_000;
+
+/**
+ * The WireGuard configs, after the service message of a NEW purchase — each as
+ * a QR picture the WireGuard app's camera reads, then the .conf file its
+ * «Import» takes (Sam, 2026-09-22). The subscription link is still the
+ * message above them; these are for the customer whose app wants a tunnel,
+ * not a subscription.
+ *
+ * Asked of the panel here, once, rather than stored: the config carries the
+ * account's private key, and the subscription URL that is stored already
+ * yields it to whoever holds it. Keeping a second copy would add nothing but
+ * a place to leak from. Fetched through the subscription URL, whose token is
+ * the credential — no admin login, and the adapter is not involved.
+ *
+ * The gate is the panel's answer, not a setting. Only a PasarGuard account
+ * can have `/links`, and one with no WireGuard host answers without a
+ * `wireguard://` line, so a VLESS-only plan sends nothing and nobody has to
+ * mark which plans are WireGuard ones.
+ *
+ * Never throws and never fails a delivery. The service is already the
+ * customer's by the time this runs, and the subscription page still offers
+ * the same config for download; a panel that does not answer costs the
+ * convenience, not the sale. Nothing about the subscription is logged — the
+ * URL is a credential, so a failure names the order and the status only.
+ *
+ * ponytail: asked once, straight after delivery. A panel that is down at
+ * that moment means no config message, and the «untold» sweep that rebuilds
+ * a lost service message does not ask again. Re-ask from that sweep, keyed
+ * the same way, if customers turn up without their config.
+ */
+async function tellWireguard(
+  db: D1Database,
+  row: PendingOrder,
+  note: Delivered,
+  fetchImpl: typeof globalThis.fetch,
+): Promise<void> {
+  const chatId = row.telegram_id;
+  // The same gate as the shelf's papers in `tell`, for the same reasons: a
+  // renewing customer has had the config since they first bought.
+  if (chatId === null || note.sold !== true || row.order_kind !== 'NEW_PURCHASE') return;
+  try {
+    const sub = await db
+      .prepare(
+        `SELECT s.subscription_url, pr.kind
+           FROM subscriptions s
+           JOIN provisioning_providers pr ON pr.id = s.provider_id
+          WHERE s.order_id = ?1`,
+      )
+      .bind(row.order_id)
+      .first<{ subscription_url: string | null; kind: string }>();
+    if (sub?.subscription_url == null || sub.kind !== 'pasarguard') return;
+
+    // `<subscription>/links`: every host of the account, one link per line.
+    const url = new URL(sub.subscription_url);
+    url.pathname = `${url.pathname.replace(/\/+$/, '')}/links`;
+    const res = await fetchImpl(url, { signal: AbortSignal.timeout(WIREGUARD_FETCH_MS) });
+    if (!res.ok) {
+      log.warn('provision.wireguard_unavailable', { ref: row.order_public_id, status: res.status });
+      return;
+    }
+    const confs = wireguardConfsFromLinks(await res.text());
+    if (confs.length === 0) return;
+    // One row per config, keyed on the order and its place in the panel's
+    // list, so a sweep that runs twice queues each once and a file Telegram
+    // refuses is retried alone.
+    await db.withSession(async (tx) => {
+      for (const [i, c] of confs.entries()) {
+        await enqueue(tx, {
+          dedupeKey: `provision:${row.order_public_id}:wg:${i}`,
+          chatId,
+          text: c.conf,
+          qrPayload: c.conf,
+          document: { name: c.fileName },
+        });
+      }
+    });
+  } catch (err) {
+    // The name of the failure only: a fetch error can carry the URL.
+    log.warn('provision.wireguard_unavailable', {
+      ref: row.order_public_id,
+      reason: err instanceof Error ? err.name : 'unknown',
+    });
+  }
 }
 
 /**
@@ -719,6 +807,7 @@ export async function provisionPaidOrders(
       // top of this loop: whatever is terminal and has no message gets one on
       // the next pass. Two cheap mechanisms rather than one careful one.
       await tell(db, row, note);
+      await tellWireguard(db, row, note, fetchImpl);
       delivered += 1;
     }
   }
