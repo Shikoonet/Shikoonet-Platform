@@ -13,7 +13,8 @@
  * sales       diamond 3,000,000 · titan 1,000,000 · ovpn 2,000,000
  *             an imported order naming no service 500,000
  *             an imported order whose subscription is on panel-b 200,000
- *                                          → ovpn, the one service on it
+ *                                          → ovpn, the one service on it,
+ *                                            though since renewed onto titan
  *             an imported order whose subscription is on panel-a 100,000
  *                                          → nobody: two services share it
  *             a wallet top-up 999,000                       ← not a sale
@@ -188,14 +189,20 @@ beforeAll(async () => {
   await order(buyer, 'o4', 'NEW_PURCHASE', 500_000, null, 'الماس ۳۰ روزه — قدیمی');
   await order(buyer, 'o5', 'WALLET_TOPUP', 999_000, null);
   // Imported: no plan, only the panel the subscription they created is on.
-  for (const [tag, total, providerId] of [['o6', 200_000, panelB], ['o7', 100_000, panelA]] as const) {
+  // o6's subscription was since renewed onto titan's plan — a tier change
+  // (#271) rewrites `subscriptions.plan_id` — and the sale is still ovpn's.
+  // Production, 2026-09-23: an August Titanium sale showed under «وایرگارد ترید».
+  for (const [tag, total, providerId, planId] of [
+    ['o6', 200_000, panelB, titan.planId],
+    ['o7', 100_000, panelA, null],
+  ] as const) {
     const id = await order(buyer, tag, 'NEW_PURCHASE', total, null, '1ماهه-50گیگ-249.000ت🚀');
     await db
       .prepare(
-        `INSERT INTO subscriptions (public_id, user_id, order_id, provider_id, plan_name_at_sale, price_irr, status, purchased_at)
-         VALUES (?1, ?2, ?3, ?4, '1ماهه-50گیگ', ?5, 'ACTIVE', to_timestamp(?6 / 1000.0))`,
+        `INSERT INTO subscriptions (public_id, user_id, order_id, provider_id, plan_id, plan_name_at_sale, price_irr, status, purchased_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, '1ماهه-50گیگ', ?6, 'ACTIVE', to_timestamp(?7 / 1000.0))`,
       )
-      .bind(`${P}sub-${tag}`, buyer, id, providerId, total, AT)
+      .bind(`${P}sub-${tag}`, buyer, id, providerId, planId, total, AT)
       .run();
   }
 
