@@ -165,6 +165,7 @@ type PaymentsBody = {
       accountId: string | null;
       timeDeltaSeconds: number | null;
       alreadyConsumed: boolean;
+      inScope: boolean;
     }>;
     matchedTransaction: { id: string; timeDeltaSeconds: number | null } | null;
     isNew?: boolean;
@@ -521,9 +522,21 @@ describe('GET /api/v1/payments', () => {
 
     // Nothing was dropped, and in-scope leads — so LIMIT can never spend
     // itself on the folded rows before the ones the operator wants.
-    const inScopeIds = cands.filter((c) => c.inScope).map((c) => c.id);
-    expect(inScopeIds).toEqual(['t-sameday-off', 't-sameday-exact']);
-    expect(cands.length).toBe(4);
+    //
+    // The whole order is asserted, not just the membership, and that matters:
+    // this claim has no matcher ids, so `t.id IN (NULL)` is NULL, and without
+    // a COALESCE the flag expression was NULL rather than false for every
+    // out-of-scope row. `ORDER BY … DESC` puts NULLs first in Postgres, so the
+    // folded rows led the list — the exact fault being fixed here, inverted,
+    // and LIMIT 30 would have spent itself on them. Every flag still read
+    // false (NULL is not 1 either), so only the order gave it away, and only
+    // in a browser. Assert the order.
+    expect(cands.map((c) => c.id)).toEqual([
+      't-sameday-off', // in scope, newest
+      't-sameday-exact', // in scope
+      't-3days-ago', // folded, but the claim's own account still ranks first
+      't-elsewhere', // folded, another account
+    ]);
   });
 
   /*

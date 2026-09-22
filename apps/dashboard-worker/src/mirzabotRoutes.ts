@@ -689,7 +689,15 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
   const ownDay = `(t.financial_account_id = ?${n + 1}
                    AND t.bank_timestamp >= ?${n + 4}::bigint
                    AND t.bank_timestamp < ?${n + 5}::bigint)`;
-  const inScope = `(t.id IN (${idList}) OR ${ownDay})`;
+  // COALESCE, and it is load-bearing. With no matcher ids `idList` is the
+  // literal NULL, so `t.id IN (NULL)` is NULL rather than false, and
+  // `NULL OR false` is NULL — as is `ownDay` for a row whose account is
+  // unmapped. `ORDER BY … DESC` puts NULLs first in Postgres, so the folded
+  // rows led the list and LIMIT 30 would have spent itself on them first:
+  // the exact fault this function is being changed to fix, inverted. The
+  // mapper's `=== 1` hid it, because NULL is not 1 either and the flag still
+  // read false.
+  const inScope = `COALESCE((t.id IN (${idList})) OR ${ownDay}, FALSE)`;
   const result = await db
     .prepare(
       `${select}, ${inScope}::int AS in_scope
