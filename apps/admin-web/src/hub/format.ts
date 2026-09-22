@@ -61,6 +61,41 @@ export function formatTimeSeconds(ts: number): string {
   return dateTimeSeconds(ts);
 }
 
+/**
+ * Largest-unit-first, so the first entry that fits is the one shown.
+ */
+const DELTA_UNITS: readonly (readonly [label: string, ms: number])[] = [
+  ['روز', 86_400_000],
+  ['ساعت', 3_600_000],
+  ['دقیقه', 60_000],
+  ['ثانیه', 1_000],
+] as const;
+
+/**
+ * How far a bank transaction sits from the moment the customer pressed
+ * «پرداخت کردم», and which side of it.
+ *
+ * This replaced «Δ 532273 sec» on the review panel: Latin digits and an
+ * English unit on an otherwise Persian screen, and a figure nobody converts
+ * in their head — the six-day gap Sam was looking at on 2026-09-22 read as
+ * «۵۳۲۲۷۳» and told him nothing.
+ *
+ * The direction is the part the old figure could not carry at all: the server
+ * sends `timeDeltaSeconds` through `Math.abs`, so a deposit half an hour
+ * before the click and one half an hour after it arrived identical. They are
+ * different stories, and «is this deposit even capable of being this order's»
+ * is the question being answered here.
+ *
+ * Takes signed milliseconds — `bankTimestamp - paidClickedAt`.
+ */
+export function formatSignedDelta(deltaMs: number): string {
+  const abs = Math.abs(deltaMs);
+  if (abs < 1_000) return 'هم‌زمان با پرداخت';
+  const side = deltaMs < 0 ? 'پیش از پرداخت' : 'پس از پرداخت';
+  const [label, ms] = DELTA_UNITS.find(([, size]) => abs >= size) ?? DELTA_UNITS[3]!;
+  return `${count(Math.round(abs / ms))} ${label} ${side}`;
+}
+
 export function directionLabel(d: 'CREDIT' | 'DEBIT' | 'UNKNOWN'): string {
   // Credit-only product: DEBIT and UNKNOWN are filtered out by the route layer
   // and are not expected on screen, but a legacy row that leaks through is

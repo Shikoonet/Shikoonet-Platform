@@ -155,6 +155,17 @@ export interface CandidateTransaction {
   accountBank: string | null;
   accountHint: string | null;
   alreadyConsumed: boolean;
+  /**
+   * On the claim's own account, inside the claim's own Tehran day — or picked
+   * by the matcher itself. The rest of the list is real and stays in the
+   * payload, but folds away behind a disclosure: it is the exact-amount
+   * deposit from three days earlier and the credit that landed on another
+   * account, which is what made this panel unreadable.
+   *
+   * Optional so a payload from a worker that predates this field still reads
+   * as «everything is in scope» rather than folding the whole list away.
+   */
+  inScope?: boolean;
 }
 
 export interface PaymentItem {

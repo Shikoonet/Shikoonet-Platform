@@ -8,7 +8,12 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { Cache, QueryStatus } from './query.js';
 import { QK } from './queries.js';
-import { formatTomanFromIrr, formatTime, formatTimeSeconds } from './format.js';
+import {
+  formatTomanFromIrr,
+  formatTime,
+  formatTimeSeconds,
+  formatSignedDelta,
+} from './format.js';
 import { count } from '../format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { ClaimChangeAccount } from './ClaimChangeAccount.js';
@@ -75,6 +80,7 @@ import {
   type PaymentsResponse,
   type ResellerItem,
   type AccountRefLike,
+  type CandidateTransaction,
   reconcileNote,
   actionErrorText,
 } from './paymentReview.js';
@@ -93,6 +99,79 @@ function AccountRef({ account }: { account: AccountRefLike }) {
       {bank && <span>{bank}</span>}
       {account.accountHint && <IdentifierText value={account.accountHint} tone="hint" />}
     </bdi>
+  );
+}
+
+/**
+ * One bank transaction the operator may pick.
+ *
+ * Drawn the same whether it is in scope or folded away below, because the
+ * choice it offers is the same one — what differs is only how hard it is to
+ * reach. The figure leads, because «is this the right amount» is the first
+ * question asked of every row; the clock and the account follow it.
+ */
+function CandidateCard({
+  c,
+  item,
+  selected,
+  onSelect,
+}: {
+  c: CandidateTransaction;
+  item: PaymentItem;
+  selected: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const otherAccount = c.accountId != null && c.accountId !== item.accountId;
+  // Signed, and computed here rather than read off the wire: the server sends
+  // `timeDeltaSeconds` through Math.abs, so it cannot say which side of the
+  // click the deposit fell on.
+  const delta =
+    c.bankTimestamp != null && item.paidClickedAt != null
+      ? formatSignedDelta(c.bankTimestamp - item.paidClickedAt)
+      : null;
+  return (
+    <li>
+      <label className="payment-candidate">
+        <input
+          type="radio"
+          name="candidate"
+          value={c.id}
+          checked={selected === c.id}
+          disabled={c.alreadyConsumed}
+          onChange={() => onSelect(c.id)}
+        />
+        <span className="payment-candidate__body">
+          <span className="payment-candidate__headline">
+            <strong className="payment-candidate__amount tabular-nums">
+              +{formatTomanFromIrr(c.amountIrr)}
+            </strong>
+            {/* The list is wider than exact-amount now; say so on the row,
+                next to the figure the eye is on. */}
+            {c.amountIrr !== item.expectedAmountIrr && (
+              <span className="payment-reason__flag">مبلغ با سفارش فرق دارد</span>
+            )}
+          </span>
+          <span className="payment-candidate__meta tabular-nums">
+            <span>{c.bankTimestamp ? formatTimeSeconds(c.bankTimestamp) : '—'}</span>
+            {delta !== null && <span className="payment-candidate__delta">{delta}</span>}
+          </span>
+          <span className="payment-candidate__meta">
+            <AccountRef account={c} />
+            {/* The list crosses accounts now. Approving one of these moves the
+                claim onto that account — say so where the choice is made, not
+                in a toast after. */}
+            {otherAccount && (
+              <span className="payment-reason__flag">
+                حساب دیگر — با تأیید، سفارش به این حساب می‌رود
+              </span>
+            )}
+            {c.alreadyConsumed && (
+              <span className="muted">قبلاً یک سفارش دیگر را تسویه کرده</span>
+            )}
+          </span>
+        </span>
+      </label>
+    </li>
   );
 }
 
@@ -2386,6 +2465,13 @@ function ReviewPanel({
 }) {
   const w = useWriteProps();
   const [selected, setSelected] = useState<string | null>(() => defaultCandidateId(item));
+  // The server has already ordered the list — in-scope first, then newest
+  // first — so this only cuts it in two and never re-sorts. `inScope` is
+  // absent on a payload from a worker that predates the field, and absent
+  // reads as in scope: an old worker's whole list stays visible rather than
+  // folding itself away.
+  const inScope = item.candidates.filter((c) => c.inScope !== false);
+  const folded = item.candidates.filter((c) => c.inScope === false);
   const [rejectReason, setRejectReason] = useState<string>('NO_BANK_TRANSACTION');
   const [confirmFake, setConfirmFake] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -2668,8 +2754,9 @@ function ReviewPanel({
                 ? formatTimeSeconds(item.matchedTransaction.bankTimestamp)
                 : '—'}{' '}
               · +{formatTomanFromIrr(item.matchedTransaction.amountIrr)}
-              {item.matchedTransaction.timeDeltaSeconds != null &&
-                ` · Δ ${item.matchedTransaction.timeDeltaSeconds} sec`}
+              {item.matchedTransaction.bankTimestamp != null &&
+                item.paidClickedAt != null &&
+                ` · ${formatSignedDelta(item.matchedTransaction.bankTimestamp - item.paidClickedAt)}`}
             </p>
           ) : (
             <p className="muted">هنوز چیزی وصل نشده</p>
@@ -2679,54 +2766,50 @@ function ReviewPanel({
               {item.candidates.length === 0 ? (
                 <p className="muted">هیچ تراکنش بانکی در فهرست نامزدهای نزدیک نیست.</p>
               ) : (
-                <ul className="payment-candidates">
-                  {item.candidates.map((c) => (
-                    <li key={c.id}>
-                      <label>
-                        <input
-                          type="radio"
-                          name="candidate"
-                          value={c.id}
-                          checked={selected === c.id}
-                          disabled={c.alreadyConsumed}
-                          onChange={() => setSelected(c.id)}
+                <>
+                  {inScope.length === 0 ? (
+                    <p className="muted">
+                      روزی که مشتری پرداخت کرد، هیچ واریزی روی این حساب ثبت نشده.
+                    </p>
+                  ) : (
+                    <ul className="payment-candidates">
+                      {inScope.map((c) => (
+                        <CandidateCard
+                          key={c.id}
+                          c={c}
+                          item={item}
+                          selected={selected}
+                          onSelect={setSelected}
                         />
-                        <span>
-                          <strong>
-                            {c.bankTimestamp ? formatTimeSeconds(c.bankTimestamp) : '—'}
-                          </strong>
-                          <br />+{formatTomanFromIrr(c.amountIrr)}
-                          {/* The list is wider than exact-amount now; say so
-                              on the row, next to the figure the eye is on. */}
-                          {c.amountIrr !== item.expectedAmountIrr && (
-                            <>
-                              {' '}
-                              · <span className="payment-reason__flag">مبلغ با سفارش فرق دارد</span>
-                            </>
-                          )}
-                          <br />
-                          <AccountRef account={c} />
-                          {/* The list crosses accounts now. Approving one of
-                              these moves the claim onto that account — say so
-                              where the choice is made, not in a toast after. */}
-                          {c.accountId != null && c.accountId !== item.accountId && (
-                            <>
-                              {' '}
-                              · <span className="payment-reason__flag">حساب دیگر — با تأیید، سفارش به این حساب می‌رود</span>
-                            </>
-                          )}
-                          {c.timeDeltaSeconds != null && <> · Δ {c.timeDeltaSeconds} sec</>}
-                          {c.alreadyConsumed && (
-                            <>
-                              {' '}
-                              · <span className="muted">already used</span>
-                            </>
-                          )}
-                        </span>
-                      </label>
-                    </li>
-                  ))}
-                </ul>
+                      ))}
+                    </ul>
+                  )}
+                  {/* Folded, not dropped. These are the exact-amount deposit
+                      from days earlier and the credit that landed on another
+                      account — noise on almost every claim, and the answer on
+                      the rare one. Issue #419 is the rare one: seven credits
+                      sat on an account their own text did not name. A native
+                      <details> because the state is «is it open», which the
+                      element already keeps. */}
+                  {folded.length > 0 && (
+                    <details className="payment-candidates__more">
+                      <summary>
+                        {`${count(folded.length)} تراکنش روی حساب یا روز دیگر`}
+                      </summary>
+                      <ul className="payment-candidates">
+                        {folded.map((c) => (
+                          <CandidateCard
+                            key={c.id}
+                            c={c}
+                            item={item}
+                            selected={selected}
+                            onSelect={setSelected}
+                          />
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </>
               )}
             </>
           )}

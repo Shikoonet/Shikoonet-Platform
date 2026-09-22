@@ -437,7 +437,7 @@ describe('GET /api/v1/payments', () => {
     expect(cands[1]!.accountId).toBe('acc-rotated');
   });
 
-  it('exposes the exact candidate set the matcher considered', async () => {
+  it('exposes the exact candidate set the matcher considered, newest first', async () => {
     const base = Date.now();
     await seedTx('t-c1', base + 21_000);
     await seedTx('t-c2', base + 37_000);
@@ -448,7 +448,128 @@ describe('GET /api/v1/payments', () => {
     });
 
     const body = await get('tab=needs_review');
-    expect(body.items[0]!.candidates.map((c) => c.id)).toEqual(['t-c1', 't-c2']);
+    // Newest first since 2026-09-22. It used to be oldest first — and the
+    // SQL took its LIMIT 30 off the newest end before a JS sort flipped it,
+    // so on a busy account the cut and the reading order disagreed.
+    expect(body.items[0]!.candidates.map((c) => c.id)).toEqual(['t-c2', 't-c1']);
+    expect(body.items[0]!.candidates.every((c) => c.inScope)).toBe(true);
+  });
+
+  /*
+   * Sam, 2026-09-22, on a live claim dated 06/23: the panel offered him six
+   * deposits from 06/20 and two on accounts that were not the claim's. The
+   * list is still all of that — issue #419 was a credit recorded on the wrong
+   * account, and it has to stay reachable — but only this account on this day
+   * comes through `inScope`, and the panel folds the rest.
+   *
+   * The day is the claim's own Tehran day, anchored on the click, so opening
+   * an old claim still shows that day rather than an empty list.
+   *
+   * The clock is pinned to a mid-day instant rather than `Date.now()`: every
+   * assertion here is about which Tehran day a timestamp falls in, so a run
+   * that started at 23:59:50 would move rows across the boundary and fail on
+   * nothing (rule 5).
+   */
+  it('scopes candidates to the claim account on the claim day, and folds the rest in', async () => {
+    const midday = Date.parse('2026-09-20T09:00:00Z'); // 12:30 Tehran
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO financial_accounts
+         (id, bank_name, display_name, owner_label, account_type, active, status, account_hint,
+          parser_configuration, created_at, updated_at)
+       VALUES ('acc-elsewhere','Melli','Elsewhere',NULL,'CARD',1,'ACTIVE','8008','{}',?1,?1)`,
+    )
+      .bind(now)
+      .run();
+
+    // Same account, same day, a figure that is not the order's. Invisible
+    // before this change: the only same-account source demanded the exact
+    // amount, so «۷۱٬۰۰۰ paid against a ۷۰٬۰۰۰ order» never reached the panel.
+    await seedTx('t-sameday-off', midday + 90_000);
+    await baseEnv.DB.prepare(
+      `UPDATE transaction_candidates SET amount_irr = ?1 WHERE id = 't-sameday-off'`,
+    )
+      .bind(AMOUNT + 10_000)
+      .run();
+
+    // Same account, same day, exact amount.
+    await seedTx('t-sameday-exact', midday + 21_000);
+
+    // Exact amount, three days earlier — the six rows Sam was looking at.
+    await seedTx('t-3days-ago', midday - 3 * 86_400_000);
+
+    // Another account, minutes away — «سامان پویان» and «گردشگری».
+    await seedTx('t-elsewhere', midday + 120_000);
+    await baseEnv.DB.prepare(
+      `UPDATE transaction_candidates SET financial_account_id = 'acc-elsewhere'
+        WHERE id = 't-elsewhere'`,
+    ).run();
+
+    await seedClaim('c-scope', {
+      suspectReason: 'AMBIGUOUS_TRANSACTIONS',
+      paidClickedAt: midday,
+    });
+
+    const body = await get('tab=needs_review');
+    const cands = body.items[0]!.candidates;
+    const scope = new Map(cands.map((c) => [c.id, c.inScope]));
+
+    expect(scope.get('t-sameday-off')).toBe(true);
+    expect(scope.get('t-sameday-exact')).toBe(true);
+    expect(scope.get('t-3days-ago')).toBe(false);
+    expect(scope.get('t-elsewhere')).toBe(false);
+
+    // Nothing was dropped, and in-scope leads — so LIMIT can never spend
+    // itself on the folded rows before the ones the operator wants.
+    const inScopeIds = cands.filter((c) => c.inScope).map((c) => c.id);
+    expect(inScopeIds).toEqual(['t-sameday-off', 't-sameday-exact']);
+    expect(cands.length).toBe(4);
+  });
+
+  /*
+   * A FULFILLED_UNRECONCILED claim reconciles over 24 hours, so the matcher's
+   * own pick can sit on the far side of midnight. Whatever the matcher
+   * weighed is in scope by definition — the panel must not fold away the one
+   * row the machine already pointed at.
+   */
+  it('keeps a matcher candidate in scope even when it fell on another day', async () => {
+    const midday = Date.parse('2026-09-20T09:00:00Z');
+    await seedTx('t-next-day', midday + 20 * 3_600_000); // 08:30 Tehran, the day after
+    await seedClaim('c-late', {
+      suspectReason: 'OUTSIDE_AUTO_MATCH_WINDOW',
+      paidClickedAt: midday,
+      suspectMeta: { candidateTransactionIds: ['t-next-day'] },
+    });
+
+    const body = await get('tab=needs_review');
+    const row = body.items[0]!.candidates.find((c) => c.id === 't-next-day');
+    expect(row).toBeTruthy();
+    expect(row!.inScope).toBe(true);
+  });
+
+  /*
+   * `alreadyConsumed` had been false for every row since the Postgres move:
+   * the SELECT returned a real boolean and the mapper compared it to `1`. The
+   * partial unique index still refused the second settle, so no claim was
+   * ever paid twice — but the panel left the radio enabled and never printed
+   * «قبلاً…», so it told the operator a spent transaction was free.
+   */
+  it('marks a candidate that already settled another claim as consumed', async () => {
+    const midday = Date.parse('2026-09-20T09:00:00Z');
+    await seedTx('t-spent', midday + 30_000);
+    await seedClaim('c-owner', { paidClickedAt: midday - 5_000, status: 'VERIFIED' });
+    await seedMatch('c-owner', 't-spent', 'CONFIRMED');
+    await seedClaim('c-asking', {
+      suspectReason: 'AMBIGUOUS_TRANSACTIONS',
+      paidClickedAt: midday,
+    });
+
+    const body = await get('tab=needs_review');
+    const row = body.items
+      .flatMap((i) => i.candidates)
+      .find((c) => c.id === 't-spent');
+    expect(row).toBeTruthy();
+    expect(row!.alreadyConsumed).toBe(true);
   });
 
   it('mark-fake sets FAKE_RECEIPT with audit trail', async () => {
