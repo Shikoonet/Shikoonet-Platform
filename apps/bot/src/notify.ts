@@ -502,13 +502,24 @@ async function settle(
   nextAttemptAt: number | null,
 ): Promise<void> {
   try {
+    // A generated document's text is a WireGuard config — a private key. It
+    // is needed until the row stops being retried and not a moment longer:
+    // SENT and DEAD rows are kept as history, and history is in every backup.
+    // Emptied at the terminal state rather than never written, because the
+    // retry needs it; the key is in the database only while its row is due
+    // (CodeRabbit on #427). Not the subscription URL's problem by extension —
+    // `revoke_sub` rotates that token, and does not rotate the WireGuard key,
+    // so a kept config would outlive the revoke that retires the link.
     await db
       .prepare(
         `UPDATE bot_notifications
             SET status = ?2,
                 last_error = ?3,
                 next_attempt_at = ?4,
-                sent_at = CASE WHEN ?2 = 'SENT' THEN now() ELSE sent_at END
+                sent_at = CASE WHEN ?2 = 'SENT' THEN now() ELSE sent_at END,
+                body = CASE WHEN ?2 IN ('SENT', 'DEAD') AND doc_name IS NOT NULL THEN '' ELSE body END,
+                qr_payload = CASE WHEN ?2 IN ('SENT', 'DEAD') AND doc_name IS NOT NULL
+                                  THEN NULL ELSE qr_payload END
           WHERE id = ?1`,
       )
       .bind(id, status, error, nextAttemptAt)

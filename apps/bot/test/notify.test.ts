@@ -712,6 +712,52 @@ describe('a row whose text leaves as a file', () => {
     expect(await rowOf('wg3')).toMatchObject({ status: 'SENT' });
   });
 
+  async function payloadOf(key: string) {
+    return db
+      .prepare(`SELECT status, body, qr_payload FROM bot_notifications WHERE dedupe_key = ?1`)
+      .bind(key)
+      .first<{ status: string; body: string; qr_payload: string | null }>();
+  }
+
+  /*
+   * The config is a private key, and SENT and DEAD rows are kept as history
+   * — in every backup. It is needed only while the row is still retried
+   * (CodeRabbit on #427), and `revoke_sub` does not rotate a WireGuard key, so
+   * a kept config would outlive the revoke that retires the link.
+   */
+  it('forgets the config once it is sent', async () => {
+    await queueConfig('wg5');
+    await flush(db, recorder().api, { now: NOW });
+    expect(await payloadOf('wg5')).toEqual({ status: 'SENT', body: '', qr_payload: null });
+  });
+
+  it('keeps the config while the row is still being retried, and forgets it when it dies', async () => {
+    await queueConfig('wg6');
+    await flush(db, recorder({ documentFails: true }).api, { now: NOW });
+    expect(await payloadOf('wg6')).toMatchObject({ status: 'FAILED', body: CONF, qr_payload: CONF });
+
+    const blocked = {
+      sendPhotoBytes: async () => undefined,
+      sendDocumentBytes: () => Promise.reject(new TelegramRejection('bot was blocked by the user', 403)),
+    } as unknown as TelegramApi;
+    await flush(db, blocked, { now: NOW + 24 * 3_600_000 });
+    expect(await payloadOf('wg6')).toEqual({ status: 'DEAD', body: '', qr_payload: null });
+  });
+
+  // Only a generated document is emptied: every other message stays as
+  // history exactly as it always did.
+  it('leaves an ordinary message as it was', async () => {
+    await db.withSession((tx) =>
+      enqueue(tx, { dedupeKey: 'wg7', chatId: CHAT, text: 'service', qrPayload: 'https://panel.example/sub/abc' }),
+    );
+    await flush(db, recorder().api, { now: NOW });
+    expect(await payloadOf('wg7')).toEqual({
+      status: 'SENT',
+      body: 'service',
+      qr_payload: 'https://panel.example/sub/abc',
+    });
+  });
+
   it('refuses a row that is both a Telegram file and a generated one', async () => {
     await expect(
       db.withSession((tx) =>

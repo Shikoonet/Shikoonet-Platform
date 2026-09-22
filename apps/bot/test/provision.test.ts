@@ -263,6 +263,30 @@ describe('the WireGuard config after a purchase', () => {
     expect((await rowsFor(order.publicId)).map((r) => r.dedupe_key)).toEqual([`provision:${order.publicId}`]);
   });
 
+  // The request carries the subscription token out and the private keys
+  // back; over plain HTTP both would cross the network readable. A panel can
+  // answer with an absolute `http:` subscription URL, which `absoluteSubUrl`
+  // keeps as it is — that is the case asked about (CodeRabbit on #427).
+  it('does not ask a subscription that is plain HTTP', async () => {
+    const order = await paidOrder();
+    const panel = panelWithLinks(WG_LINK);
+    const plainHttp = (async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await panel.fetchImpl(input, init);
+      if ((init?.method ?? 'GET') !== 'POST' || !String(input).endsWith('/api/user')) return res;
+      const user = (await res.json()) as { username: string };
+      return new Response(
+        JSON.stringify({ ...user, subscription_url: `http://sub.panel.test/sub/${user.username}` }),
+        { status: 200 },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    await provisionPaidOrders(db, plainHttp);
+
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
+    expect(panel.asked).toEqual([]);
+    expect((await rowsFor(order.publicId)).map((r) => r.dedupe_key)).toEqual([`provision:${order.publicId}`]);
+  });
+
   // A decoration never costs the sale: the service is already delivered, and
   // the subscription page still offers the same config for download.
   it('delivers the service untouched when the panel will not give the links', async () => {

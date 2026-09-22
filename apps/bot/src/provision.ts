@@ -412,6 +412,14 @@ async function tellWireguard(
 
     // `<subscription>/links`: every host of the account, one link per line.
     const url = new URL(sub.subscription_url);
+    // The request carries the subscription token out and the private keys
+    // back. Over plain HTTP both cross the network readable, so a panel set
+    // up that way gets no config message — a warning says why, and the
+    // customer still has the link (CodeRabbit on #427).
+    if (url.protocol !== 'https:') {
+      log.warn('provision.wireguard_unavailable', { ref: row.order_public_id, reason: 'not_https' });
+      return;
+    }
     url.pathname = `${url.pathname.replace(/\/+$/, '')}/links`;
     const res = await fetchImpl(url, { signal: AbortSignal.timeout(WIREGUARD_FETCH_MS) });
     if (!res.ok) {
