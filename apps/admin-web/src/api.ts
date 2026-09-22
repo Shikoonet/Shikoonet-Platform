@@ -640,13 +640,112 @@ export interface BulkStockResult {
  * The sign alone said «which way» and never «what», and a screen built on it
  * reported 35.8 million Toman of fake receipts as money the shop had spent.
  */
-export type LedgerKind = 'EXPENSE' | 'REVENUE_FIX' | 'MANUAL_INCOME';
+export type LedgerKind = 'EXPENSE' | 'REVENUE_FIX' | 'MANUAL_INCOME' | 'PARTNER_DRAW';
 
 export const LEDGER_KIND_FA: Record<LedgerKind, string> = {
   EXPENSE: 'هزینه',
   REVENUE_FIX: 'اصلاح درآمد',
   MANUAL_INCOME: 'درآمد دستی',
+  // A partner taking his share of the profit (0092). Money out, not a cost.
+  PARTNER_DRAW: 'برداشت شریک',
 };
+
+/** What part of the catalogue a cost was for (0092). `SHOP` is none — the whole shop. */
+export type ScopeLevel = 'SHOP' | 'CATEGORY' | 'PRODUCT' | 'PROVIDER';
+
+export const SCOPE_LEVEL_FA: Record<ScopeLevel, string> = {
+  SHOP: 'همهٔ فروشگاه',
+  CATEGORY: 'دستهٔ سرویس',
+  PRODUCT: 'سرویس',
+  PROVIDER: 'پنل',
+};
+
+export interface LedgerScope {
+  level: ScopeLevel;
+  id: number | null;
+  name: string | null;
+}
+
+/** Who and what-for, on the wire. `scope.id` is absent exactly for `SHOP`. */
+export interface LedgerRefs {
+  partyId?: number | null;
+  scope?: { level: ScopeLevel; id?: number };
+}
+
+export type PartyRole = 'PARTNER' | 'SUPPLIER' | 'CONTRACTOR' | 'AGENT' | 'OTHER';
+
+export const PARTY_ROLE_FA: Record<PartyRole, string> = {
+  PARTNER: 'شریک',
+  SUPPLIER: 'تأمین‌کننده',
+  CONTRACTOR: 'همکار',
+  AGENT: 'نماینده',
+  OTHER: 'سایر',
+};
+
+/** A person or business the books deal with — «حسام»، «پویان»، the server company. */
+export interface Party {
+  id: number;
+  name: string;
+  roles: PartyRole[];
+  /** His cut of the profit; only a partner has one. */
+  sharePercent: number | null;
+  active: boolean;
+  note: string;
+  /** Lifetime, positive: what he took as a partner. */
+  drawnIrr: number;
+  /** Lifetime, positive: what the shop paid him as an expense. */
+  paidIrr: number;
+  /** Lifetime: what came in from him by hand. */
+  receivedIrr: number;
+  rowCount: number;
+  lastOn: string | null;
+}
+
+/** Everything an expense can be «for», for the form's picker. */
+export interface ExpenseScopes {
+  categories: Array<{ id: number; name: string }>;
+  products: Array<{ id: number; name: string; categoryId: number | null; providerId: number | null; active: boolean }>;
+  providers: Array<{ id: number; name: string }>;
+}
+
+/** «سود و زیان» — see `packages/domain/src/shopProfit.ts`. Every figure is IRR. */
+export interface ShopProfit {
+  startMs: number | null;
+  endMs: number | null;
+  salesIrr: number;
+  revenueFixIrr: number;
+  manualIncomeIrr: number;
+  revenueIrr: number;
+  giftsIrr: number;
+  /** Of `giftsIrr`, what no order carries — a gift code, the wheel. */
+  sharedGiftsIrr: number;
+  expensesIrr: number;
+  serviceExpensesIrr: number;
+  sharedExpensesIrr: number;
+  profitIrr: number;
+  drawsIrr: number;
+  retainedIrr: number;
+  services: Array<{
+    productId: number | null;
+    name: string;
+    categoryName: string | null;
+    revenueIrr: number;
+    expensesIrr: number;
+    giftsIrr: number;
+    profitIrr: number;
+    marginPercent: number | null;
+  }>;
+  unallocated: Array<{ name: string; irr: number }>;
+  partners: Array<{
+    partyId: number;
+    name: string;
+    sharePercent: number | null;
+    shareIrr: number;
+    drawnIrr: number;
+    balanceIrr: number;
+  }>;
+  undividedPercent: number;
+}
 
 /**
  * What a bill arrived in. `IRR` means the row is what it has always been — a
@@ -825,6 +924,11 @@ export interface RevenueAdjustmentRow {
   feeIrr: number;
   /** The withdrawal SMS this row is, when one was linked. */
   transactionCandidateId: string | null;
+  /** Who it was paid to or came from (0092). */
+  partyId: number | null;
+  partyName: string | null;
+  /** What part of the catalogue it was for. */
+  scope: LedgerScope;
   createdBy: string | null;
   createdAt: string;
   voidedAt: string | null;
@@ -845,6 +949,8 @@ export interface RevenueTotals {
   revenueFixIrr: number;
   /** Sales recorded by hand, mostly reseller top-ups. Positive. */
   manualIncomeIrr: number;
+  /** Negative or zero — partners' profit draws, with their fees. Not in `expensesIrr`. */
+  partnerDrawsIrr: number;
   /** The three above, added. */
   netIrr: number;
   /**
@@ -857,6 +963,7 @@ export interface RevenueTotals {
   expensesCount: number;
   revenueFixCount: number;
   manualIncomeCount: number;
+  partnerDrawsCount: number;
   netCount: number;
 }
 
@@ -892,6 +999,9 @@ export interface ExpenseRecurrence {
   active: boolean;
   note: string;
   due: boolean;
+  partyId: number | null;
+  partyName: string | null;
+  scope: LedgerScope;
 }
 
 export interface RevenueAdjustmentPage {
@@ -930,6 +1040,8 @@ export interface LedgerFilter {
   kind?: LedgerKind | '';
   categoryId?: number | '';
   uncategorised?: boolean;
+  /** One person's rows — the statement behind «اشخاص». */
+  partyId?: number | '';
   /** Gregorian `YYYY-MM-DD`, on `spent_on`. The screen picks them in Jalali. */
   from?: string;
   to?: string;
@@ -953,6 +1065,7 @@ export function ledgerQuery(f: LedgerFilter): URLSearchParams {
   if (f.kind) qs.set('kind', f.kind);
   if (f.uncategorised) qs.set('uncategorised', 'true');
   else if (f.categoryId) qs.set('categoryId', String(f.categoryId));
+  if (f.partyId) qs.set('partyId', String(f.partyId));
   if (f.from) qs.set('from', f.from);
   if (f.to) qs.set('to', f.to);
   if (f.q) qs.set('q', f.q);
@@ -2331,7 +2444,7 @@ export const api = {
    * what a line is gets a 400 rather than a guess, because the guess would be
    * invisible and this is money.
    */
-  addRevenueAdjustment(body: LedgerMoney & LedgerAccount & {
+  addRevenueAdjustment(body: LedgerMoney & LedgerAccount & LedgerRefs & {
     kind: LedgerKind;
     direction?: 'expense' | 'credit';
     categoryId?: number | null;
@@ -2346,7 +2459,7 @@ export const api = {
 
   editRevenueAdjustment(
     id: number,
-    body: Partial<LedgerMoney> & LedgerAccount & {
+    body: Partial<LedgerMoney> & LedgerAccount & LedgerRefs & {
       kind?: LedgerKind;
       direction?: 'expense' | 'credit';
       categoryId?: number | null;
@@ -2485,11 +2598,43 @@ export const api = {
     });
   },
 
+  parties() {
+    return req<{ ok: boolean; items: Party[] }>('/revenue-adjustments/parties');
+  },
+
+  addParty(body: { name: string; roles: PartyRole[]; sharePercent?: number | null; note?: string }) {
+    return req<{ ok: boolean; id: number }>('/revenue-adjustments/parties', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  editParty(
+    id: number,
+    body: { name?: string; roles?: PartyRole[]; sharePercent?: number | null; active?: boolean; note?: string },
+  ) {
+    return req<{ ok: boolean }>(`/revenue-adjustments/parties/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+
+  expenseScopes() {
+    return req<ExpenseScopes & { ok: boolean }>('/revenue-adjustments/scopes');
+  },
+
+  shopProfit(range: StatsRange, day?: string, to?: string) {
+    const qs = new URLSearchParams({ range });
+    if (day) qs.set('day', day);
+    if (to) qs.set('to', to);
+    return req<ShopProfit & { ok: boolean }>(`/revenue-adjustments/profit?${qs}`);
+  },
+
   expenseRecurrences() {
     return req<{ ok: boolean; items: ExpenseRecurrence[] }>('/revenue-adjustments/recurrences');
   },
 
-  addExpenseRecurrence(body: {
+  addExpenseRecurrence(body: LedgerRefs & {
     label: string;
     categoryId?: number | null;
     amountToman: number;
@@ -2505,7 +2650,7 @@ export const api = {
 
   editExpenseRecurrence(
     id: number,
-    body: {
+    body: LedgerRefs & {
       label?: string;
       categoryId?: number | null;
       amountToman?: number;
@@ -2528,7 +2673,7 @@ export const api = {
    */
   postExpenseRecurrence(
     id: number,
-    body: Partial<LedgerMoney> & LedgerAccount & { spentOn?: string; note?: string } = {},
+    body: Partial<LedgerMoney> & LedgerAccount & LedgerRefs & { spentOn?: string; note?: string } = {},
   ) {
     return req<{ ok: boolean; id: number; nextDueOn: string }>(
       `/revenue-adjustments/recurrences/${id}/post`,

@@ -15,7 +15,7 @@
  *
  * **Sam, 2026-09-22, changed the rule.** Two rates now, both editable in the
  * dashboard's settings: `bot/affiliatespercentage` on the referred customer's
- * FIRST purchase (30 from migration 0092), and `bot/affiliatespercentage_renewal`
+ * FIRST purchase (30 from migration 0093), and `bot/affiliatespercentage_renewal`
  * on EVERY renewal they make, of any of their services, as often as they renew
  * (10). A second or third new purchase pays nothing, and neither does an
  * add-on («فعلاً نداریم»). The joining gift that credits

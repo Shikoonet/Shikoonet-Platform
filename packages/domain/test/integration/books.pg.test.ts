@@ -94,6 +94,7 @@ async function expense(txId: string | null, amountIrr: number, feeIrr = 0, day =
 
 async function purge(): Promise<void> {
   await db.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE ?1`).bind(`${P}%`).run();
+  await db.prepare(`DELETE FROM parties WHERE name LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM income_declined_transactions WHERE transaction_candidate_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM account_opening_balances WHERE financial_account_id LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM manual_bank_movements WHERE financial_account_id LIKE ?1`).bind(`${P}%`).run();
@@ -193,6 +194,34 @@ describe('accountStatement', () => {
     // The same month with the fee left off the expense is short by exactly it.
     await db.prepare(`UPDATE revenue_adjustments SET fee_irr = 0 WHERE transaction_candidate_id = ?1`).bind(paid).run();
     expect((await accountStatement(db, ACCT, month))!.gapIrr).toBe(-11_000);
+  });
+
+  it('a partner’s draw is a withdrawal the books explain, texted or not (0092)', async () => {
+    // Not an expense on the profit screen, and the bank does not care: 1.5M
+    // left the account to a partner, 1M of it with an SMS and 500k without.
+    // Counted only as `kind = 'EXPENSE'`, the texted one would sit in
+    // «برداشت بی‌توضیح» and the untexted one would open a −500,000 gap.
+    const party = await db
+      .prepare(`INSERT INTO parties (name, roles) VALUES (?1, '{PARTNER}') RETURNING id`)
+      .bind(`${P}partner`)
+      .first<{ id: number }>();
+    await tx({ direction: 'CREDIT', amountIrr: 100, balanceIrr: 5_000_000, at: month.start - DAY });
+    const texted = await tx({ direction: 'DEBIT', amountIrr: 1_000_000, balanceIrr: 4_000_000, at: T(2) });
+    await tx({ direction: 'CREDIT', amountIrr: 100_000, balanceIrr: 3_600_000, at: T(4) });
+    for (const [txId, amount, day] of [[texted, 1_000_000, T(2)], [null, 500_000, T(3)]] as const) {
+      await db
+        .prepare(
+          `INSERT INTO revenue_adjustments
+             (amount_irr, note, created_by, created_at, kind, spent_on, financial_account_id, transaction_candidate_id, party_id)
+           VALUES (?1, ?2, 't', now(), 'PARTNER_DRAW', to_timestamp(?3 / 1000.0)::date, ?4, ?5, ?6)`,
+        )
+        .bind(-amount, `${P}draw`, day, ACCT, txId, party!.id)
+        .run();
+    }
+    const s = (await accountStatement(db, ACCT, month))!;
+    expect(s.explainedWithdrawals).toEqual({ count: 1, amountIrr: 1_000_000 });
+    expect(s.unexplainedWithdrawals).toEqual({ count: 0, amountIrr: 0 });
+    expect(s.gapIrr).toBe(0);
   });
 
   it('is null for an account that does not exist, and «؟» for one the bank never priced', async () => {

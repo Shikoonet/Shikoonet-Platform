@@ -65,6 +65,9 @@ const ROWS_BASE: RevenueAdjustmentRow = {
   accountName: null,
   feeIrr: 0,
   transactionCandidateId: null,
+  partyId: null,
+  partyName: null,
+  scope: { level: 'SHOP', id: null, name: null },
 };
 
 const ROWS: RevenueAdjustmentRow[] = [
@@ -92,6 +95,9 @@ const ROWS: RevenueAdjustmentRow[] = [
     accountName: null,
     feeIrr: 0,
     transactionCandidateId: null,
+    partyId: null,
+    partyName: null,
+    scope: { level: 'SHOP', id: null, name: null },
   },
   {
     ...{
@@ -118,6 +124,9 @@ const ROWS: RevenueAdjustmentRow[] = [
       accountName: null,
       feeIrr: 0,
       transactionCandidateId: null,
+      partyId: null,
+      partyName: null,
+      scope: { level: 'SHOP', id: null, name: null },
     },
   },
   // گردشگری‑۱‑سارا, 2026-09-20: 109,000 on the invoice, 1,100 the bank took on top.
@@ -144,6 +153,8 @@ const TOTALS = {
   expensesCount: 56,
   revenueFixCount: 120,
   manualIncomeCount: 43,
+  partnerDrawsIrr: 0,
+  partnerDrawsCount: 0,
   netCount: 219,
 };
 
@@ -166,6 +177,24 @@ const editRevenueAdjustment = vi.fn(async (_id: number, _body: unknown) => ({
   ok: true,
   changed: true,
 }));
+const addRevenueAdjustment = vi.fn(async (_body: unknown) => ({ ok: true, id: 900, amountIrr: -10_000 }));
+const parties = vi.fn(async () => ({
+  ok: true,
+  items: [
+    { id: 1, name: 'حسام', roles: ['PARTNER'], sharePercent: 40, active: true, note: '', drawnIrr: 0, paidIrr: 0, receivedIrr: 0, rowCount: 0, lastOn: null },
+    { id: 2, name: 'هتزنر', roles: ['SUPPLIER'], sharePercent: null, active: true, note: '', drawnIrr: 0, paidIrr: 0, receivedIrr: 0, rowCount: 0, lastOn: null },
+  ],
+}));
+const expenseScopes = vi.fn(async () => ({
+  ok: true,
+  categories: [{ id: 10, name: 'V2ray' }, { id: 11, name: 'OpenVPN' }],
+  products: [
+    { id: 20, name: 'الماس', categoryId: 10, providerId: 30, active: true },
+    { id: 21, name: 'تیتانیوم', categoryId: 10, providerId: 30, active: true },
+    { id: 22, name: 'OPENVPN', categoryId: 11, providerId: 31, active: true },
+  ],
+  providers: [{ id: 30, name: 'پنل آلمان' }, { id: 31, name: 'openvpn' }],
+}));
 
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
@@ -179,6 +208,9 @@ vi.mock('../src/api.js', async () => {
       expenseRecurrences: () => expenseRecurrences(),
       revenueAdjustmentsCsvUrl: () => '/api/v1/admin/revenue-adjustments/export.csv',
       editRevenueAdjustment: (id: number, body: unknown) => editRevenueAdjustment(id, body),
+      addRevenueAdjustment: (body: unknown) => addRevenueAdjustment(body),
+      parties: () => parties(),
+      expenseScopes: () => expenseScopes(),
     },
   };
 });
@@ -195,6 +227,7 @@ beforeEach(() => {
   expenseCategories.mockClear();
   expenseRecurrences.mockClear();
   editRevenueAdjustment.mockClear();
+  addRevenueAdjustment.mockClear();
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -242,7 +275,7 @@ describe('where the totals come from', () => {
     expect(screen.getByText('فیش فیک، عدم واریزی، تکراری')).toBeTruthy();
     expect(screen.getByText('پولی که فروشگاه خرج کرده، با کارمزد بانک')).toBeTruthy();
     expect(screen.getByText('فروشی که دستی ثبت شده')).toBeTruthy();
-    expect(screen.getByText('جمع سه ستون قبل')).toBeTruthy();
+    expect(screen.getByText('جمع ستون‌های قبل')).toBeTruthy();
   });
 
   it('a row shows what left the account, and says how much of it was the fee', async () => {
@@ -358,5 +391,51 @@ describe('an amount the operator did not touch', () => {
 
     await waitFor(() => expect(screen.getByText(/رقم اعشاری/)).toBeTruthy());
     expect(editRevenueAdjustment).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * «به کی» and «مالِ کدام» — Sam, 2026-09-22: «وقتی هزینه تعریف می‌کنم باید
+ * بتونم وصلش کنم به سرویس‌هامون، مثلاً v2ray یا openvpn».
+ */
+describe('who and what for', () => {
+  const openNew = async () => {
+    draw();
+    await screen.findByText('شارژ آروان');
+    fireEvent.click(screen.getByRole('button', { name: 'ثبت ردیف تازه' }));
+    await screen.findByText('ثبت ردیف تازه', { selector: '.card__title' });
+    fireEvent.change(screen.getByLabelText('مبلغ (تومان)'), { target: { value: '1000' } });
+    fireEvent.change(screen.getByLabelText('شرح'), { target: { value: 'تبلیغ کانال' } });
+  };
+
+  it('sends a cost for «V2ray» as that category, and says which services it will be spread over', async () => {
+    await openNew();
+    fireEvent.change(screen.getByLabelText('مالِ کدام'), { target: { value: 'CATEGORY' } });
+    fireEvent.change(await screen.findByLabelText('دستهٔ سرویس', { selector: '#entry-scope-id' }), { target: { value: '10' } });
+    expect(screen.getByText(/بین الماس، تیتانیوم پخش می‌شود/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'ثبت' }));
+    await waitFor(() => expect(addRevenueAdjustment).toHaveBeenCalled());
+    expect(addRevenueAdjustment.mock.calls[0]![0]).toMatchObject({
+      kind: 'EXPENSE',
+      scope: { level: 'CATEGORY', id: 10 },
+      partyId: null,
+    });
+  });
+
+  it('will not send a partner draw without a partner, and offers only partners for one', async () => {
+    await openNew();
+    fireEvent.click(screen.getByLabelText('برداشت شریک'));
+    const who = (await screen.findByLabelText('کدام شریک')) as HTMLSelectElement;
+    expect([...who.options].map((o) => o.textContent)).toEqual(['— انتخاب کن —', 'حسام · شریک']);
+    // No «مالِ کدام» on a draw: it is not a cost of any service.
+    expect(screen.queryByLabelText('مالِ کدام')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'ثبت' }));
+    await waitFor(() => expect(screen.getByText('برداشت سود مال کدام شریک است؟')).toBeTruthy());
+    expect(addRevenueAdjustment).not.toHaveBeenCalled();
+
+    fireEvent.change(who, { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'ثبت' }));
+    await waitFor(() => expect(addRevenueAdjustment).toHaveBeenCalled());
+    expect(addRevenueAdjustment.mock.calls[0]![0]).toMatchObject({ kind: 'PARTNER_DRAW', partyId: 1 });
   });
 });

@@ -232,7 +232,7 @@ export function entryNoteFa(kind: string, note: string | null): string | null {
   if (kind === 'REFERRAL_BONUS' && referral) {
     return `${count(Number(referral[1]))}٪ پورسانت اولین خرید زیرمجموعه`;
   }
-  // Since 2026-09-22 a referrer is paid on every renewal too (migration 0092).
+  // Since 2026-09-22 a referrer is paid on every renewal too (migration 0093).
   if (kind === 'REFERRAL_BONUS' && renewal) {
     return `${count(Number(renewal[1]))}٪ پورسانت تمدید زیرمجموعه`;
   }

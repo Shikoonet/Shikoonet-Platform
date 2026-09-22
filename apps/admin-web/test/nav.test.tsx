@@ -61,7 +61,7 @@ describe('navigation', () => {
     // screen leaving its group is the regression. Written this way, only the
     // second one goes red.
     const groupOf = (id: PageId) => NAV.find((g) => g.items.some((i) => i.id === id))!.label;
-    for (const id of ['payments', 'today', 'transactions', 'expenses', 'books', 'accounts', 'banks', 'devices'] as const) {
+    for (const id of ['payments', 'today', 'transactions', 'expenses', 'parties', 'books', 'accounts', 'banks', 'devices'] as const) {
       expect(groupOf(id), `${id} belongs with the money`).toBe('پول');
     }
     for (const id of ['panels', 'catalog', 'categories', 'discounts', 'stock'] as const) {
@@ -70,6 +70,7 @@ describe('navigation', () => {
     // «آمار فروشگاه» is a report, so it belongs with the reports — and it is
     // the only «آمار» left since «آمار مالی» went on 2026-09-21.
     expect(groupOf('stats')).toBe(groupOf('dashboard'));
+    expect(groupOf('profit')).toBe(groupOf('dashboard'));
 
     // داشبورد still opens the panel.
     expect(NAV[0]!.items[0]!.id).toBe('dashboard');
@@ -161,6 +162,10 @@ describe('navigation', () => {
       // used; none of their own customers is on it, and none can be, because
       // they never reach this database.
       'resellers',
+      // «اشخاص» and «سود و زیان», 2026-09-22 — who the books pay, and what
+      // each service and each partner made. Sam: «من چقدر گرفتم؟».
+      'parties',
+      'profit',
     ];
     expect([...ALL].sort()).toEqual([...implemented].sort());
   });

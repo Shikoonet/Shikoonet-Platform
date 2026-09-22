@@ -72,7 +72,9 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   // of switches. A new section, so the number moved.
   // 33 -> 32 on 2026-09-21: «آمار مالی» left — Sam: «بکارمون نمیاد دیگه». One
   // sidebar item fewer, for the reason a number should move.
-  expect(labels.length).toBe(32);
+  // 32 -> 34 on 2026-09-22: «اشخاص» and «سود و زیان» (#426) — who the books
+  // pay, and what each service and each partner made. Two new sections.
+  expect(labels.length).toBe(34);
 
   for (const label of labels) {
     const name = label.trim();

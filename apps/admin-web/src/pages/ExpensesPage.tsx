@@ -61,9 +61,16 @@ import {
   CURRENCY_FA,
   FOREIGN_CURRENCIES,
   LEDGER_KIND_FA,
+  PARTY_ROLE_FA,
+  SCOPE_LEVEL_FA,
   type Currency,
   type ExpenseCategory,
   type ExpenseRecurrence,
+  type ExpenseScopes,
+  type LedgerRefs,
+  type LedgerScope,
+  type Party,
+  type ScopeLevel,
   type LedgerFilter,
   type LedgerHistoryEntry,
   type LedgerKind,
@@ -81,6 +88,9 @@ function message(e: unknown): string {
     if (e.code === 'admin_access_not_configured') return 'درِ دسترسی ادمین تنظیم نشده است.';
     if (e.code === 'already_voided') return 'این ردیف قبلاً باطل شده است.';
     if (e.code === 'duplicate_name') return 'دسته‌ای با همین نام هست.';
+    if (e.code === 'draw_needs_a_partner') return 'برداشت سود باید به نام یکی از شرکا ثبت شود.';
+    if (e.code === 'party_not_found') return 'این شخص پیدا نشد.';
+    if (e.code === 'scope_not_found') return 'این دسته، سرویس یا پنل دیگر وجود ندارد.';
     return e.detail ?? e.code;
   }
   return e instanceof Error ? e.message : String(e);
@@ -92,10 +102,12 @@ const ZERO: RevenueTotals = {
   feesIrr: 0,
   revenueFixIrr: 0,
   manualIncomeIrr: 0,
+  partnerDrawsIrr: 0,
   netIrr: 0,
   expensesCount: 0,
   revenueFixCount: 0,
   manualIncomeCount: 0,
+  partnerDrawsCount: 0,
   netCount: 0,
 };
 
@@ -109,17 +121,28 @@ const ZERO: RevenueTotals = {
  * imaginary spending on the screen this page replaced.
  */
 const COLUMN_FA: {
-  key: 'expenses' | 'revenueFix' | 'manualIncome' | 'net';
+  key: 'expenses' | 'revenueFix' | 'manualIncome' | 'partnerDraws' | 'net';
   title: string;
   what: string;
 }[] = [
   { key: 'expenses', title: 'هزینه', what: 'پولی که فروشگاه خرج کرده، با کارمزد بانک' },
   { key: 'revenueFix', title: 'اصلاح درآمد', what: 'فیش فیک، عدم واریزی، تکراری' },
   { key: 'manualIncome', title: 'درآمد دستی', what: 'فروشی که دستی ثبت شده' },
-  { key: 'net', title: 'خالص', what: 'جمع سه ستون قبل' },
+  // Its own column since 0092: a partner's share is money out and not a cost,
+  // and 680 million Toman of it sat under «هزینه» until it had one.
+  { key: 'partnerDraws', title: 'برداشت شرکا', what: 'سهم سود شرکا — هزینه نیست' },
+  { key: 'net', title: 'خالص', what: 'جمع ستون‌های قبل' },
 ];
 
-const KINDS: LedgerKind[] = ['EXPENSE', 'REVENUE_FIX', 'MANUAL_INCOME'];
+const KINDS: LedgerKind[] = ['EXPENSE', 'PARTNER_DRAW', 'REVENUE_FIX', 'MANUAL_INCOME'];
+
+/** Money leaving the shop — the kinds an account and a withdrawal SMS belong to. */
+const OUTFLOW: LedgerKind[] = ['EXPENSE', 'PARTNER_DRAW'];
+
+/** «مالِ کدام»: one line, for a row or a template. */
+function scopeLabel(scope: LedgerScope): string {
+  return scope.level === 'SHOP' ? SCOPE_LEVEL_FA.SHOP : `${SCOPE_LEVEL_FA[scope.level]}: ${scope.name ?? '—'}`;
+}
 
 /**
  * Which fields the history can show, and what to call them.
@@ -137,6 +160,10 @@ const FIELD_FA: Record<string, string> = {
   currency: 'ارز',
   original_amount: 'مبلغ ارزی',
   fx_rate_irr: 'نرخ ارز',
+  party_id: 'شخص (شناسه)',
+  product_category_id: 'دستهٔ سرویس (شناسه)',
+  product_id: 'سرویس (شناسه)',
+  provider_id: 'پنل (شناسه)',
 };
 
 /**
@@ -190,6 +217,8 @@ export function ExpensesPage() {
   >([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [recurrences, setRecurrences] = useState<ExpenseRecurrence[]>([]);
+  const [parties, setParties] = useState<Party[]>([]);
+  const [scopes, setScopes] = useState<ExpenseScopes>({ categories: [], products: [], providers: [] });
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState<string | null>(null);
@@ -201,6 +230,11 @@ export function ExpensesPage() {
   const [kind, setKind] = useState<LedgerKind | ''>('');
   const [categoryId, setCategoryId] = useState<number | ''>('');
   const [uncategorised, setUncategorised] = useState(false);
+  // «اشخاص» links here as ?party=<id> — that person's rows, his statement.
+  const [partyId, setPartyId] = useState<number | ''>(() => {
+    const raw = Number(new URLSearchParams(window.location.search).get('party'));
+    return Number.isInteger(raw) && raw > 0 ? raw : '';
+  });
   const [q, setQ] = useState('');
   const [voided, setVoided] = useState<'hide' | 'show' | 'only'>('hide');
   const [dated, setDated] = useState(false);
@@ -229,11 +263,12 @@ export function ExpensesPage() {
       kind,
       categoryId,
       uncategorised,
+      partyId,
       q,
       voided,
       ...(dated ? { from, to } : {}),
     }),
-    [kind, categoryId, uncategorised, q, voided, dated, from, to],
+    [kind, categoryId, uncategorised, partyId, q, voided, dated, from, to],
   );
 
   async function load() {
@@ -267,6 +302,14 @@ export function ExpensesPage() {
         .expenseRecurrences()
         .then((r) => setRecurrences(r.items))
         .catch(() => setRecurrences([])),
+      api
+        .parties()
+        .then((r) => setParties(r.items))
+        .catch(() => setParties([])),
+      api
+        .expenseScopes()
+        .then((r) => setScopes({ categories: r.categories, products: r.products, providers: r.providers }))
+        .catch(() => {}),
     ]);
   }
 
@@ -357,6 +400,8 @@ export function ExpensesPage() {
             row={editing === 'new' ? null : editing}
             prefill={editing === 'new' ? prefill : null}
             categories={activeCategories}
+            parties={parties}
+            scopes={scopes}
             onClose={() => setEditing(null)}
             onSaved={async (msg) => {
               setEditing(null);
@@ -372,6 +417,8 @@ export function ExpensesPage() {
             row={null}
             recurrence={posting}
             categories={activeCategories}
+            parties={parties}
+            scopes={scopes}
             onClose={() => setPosting(null)}
             onSaved={async (msg) => {
               setPosting(null);
@@ -404,6 +451,8 @@ export function ExpensesPage() {
         <Recurrences
           items={recurrences}
           categories={activeCategories}
+          parties={parties}
+          scopes={scopes}
           onPost={setPosting}
           onChanged={async (msg) => {
             setDone(msg);
@@ -429,7 +478,7 @@ export function ExpensesPage() {
         lifetime={lifetime}
         // «باطل‌شده‌ها: پنهان» is the default, not a filter — counting it would
         // tell an admin they had narrowed something when they had not.
-        filtered={Boolean(kind || categoryId || uncategorised || q || dated || voided !== 'hide')}
+        filtered={Boolean(kind || categoryId || uncategorised || partyId || q || dated || voided !== 'hide')}
       />
 
       {byCategory.length > 0 && (
@@ -491,6 +540,26 @@ export function ExpensesPage() {
                   rather than folded into «سایر», because «I have not looked at
                   this yet» and «I looked, and it is other» are different. */}
               <option value="none">— دسته‌بندی‌نشده —</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="form-label" htmlFor="adj-party">
+              شخص
+            </label>
+            <select
+              id="adj-party"
+              className="form-control"
+              value={String(partyId)}
+              onChange={(e) => setPartyId(e.target.value === '' ? '' : Number(e.target.value))}
+            >
+              <option value="">همه</option>
+              {parties.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.active ? '' : ' (بایگانی)'}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -789,6 +858,13 @@ function Row({
         <td>{row.kind === 'EXPENSE' ? (row.categoryName ?? '—') : '—'}</td>
         <td style={struck}>
           {row.note}
+          {(row.partyName || (row.kind === 'EXPENSE' && row.scope.level !== 'SHOP')) && (
+            <div className="muted" style={{ fontSize: 11 }}>
+              {row.partyName ? `${row.kind === 'MANUAL_INCOME' ? 'از' : 'به'} ${row.partyName}` : ''}
+              {row.partyName && row.kind === 'EXPENSE' && row.scope.level !== 'SHOP' ? ' · ' : ''}
+              {row.kind === 'EXPENSE' && row.scope.level !== 'SHOP' ? `مالِ ${scopeLabel(row.scope)}` : ''}
+            </div>
+          )}
           {(row.accountName || row.transactionCandidateId) && (
             <div className="muted" style={{ fontSize: 11 }}>
               {row.accountName ? `از ${row.accountName}` : ''}
@@ -967,12 +1043,16 @@ function DueBanner({
 function Recurrences({
   items,
   categories,
+  parties,
+  scopes,
   onPost,
   onChanged,
   onError,
 }: {
   items: ExpenseRecurrence[];
   categories: ExpenseCategory[];
+  parties: Party[];
+  scopes: ExpenseScopes;
   onPost: (r: ExpenseRecurrence) => void;
   onChanged: (msg: string) => void | Promise<void>;
   onError: (msg: string) => void;
@@ -1001,6 +1081,8 @@ function Recurrences({
         <RecurrenceForm
           row={editing === 'new' ? null : editing}
           categories={categories}
+          parties={parties}
+          scopes={scopes}
           onClose={() => setEditing(null)}
           onSaved={async (msg) => {
             setEditing(null);
@@ -1035,6 +1117,13 @@ function Recurrences({
                 <td>
                   {r.label}
                   {!r.active && <span className="muted"> (بایگانی)</span>}
+                  {(r.scope.level !== 'SHOP' || r.partyName) && (
+                    <div className="muted" style={{ fontSize: 11 }}>
+                      {r.scope.level !== 'SHOP' ? `مالِ ${scopeLabel(r.scope)}` : ''}
+                      {r.scope.level !== 'SHOP' && r.partyName ? ' · ' : ''}
+                      {r.partyName ? `به ${r.partyName}` : ''}
+                    </div>
+                  )}
                 </td>
                 <td>{r.categoryName ?? '—'}</td>
                 <td>{toman(-r.amountIrr)}</td>
@@ -1083,12 +1172,16 @@ function Recurrences({
 function RecurrenceForm({
   row,
   categories,
+  parties,
+  scopes,
   onClose,
   onSaved,
   onError,
 }: {
   row: ExpenseRecurrence | null;
   categories: ExpenseCategory[];
+  parties: Party[];
+  scopes: ExpenseScopes;
   onClose: () => void;
   onSaved: (msg: string) => void | Promise<void>;
   onError: (msg: string) => void;
@@ -1101,10 +1194,15 @@ function RecurrenceForm({
   const [jDate, setJDate] = useState<JalaliDate>(() =>
     toJalali(row ? Date.parse(`${row.nextDueOn}T12:00:00Z`) : Date.now()),
   );
+  const [refs, setRefs] = useState<Refs>(() => refsFrom(row));
   const [busy, setBusy] = useState(false);
 
   async function submit() {
     const amountToman = digits(amount);
+    if (refs.level !== 'SHOP' && refs.scopeId === '') {
+      onError('بگو مالِ کدام است — یا «همهٔ فروشگاه» را بزن.');
+      return;
+    }
     if (!label.trim()) {
       onError('عنوان لازم است.');
       return;
@@ -1122,6 +1220,7 @@ function RecurrenceForm({
         categoryId: categoryId === '' ? null : categoryId,
         nextDueOn: jalaliToIsoDate(jDate),
         note: note.trim(),
+        ...refsBody(refs),
       };
       if (row) {
         await api.editExpenseRecurrence(row.id, body);
@@ -1202,6 +1301,15 @@ function RecurrenceForm({
 
         <DateField label="سررسید بعدی" value={jDate} onChange={setJDate} />
       </div>
+
+      <RefsFields
+        idPrefix="rec"
+        kind="EXPENSE"
+        refs={refs}
+        onChange={setRefs}
+        parties={parties}
+        scopes={scopes}
+      />
 
       <div style={{ marginBlockStart: 12 }}>
         <label className="form-label" htmlFor="rec-note">
@@ -1415,6 +1523,8 @@ function EntryForm({
   row,
   recurrence = null,
   categories,
+  parties,
+  scopes,
   prefill = null,
   onClose,
   onSaved,
@@ -1426,10 +1536,14 @@ function EntryForm({
   /** Arriving from «دفتر بانک» with the hole already measured. */
   prefill?: { account: string; amount: string; date: string } | null;
   categories: ExpenseCategory[];
+  parties: Party[];
+  scopes: ExpenseScopes;
   onClose: () => void;
   onSaved: (msg: string) => void | Promise<void>;
   onError: (msg: string) => void;
 }) {
+  // Who and what-for — the template's when posting an instalment of one.
+  const [refs, setRefs] = useState<Refs>(() => refsFrom(row ?? recurrence));
   // A recurring cost is always spending, and its category is the template's.
   const [kind, setKind] = useState<LedgerKind>(recurrence ? 'EXPENSE' : (row?.kind ?? 'EXPENSE'));
   const [currency, setCurrency] = useState<Currency>(row?.currency ?? 'IRR');
@@ -1491,8 +1605,9 @@ function EntryForm({
   );
   const [busy, setBusy] = useState(false);
 
+  const outflow = OUTFLOW.includes(kind);
   useEffect(() => {
-    if (kind !== 'EXPENSE') return;
+    if (!outflow) return;
     let live = true;
     hubApi
       .accounts()
@@ -1503,11 +1618,11 @@ function EntryForm({
     return () => {
       live = false;
     };
-  }, [kind]);
+  }, [outflow]);
 
   const spentOnIso = jalaliToIsoDate(jDate);
   useEffect(() => {
-    if (kind !== 'EXPENSE' || !accountId) {
+    if (!outflow || !accountId) {
       setWithdrawals([]);
       return;
     }
@@ -1529,7 +1644,7 @@ function EntryForm({
     return () => {
       live = false;
     };
-  }, [kind, accountId, spentOnIso]);
+  }, [outflow, accountId, spentOnIso]);
 
   const originalAmount = decimal(foreign);
   const fxRateToman = digits(rate);
@@ -1561,7 +1676,7 @@ function EntryForm({
   const amountToman =
     currency === 'IRR' ? tomanField(amount) : Math.round(originalAmount * fxRateToman);
   const previewIrr =
-    kind === 'EXPENSE' || (kind === 'REVENUE_FIX' && direction === 'expense')
+    outflow || (kind === 'REVENUE_FIX' && direction === 'expense')
       ? -amountToman * 10
       : amountToman * 10;
 
@@ -1583,6 +1698,14 @@ function EntryForm({
     }
     if (!note.trim()) {
       onError('شرح لازم است.');
+      return;
+    }
+    if (kind === 'PARTNER_DRAW' && refs.partyId === '') {
+      onError('برداشت سود مال کدام شریک است؟');
+      return;
+    }
+    if (kind === 'EXPENSE' && refs.level !== 'SHOP' && refs.scopeId === '') {
+      onError('بگو مالِ کدام است — یا «همهٔ فروشگاه» را بزن.');
       return;
     }
     const feeToman = tomanField(fee);
@@ -1608,6 +1731,7 @@ function EntryForm({
           ...(accountId ? { financialAccountId: accountId } : {}),
           ...(feeToman > 0 ? { feeToman } : {}),
           ...(withdrawalId ? { transactionCandidateId: withdrawalId } : {}),
+          ...refsBody(refs),
         });
         await onSaved(
           `ثبت شد — سررسید بعدی ${dateOnly(`${res.nextDueOn}T12:00:00Z`)}.`,
@@ -1621,9 +1745,12 @@ function EntryForm({
         categoryId: kind === 'EXPENSE' ? (categoryId === '' ? null : categoryId) : null,
         spentOn,
         note: note.trim(),
-        financialAccountId: kind === 'EXPENSE' && accountId ? accountId : null,
-        feeToman: kind === 'EXPENSE' ? feeToman : 0,
-        transactionCandidateId: kind === 'EXPENSE' && withdrawalId ? withdrawalId : null,
+        financialAccountId: outflow && accountId ? accountId : null,
+        feeToman: outflow ? feeToman : 0,
+        transactionCandidateId: outflow && withdrawalId ? withdrawalId : null,
+        // A correction is not paid to anybody; the server would keep a stale
+        // person on it otherwise, since an absent field means «unchanged».
+        ...(kind === 'REVENUE_FIX' ? { partyId: null } : refsBody(refs)),
       };
       if (row) {
         const res = await api.editRevenueAdjustment(row.id, {
@@ -1787,7 +1914,7 @@ function EntryForm({
 
         <DateField label="تاریخ هزینه" value={jDate} onChange={setJDate} />
 
-        {kind === 'EXPENSE' && (
+        {outflow && (
           <>
             <div>
               <label className="form-label" htmlFor="entry-account">
@@ -1860,6 +1987,17 @@ function EntryForm({
         )}
       </div>
 
+      {kind !== 'REVENUE_FIX' && (
+        <RefsFields
+          idPrefix="entry"
+          kind={kind}
+          refs={refs}
+          onChange={setRefs}
+          parties={parties}
+          scopes={scopes}
+        />
+      )}
+
       <div style={{ marginBlockStart: 12 }}>
         <label className="form-label" htmlFor="entry-note">
           شرح
@@ -1915,6 +2053,165 @@ function EntryForm({
           انصراف
         </button>
       </div>
+    </div>
+  );
+}
+
+/** The person and the «مالِ کدام» of a row or template, as the form holds them. */
+interface Refs {
+  partyId: number | '';
+  level: ScopeLevel;
+  scopeId: number | '';
+}
+
+function refsFrom(r: { partyId: number | null; scope: LedgerScope } | null | undefined): Refs {
+  return {
+    partyId: r?.partyId ?? '',
+    level: r?.scope.level ?? 'SHOP',
+    scopeId: r?.scope.id ?? '',
+  };
+}
+
+/** What the server is sent. `SHOP` carries no id; an empty person is a null that clears one. */
+function refsBody(r: Refs): LedgerRefs {
+  return {
+    partyId: r.partyId === '' ? null : r.partyId,
+    scope: r.level === 'SHOP' || r.scopeId === '' ? { level: 'SHOP' } : { level: r.level, id: r.scopeId },
+  };
+}
+
+/**
+ * «به کی» and «مالِ کدام» — Sam, 2026-09-22.
+ *
+ * «وقتی هزینه تعریف می‌کنم باید بتونم وصلش کنم به سرویس‌هامون — مثلاً v2ray یا
+ * openvpn یا وایرگارد». Those three are CATEGORIES on this shop; «الماس» is a
+ * service inside one; the server is a panel. All three are offered, and the
+ * page says what each one does to the profit screen, because «دسته» quietly
+ * splitting a cost over four services is the thing an admin would not guess.
+ *
+ * A draw lists partners only; the server refuses anybody else.
+ */
+function RefsFields({
+  idPrefix,
+  kind,
+  refs,
+  onChange,
+  parties,
+  scopes,
+}: {
+  idPrefix: string;
+  kind: LedgerKind;
+  refs: Refs;
+  onChange: (r: Refs) => void;
+  parties: Party[];
+  scopes: ExpenseScopes;
+}) {
+  const draw = kind === 'PARTNER_DRAW';
+  const choices = parties.filter(
+    (p) => (p.active || p.id === refs.partyId) && (!draw || p.roles.includes('PARTNER')),
+  );
+  const options =
+    refs.level === 'CATEGORY'
+      ? scopes.categories.map((c) => ({ id: c.id, name: c.name }))
+      : refs.level === 'PRODUCT'
+        ? scopes.products
+            .filter((p) => p.active || p.id === refs.scopeId)
+            .map((p) => ({
+              id: p.id,
+              name: `${p.name}${p.categoryId ? ` — ${scopes.categories.find((c) => c.id === p.categoryId)?.name ?? ''}` : ''}`,
+            }))
+        : refs.level === 'PROVIDER'
+          ? scopes.providers.map((p) => ({ id: p.id, name: p.name }))
+          : [];
+  const spreadOver =
+    refs.scopeId === ''
+      ? []
+      : refs.level === 'CATEGORY'
+        ? scopes.products.filter((p) => p.categoryId === refs.scopeId)
+        : refs.level === 'PROVIDER'
+          ? scopes.products.filter((p) => p.providerId === refs.scopeId)
+          : [];
+
+  return (
+    <div className="filters" style={{ marginBlockStart: 12 }}>
+      <div>
+        <label className="form-label" htmlFor={`${idPrefix}-party`}>
+          {draw ? 'کدام شریک' : kind === 'MANUAL_INCOME' ? 'از طرف (اختیاری)' : 'به کی (اختیاری)'}
+        </label>
+        <select
+          id={`${idPrefix}-party`}
+          className="form-control"
+          value={String(refs.partyId)}
+          onChange={(e) => onChange({ ...refs, partyId: e.target.value === '' ? '' : Number(e.target.value) })}
+        >
+          <option value="">{draw ? '— انتخاب کن —' : '— کسی نیست —'}</option>
+          {choices.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} · {p.roles.map((r) => PARTY_ROLE_FA[r]).join('، ') || 'بی‌نقش'}
+            </option>
+          ))}
+        </select>
+        {choices.length === 0 && (
+          <p className="muted" style={{ marginBlockStart: 4 }}>
+            {draw ? 'هنوز شریکی تعریف نشده — از «اشخاص» اضافه کن.' : 'شخصی تعریف نشده — از «اشخاص» اضافه کن.'}
+          </p>
+        )}
+      </div>
+
+      {kind === 'EXPENSE' && (
+        <>
+          <div>
+            <label className="form-label" htmlFor={`${idPrefix}-scope-level`}>
+              مالِ کدام
+            </label>
+            <select
+              id={`${idPrefix}-scope-level`}
+              className="form-control"
+              value={refs.level}
+              onChange={(e) => onChange({ ...refs, level: e.target.value as ScopeLevel, scopeId: '' })}
+            >
+              {(['SHOP', 'CATEGORY', 'PRODUCT', 'PROVIDER'] as const).map((l) => (
+                <option key={l} value={l}>
+                  {SCOPE_LEVEL_FA[l]}
+                </option>
+              ))}
+            </select>
+          </div>
+          {refs.level !== 'SHOP' && (
+            <div>
+              <label className="form-label" htmlFor={`${idPrefix}-scope-id`}>
+                {SCOPE_LEVEL_FA[refs.level]}
+              </label>
+              <select
+                id={`${idPrefix}-scope-id`}
+                className="form-control"
+                value={String(refs.scopeId)}
+                onChange={(e) => onChange({ ...refs, scopeId: e.target.value === '' ? '' : Number(e.target.value) })}
+              >
+                <option value="">— انتخاب کن —</option>
+                {options.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <p className="muted" style={{ flexBasis: '100%', margin: 0, fontSize: 12 }}>
+            {refs.level === 'SHOP'
+              ? 'هزینهٔ کل فروشگاه (مثل حسابداری) — در «سود و زیان» جدا نشان داده می‌شود و روی سرویس‌ها پخش نمی‌شود.'
+              : refs.level === 'PRODUCT'
+                ? 'همهٔ این هزینه به حساب همین سرویس نوشته می‌شود.'
+                : spreadOver.length > 0
+                  ? `بین ${
+                      spreadOver.length <= 4
+                        ? spreadOver.map((p) => p.name).join('، ')
+                        : `${spreadOver.slice(0, 3).map((p) => p.name).join('، ')} و ${count(spreadOver.length - 3)} سرویس دیگر`
+                    } پخش می‌شود — به نسبت فروش هرکدام در همان بازه.`
+                  : 'بین سرویس‌های زیر آن، به نسبت فروش هرکدام در همان بازه پخش می‌شود.'}
+          </p>
+        </>
+      )}
     </div>
   );
 }

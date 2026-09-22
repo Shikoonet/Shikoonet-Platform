@@ -1,4 +1,4 @@
--- 0092 — a referrer is paid on the first purchase AND on every renewal.
+-- 0093 — a referrer is paid on the first purchase AND on every renewal.
 --
 -- Sam, 2026-09-22: «زیرمجموعه‌هاشون هر زمان خرید اول کردن 30 % به کیف پولشون
 -- بریزه، و هر زمان تمدید کردن 10 %. این اعداد رو بشه در تنظیمات داشبورد
