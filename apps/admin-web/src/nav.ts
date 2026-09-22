@@ -42,7 +42,7 @@
  * and nothing else: the compiler, not a comment, is what stops «کاربران» being
  * routed into a screen that expects a payment cache.
  */
-export type HubPageId = 'payments' | 'statistics' | 'today' | 'accounts' | 'banks' | 'devices';
+export type HubPageId = 'payments' | 'today' | 'accounts' | 'banks' | 'devices';
 
 export type PageId =
   | HubPageId
@@ -88,14 +88,13 @@ export interface NavGroup {
 export const NAV: NavGroup[] = [
   {
     // First, because it is the question every other screen is an answer to.
-    // The two «آمار» screens are here together on purpose: one is the shop's
-    // own trade and the other is the bank side, and side by side their names
-    // read as a division of labour instead of as the same word twice.
+    // «آمار مالی» — the bank-side twin of «آمار فروشگاه» — sat here until
+    // 2026-09-21; Sam: «بکارمون نمیاد دیگه». Its metrics and chart are still
+    // drawn on «پرداخت‌ها», which is the screen that reads them.
     label: 'گزارش‌ها',
     items: [
       { id: 'dashboard', label: 'داشبورد', icon: 'home' },
       { id: 'stats', label: 'آمار فروشگاه', icon: 'grid' },
-      { id: 'statistics', label: 'آمار مالی', icon: 'bars' },
     ],
   },
   {
@@ -219,7 +218,7 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'dashboard',
   // Every figure on it is an aggregate — nothing there names a customer.
   'stats',
-  // All six finance screens. Not an oversight and not generosity: reviewing
+  // All five finance screens. Not an oversight and not generosity: reviewing
   // payments is the entire reason the READ_ONLY role exists, and `mayRead`
   // withholds nothing on these paths — its list is `/api/v1/admin/*` only, and
   // the hub's routes have never been under it. Every *write* on them already
@@ -227,7 +226,6 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   // out of this set would hide from a reviewer exactly the work they were
   // given the account to do.
   'payments',
-  'statistics',
   'today',
   'accounts',
   'banks',

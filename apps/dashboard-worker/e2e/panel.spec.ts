@@ -70,7 +70,9 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   // operator writes the rules for, on a screen of its own beside
   // «کرون‌جاب‌ها» rather than a block on it: a list that grows is not a row
   // of switches. A new section, so the number moved.
-  expect(labels.length).toBe(33);
+  // 33 -> 32 on 2026-09-21: «آمار مالی» left — Sam: «بکارمون نمیاد دیگه». One
+  // sidebar item fewer, for the reason a number should move.
+  expect(labels.length).toBe(32);
 
   for (const label of labels) {
     const name = label.trim();

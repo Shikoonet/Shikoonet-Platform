@@ -78,7 +78,6 @@ import './hub/styles.css';
 
 const HUB_PAGES: ReadonlySet<PageId> = new Set<HubPageId>([
   'payments',
-  'statistics',
   'today',
   'accounts',
   'banks',

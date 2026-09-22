@@ -406,39 +406,6 @@
   min-height: 0;
 }
 
-/* The same presets, unfolded — «آمار مالی» draws them on the screen. */
-.range-strip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
-  margin-block-end: var(--space-md);
-}
-
-.range-strip__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
-.range-strip__chip {
-  min-height: 0;
-  padding: 0.4rem 0.85rem;
-  border-radius: 999px;
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.range-strip__chip--on {
-  border-color: var(--border-gold);
-  background: var(--gold-muted);
-  color: var(--text-primary);
-  font-weight: 600;
-}
 
 .section-heading {
   margin: 0 0 var(--space-md);
@@ -1236,124 +1203,6 @@
     grid-template-columns: repeat(2, 1fr);
   }
 }
-
-/* === حساب‌ها و کارت‌ها — the one table on «آمار مالی» === */
-.fin-table-wrap {
-  padding: var(--space-md);
-  background: var(--surface-muted);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
-
-.fin-table__header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-sm);
-}
-
-.fin-table__header p {
-  margin: 0;
-  font-size: 0.75rem;
-}
-
-/* The only thing on the page allowed to be wider than the phone. */
-.fin-table__scroll {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.fin-table {
-  width: 100%;
-  min-width: 56rem;
-  border-collapse: collapse;
-  font-size: 0.8125rem;
-}
-
-.fin-table th,
-.fin-table td {
-  padding: 0.55rem 0.6rem;
-  text-align: right;
-  vertical-align: top;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.fin-table thead th {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.fin-table__name {
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.fin-table__name small,
-.fin-table__num small {
-  display: block;
-  font-size: 0.6875rem;
-  margin-top: 0.1rem;
-}
-
-.fin-table__num {
-  white-space: nowrap;
-}
-
-.fin-table__num--zero {
-  color: var(--text-muted);
-}
-
-.fin-table__account {
-  background: var(--surface-elevated);
-}
-
-.fin-table__account--orphans th {
-  padding-top: 0.9rem;
-}
-
-.fin-table__card .fin-table__name {
-  padding-inline-start: 1.75rem;
-  font-weight: 400;
-  color: var(--text-secondary);
-}
-
-.fin-table__card-mask {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.8125rem;
-  letter-spacing: 0.04em;
-  display: inline-block;
-}
-
-.fin-table__tag {
-  display: inline-block;
-  margin-inline-start: 0.5rem;
-  padding: 0.05rem 0.45rem;
-  border-radius: 999px;
-  font-size: 0.6875rem;
-  color: var(--warning);
-  background: var(--warning-soft);
-  cursor: help;
-}
-
-.fin-table__total th,
-.fin-table__total td {
-  border-top: 2px solid var(--border-mid);
-  border-bottom: 0;
-  background: var(--gold-muted);
-  font-weight: 700;
-}
-
-.fin-table__foot {
-  margin: var(--space-sm) 0 0;
-  font-size: 0.75rem;
-}
-
 
 /* === Hub list rows === */
 .hub-list {
@@ -2437,10 +2286,6 @@
 .sales-trend__subtitle {
   margin: 0 0 0.5rem;
   font-size: 0.85rem;
-}
-
-.statistics__chart-card {
-  grid-column: 1 / -1;
 }
 
 .warn {

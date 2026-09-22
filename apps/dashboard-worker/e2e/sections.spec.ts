@@ -89,7 +89,9 @@ test('every section opens without a failed request, a thrown render or an error 
   // operator writes the rules for, on a screen of its own beside
   // «کرون‌جاب‌ها» rather than a block on it: a list that grows is not a row
   // of switches. A new section, so the number moved.
-  expect(labels.length).toBe(33);
+  // 33 -> 32 on 2026-09-21: «آمار مالی» left — Sam: «بکارمون نمیاد دیگه». One
+  // sidebar item fewer, for the reason a number should move.
+  expect(labels.length).toBe(32);
 
   for (const label of labels) {
     section = label;
@@ -114,9 +116,9 @@ test('every section opens without a failed request, a thrown render or an error 
 
     // A screen with no heading cannot be navigated by one, and on 2026-09-09
     // that was every screen: the panel's titles were `div`s and so was the
-    // shell's. Asserted for all thirty-one rather than for a sample, because
+    // shell's. Asserted for every section rather than for a sample, because
     // the sample that was checked (`shell.test.tsx`, «پرداخت‌ها») passed while
-    // «آمار مالی» was serving four headers and no heading at all.
+    // «آمار مالی» — since retired — was serving four headers and no heading.
     const headings = (await page.locator('h1').allInnerTexts()).map((t) => t.trim());
     if (headings.length !== 1) {
       trouble.push({ section: label, what: `${headings.length} h1: ${headings.join(' | ') || '(none)'}` });

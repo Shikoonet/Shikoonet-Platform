@@ -51,17 +51,9 @@ export function tehranTodayDateString(nowMs = Date.now()): string {
 export function HistoryDateNav({
   value,
   onChange,
-  variant = 'menu',
 }: {
   value: HistoryRangeState;
   onChange: (next: HistoryRangeState) => void;
-  /**
-   * `menu` is the compact `<details>` that fits the header beside the payment
-   * tabs. `strip` lays every preset out as a chip, for a screen with room —
-   * «آمار مالی», where the folded menu read as a badge saying «همه» and nobody
-   * took it for the control it was.
-   */
-  variant?: 'menu' | 'strip';
 }) {
   const day = value.day ?? tehranTodayDateString();
   const relative = value.preset === 'day' ? tehranDayRelativeLabel(day) : null;
@@ -113,31 +105,6 @@ export function HistoryDateNav({
       </button>
     </div>
   );
-
-  if (variant === 'strip') {
-    return (
-      <div className="range-strip">
-        <div className="range-strip__chips" role="radiogroup" aria-label="بازهٔ تاریخ">
-          {HISTORY_RANGE_PRESETS.map((o) => {
-            const on = o.value === value.preset;
-            return (
-              <button
-                key={o.value}
-                type="button"
-                role="radio"
-                aria-checked={on}
-                className={`range-strip__chip${on ? ' range-strip__chip--on' : ''}`}
-                onClick={() => setPreset(o.value)}
-              >
-                {o.label}
-              </button>
-            );
-          })}
-        </div>
-        {dayNav}
-      </div>
-    );
-  }
 
   return (
     <details className="unified-date-control">

@@ -22,7 +22,7 @@
 
 import { expect, test } from '@playwright/test';
 
-const SECTIONS = ['payments', 'statistics', 'today', 'accounts', 'banks', 'devices'] as const;
+const SECTIONS = ['payments', 'today', 'accounts', 'banks', 'devices'] as const;
 
 test('the notification bell opens the tab it names, from another section', async ({ page }) => {
   await page.goto('/admin/today');

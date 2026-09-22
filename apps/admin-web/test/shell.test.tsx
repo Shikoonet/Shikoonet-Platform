@@ -103,15 +103,15 @@ describe('the panel has one header', () => {
  * Two pages out of twenty-six took it up. This is the rest.
  *
  * The heading is the SHELL's title rather than the page's, because that is the
- * one element all thirty-one screens have: six of them are finance screens with
- * no `.page-head` at all, and giving each its own would be six chances to
- * forget the seventh.
+ * one element every screen has: five of them are finance screens with no
+ * `.page-head` at all, and giving each its own would be five chances to
+ * forget the sixth.
  */
 describe('every screen has one heading, and it names the screen', () => {
   // A panel page whose title is a `div`; a page that already had its own `h1`
   // and would otherwise now have two; and two finance screens that have no page
   // title at all. If the claim holds anywhere it has to hold on all four.
-  const SCREENS = ['کاربران', 'نمایندگان', 'پرداخت‌ها', 'آمار مالی'];
+  const SCREENS = ['کاربران', 'نمایندگان', 'پرداخت‌ها', 'حساب‌ها'];
 
   it('puts the section name in exactly one h1', SHELL, async () => {
     await drawApp();
@@ -138,9 +138,11 @@ describe('every screen has one heading, and it names the screen', () => {
     // alone, and passes — while «آمار مالی» was serving four, because the hub's
     // statistics view kept a page header of its own with a second copy of the
     // title and a second date control. A guard that checks one of the screens
-    // its claim covers is not a guard.
+    // its claim covers is not a guard. That screen left on 2026-09-21; the
+    // claim still covers the finance screens that stayed, so this asks one of
+    // them instead of retiring with it.
     await drawApp();
-    await go('آمار مالی');
+    await go('حساب‌ها');
     await waitFor(() => expect(document.querySelectorAll('header.app-header')).toHaveLength(1));
     expect(document.querySelector('#main-content .page-header')).toBeNull();
   });

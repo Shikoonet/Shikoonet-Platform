@@ -157,11 +157,12 @@ describe('the command palette', () => {
   it('moves the selection with the arrow keys', () => {
     draw();
     openIt();
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'آمار' } });
-    // Two sections match: «آمار فروشگاه» and «آمار مالی». The second one is
-    // reachable only if the arrow moves.
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'ربات' } });
+    // Two sections match: «ربات تلگرام» and «متن‌های ربات», in that order. The
+    // second one is reachable only if the arrow moves. It used to be the two
+    // «آمار» screens, until «آمار مالی» left the sidebar on 2026-09-21.
     fireEvent.keyDown(document, { key: 'ArrowDown' });
     fireEvent.keyDown(document, { key: 'Enter' });
-    expect(go).toHaveBeenCalledWith('statistics');
+    expect(go).toHaveBeenCalledWith('texts');
   });
 });

@@ -28,7 +28,7 @@ interface NotificationCounts {
 interface NotificationBellProps {
   cache: Cache;
   onNavigate?: (
-    tab: 'payments' | 'statistics' | 'today',
+    tab: 'payments' | 'today',
     filter?: { kind: string; paymentTab?: string },
   ) => void;
 }

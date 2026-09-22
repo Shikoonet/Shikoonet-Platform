@@ -36,6 +36,9 @@ export function pageFromPath(path: string): PageId {
   // «محصولات» became a view of «سرویس‌ها» on 2026-09-13. The bookmarks and
   // the links in old chats still say /products; they open the same shop.
   if (first === 'products') return 'catalog';
+  // «آمار مالی» left the sidebar on 2026-09-21; the other stats screen is the
+  // nearest thing a bookmark could have meant.
+  if (first === 'statistics') return 'stats';
   return isPageId(first) ? first : 'dashboard';
 }
 

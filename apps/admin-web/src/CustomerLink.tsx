@@ -25,9 +25,9 @@
  * ## Why READ_ONLY gets no link
  *
  * That role cannot open «کاربران»: `READABLE_BY_READER` in `nav.ts` leaves it
- * out and `mayRead` answers 403. But it CAN open «پرداخت‌ها», «امروز» and
- * «آمار مالی», which print telegram ids — so without this branch the one role
- * that is all reading gets a door that answers 403.
+ * out and `mayRead` answers 403. But it CAN open «پرداخت‌ها» and «امروز»,
+ * which print telegram ids — so without this branch the one role that is all
+ * reading gets a door that answers 403.
  */
 
 import { useRole } from './role.js';
