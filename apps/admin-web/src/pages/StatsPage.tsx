@@ -82,6 +82,19 @@ const exact = (irr: number): string | undefined =>
 
 const pctText = (n: number) => `${n.toLocaleString('fa-IR', { maximumFractionDigits: 2 })}٪`;
 
+/** What the whole «به تفکیک سرویس» table came to, for the share column. */
+const serviceTotalIrr = (rows: ReadonlyArray<{ irr: number }>) =>
+  rows.reduce((sum, r) => sum + r.irr, 0);
+
+/**
+ * One row's share of the table, as a percentage.
+ *
+ * Zero when the table is zero rather than NaN: a range whose only sales were
+ * free trials has rows and no money, and «NaN٪» on a money screen reads as a
+ * broken page rather than as «nothing was earned».
+ */
+const share = (irr: number, total: number) => (total > 0 ? (irr / total) * 100 : 0);
+
 export function StatsPage() {
   const [range, setRange] = useState<StatsRange>('all');
   // Held as a Jalali date because that is what the operator picks. The wire
@@ -397,6 +410,48 @@ export function StatsPage() {
                 foot={`میانگین ${count(data.projectionDays)} روزهٔ همین بازه × ۳۰`}
               />
             </div>
+          </Section>
+
+          <Section
+            title="فروش به تفکیک سرویس"
+            sub="کدام سرویس چقدر فروخت — خرید تازه، تمدید و افزودنی، در همین بازه. جمع ستون «فروش» همان «درآمد» بالاست."
+          >
+            {data.byService.length === 0 ? (
+              <p className="muted">در این بازه هیچ فروشی ثبت نشده.</p>
+            ) : (
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>سرویس</th>
+                      <th>خرید تازه</th>
+                      <th>تمدید</th>
+                      <th>فروش</th>
+                      <th>سهم</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.byService.map((s) => (
+                      <tr key={s.productId ?? 'legacy'}>
+                        {/* The imported bucket is a heap of old orders, not a
+                            service anybody can sell today, so it reads as the
+                            aside it is. */}
+                        <td className={s.productId === null ? 'muted' : undefined}>{s.name}</td>
+                        <td>{count(s.newCount)}</td>
+                        <td>{count(s.renewalCount)}</td>
+                        <td>{toman(s.irr)}</td>
+                        <td>
+                          <span className="broadcast-progress">
+                            <progress value={s.irr} max={serviceTotalIrr(data.byService)} />
+                            {pctText(share(s.irr, serviceTotalIrr(data.byService)))}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Section>
 
           <Section
