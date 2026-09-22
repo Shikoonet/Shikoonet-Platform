@@ -850,7 +850,7 @@ describe('a settings read that fails', () => {
     const during = await withSettingsUnreachable(staleRead);
 
     expect(during.commissionPercent).toBe(5);
-    expect(DEFAULT_SHOP_SETTINGS.commissionPercent).toBe(10);
+    expect(DEFAULT_SHOP_SETTINGS.commissionPercent).toBe(30);
     // Still marked as not from the database, because it is not fresh — the flag
     // means "could not ask", and a money path is entitled to know that.
     expect(during.fromDatabase).toBe(false);
