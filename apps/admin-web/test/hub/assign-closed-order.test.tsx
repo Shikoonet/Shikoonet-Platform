@@ -3,11 +3,13 @@
  *
  * Sam, 2026-09-23: «وقتی تایید میشه یعنی پول به حساب اومده». An order closed
  * by hand without its bank row (a hand delivery, or «تایید دستی») is offered
- * too, but only on the deposit's own account, only while it has no deposit,
- * and only as evidence: the request always verifies, never suggests.
+ * too, but only on the deposit's own account, only within a day of the
+ * deposit, only while it has no deposit, and only as evidence: the request
+ * always verifies, never suggests.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { FULFILLED_RECONCILE_MAX_TIME_DELTA_MS } from '@shikoo/contracts';
 import { AssignToPaymentModal } from '../../src/hub/financialHub.js';
 import type { PaymentItem } from '../../src/hub/paymentReview.js';
 
@@ -70,12 +72,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderModal() {
+const DEPOSIT_AT = 1_790_000_000_000;
+
+function renderModal(transactionAt: number | null = DEPOSIT_AT) {
   render(
     <AssignToPaymentModal
       transactionId="tx-late"
       transactionAmountIrr={1_200_000}
       transactionAccountId="acc-1"
+      transactionAt={transactionAt}
       onClose={() => {}}
       onError={() => {}}
     />,
@@ -83,7 +88,7 @@ function renderModal() {
 }
 
 describe('assigning a deposit to an order', () => {
-  it('offers the orders closed by hand without their deposit, on this account only', async () => {
+  it('offers the orders closed by hand without their deposit, on this account and near it only', async () => {
     renderModal();
     await screen.findByRole('option', { name: /ORD-HAND-VERIFIED/ });
     expect(screen.getByRole('option', { name: /ORD-OPEN/ })).toBeTruthy();
@@ -91,10 +96,23 @@ describe('assigning a deposit to an order', () => {
     expect(screen.getByRole('option', { name: /ORD-HAND-VERIFIED · .*تایید دستی/ })).toBeTruthy();
     // Already has its bank row: not a place for a second deposit.
     expect(screen.queryByRole('option', { name: /ORD-HAS-DEPOSIT/ })).toBeNull();
-    // Closed orders are asked for on the deposit's account and nowhere else.
-    for (const url of asked.filter((u) => /FULFILLED_UNRECONCILED|manually_verified/.test(u))) {
-      expect(url).toContain('accountId=acc-1');
+    // Closed orders are asked for on the deposit's account, within a day of
+    // it either way, and nowhere else.
+    const closedAsks = asked.filter((u) => /FULFILLED_UNRECONCILED|manually_verified/.test(u));
+    expect(closedAsks).toHaveLength(2);
+    for (const url of closedAsks) {
+      const q = new URL(url, 'http://local').searchParams;
+      expect(q.get('accountId')).toBe('acc-1');
+      expect(Number(q.get('from'))).toBe(DEPOSIT_AT - FULFILLED_RECONCILE_MAX_TIME_DELTA_MS);
+      expect(Number(q.get('to'))).toBe(DEPOSIT_AT + FULFILLED_RECONCILE_MAX_TIME_DELTA_MS);
     }
+  });
+
+  it('offers no closed order for a deposit with no bank time', async () => {
+    renderModal(null);
+    await screen.findByRole('option', { name: /ORD-OPEN/ });
+    expect(asked.filter((u) => /FULFILLED_UNRECONCILED|manually_verified/.test(u))).toEqual([]);
+    expect(screen.queryByRole('option', { name: /بی‌واریزی/ })).toBeNull();
   });
 
   it('always verifies a closed order, even with «تایید بعد از تخصیص» off beforehand', async () => {

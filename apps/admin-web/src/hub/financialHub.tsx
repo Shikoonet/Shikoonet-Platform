@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { FULFILLED_RECONCILE_MAX_TIME_DELTA_MS } from '@shikoo/contracts';
 import type { Cache } from './query.js';
 import { count } from '../format.js';
 import { useWriteProps } from '../role.js';
@@ -618,12 +619,15 @@ export function AssignToPaymentModal({
   transactionId,
   transactionAmountIrr,
   transactionAccountId,
+  transactionAt,
   onClose,
   onError,
 }: {
   transactionId: string;
   transactionAmountIrr: number | null;
   transactionAccountId: string | null;
+  /** The deposit's bank time; closed orders are offered only near it. */
+  transactionAt: number | null;
   onClose: () => void;
   onError: (msg: string) => void;
 }) {
@@ -643,12 +647,23 @@ export function AssignToPaymentModal({
     // Every undecided order: the four queues «در انتظار بررسی» is split into.
     const open = ['open', 'awaiting_receipt', 'parked', 'messaged'].map((t) => get(`tab=${t}`));
     // Closed orders still missing their deposit — only on this deposit's
-    // account, the one `verifyMirzabotClaim` will accept.
-    const acct = transactionAccountId ? `&accountId=${encodeURIComponent(transactionAccountId)}` : null;
-    const closed = acct
+    // account, the one `verifyMirzabotClaim` will accept, and only within a
+    // day of it: the window the matcher gives a hand-delivered order
+    // (#134). Without it every order ever closed by hand sat under every
+    // deposit on that account for good — on production (2026-09-23) two
+    // orders from before the fresh start, whose money came long ago, were
+    // offered for a 120k deposit that arrived that morning. No bank time,
+    // no nearness to judge: no closed orders.
+    const near =
+      transactionAccountId && transactionAt != null
+        ? `&accountId=${encodeURIComponent(transactionAccountId)}` +
+          `&from=${transactionAt - FULFILLED_RECONCILE_MAX_TIME_DELTA_MS}` +
+          `&to=${transactionAt + FULFILLED_RECONCILE_MAX_TIME_DELTA_MS}`
+        : null;
+    const closed = near
       ? [
-          get(`tab=all&status=FULFILLED_UNRECONCILED${acct}`),
-          get(`tab=manually_verified${acct}`).then((items) =>
+          get(`tab=all&status=FULFILLED_UNRECONCILED${near}`),
+          get(`tab=manually_verified${near}`).then((items) =>
             items.filter((c) => c.claimStatus === 'VERIFIED' && c.matchedTransaction == null),
           ),
         ]
@@ -660,7 +675,7 @@ export function AssignToPaymentModal({
         setClaims([...byId.values()]);
       })
       .catch(() => setClaims([]));
-  }, [transactionAccountId]);
+  }, [transactionAccountId, transactionAt]);
 
   const filteredClaims = useMemo(() => {
     const q = search.trim().toLowerCase();
