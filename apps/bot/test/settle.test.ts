@@ -446,4 +446,30 @@ describe('a claim delivered before the money was proven', () => {
     expect(await settleVerifiedPayments(db)).toBe(1);
     expect(await settleVerifiedPayments(db)).toBe(0);
   });
+
+  /*
+   * An admin writes the claim off (0098) before this sweep has reached it.
+   * The write-off says no money is coming; it does not take back the decision
+   * to deliver. Drop 'WRITTEN_OFF' from either status list in settle.ts and
+   * this order stays AWAITING_PAYMENT for good.
+   */
+  it('is still settled when an admin writes it off before the sweep runs', async () => {
+    const f = await buyAndClaim('sim-vip-1m-50');
+    await hubFulfilsWithoutPayment(f.paymentPublicId);
+    await db
+      .prepare(
+        `UPDATE payment_claims
+            SET status = 'WRITTEN_OFF', written_off_at = ?2,
+                written_off_by = 'admin@example.com', write_off_reason = 'test purchase'
+          WHERE external_order_id = ?1`,
+      )
+      .bind(`shikoo:${f.paymentPublicId}`, Date.now())
+      .run();
+
+    expect(await settleVerifiedPayments(db)).toBe(1);
+    const after = await statuses(f.orderId, f.paymentPublicId);
+    expect(after.payment).toBe('PAID');
+    expect(after.order).toBe('PAID');
+    expect(await settleVerifiedPayments(db)).toBe(0);
+  });
 });

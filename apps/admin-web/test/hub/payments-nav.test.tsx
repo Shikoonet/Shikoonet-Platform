@@ -174,9 +174,9 @@ describe('Payments grouped navigation', () => {
     render(<PaymentsView cache={createCache()} />);
     fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار تطبیق 2/i }));
     const pending = await screen.findByRole('region', { name: 'در انتظار تطبیق بانکی' });
-    const history = screen.getByRole('region', { name: 'سابقه تطبیق‌شده' });
+    const history = screen.getByRole('region', { name: 'سابقه (تطبیق‌شده یا بسته‌شده)' });
     expect(within(pending).getByText('موردی در انتظار تطبیق بانکی نیست.')).toBeTruthy();
-    expect(within(history).getByText('در این بازه سابقه تطبیق‌شده‌ای نیست.')).toBeTruthy();
+    expect(within(history).getByText('در این بازه سابقه‌ای نیست.')).toBeTruthy();
     expect(window.location.search).toContain('tab=continuity');
   });
 

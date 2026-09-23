@@ -195,6 +195,9 @@ type PaymentsBody = {
     fulfilledBy?: string | null;
     fulfilmentReason?: string | null;
     reconciledAt?: number | null;
+    writtenOffAt?: number | null;
+    writtenOffBy?: string | null;
+    writeOffReason?: string | null;
     messagedAt?: number | null;
     messagedTemplate?: string | null;
   }>;
@@ -2397,5 +2400,194 @@ describe('the continuity queue has a manual exit', () => {
       ).rejects.toThrow(/duplicate key value violates unique constraint/);
       expect(await consumingMatches('payment_claim_id', 'c-solo')).toBe(1);
     });
+  });
+});
+
+/**
+ * «بستن بدون پرداخت» — the second exit from «در انتظار تطبیق» (0098).
+ *
+ * An admin's own test purchase, a gift: delivered, and no money will ever
+ * come. Before this the row had one exit, a bank credit, and stayed in the
+ * queue for ever.
+ */
+describe('a delivered claim can be written off by an admin', () => {
+  const REVIEWER = 'reviewer@example.com';
+
+  beforeAll(async () => {
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at)
+       VALUES (?1, ?2, 'REVIEWER', 1, ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), REVIEWER, Date.now())
+      .run();
+  });
+
+  function writeOff(claimId: string, body: object, email = EMAIL) {
+    return app.fetch(
+      new Request(`https://example.com/api/v1/suspects/${claimId}/write-off`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      envAs(email),
+    );
+  }
+
+  function approve(claimId: string, transactionId: string) {
+    return app.fetch(
+      new Request(`https://example.com/api/v1/suspects/${claimId}/approve`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transactionId }),
+      }),
+      envAs(),
+    );
+  }
+
+  async function seedDelivered(id: string) {
+    return seedClaim(id, {
+      status: 'FULFILLED_UNRECONCILED',
+      fulfilmentMode: 'MANUAL',
+      fulfilledBy: 'ops@example.com',
+      fulfilmentReason: 'okk',
+    });
+  }
+
+  async function claimRow(id: string) {
+    return await baseEnv.DB.prepare(
+      `SELECT status, fulfilled_at, written_off_at, written_off_by, write_off_reason
+         FROM payment_claims WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{
+        status: string;
+        fulfilled_at: number | null;
+        written_off_at: number | null;
+        written_off_by: string | null;
+        write_off_reason: string | null;
+      }>();
+  }
+
+  async function auditCount(id: string): Promise<number> {
+    const r = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM audit_logs
+        WHERE entity_id = ?1 AND action = 'claim.written_off'`,
+    )
+      .bind(id)
+      .first<{ n: number }>();
+    return r?.n ?? 0;
+  }
+
+  it('moves the row from the queue to «سابقه», with who, when and why', async () => {
+    const now = pinClock();
+    const seeded = await seedDelivered('c-test-buy');
+    await seedDelivered('c-still-owed');
+
+    expect((await get('tab=continuity&range=all')).counts.continuityPending).toBe(2);
+
+    const res = await writeOff('c-test-buy', { reason: '  خرید تستی ادمین  ' });
+    expect(res.status).toBe(200);
+
+    const row = await claimRow('c-test-buy');
+    expect(row).toEqual({
+      status: 'WRITTEN_OFF',
+      // The delivery is a fact about the world and is not rewritten.
+      fulfilled_at: seeded.paid,
+      written_off_at: now,
+      written_off_by: EMAIL,
+      write_off_reason: 'خرید تستی ادمین',
+    });
+    expect(await auditCount('c-test-buy')).toBe(1);
+
+    const pending = await get('tab=continuity&continuityState=pending&range=all');
+    expect(pending.items.map((i) => i.id)).toEqual(['c-still-owed']);
+    expect(pending.counts.continuityPending).toBe(1);
+
+    const history = await get('tab=continuity&continuityState=history&range=all');
+    const closed = history.items.find((i) => i.id === 'c-test-buy');
+    expect(closed?.reviewState).toBe('WRITTEN_OFF');
+    expect(closed?.writeOffReason).toBe('خرید تستی ادمین');
+    expect(closed?.writtenOffBy).toBe(EMAIL);
+
+    // And «همه» can filter to it, as it can to every other state.
+    const all = await get('tab=all&status=WRITTEN_OFF&range=all');
+    expect(all.items.map((i) => i.id)).toEqual(['c-test-buy']);
+  });
+
+  it('a second click is a success that writes nothing', async () => {
+    await seedDelivered('c-double');
+    expect((await writeOff('c-double', { reason: 'هدیه' })).status).toBe(200);
+    const again = await writeOff('c-double', { reason: 'هدیه دوباره' });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ ok: true, already: true });
+
+    expect((await claimRow('c-double'))?.write_off_reason).toBe('هدیه');
+    expect(await auditCount('c-double')).toBe(1);
+  });
+
+  it('refuses a reviewer, and refuses without a reason', async () => {
+    await seedDelivered('c-guarded');
+
+    expect((await writeOff('c-guarded', { reason: 'تست' }, REVIEWER)).status).toBe(403);
+    const blank = await writeOff('c-guarded', { reason: '   ' });
+    expect(blank.status).toBe(400);
+    expect(await blank.json()).toEqual({ ok: false, error: 'reason_required' });
+    expect((await writeOff('c-guarded', {})).status).toBe(400);
+
+    expect((await claimRow('c-guarded'))?.status).toBe('FULFILLED_UNRECONCILED');
+    expect(await auditCount('c-guarded')).toBe(0);
+  });
+
+  it('only a delivered, unreconciled claim can be written off', async () => {
+    await seedClaim('c-pending');
+    await seedClaim('c-verified', { status: 'VERIFIED' });
+
+    for (const id of ['c-pending', 'c-verified']) {
+      const res = await writeOff(id, { reason: 'تست' });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ ok: false, error: 'illegal_claim_transition' });
+      expect(await auditCount(id)).toBe(0);
+    }
+    expect((await claimRow('c-pending'))?.status).toBe('PENDING');
+    expect((await writeOff('c-nowhere', { reason: 'تست' })).status).toBe(404);
+  });
+
+  it('no later bank credit can be spent on a written-off claim', async () => {
+    await seedDelivered('c-closed');
+    await seedTx('t-real-customer', Date.now());
+    expect((await writeOff('c-closed', { reason: 'خرید تستی' })).status).toBe(200);
+
+    // The one credit that would have matched it — same account, same amount —
+    // belongs to somebody else now. The claim is out of every live set.
+    expect((await approve('c-closed', 't-real-customer')).status).toBe(409);
+    expect((await claimRow('c-closed'))?.status).toBe('WRITTEN_OFF');
+    const spent = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM reconciliation_matches
+        WHERE transaction_candidate_id = 't-real-customer'
+          AND status IN ('CONFIRMED','AUTO_VERIFIED')`,
+    ).first<{ n: number }>();
+    expect(spent?.n).toBe(0);
+  });
+
+  it('Postgres refuses a write-off without its reason, or on an undelivered claim', async () => {
+    await seedDelivered('c-bare');
+    await seedClaim('c-undelivered');
+
+    // Around every line of application code: the CHECK is what holds.
+    await expect(
+      baseEnv.DB.prepare(`UPDATE payment_claims SET status = 'WRITTEN_OFF' WHERE id = 'c-bare'`).run(),
+    ).rejects.toThrow(/payment_claims_written_off_complete/);
+    await expect(
+      baseEnv.DB.prepare(
+        `UPDATE payment_claims
+            SET status = 'WRITTEN_OFF', written_off_at = 1, written_off_by = 'a@b.c',
+                write_off_reason = 'تست'
+          WHERE id = 'c-undelivered'`,
+      ).run(),
+    ).rejects.toThrow(/payment_claims_written_off_complete/);
+    // And the columns cannot be set on a row that is not written off.
+    await expect(
+      baseEnv.DB.prepare(`UPDATE payment_claims SET write_off_reason = 'تست' WHERE id = 'c-bare'`).run(),
+    ).rejects.toThrow(/payment_claims_written_off_complete/);
   });
 });

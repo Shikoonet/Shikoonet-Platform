@@ -51,6 +51,8 @@ export type ReviewState =
   | 'MANUALLY_VERIFIED'
   /** Delivered without evidence — never to be drawn as a verified payment. */
   | 'FULFILLED_UNRECONCILED'
+  /** Delivered, and an admin closed it with no money coming (0098). */
+  | 'WRITTEN_OFF'
   | 'WAITING'
   | 'NO_TRANSFER_FOUND'
   | 'REJECTED'
@@ -270,6 +272,10 @@ export interface PaymentItem {
   fulfilledBy?: string | null;
   fulfilmentReason?: string | null;
   reconciledAt?: number | null;
+  /** Closed with no money coming — who, when, why (0098). */
+  writtenOffAt?: number | null;
+  writtenOffBy?: string | null;
+  writeOffReason?: string | null;
   isNew?: boolean;
   /** Business classification (NEW_PURCHASE / RENEWAL / UNKNOWN). */
   purchaseType?: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP' | 'UNKNOWN';
@@ -448,6 +454,7 @@ const STATE_LABEL: Record<ReviewState, string> = {
   // said nothing; a label with the word «تایید» in it would be the panel
   // claiming the one thing this state exists to deny.
   FULFILLED_UNRECONCILED: 'تحویل‌شده، در انتظار تطبیق',
+  WRITTEN_OFF: 'بسته‌شده بدون پرداخت',
   WAITING: 'در انتظار',
   NO_TRANSFER_FOUND: 'واریزی پیدا نشد',
   REJECTED: 'رد شده',
@@ -464,6 +471,7 @@ export const ALL_TAB_STATES: ReviewState[] = [
   'NEEDS_REVIEW',
   'MANUALLY_VERIFIED',
   'FULFILLED_UNRECONCILED',
+  'WRITTEN_OFF',
   'WAITING',
   'NO_TRANSFER_FOUND',
   'REJECTED',
@@ -683,7 +691,7 @@ export function actionErrorText(
 }
 
 export function reconcileNote(item: PaymentItem): string | null {
-  if (item.fulfilledAt == null || item.reconciledAt != null) return null;
+  if (item.fulfilledAt == null || item.reconciledAt != null || item.writtenOffAt != null) return null;
   switch (item.suspectReason) {
     case 'OUTSIDE_AUTO_MATCH_WINDOW':
       return 'واریزی پیدا شد ولی بیرون از بازهٔ تطبیق خودکار — دستی بررسی کن';

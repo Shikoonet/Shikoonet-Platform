@@ -114,6 +114,10 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
    * the guarded UPDATE below, so when the claim is later reconciled and becomes
    * `VERIFIED`, this sweep finds the payment already PAID and matches nothing.
    * One claim, two statuses over its life, one settlement.
+   *
+   * `WRITTEN_OFF` (0098) is swept for the same reason: it is a delivered claim
+   * an admin closed without money, and closing it must not cancel a delivery
+   * this sweep has not reached yet.
    */
   const { results } = await db
     .prepare(
@@ -130,7 +134,7 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
          JOIN payments p ON ('shikoo:' || p.public_id) = c.external_order_id
          LEFT JOIN orders o ON o.id = p.order_id
          LEFT JOIN users  u ON u.id = p.user_id
-        WHERE c.status IN ('VERIFIED', 'FULFILLED_UNRECONCILED')
+        WHERE c.status IN ('VERIFIED', 'FULFILLED_UNRECONCILED', 'WRITTEN_OFF')
           AND p.status <> 'PAID'
         ORDER BY p.id
         LIMIT 100`,
@@ -182,7 +186,7 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
                      WHERE id = ?1 AND status <> 'PAID'
                        AND EXISTS (SELECT 1 FROM payment_claims c
                                     WHERE c.external_order_id = ('shikoo:' || payments.public_id)
-                                      AND c.status IN ('VERIFIED','FULFILLED_UNRECONCILED'))`,
+                                      AND c.status IN ('VERIFIED','FULFILLED_UNRECONCILED','WRITTEN_OFF'))`,
           )
           .bind(row.payment_id)
           .run();

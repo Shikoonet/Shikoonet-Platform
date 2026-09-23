@@ -404,7 +404,7 @@ describe('PaymentsView tabs', () => {
     fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار تطبیق 3/i }));
 
     const pendingRegion = await screen.findByRole('region', { name: 'در انتظار تطبیق بانکی' });
-    expect(screen.getByRole('region', { name: 'سابقه تطبیق‌شده' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'سابقه (تطبیق‌شده یا بسته‌شده)' })).toBeTruthy();
     // The row's own pill, not the tab of the same name.
     expect(await within(pendingRegion).findByText('در انتظار تطبیق')).toBeTruthy();
     expect(screen.getByText('SMS relay unavailable')).toBeTruthy();
@@ -451,7 +451,7 @@ describe('PaymentsView tabs', () => {
     fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار تطبیق 3/i }));
 
     const pending = await screen.findByRole('region', { name: 'در انتظار تطبیق بانکی' });
-    const history = await screen.findByRole('region', { name: 'سابقه تطبیق‌شده' });
+    const history = await screen.findByRole('region', { name: 'سابقه (تطبیق‌شده یا بسته‌شده)' });
     expect(await within(pending).findByText(/سفارش PENDING-1/)).toBeTruthy();
     expect(await within(history).findByText(/سفارش HISTORY-1/)).toBeTruthy();
 
