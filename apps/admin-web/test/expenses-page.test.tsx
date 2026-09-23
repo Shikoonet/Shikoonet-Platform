@@ -196,6 +196,11 @@ const expenseScopes = vi.fn(async () => ({
   providers: [{ id: 30, name: 'پنل آلمان' }, { id: 31, name: 'openvpn' }, { id: 32, name: 'سرویس الماس' }],
 }));
 
+const withdrawalsNear = vi.fn(async (_account: string, _day: string) => ({
+  ok: true,
+  items: [{ id: 'tx-7m', amountIrr: 70_000_000, bankTimestamp: Date.parse('2026-09-23T08:26:00Z'), balanceIrr: 1_106_070, linkedExpenseId: null }],
+}));
+
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
   return {
@@ -211,6 +216,7 @@ vi.mock('../src/api.js', async () => {
       addRevenueAdjustment: (body: unknown) => addRevenueAdjustment(body),
       parties: () => parties(),
       expenseScopes: () => expenseScopes(),
+      withdrawalsNear: (a: string, d: string) => withdrawalsNear(a, d),
     },
   };
 });
@@ -453,5 +459,40 @@ describe('who and what for', () => {
     fireEvent.click(screen.getByRole('button', { name: 'ثبت' }));
     await waitFor(() => expect(addRevenueAdjustment).toHaveBeenCalled());
     expect(addRevenueAdjustment.mock.calls[0]![0]).toMatchObject({ kind: 'PARTNER_DRAW', partyId: 1 });
+  });
+});
+
+/**
+ * «دفتر بانک» › «برداشت شریک» on an unexplained withdrawal (Sam, 1 Mehr 1405):
+ * the form opens already on that SMS — account, amount, day, the SMS itself,
+ * and the kind — so the operator only picks the partner.
+ */
+describe('opened from a withdrawal in «دفتر بانک»', () => {
+  afterEach(() => window.history.replaceState(null, '', '/'));
+
+  it('is a partner draw on that withdrawal, and sends it linked', async () => {
+    window.history.replaceState(null, '', '/admin/expenses?account=acc-resalat&amount=7000000&date=2026-09-23&tx=tx-7m&kind=PARTNER_DRAW');
+    draw();
+    expect((await screen.findByLabelText('برداشت شریک')) as HTMLInputElement).toMatchObject({ checked: true });
+    await waitFor(() => expect(withdrawalsNear).toHaveBeenCalledWith('acc-resalat', '2026-09-23'));
+    fireEvent.change(await screen.findByLabelText('کدام شریک'), { target: { value: '1' } });
+    // The one thing the link cannot know: what it was for.
+    fireEvent.change(screen.getByLabelText('شرح'), { target: { value: 'سهم سود شهریور' } });
+    fireEvent.click(screen.getByRole('button', { name: 'ثبت' }));
+    await waitFor(() => expect(addRevenueAdjustment).toHaveBeenCalled());
+    expect(addRevenueAdjustment.mock.calls[0]![0]).toMatchObject({
+      kind: 'PARTNER_DRAW',
+      partyId: 1,
+      amountToman: 7_000_000,
+      spentOn: '2026-09-23',
+      financialAccountId: 'acc-resalat',
+      transactionCandidateId: 'tx-7m',
+    });
+  });
+
+  it('is a cost when no kind is asked for', async () => {
+    window.history.replaceState(null, '', '/admin/expenses?account=acc-resalat&amount=7000000&date=2026-09-23&tx=tx-7m');
+    draw();
+    expect((await screen.findByLabelText('هزینه')) as HTMLInputElement).toMatchObject({ checked: true });
   });
 });

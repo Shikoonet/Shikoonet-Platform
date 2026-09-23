@@ -404,6 +404,48 @@ describe('PHASE 8 — integration: SUGGESTED path', () => {
     expect(settledBy?.transaction_candidate_id).toBe('tx-spent-b');
   });
 
+  /**
+   * «شارژ کیف پول» (#441) spends a deposit with a wallet entry and no match
+   * row. The pool read only matches, so that deposit still looked free: inside
+   * the next same-amount claim's window it was a second candidate, and a real
+   * 1↔1 sat in review as AMBIGUOUS_TRANSACTIONS.
+   */
+  it('a deposit already credited to a wallet is not a candidate either', async () => {
+    const accountId = 'acc-int-wallet';
+    await seedAccountWithCard(accountId, '6037997512345702');
+    await seedTransaction(accountId, 1_000_000, BASE_MS + 10_000, 'tx-wallet-spent');
+    const user = await env.DB.prepare(
+      `INSERT INTO users (telegram_id, username, registered_at) VALUES (9123400000441, 'wallet-spent', now())
+       ON CONFLICT (telegram_id) DO UPDATE SET username = EXCLUDED.username RETURNING id`,
+    ).first<{ id: number }>();
+    await env.DB.prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, idempotency_key)
+       VALUES (?1, 1000000, 'TOPUP', 'deposit:tx-wallet-spent:wallet') ON CONFLICT (idempotency_key) DO NOTHING`,
+    )
+      .bind(user!.id)
+      .run();
+
+    const body = claimBody({
+      orderId: 'ord-wallet-b',
+      cardNumber: '6037-9975-1234-5702',
+      paidClickedAt: BASE_MS,
+      receiptSubmittedAt: BASE_MS + 1000,
+    });
+    await signedPost(body, body.eventId);
+    await seedTransaction(accountId, 1_000_000, BASE_MS + 20_000, 'tx-wallet-b');
+    expect((await rematch(accountId, 1_000_000, 'tx-wallet-b', BASE_MS + 20_000)).autoVerifiedCount).toBe(1);
+
+    const claim = await claimByOrder('ord-wallet-b');
+    expect(claim?.status).toBe('VERIFIED');
+    const settledBy = await env.DB.prepare(
+      `SELECT transaction_candidate_id FROM reconciliation_matches
+        WHERE payment_claim_id = ?1 AND status = 'AUTO_VERIFIED'`,
+    )
+      .bind(claim!.id)
+      .first<{ transaction_candidate_id: string }>();
+    expect(settledBy?.transaction_candidate_id).toBe('tx-wallet-b');
+  });
+
   it('a claim held in WAIT is settled as NO_TRANSACTION_AFTER_10M once waiting expires', async () => {
     const accountId = 'acc-int-wait';
     await seedAccountWithCard(accountId, '6037997512345693');

@@ -16,31 +16,70 @@
  * It replaced a hardcoded «نسخهٔ ۱» in the sidebar footer. Two things claiming
  * to be the version, one of them a literal that no build could ever change, is
  * worse than one: the false one occupies the place a reader looks.
+ *
+ * ## And it says when this page is older than the server
+ *
+ * The first answer is the build this page was loaded with — the server serves
+ * the bundle, so the two start equal. The server can move on while the tab
+ * stays open, and the tab keeps running the old code against the new API.
+ * 1 Mehr 1405: Sam pressed «از نو باز کردن» in a tab opened before that
+ * morning's release; the old page had no day picker, sent no `asOf`, and the
+ * books opened at 15:22 instead of midnight. So it asks again every two
+ * minutes and whenever the tab comes back into view, and when the answer
+ * differs it says so over the whole page until it is reloaded.
  */
 
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+
+const RECHECK_MS = 2 * 60 * 1000;
+
+type Info = { version: string; env: string };
+
+async function probe(signal?: AbortSignal): Promise<Info | null> {
+  const r = await fetch('/api/v1/version', signal ? { signal } : {});
+  const d = r.ok ? await r.json() : null;
+  // Validate the shape rather than trusting `ok` — an older worker, a proxy,
+  // or a stubbed fetch can answer 200 with something else, and a missing field
+  // here would crash the whole sidebar.
+  return typeof d?.version === 'string' && typeof d?.env === 'string' ? { version: d.version, env: d.env } : null;
+}
 
 export function VersionBadge() {
-  const [info, setInfo] = useState<{ version: string; env: string } | null>(null);
+  const [info, setInfo] = useState<Info | null>(null);
+  const [newer, setNewer] = useState<string | null>(null);
 
   useEffect(() => {
     const ac = new AbortController();
-    // Fetched once — the running build cannot change while the page is open.
-    fetch('/api/v1/version', { signal: ac.signal })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        // Validate the shape rather than trusting `ok` — an older worker, a
-        // proxy, or a stubbed fetch can answer 200 with something else, and a
-        // missing field here would crash the whole sidebar.
-        if (typeof d?.version === 'string' && typeof d?.env === 'string') {
-          setInfo({ version: d.version, env: d.env });
-        }
-      })
+    probe(ac.signal)
+      .then((d) => d && setInfo(d))
       .catch(() => {
         /* badge is cosmetic; a failed probe just hides it */
       });
     return () => ac.abort();
   }, []);
+
+  useEffect(() => {
+    if (!info) return;
+    const check = () => {
+      probe()
+        .then((d) => {
+          if (d && d.version !== info.version) setNewer(d.version);
+        })
+        .catch(() => {
+          /* a deploy in progress answers nothing for a moment; ask again later */
+        });
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') check();
+    };
+    const timer = setInterval(check, RECHECK_MS);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [info]);
 
   if (!info) return null;
   const isProd = info.env === 'production';
@@ -61,15 +100,51 @@ export function VersionBadge() {
   const short = info.version.slice(0, 7);
 
   return (
-    // `dir="ltr"`: the content is `STAGING v1a2b3c4`, and in the RTL sidebar
-    // the environment word and the version were drawn in the opposite order
-    // from the one they are written in.
-    <span
-      dir="ltr"
-      className={`env-badge${isProd ? '' : ' env-badge--nonprod'}`}
-      title={`${info.env} — ${info.version}`}
-    >
-      {isProd ? `v${short}` : `${info.env.toUpperCase()} v${short}`}
-    </span>
+    <>
+      {/* `dir="ltr"`: the content is `STAGING v1a2b3c4`, and in the RTL sidebar
+          the environment word and the version were drawn in the opposite order
+          from the one they are written in. */}
+      <span
+        dir="ltr"
+        className={`env-badge${isProd ? '' : ' env-badge--nonprod'}`}
+        title={`${info.env} — ${info.version}`}
+      >
+        {isProd ? `v${short}` : `${info.env.toUpperCase()} v${short}`}
+      </span>
+      {/* To <body>: a fixed child under the sidebar's backdrop-filter is
+          positioned inside the sidebar, not the page. Above everything —
+          header 1001/1002, dialogs 1110 — because the local walk found it at
+          1000, drawn under the header, its button unreachable. */}
+      {newer !== null &&
+        createPortal(
+          <div
+            role="alert"
+            data-testid="new-version"
+            className="alert alert-warning"
+            style={{
+              position: 'fixed',
+              top: 12,
+              insetInline: 16,
+              zIndex: 1200,
+              margin: 0,
+              background: 'var(--bg-body)',
+              display: 'flex',
+              gap: 12,
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+            }}
+          >
+            <span>
+              نسخهٔ تازهٔ پنل منتشر شده ({newer.slice(0, 7)}) و این صفحه هنوز نسخهٔ قبلی است. پیش از هر کاری صفحه را
+              تازه کن تا کاری با کد قدیمی ثبت نشود.
+            </span>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => window.location.reload()}>
+              تازه کردن صفحه
+            </button>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }

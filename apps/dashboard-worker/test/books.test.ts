@@ -608,6 +608,56 @@ describe('the monthly statement', () => {
   });
 });
 
+describe('what each row lets the operator do', () => {
+  // 1 Mehr 1405, Sam: «اصلا نمیدونم چی به چیه». A deposit is given its owner
+  // only in «واریزی‌ها», so an unclaimed one links there; a reseller's says
+  // whose; and no row offers a button the server would refuse.
+  it('links an unclaimed deposit to «واریزی‌ها», names a reseller, and offers «خارج از دفتر» only where it is accepted', async () => {
+    await baseEnv.DB.prepare(`UPDATE financial_accounts SET customer_visible = 1 WHERE id = ?1`).bind(ACCT).run();
+    try {
+      const unclaimed = await tx({ direction: 'CREDIT', amountIrr: 1_230_000, balanceIrr: null, at: T(1) });
+      const resold = await tx({ direction: 'CREDIT', amountIrr: 4_560_000, balanceIrr: null, at: T(1, 13) });
+      const out = await tx({ direction: 'DEBIT', amountIrr: 70_000_000, balanceIrr: null, at: T(1, 14) });
+      const now = Date.now();
+      await baseEnv.DB.prepare(
+        `INSERT INTO resellers (id, name, status, created_at, updated_at) VALUES (?1, ?2, 'ACTIVE', ?3, ?3)
+         ON CONFLICT (id) DO NOTHING`,
+      )
+        .bind(`${P}reseller`, `${P}نماینده`, now)
+        .run();
+      // What «نمایندگی» in «واریزی‌ها» writes (classifyResellerTransaction).
+      await baseEnv.DB.prepare(
+        `INSERT INTO reseller_transactions (id, transaction_candidate_id, reseller_id, classified_by, classified_at, created_at)
+         VALUES (?1, ?2, ?3, 'test', ?4, ?4)`,
+      )
+        .bind(`${P}rt`, resold, `${P}reseller`, now)
+        .run();
+      await baseEnv.DB.prepare(`UPDATE transaction_candidates SET processing_disposition = 'ADMIN_EXCLUDED' WHERE id = ?1`)
+        .bind(resold)
+        .run();
+
+      const moves = ((await (await get(`/api/v1/admin/books/movements?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+        items: Array<{ id: string; inQueue: boolean; offBooksEligible: boolean; reseller: string | null }>;
+      }).items;
+      const row = (id: string) => moves.find((m) => m.id === id)!;
+      expect(row(unclaimed)).toMatchObject({ inQueue: true, offBooksEligible: true, reseller: null });
+      expect(row(resold)).toMatchObject({ inQueue: false, offBooksEligible: false, reseller: `${P}نماینده` });
+      expect(row(out)).toMatchObject({ inQueue: false, offBooksEligible: true, reseller: null });
+
+      // The link's own search finds exactly that deposit — asked of the queue,
+      // not of the movements route that set the flag.
+      const q = (await (
+        await get(`/api/v1/payments?tab=income&range=all&q=${encodeURIComponent(unclaimed)}`)
+      ).json()) as { items: Array<{ id: string }> };
+      expect(q.items.map((i) => i.id)).toEqual([unclaimed]);
+      // And the server does refuse what the page no longer offers.
+      expect((await json('POST', `/api/v1/transactions/${resold}/decline-income`, { category: 'PERSONAL' })).status).toBe(409);
+    } finally {
+      await baseEnv.DB.prepare(`UPDATE financial_accounts SET customer_visible = 0 WHERE id = ?1`).bind(ACCT).run();
+    }
+  });
+});
+
 describe('the fresh start', () => {
   it('writes tonight’s balances as the opening, and the month starts there', async () => {
     // History the fresh start must ignore.

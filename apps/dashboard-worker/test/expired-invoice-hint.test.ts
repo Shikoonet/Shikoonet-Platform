@@ -8,9 +8,11 @@
  * no verification, no claim.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { applySchema, env as baseEnv } from "./helpers/env.js";
 import { app } from "../src/index.js";
+import { alertLateDeposits } from "@shikoo/domain";
+import { reportTopicKey } from "@shikoo/contracts";
 
 const EMAIL = "admin-hint@example.com";
 const ACCOUNT = "acc-hint";
@@ -327,5 +329,91 @@ describe("«شارژ کیف پول» on a late deposit", () => {
     expect((await creditWallet(id, { userId: 999_999_999, reason: "x" })).status).toBe(404);
     expect(await walletBalance()).toBe(before);
     expect((await income()).map((r) => r.id)).toContain(id);
+  });
+});
+
+/**
+ * The report group is told — 1 Mehr 1405, production: a 120,000 deposit for
+ * an expired invoice sat in «واریزی‌ها» from 11:08 until the evening while the
+ * customer raised eight more invoices. Sam: an alert, never an automatic credit.
+ */
+describe("the late deposit reaches the report group, once", () => {
+  const GROUP = -1009990275;
+  const TOPIC = 7;
+  const at = (ms: number) => alertLateDeposits(baseEnv.DB, ms);
+  const alerts = async () =>
+    (
+      await baseEnv.DB.prepare(
+        `SELECT dedupe_key, chat_id, message_thread_id, body FROM bot_notifications
+          WHERE dedupe_key LIKE 'report:paymentreport:late-deposit:%' ORDER BY id`,
+      ).all<{ dedupe_key: string; chat_id: string | number; message_thread_id: number | null; body: string }>()
+    ).results;
+
+  beforeEach(async () => {
+    await baseEnv.DB.prepare(
+      `DELETE FROM bot_notifications WHERE dedupe_key LIKE 'report:paymentreport:late-deposit:%'`,
+    ).run();
+    for (const [key, value] of [
+      ["Channel_Report", String(GROUP)],
+      [reportTopicKey("paymentreport"), String(TOPIC)],
+    ] as const) {
+      await baseEnv.DB.prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('bot', ?1, ?2::jsonb)
+         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+      )
+        .bind(key, value)
+        .run();
+    }
+  });
+
+  // `settings` is shared by every file on this database; leave it as found.
+  afterAll(async () => {
+    await baseEnv.DB.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key IN ('Channel_Report', ?1)`)
+      .bind(reportTopicKey("paymentreport"))
+      .run();
+  });
+
+  it("names the deposit, the invoice and the customer, and says to credit the wallet", async () => {
+    await seedDeposit("t-alert");
+    await seedInvoice("hint-alert", { order: "EXPIRED" });
+
+    expect(await at(DEPOSIT_AT + HOUR)).toBe(1);
+    const [row] = await alerts();
+    expect([row?.dedupe_key, Number(row?.chat_id), row?.message_thread_id]).toEqual([
+      "report:paymentreport:late-deposit:t-alert",
+      GROUP,
+      TOPIC,
+    ]);
+    // 2,500,000 Rial is 250,000 Toman, the way the group reads money.
+    expect(row?.body).toContain("۲۵۰٬۰۰۰ تومان");
+    expect(row?.body).toContain("hint-alert");
+    expect(row?.body).toContain("@latepayer");
+    expect(row?.body).toContain("«شارژ کیف پول»");
+    // Once: the next sweep finds it already said.
+    expect(await at(DEPOSIT_AT + HOUR + 15_000)).toBe(0);
+    expect(await alerts()).toHaveLength(1);
+  });
+
+  it("points at the customer's fresh invoice instead, when there is one for the same money", async () => {
+    await seedDeposit("t-alert-open");
+    await seedInvoice("hint-alert-old", { order: "EXPIRED" });
+    // Raised after the old one expired, with a receipt waiting — production's @msterali777.
+    await seedInvoice("hint-alert-new", { status: "AWAITING_REVIEW", issuedAt: DEPOSIT_AT + 30 * 60_000 });
+
+    expect(await at(DEPOSIT_AT + HOUR)).toBe(1);
+    const [row] = await alerts();
+    expect(row?.body).toContain("hint-alert-new");
+    expect(row?.body).toContain("«تخصیص»");
+    expect(row?.body).not.toContain("«شارژ کیف پول»");
+  });
+
+  it("says nothing without an expired invoice, or about a deposit older than a day", async () => {
+    await seedDeposit("t-alert-none");
+    expect(await at(DEPOSIT_AT + HOUR)).toBe(0);
+
+    await seedDeposit("t-alert-stale");
+    await seedInvoice("hint-alert-stale", { order: "EXPIRED" });
+    expect(await at(DEPOSIT_AT + 25 * HOUR)).toBe(0);
+    expect(await alerts()).toHaveLength(0);
   });
 });

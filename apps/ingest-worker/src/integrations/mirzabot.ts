@@ -5,7 +5,7 @@ import {
   MIRZABOT_SOURCE,
   type MirzabotClaimPayload,
 } from '@shikoo/contracts';
-import { normalizeCardDigits, tomanToIrr } from '@shikoo/domain';
+import { TX_WALLET_CREDITED, normalizeCardDigits, tomanToIrr } from '@shikoo/domain';
 import {
   evaluateMirzabotGroup,
   recordMirzabotSuspect,
@@ -160,11 +160,17 @@ async function loadTxPool(
     .prepare(
       `SELECT t.id, t.direction, t.amount_irr, t.financial_account_id, t.bank_timestamp,
               t.processing_disposition,
+              -- Spent: on a claim, or into a customer's wallet by hand
+              -- («شارژ کیف پول», #441). A wallet-credited deposit left out of
+              -- this looked free: it was offered to a same-amount claim, and
+              -- as a second candidate it made a real 1↔1 look AMBIGUOUS.
+              -- verifyMirzabotClaim refused the spend, so nothing was paid
+              -- twice — the claim only sat in review.
               (EXISTS(
                 SELECT 1 FROM reconciliation_matches m
                  WHERE m.transaction_candidate_id = t.id
                    AND m.status IN ('CONFIRMED','AUTO_VERIFIED')
-              ))::int AS consumed
+              ) OR ${TX_WALLET_CREDITED})::int AS consumed
        FROM transaction_candidates t
        WHERE t.financial_account_id = ?1
          AND t.direction = 'CREDIT'
