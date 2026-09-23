@@ -201,6 +201,23 @@ const withdrawalsNear = vi.fn(async (_account: string, _day: string) => ({
   items: [{ id: 'tx-7m', amountIrr: 70_000_000, bankTimestamp: Date.parse('2026-09-23T08:26:00Z'), balanceIrr: 1_106_070, linkedExpenseId: null }],
 }));
 
+// «رسالت-پگاه» is retired: a withdrawal on it still has to be explainable.
+vi.mock('../src/hub/api.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/hub/api.js')>('../src/hub/api.js');
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      accounts: async () => ({
+        items: [
+          { id: 'acc-mellat', display_name: 'ملت-سارا', active: 1, status: 'ACTIVE', card_last_four: null },
+          { id: 'acc-resalat', display_name: 'رسالت-پگاه', active: 0, status: 'ACTIVE', card_last_four: null },
+        ],
+      }),
+    },
+  };
+});
+
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
   return {
@@ -475,6 +492,10 @@ describe('opened from a withdrawal in «دفتر بانک»', () => {
     draw();
     expect((await screen.findByLabelText('برداشت شریک')) as HTMLInputElement).toMatchObject({ checked: true });
     await waitFor(() => expect(withdrawalsNear).toHaveBeenCalledWith('acc-resalat', '2026-09-23'));
+    // Retired, and still the account the picker shows — not «مشخص نشده».
+    await waitFor(() =>
+      expect((document.getElementById('entry-account') as HTMLSelectElement).selectedOptions[0]?.textContent).toBe('رسالت-پگاه'),
+    );
     fireEvent.change(await screen.findByLabelText('کدام شریک'), { target: { value: '1' } });
     // The one thing the link cannot know: what it was for.
     fireEvent.change(screen.getByLabelText('شرح'), { target: { value: 'سهم سود شهریور' } });
@@ -493,6 +514,13 @@ describe('opened from a withdrawal in «دفتر بانک»', () => {
     await waitFor(() => expect(window.location.search).toBe(''));
     fireEvent.click(await screen.findByRole('button', { name: 'ثبت ردیف تازه' }));
     expect(((await screen.findByLabelText('مبلغ (تومان)')) as HTMLInputElement).value).toBe('');
+    // A form that holds no account offers only the live ones.
+    await waitFor(() =>
+      expect([...(document.getElementById('entry-account') as HTMLSelectElement).options].map((o) => o.textContent)).toEqual([
+        '— مشخص نشده —',
+        'ملت-سارا',
+      ]),
+    );
   });
 
   it('is a cost when no kind is asked for', async () => {
