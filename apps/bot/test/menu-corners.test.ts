@@ -15,7 +15,12 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
-import { COMMISSION_PERCENT, payReferralCommission, referrerFromPayload } from '../src/referral.js';
+import {
+  COMMISSION_PERCENT,
+  RENEWAL_COMMISSION_PERCENT,
+  payReferralCommission,
+  referrerFromPayload,
+} from '../src/referral.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -284,7 +289,8 @@ describe('referrals', () => {
     });
   });
 
-  it('pays nothing on a second purchase', async () => {
+  it('pays the renewal rate on a second purchase', async () => {
+    // Sam, 2026-09-23: «یا اکانت دیگه‌ای خرید، ۱۰٪». Until then: nothing.
     const referrer = await makeCustomer(ids().telegramId);
     const buyerTelegram = ids().telegramId;
     const buyer = await makeCustomer(buyerTelegram);
@@ -304,7 +310,9 @@ describe('referrals', () => {
       .bind(`ref2-${buyerTelegram}-2`)
       .first<{ id: number }>();
 
-    expect(await payReferralCommission(db as never, second!.id)).toBeNull();
+    expect(await payReferralCommission(db as never, second!.id)).toBe(
+      Math.floor((VIP_PRICE * RENEWAL_COMMISSION_PERCENT) / 100),
+    );
   });
 
   it('still pays when the customer took the free trial first', async () => {

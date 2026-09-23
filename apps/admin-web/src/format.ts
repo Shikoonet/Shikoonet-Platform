@@ -236,6 +236,11 @@ export function entryNoteFa(kind: string, note: string | null): string | null {
   if (kind === 'REFERRAL_BONUS' && renewal) {
     return `${count(Number(renewal[1]))}٪ پورسانت تمدید زیرمجموعه`;
   }
+  // Since 2026-09-23 every new purchase after the first pays too.
+  const repeat = /^(\d+)% of a repeat purchase$/.exec(note);
+  if (kind === 'REFERRAL_BONUS' && repeat) {
+    return `${count(Number(repeat[1]))}٪ پورسانت خرید بعدی زیرمجموعه`;
+  }
   return note;
 }
 

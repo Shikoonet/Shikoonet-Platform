@@ -17,8 +17,12 @@
  * dashboard's settings: `bot/affiliatespercentage` on the referred customer's
  * FIRST purchase (30 from migration 0093), and `bot/affiliatespercentage_renewal`
  * on EVERY renewal they make, of any of their services, as often as they renew
- * (10). A second or third new purchase pays nothing, and neither does an
- * add-on («فعلاً نداریم»). The joining gift that credits
+ * (10). An add-on pays nothing («فعلاً نداریم»).
+ *
+ * **Sam, 2026-09-23:** a second, third, … new purchase pays the renewal rate
+ * too — «وقتی تمدید کرد یا اکانت دیگه‌ای خرید، ۱۰٪» — and a purchase that cost
+ * nothing (a 100% code) is not the «first purchase»: the first one they PAY
+ * for is. The joining gift that credits
  * both sides half of `price_Discount` is switched off, so it is not built —
  * building a disabled feature is how you get a second, untested money path.
  *
@@ -55,7 +59,7 @@ export const RENEWAL_COMMISSION_PERCENT = 10;
 export interface CommissionRates {
   /** Percent of the referred customer's first purchase. */
   first: number;
-  /** Percent of each of their renewals. */
+  /** Percent of each of their renewals, and of every new purchase after the first. */
   renewal: number;
 }
 
@@ -138,10 +142,12 @@ export async function referralSummary(db: Db, userId: number): Promise<ReferralS
  * Which orders earn, and at which rate, is decided by kind alone:
  *
  *   - `RENEWAL` — always, at `rates.renewal`. Every renewal of every service.
- *   - `NEW_PURCHASE` — at `rates.first`, and only when it is the customer's
- *     only new purchase past AWAITING_PAYMENT, this one included. Counted
- *     over `NEW_PURCHASE` alone: a deposit, a trial or a renewal before it
- *     must not make the first purchase look like a second.
+ *   - `NEW_PURCHASE` — at `rates.first` when it is the customer's only PAID
+ *     new purchase past AWAITING_PAYMENT, this one included; at
+ *     `rates.renewal` otherwise. Counted over `NEW_PURCHASE` alone, and only
+ *     over ones that cost something: a deposit, a trial, a renewal or a free
+ *     purchase before it must not make the first paid purchase look like a
+ *     second.
  *   - anything else — a top-up (paying on it would pay again on whatever it
  *     then buys), a trial, an add-on, a transfer — nothing.
  */
@@ -175,18 +181,20 @@ export async function payReferralCommission(
   } else if (order.kind === 'NEW_PURCHASE') {
     const counted = await tx
       .prepare(
-        // Only NEW_PURCHASE is counted. Until 2026-09-22 this counted every
-        // kind but WALLET_TOPUP and TRIAL — and before that TRIAL too, which
-        // withheld the commission from every customer who tried first.
+        // Only paid NEW_PURCHASE is counted. Until 2026-09-22 this counted
+        // every kind but WALLET_TOPUP and TRIAL — and before that TRIAL too,
+        // which withheld the commission from every customer who tried first.
+        // Until 2026-09-23 a free purchase counted, so a 100% code spent the
+        // «first» and the purchase they then paid for earned nothing.
         `SELECT count(*)::int AS n FROM orders
-          WHERE user_id = ?1 AND kind = 'NEW_PURCHASE'
+          WHERE user_id = ?1 AND kind = 'NEW_PURCHASE' AND total_irr > 0
             AND status IN ('PAID', 'PROVISIONING', 'COMPLETED')`,
       )
       .bind(order.user_id)
       .first<{ n: number }>();
-    if ((counted?.n ?? 0) > 1) return null;
-    percent = rates.first;
-    what = 'a first purchase';
+    const first = (counted?.n ?? 0) <= 1;
+    percent = first ? rates.first : rates.renewal;
+    what = first ? 'a first purchase' : 'a repeat purchase';
   } else {
     return null;
   }
