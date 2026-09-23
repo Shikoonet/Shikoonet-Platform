@@ -14,7 +14,15 @@ import {
   formatTimeSeconds,
   formatSignedDelta,
 } from './format.js';
-import { count } from '../format.js';
+import {
+  count,
+  dateTime,
+  ORDER_KIND_FA,
+  ORDER_STATUS_FA,
+  planDisplayName,
+  statusTone,
+  toman,
+} from '../format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { ClaimChangeAccount } from './ClaimChangeAccount.js';
 import { TransactionReassignPicker } from './TransactionReassignPicker.js';
@@ -75,6 +83,7 @@ import {
   deviceInlineLabel,
   type DeclinedIncomeItem,
   type IncomeItem,
+  type NearbyOrder,
   type PaymentItem,
   type PaymentTab,
   type PaymentsResponse,
@@ -203,6 +212,45 @@ function PaymentIdentity({ item }: { item: PaymentItem }) {
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * The customer's orders from the day around this claim, numbered, this one
+ * marked (Sam, 2026-09-23). A customer pressed «پرداخت کردم» on a 330,000
+ * renewal, then bought the same plan new with a 30% code and paid 231,000 to
+ * that invoice's card; the review page showed the 231,000 receipt under
+ * «۳۳۰٬۰۰۰» and nothing else. The card's last four is what says which invoice
+ * a receipt was paid against. Drawn only when there is another order.
+ */
+function NearbyOrders({ orders }: { orders: NearbyOrder[] }) {
+  if (!orders.some((o) => !o.isThis)) return null;
+  return (
+    <section className="drawer-section" data-testid="nearby-orders">
+      <h3 className="drawer-section__heading">سفارش‌های این مشتری در ۲۴ ساعت اطراف</h3>
+      <ol className="nearby-orders">
+        {orders.map((o, i) => (
+          <li key={o.publicId} className={o.isThis ? 'nearby-orders__this' : undefined}>
+            <span>
+              {count(i + 1)}. {o.isThis && <strong>همین پرداخت · </strong>}
+              {ORDER_KIND_FA[o.kind] ?? o.kind} — {planDisplayName(o.planName) ?? '—'} —{' '}
+              <span className="tabular-nums">{toman(o.totalIrr)}</span>
+            </span>
+            <span className="nearby-orders__facts">
+              <span className={statusTone(o.status)}>{ORDER_STATUS_FA[o.status] ?? o.status}</span>
+              {o.cardLast4 && (
+                <span className="tabular-nums">
+                  کارت <bdi>…{o.cardLast4}</bdi>
+                </span>
+              )}
+              {o.code && <span className="badge badge-info">کد {o.code}</span>}
+              {o.walletIrr > 0 && <span className="badge">کیف پول {toman(o.walletIrr)}</span>}
+              <span className="muted tabular-nums">{dateTime(o.createdAt)}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -2593,6 +2641,7 @@ function ReviewPanel({
     );
   }
 
+  const thisOrder = item.nearbyOrders?.find((o) => o.isThis) ?? null;
   return (
     <div className="payment-review">
       {/* The title lives on the page bar now, next to the way back. It was
@@ -2621,12 +2670,23 @@ function ReviewPanel({
               </dd>
             </>
           )}
+          {thisOrder && thisOrder.discountIrr > 0 && (
+            <>
+              <dt>تخفیف</dt>
+              <dd className="tabular-nums">
+                {toman(thisOrder.discountIrr)}
+                {thisOrder.code ? ` — کد ${thisOrder.code}` : ' — تخفیف دائمی'}
+              </dd>
+            </>
+          )}
           <dt>کارت نمایش‌داده‌شده</dt>
           <dd className="ltr tabular-nums">{item.cardDisplay ?? item.cardMasked ?? '—'}</dd>
           <dt>وضعیت</dt>
           <dd>{stateLabel(item.reviewState)}</dd>
         </dl>
       </section>
+
+      <NearbyOrders orders={item.nearbyOrders ?? []} />
 
       {item.fulfilmentMode === 'CONTINUITY' && (
         <section className="drawer-section">

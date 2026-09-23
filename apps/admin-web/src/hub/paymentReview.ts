@@ -168,6 +168,22 @@ export interface CandidateTransaction {
   inScope?: boolean;
 }
 
+/** One of the customer's orders within a day of the claim; `isThis` is the claim's own. */
+export interface NearbyOrder {
+  publicId: string;
+  kind: string;
+  status: string;
+  totalIrr: number;
+  createdAt: number;
+  planName: string | null;
+  cardLast4: string | null;
+  /** Standing discount and code together, as the order stores them. */
+  discountIrr: number;
+  code: string | null;
+  walletIrr: number;
+  isThis: boolean;
+}
+
 export interface PaymentItem {
   /**
    * Whether the payer is a personal customer or a reseller — and «UNKNOWN»
@@ -247,6 +263,8 @@ export interface PaymentItem {
   customerSubscriptions?: number | null;
   /** Of those, ACTIVE or ON_HOLD right now. */
   customerLiveSubscriptions?: number | null;
+  /** The customer's orders within a day of this claim, oldest first — this one included. */
+  nearbyOrders?: NearbyOrder[];
   fulfilmentMode?: 'MANUAL' | 'CONTINUITY' | null;
   fulfilledAt?: number | null;
   fulfilledBy?: string | null;

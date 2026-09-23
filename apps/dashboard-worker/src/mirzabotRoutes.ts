@@ -404,6 +404,9 @@ type ClaimRow = {
   // no order here, and on a wallet top-up, which buys no service.
   service_name: string | null;
   plan_name: string | null;
+  // The customer's orders within a day of this claim, oldest first; NULL
+  // when there are none or no customer.
+  nearby_orders: NearbyOrder[] | null;
   effective_ts: number;
   // NULL on an imported Mirzabot claim the backfill could not classify; the
   // bot writes it from the order's kind (0069).
@@ -411,6 +414,24 @@ type ClaimRow = {
   messaged_at: number | null;
   messaged_template: string | null;
   operation_type: string | null;
+};
+
+/** One of the customer's orders beside a claim — `json_build_object` in the list query. */
+type NearbyOrder = {
+  publicId: string;
+  kind: string;
+  status: string;
+  totalIrr: number;
+  createdAt: number;
+  planName: string | null;
+  cardLast4: string | null;
+  /** Standing discount and code together, as `orders.discount_irr` holds them. */
+  discountIrr: number;
+  /** The code typed on this order, if any. */
+  code: string | null;
+  /** What the balance paid toward it. */
+  walletIrr: number;
+  isThis: boolean;
 };
 
 type DeviceRef = { id: string; name: string };
@@ -1732,6 +1753,50 @@ export function registerMirzabotRoutes(
                  LEFT JOIN subscriptions s ON s.id = o.target_subscription_id
                 WHERE c.external_order_id LIKE 'shikoo:%'
                   AND np.public_id = substring(c.external_order_id FROM 8)) AS plan_name,
+              -- Every order this customer placed within a day of this claim,
+              -- this one included and marked (Sam, 2026-09-23). A customer
+              -- pressed «پرداخت کردم» on a 330,000 renewal, then bought the
+              -- same plan new with a 30% code and paid 231,000 — to the other
+              -- invoice's card. The review page showed a 231,000 receipt under
+              -- «مبلغ مورد انتظار ۳۳۰٬۰۰۰» and nothing about the second order.
+              -- The card's last four is what tells which invoice a receipt
+              -- was paid against. idx_orders_user serves the range.
+              (SELECT json_agg(json_build_object(
+                        'publicId', o.public_id,
+                        'kind', o.kind,
+                        'status', o.status,
+                        'totalIrr', o.total_irr,
+                        'createdAt', (extract(epoch FROM o.created_at) * 1000)::bigint,
+                        'planName', COALESCE(o.plan_name_at_sale, opl.name),
+                        'cardLast4', right(lp.assigned_card_number, 4),
+                        -- «اگر از کد تخفیف یا کیف پولش استفاده کرده، همین‌جا
+                        -- نشان بده» — Sam, same day. discount_irr is the
+                        -- standing discount and the code together, as the
+                        -- order stores them; the code names which one was
+                        -- typed. idx_redemptions_user and idx_wallet_entries_order
+                        -- (0078) serve the two lookups.
+                        'discountIrr', o.discount_irr,
+                        'code', (SELECT string_agg(dc.code, '، ')
+                                   FROM discount_redemptions dr
+                                   JOIN discount_codes dc ON dc.id = dr.code_id
+                                  WHERE dr.user_id = cu.id AND dr.order_id = o.id),
+                        'walletIrr', (SELECT coalesce(-sum(w.amount_irr), 0)::bigint
+                                        FROM wallet_entries w
+                                       WHERE w.order_id = o.id AND w.kind = 'PURCHASE'),
+                        'isThis', EXISTS (SELECT 1 FROM payments tp
+                                           WHERE tp.order_id = o.id
+                                             AND c.external_order_id LIKE 'shikoo:%'
+                                             AND tp.public_id = substring(c.external_order_id FROM 8))
+                      ) ORDER BY o.created_at, o.id)
+                 FROM orders o
+                 LEFT JOIN product_plans opl ON opl.id = o.plan_id
+                 LEFT JOIN LATERAL (SELECT assigned_card_number FROM payments
+                                     WHERE order_id = o.id
+                                     ORDER BY created_at DESC LIMIT 1) lp ON TRUE
+                WHERE o.user_id = cu.id
+                  AND o.created_at BETWEEN to_timestamp(c.created_at / 1000.0) - interval '24 hours'
+                                       AND to_timestamp(c.created_at / 1000.0) + interval '24 hours'
+              ) AS nearby_orders,
               ${EFFECTIVE_TS} AS effective_ts
        ${claimsFrom}
        WHERE ${where.join(' AND ')}
@@ -1907,6 +1972,7 @@ export function registerMirzabotRoutes(
           expectedAmountIrr: row.expected_amount_irr,
           expectedAmountToman: Math.floor(row.expected_amount_irr / 10),
           walletPaidToman: Math.floor(row.wallet_paid_irr / 10),
+          nearbyOrders: row.nearby_orders ?? [],
           cardMasked: cardDigits ? maskCardDigits(cardDigits) : null,
           // The review page shows the whole number — the admin compares it
           // against the receipt, and a masked one cannot be compared.

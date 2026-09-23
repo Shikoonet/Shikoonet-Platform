@@ -2444,6 +2444,33 @@
   flex-basis: 100%;
 }
 
+/* Numbered by hand: a flex <li> drops its list marker. */
+.nearby-orders {
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.nearby-orders li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+/* The claim under review, told apart from its siblings at a glance. */
+.nearby-orders__this {
+  border-inline-start: 3px solid var(--accent);
+  padding-inline-start: 0.5rem;
+}
+.nearby-orders__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.6rem;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+
 .payment-review__reassign,
 .payment-review__manual-anyway,
 .payment-review__fulfil {
