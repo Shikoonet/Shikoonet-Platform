@@ -43,6 +43,8 @@ function fakePanel(
     online_at?: string | null;
     /** `{ username }` of the admin who made it. Left out when undefined. */
     admin?: { username?: string } | null;
+    /** What `GET /api/user/<name>` answers with. 404 when undefined. */
+    single?: string;
   }[],
 ) {
   const calls: string[] = [];
@@ -68,6 +70,15 @@ function fakePanel(
         }),
         { status: 200 },
       );
+    }
+    const one = /\/api\/user\/([^/?]+)$/.exec(url);
+    if (one) {
+      const hit = accounts.find((a) => a.username === decodeURIComponent(one[1]!));
+      return hit?.single === undefined
+        ? new Response('{}', { status: 404 })
+        : new Response(JSON.stringify({ username: hit.username, subscription_url: hit.single }), {
+            status: 200,
+          });
     }
     return new Response('{}', { status: 500 });
   }) as unknown as typeof globalThis.fetch;
@@ -230,6 +241,62 @@ describe('refreshing what the customer sees', () => {
     await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
 
     expect((await readService(id))?.subscription_url).toBe('https://sync.test/sub/u_c');
+  });
+
+  it('asks one account at a time for the link the listing leaves out — the live panel (2026-09-23)', async () => {
+    // PasarGuard's `/api/users` rows carry no subscription_url. Every service
+    // imported from the PHP bot arrived without a link, was synced every ten
+    // minutes, and still showed «لینک این سرویس هنوز در دسترس نیست».
+    const userId = await makeCustomer(nextTelegramId());
+    const imported = await makeService(userId, panelId, { publicId: 'sync-imp', username: 'u_imp' });
+    const gone = await makeService(userId, panelId, { publicId: 'sync-gone', username: 'u_gone' });
+    const panel = fakePanel([{ username: 'u_imp', used: GIB, url: null, single: '/sub/tok-imp' }]);
+
+    const summary = await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
+
+    expect(summary).toMatchObject({ updated: 1, linked: 1 });
+    expect((await readService(imported))?.subscription_url).toBe('https://sync.test/sub/tok-imp');
+    // Not on the panel's list: not asked for, so it cannot eat the budget
+    // with a 404 on every sweep.
+    expect(panel.calls.some((c) => c.endsWith('/api/user/u_gone'))).toBe(false);
+    expect((await readService(gone))?.subscription_url).toBeNull();
+  });
+
+  it('stops asking once a whole round goes unanswered — the sweep runs inside the poll loop', async () => {
+    // Each lookup may wait out the full timeout. A panel that lists and then
+    // hangs on every single-account read must cost one round, not ten.
+    const userId = await makeCustomer(nextTelegramId());
+    const names = Array.from({ length: 25 }, (_, i) => `u_hang${i}`);
+    for (const name of names) await makeService(userId, panelId, { publicId: `sync-${name}`, username: name });
+    const panel = fakePanel(names.map((username) => ({ username, used: 1, url: null })));
+    const asked: string[] = [];
+    const hanging = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (/\/api\/user\/[^/?]+$/.test(String(input))) {
+        asked.push(String(input));
+        throw new Error('The operation was aborted due to timeout');
+      }
+      return panel.fetchImpl(input, init);
+    }) as typeof globalThis.fetch;
+
+    const summary = await syncSubscriptions(db, hanging, NOW_MS);
+
+    expect(summary.linked).toBe(0);
+    expect(asked).toHaveLength(10);
+  });
+
+  it('does not ask again for a row that already has its link', async () => {
+    const userId = await makeCustomer(nextTelegramId());
+    await makeService(userId, panelId, {
+      publicId: 'sync-has',
+      username: 'u_has',
+      url: 'https://sync.test/sub/u_has',
+    });
+    const panel = fakePanel([{ username: 'u_has', used: GIB, url: null, single: '/sub/other' }]);
+
+    const summary = await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
+
+    expect(summary.linked).toBe(0);
+    expect(panel.calls.some((c) => c.includes('/api/user/'))).toBe(false);
   });
 
   it('refreshes a service still on hold — it is live, and 707 imported ones were frozen', async () => {
