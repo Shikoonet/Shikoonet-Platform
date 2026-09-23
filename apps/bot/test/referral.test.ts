@@ -3,8 +3,9 @@
  *
  * Sam, 2026-09-22: the referred customer's FIRST purchase pays one rate
  * (`bot/affiliatespercentage`, 30), every one of their renewals pays another
- * (`bot/affiliatespercentage_renewal`, 10), and nothing else pays at all — not
- * a second new purchase, not an add-on, not a top-up. Delivery is where it is
+ * (`bot/affiliatespercentage_renewal`, 10). Sam, 2026-09-23: so does every new
+ * purchase after the first, and the «first» is the first one they PAID for.
+ * Nothing else pays — not an add-on, not a top-up. Delivery is where it is
  * called (`provision.test.ts` › «the referrer is paid on delivery»); this file
  * is the rule itself, one order kind at a time.
  */
@@ -62,11 +63,24 @@ async function earned(referrer: number): Promise<number> {
 }
 
 describe('referral commission', () => {
-  it('pays the first-purchase rate on the first purchase, and nothing on a second', async () => {
+  it('pays the first-purchase rate on the first purchase, and the renewal rate on every one after', async () => {
+    // Sam, 2026-09-23: «یا اکانت دیگه‌ای خرید، ۱۰٪». Until then a second
+    // new purchase paid nothing.
     const { referrer, customer } = await pair();
     expect(await pay(await delivered(customer, 'NEW_PURCHASE', 2_000_000))).toBe(600_000);
-    expect(await pay(await delivered(customer, 'NEW_PURCHASE', 2_000_000))).toBeNull();
-    expect(await earned(referrer)).toBe(600_000);
+    expect(await pay(await delivered(customer, 'NEW_PURCHASE', 2_000_000))).toBe(200_000);
+    expect(await pay(await delivered(customer, 'NEW_PURCHASE', 1_000_000))).toBe(100_000);
+    expect(await earned(referrer)).toBe(600_000 + 200_000 + 100_000);
+  });
+
+  it('does not let a free purchase spend the first-purchase rate', async () => {
+    // A 100% code makes a NEW_PURCHASE of 0. It pays nothing — and until
+    // 2026-09-23 it also counted as the «first», so the purchase they then
+    // paid for earned nothing at all.
+    const { referrer, customer } = await pair();
+    expect(await pay(await delivered(customer, 'NEW_PURCHASE', 0))).toBeNull();
+    expect(await pay(await delivered(customer, 'NEW_PURCHASE', 1_000_000))).toBe(300_000);
+    expect(await earned(referrer)).toBe(300_000);
   });
 
   it('pays the renewal rate on every renewal, as often as they renew', async () => {
@@ -98,6 +112,8 @@ describe('referral commission', () => {
     const { customer } = await pair();
     const off = { first: 30, renewal: 0 };
     expect(await pay(await delivered(customer, 'RENEWAL', 1_000_000), off)).toBeNull();
+    expect(await pay(await delivered(customer, 'NEW_PURCHASE', 1_000_000), off)).toBe(300_000);
+    expect(await pay(await delivered(customer, 'NEW_PURCHASE', 1_000_000), off)).toBeNull();
   });
 
   it('pays once per order however many times it is called', async () => {

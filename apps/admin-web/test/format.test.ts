@@ -199,6 +199,9 @@ describe('the ledger, in Persian', () => {
     // The same note on a different kind means something else: a renewal's
     // commission to the referrer, not the customer's own cashback.
     expect(entryNoteFa('REFERRAL_BONUS', '10% of a renewal')).toBe('۱۰٪ پورسانت تمدید زیرمجموعه');
+    expect(entryNoteFa('REFERRAL_BONUS', '10% of a repeat purchase')).toBe(
+      '۱۰٪ پورسانت خرید بعدی زیرمجموعه',
+    );
   });
 
   it('leaves a note an operator typed alone', () => {
