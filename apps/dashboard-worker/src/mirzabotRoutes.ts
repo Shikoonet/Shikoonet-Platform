@@ -155,6 +155,8 @@ export type ReviewState =
    * verified.
    */
   | 'FULFILLED_UNRECONCILED'
+  /** Delivered, and an admin closed it with no money coming (0098). */
+  | 'WRITTEN_OFF'
   | 'WAITING'
   | 'NO_TRANSFER_FOUND'
   | 'REJECTED'
@@ -254,6 +256,7 @@ function deriveReviewState(
     return matchStatus === 'AUTO_VERIFIED' ? 'AUTO_VERIFIED' : 'MANUALLY_VERIFIED';
   }
   if (claimStatus === 'FULFILLED_UNRECONCILED') return 'FULFILLED_UNRECONCILED';
+  if (claimStatus === 'WRITTEN_OFF') return 'WRITTEN_OFF';
   if (claimStatus === 'FAKE_RECEIPT') return 'FAKE';
   if (claimStatus === 'REJECTED') return 'REJECTED';
   if (claimStatus === 'EXPIRED') return 'EXPIRED';
@@ -305,6 +308,8 @@ function stateSql(state: ReviewState): string {
       return `${PENDING_CLAIM} AND c.suspect_reason IS NULL`;
     case 'FULFILLED_UNRECONCILED':
       return `c.status = 'FULFILLED_UNRECONCILED'`;
+    case 'WRITTEN_OFF':
+      return `c.status = 'WRITTEN_OFF'`;
     case 'NO_TRANSFER_FOUND':
       return `${PENDING_CLAIM} AND c.suspect_reason IN ${NO_TRANSFER_REASONS}`;
     case 'REJECTED':
@@ -339,6 +344,7 @@ const REVIEW_STATES: readonly ReviewState[] = [
   'AUTO_VERIFIED',
   'MANUALLY_VERIFIED',
   'FULFILLED_UNRECONCILED',
+  'WRITTEN_OFF',
   'NO_TRANSFER_FOUND',
   'NEEDS_REVIEW',
   'WAITING',
@@ -394,6 +400,9 @@ type ClaimRow = {
   fulfilled_by: string | null;
   fulfilment_reason: string | null;
   reconciled_at: number | null;
+  written_off_at: number | null;
+  written_off_by: string | null;
+  write_off_reason: string | null;
   /**
    * `true`, `false`, or `null` when the reference matches no user at all.
    *
@@ -851,6 +860,7 @@ export async function loadCounts(
     NEEDS_REVIEW: 0,
     MANUALLY_VERIFIED: 0,
     FULFILLED_UNRECONCILED: 0,
+    WRITTEN_OFF: 0,
     WAITING: 0,
     NO_TRANSFER_FOUND: 0,
     REJECTED: 0,
@@ -1534,7 +1544,9 @@ export function registerMirzabotRoutes(
       if (tab === 'continuity') {
         where.push(FULFILLED_WITHOUT_PAYMENT);
         if (continuityState === 'pending') where.push(AWAITING_RECONCILIATION);
-        if (continuityState === 'history') where.push(`c.reconciled_at IS NOT NULL`);
+        // Closed either way: the bank matched it, or an admin wrote it off.
+        if (continuityState === 'history')
+          where.push(`(c.reconciled_at IS NOT NULL OR c.status = 'WRITTEN_OFF')`);
       }
 
       const tabState: ReviewState | null =
@@ -1691,6 +1703,7 @@ export function registerMirzabotRoutes(
               c.suspect_metadata_json, c.metadata_json, c.status,
               c.fulfilment_mode, c.fulfilled_at, c.fulfilled_by,
               c.fulfilment_reason, c.reconciled_at,
+              c.written_off_at, c.written_off_by, c.write_off_reason,
               c.purchase_type, c.operation_type,
               c.messaged_at, c.messaged_template,
               fa.display_name AS account_display, fa.bank_name AS account_bank,
@@ -2046,6 +2059,9 @@ export function registerMirzabotRoutes(
           fulfilledBy: row.fulfilled_by,
           fulfilmentReason: row.fulfilment_reason,
           reconciledAt: row.reconciled_at,
+          writtenOffAt: row.written_off_at,
+          writtenOffBy: row.written_off_by,
+          writeOffReason: row.write_off_reason,
           // 'PERSONAL' | 'RESELLER' | 'UNKNOWN' rather than a boolean, so the
           // screen can say «نامشخص» instead of quietly drawing «شخصی».
           customerType:
@@ -2477,6 +2493,66 @@ export function registerMirzabotRoutes(
       )
       .run();
     return c.json({ ok: true });
+  });
+
+  /*
+   * «بستن بدون پرداخت» (0098) — the second exit from «در انتظار تطبیق», for
+   * a delivery no money will ever come for: an admin's test purchase, a gift.
+   *
+   * ADMIN only. An operator can already deliver without payment; if the same
+   * operator could also close the claim, the queue that tells an admin «this
+   * was delivered and never paid» would be theirs to empty.
+   *
+   * One statement, as `fulfilWithoutPayment` does it: the audit row is
+   * selected from the UPDATE's own RETURNING, so a double click or a race with
+   * the matcher reconciling the claim writes one audit row or none.
+   */
+  const WriteOffBody = z.object({ reason: z.string().trim().min(3).max(500) }).strict();
+  app.post('/api/v1/suspects/:claimId/write-off', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = WriteOffBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'reason_required' }, 400);
+    const claimId = c.req.param('claimId');
+    const now = Date.now();
+    const r = await c.env.DB.prepare(
+      `WITH moved AS (
+         UPDATE payment_claims
+            SET status = 'WRITTEN_OFF', written_off_at = ?2, written_off_by = ?3,
+                write_off_reason = ?4, updated_at = ?2
+          WHERE id = ?1 AND source_system = ?5 AND status = 'FULFILLED_UNRECONCILED'
+          RETURNING id
+       )
+       INSERT INTO audit_logs
+         (id, actor_email, actor_role, action, entity_type, entity_id,
+          before_json, after_json, reason, request_id, created_at)
+       SELECT ?6, ?3, ?7, 'claim.written_off', 'CLAIM', moved.id, ?8, ?9, ?4, ?10, ?2
+         FROM moved`,
+    )
+      .bind(
+        claimId,
+        now,
+        ident.email,
+        parsed.data.reason,
+        MIRZABOT_SOURCE,
+        crypto.randomUUID(),
+        ident.role,
+        JSON.stringify({ status: 'FULFILLED_UNRECONCILED' }),
+        JSON.stringify({ status: 'WRITTEN_OFF' }),
+        c.req.header('cf-ray') ?? null,
+      )
+      .run();
+    if (r.meta.changes > 0) return c.json({ ok: true });
+
+    const after = await c.env.DB.prepare(
+      `SELECT status FROM payment_claims WHERE id = ?1 AND source_system = ?2`,
+    )
+      .bind(claimId, MIRZABOT_SOURCE)
+      .first<{ status: string }>();
+    if (!after) return c.json({ ok: false, error: 'not_found' }, 404);
+    // A retry of a write-off that landed is what was asked for, not a conflict.
+    if (after.status === 'WRITTEN_OFF') return c.json({ ok: true, already: true });
+    return c.json({ ok: false, error: 'illegal_claim_transition' }, 409);
   });
 
   const ReassignBody = z
@@ -2962,6 +3038,8 @@ export function registerMirzabotRoutes(
               fulfilled_at, fulfilled_by, fulfilment_reason, customer_reference
          FROM payment_claims
         WHERE fulfilled_at IS NOT NULL AND reconciled_at IS NULL
+          -- Closed with no money coming (0098): owed nothing any more.
+          AND status <> 'WRITTEN_OFF'
         ORDER BY fulfilled_at DESC
         LIMIT 200`,
     ).all<{

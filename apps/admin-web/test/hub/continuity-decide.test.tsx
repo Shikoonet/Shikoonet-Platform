@@ -152,6 +152,63 @@ describe('the queue finally has an exit', () => {
   });
 });
 
+/**
+ * The second exit (0098): no money is coming — an admin's own test purchase,
+ * a gift. The product stays delivered; only the queue lets go of the row.
+ */
+describe('«بستن بدون پرداخت»', () => {
+  it('asks for a reason, then posts it to the write-off route', async () => {
+    mockApi(continuityClaim());
+    renderPanel();
+    await screen.findByTestId('review-page');
+    fireEvent.click(await screen.findByRole('button', { name: 'بستن بدون پرداخت' }));
+
+    const confirm = screen.getByRole('button', { name: 'تأیید بستن' }) as HTMLButtonElement;
+    // No reason, no close: this is the row an admin would otherwise read as
+    // «delivered and never paid».
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('دلیل'), { target: { value: '  خرید تستی ادمین ' } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(posts.length).toBe(1));
+    expect(posts[0]).toEqual({
+      url: '/api/v1/suspects/claim-cont-1/write-off',
+      body: { reason: 'خرید تستی ادمین' },
+    });
+  });
+
+  it('is inert for a reviewer — emptying this queue is an admin decision', async () => {
+    mockApi(continuityClaim());
+    renderPanel('REVIEWER');
+    await screen.findByTestId('review-page');
+    const btn = (await screen.findByRole('button', {
+      name: 'بستن بدون پرداخت',
+    })) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('is not offered on a claim nobody has delivered yet', async () => {
+    mockApi(
+      continuityClaim({
+        reviewState: 'NEEDS_REVIEW',
+        claimStatus: 'PENDING',
+        suspectReason: 'AMBIGUOUS_TRANSACTIONS',
+        fulfilmentMode: null,
+        fulfilledAt: null,
+        fulfilledBy: null,
+        fulfilmentReason: null,
+      }),
+    );
+    renderPanel();
+    await screen.findByTestId('review-page');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'تایید انتخاب‌شده‌ها' })).toBeTruthy(),
+    );
+    expect(screen.queryByRole('button', { name: 'بستن بدون پرداخت' })).toBeNull();
+  });
+});
+
 describe('what must NOT appear, because the state machine forbids it', () => {
   it('does not offer to deliver a claim that is already delivered', async () => {
     mockApi(continuityClaim());

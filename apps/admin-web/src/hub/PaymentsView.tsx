@@ -38,7 +38,7 @@ import {
   SEARCHABLE_TABS,
 } from './paymentsNav.js';
 import { HeaderSlot } from './shikoonetShell.js';
-import { useWriteProps, useCanWriteAdmin } from '../role.js';
+import { useWriteProps, useCanWriteAdmin, useAdminWriteProps } from '../role.js';
 import {
   AssignToPaymentModal,
   DeclinedIncomeRow,
@@ -819,6 +819,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   onMarkFake={() =>
                     post(`/api/v1/suspects/${reviewing.id}/mark-fake`, { confirmed: true })
                   }
+                  onWriteOff={(reason) =>
+                    post(`/api/v1/suspects/${reviewing.id}/write-off`, { reason })
+                  }
                   onReopen={() => setReopenTarget(reviewing)}
                   onFulfil={() => setFulfilTarget(reviewing)}
                   /*
@@ -1294,8 +1297,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 />
                 <ContinuityClaimsSection
                   id="continuity-history"
-                  title="سابقه تطبیق‌شده"
-                  empty="در این بازه سابقه تطبیق‌شده‌ای نیست."
+                  title="سابقه (تطبیق‌شده یا بسته‌شده)"
+                  empty="در این بازه سابقه‌ای نیست."
                   items={continuityHistoryItems}
                   data={continuityHistoryData}
                   status={continuityHistoryStatus}
@@ -2264,6 +2267,7 @@ function ContinuityRow({
   onOpen: () => void;
 }) {
   const reconciled = item.reconciledAt != null;
+  const writtenOff = item.writtenOffAt != null;
 
   return (
     <li className={`hub-list-row${isNew ? ' hub-list-row--new' : ''}`}>
@@ -2285,12 +2289,14 @@ function ContinuityRow({
           {item.fulfilledAt != null && <> · تحویل {formatExactDateTime(item.fulfilledAt)}</>}
         </div>
         <div className="hub-list-row__line3 payment-reason">
-          <StatusBadge tone={reconciled ? 'verified' : 'review'}>
-            {reconciled ? 'تطبیق‌شده' : 'در انتظار تطبیق'}
+          <StatusBadge tone={reconciled ? 'verified' : writtenOff ? 'neutral' : 'review'}>
+            {reconciled ? 'تطبیق‌شده' : writtenOff ? 'بسته‌شده بدون پرداخت' : 'در انتظار تطبیق'}
           </StatusBadge>
           <span className="payment-reason__text">
-            {item.fulfilmentReason ??
-              (item.fulfilmentMode === 'MANUAL' ? 'تحویل دستی بدون پرداخت' : 'تحویل خودکار در حالت تداوم')}
+            {writtenOff
+              ? item.writeOffReason
+              : (item.fulfilmentReason ??
+                (item.fulfilmentMode === 'MANUAL' ? 'تحویل دستی بدون پرداخت' : 'تحویل خودکار در حالت تداوم'))}
           </span>
           {/*
             Beside the reason it was delivered, not instead of it — the two
@@ -2525,6 +2531,7 @@ function ReviewPanel({
   onReject,
   onRemove,
   onMarkFake,
+  onWriteOff,
   onReopen,
   onFulfil,
   onSetCustomerStatus,
@@ -2543,6 +2550,8 @@ function ReviewPanel({
   onReject: (reason: string) => Promise<void>;
   onRemove: () => Promise<void>;
   onMarkFake: () => Promise<void>;
+  /** «بستن بدون پرداخت» — a delivered claim no money is coming for (0098). */
+  onWriteOff: (reason: string) => Promise<void>;
   onReopen: () => void;
   /** Open «تأیید و تحویل دستی». The dialog and the request live in the parent. */
   onFulfil: () => void;
@@ -2551,6 +2560,7 @@ function ReviewPanel({
   onError: (message: string) => void;
 }) {
   const w = useWriteProps();
+  const adminW = useAdminWriteProps();
   const [selected, setSelected] = useState<string | null>(() => defaultCandidateId(item));
   // The server has already ordered the list — in-scope first, then newest
   // first — so this only cuts it in two and never re-sorts. `inScope` is
@@ -2564,6 +2574,8 @@ function ReviewPanel({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [confirmManual, setConfirmManual] = useState(false);
   const [manualReason, setManualReason] = useState('');
+  const [confirmWriteOff, setConfirmWriteOff] = useState(false);
+  const [writeOffReason, setWriteOffReason] = useState('');
   const [showReassign, setShowReassign] = useState(false);
   const [confirmBlock, setConfirmBlock] = useState(false);
   const [blockReason, setBlockReason] = useState('');
@@ -3052,6 +3064,63 @@ function ReviewPanel({
                   </>
                 )}
               </div>
+              )}
+
+              {/*
+                The other exit from «در انتظار تطبیق» (0098): no money is
+                coming — an admin's own test purchase, a gift. It withdraws
+                nothing; the product stays delivered. ADMIN only, and a reason
+                is required, because this is the row an admin would otherwise
+                see as «delivered and never paid».
+              */}
+              {reconciling && (
+                <div className="payment-review__write-off">
+                  <p className="muted">پولی قرار نیست برسد؟ (خرید تستی، هدیه)</p>
+                  {!confirmWriteOff ? (
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={busy}
+                      onClick={() => setConfirmWriteOff(true)}
+                      {...adminW}
+                    >
+                      بستن بدون پرداخت
+                    </button>
+                  ) : (
+                    <>
+                      <p className="muted">
+                        سرویس تحویل‌شده دست نمی‌خورد؛ فقط این مورد از صف تطبیق بیرون می‌رود و
+                        دیگر هیچ واریزی به آن وصل نمی‌شود.
+                      </p>
+                      <label>
+                        دلیل
+                        <input
+                          type="text"
+                          value={writeOffReason}
+                          maxLength={500}
+                          onChange={(e) => setWriteOffReason(e.target.value)}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy || writeOffReason.trim().length < 3}
+                        onClick={() => run(() => onWriteOff(writeOffReason.trim()))}
+                        {...adminW}
+                      >
+                        تأیید بستن
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={busy}
+                        onClick={() => setConfirmWriteOff(false)}
+                      >
+                        انصراف
+                      </button>
+                    </>
+                  )}
+                </div>
               )}
 
               {canMarkFake && (
