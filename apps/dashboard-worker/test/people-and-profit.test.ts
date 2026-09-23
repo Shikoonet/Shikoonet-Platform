@@ -578,6 +578,26 @@ describe('the fresh start cuts every money report', () => {
     expect([s.startMs, s.earnedIrr]).toEqual([START, 0]);
   });
 
+  it('the dashboard’s adjustment starts there too, and never counts a draw', async () => {
+    // Production, 2026-09-23: «درآمد کل −۸۹۹ میلیون» — sales since the start
+    // less a billion of adjustments from before it.
+    const o = (await (await call('GET', '/api/v1/admin/overview')).json()) as { revenueAdjustmentIrr: number; booksStartMs: number };
+    const sql = await one<{ s: string | number }>(
+      `SELECT COALESCE(SUM(amount_irr - fee_irr), 0) AS s FROM shop_books
+        WHERE kind <> 'PARTNER_DRAW' AND spent_on >= '2026-05-11'`,
+    );
+    expect([o.revenueAdjustmentIrr, o.booksStartMs]).toEqual([Number(sql.s), START]);
+  });
+
+  it('«اشخاص» counts from the start as well', async () => {
+    const items = ((await (await call('GET', `${BASE}/parties`)).json()) as {
+      items: Array<{ id: number; drawnIrr: number; paidIrr: number }>;
+    }).items;
+    const host = items.find((i) => i.id === ids.host)!;
+    // The host's two rows were both on 05-10: before the start, so nothing.
+    expect([host.drawnIrr, host.paidIrr]).toEqual([0, 0]);
+  });
+
   it('a partner’s draws count from the start: the 05-10 draw is history', async () => {
     const hesam = (((await (await call('GET', `${BASE}/distributions`)).json()) as {
       accounts: Array<{ partyId: number; drawnIrr: number }>;

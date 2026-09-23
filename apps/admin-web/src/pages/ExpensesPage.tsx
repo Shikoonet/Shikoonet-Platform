@@ -213,6 +213,7 @@ export function ExpensesPage() {
   const [rows, setRows] = useState<RevenueAdjustmentRow[]>([]);
   const [totals, setTotals] = useState<RevenueTotals>(ZERO);
   const [lifetime, setLifetime] = useState<RevenueTotals>(ZERO);
+  const [booksStartDay, setBooksStartDay] = useState<string | null>(null);
   const [byCategory, setByCategory] = useState<
     { categoryId: number | null; name: string | null; count: number; irr: number }[]
   >([]);
@@ -280,6 +281,7 @@ export function ExpensesPage() {
       setRows(res.items);
       setTotals(res.totals);
       setLifetime(res.lifetime);
+      setBooksStartDay(res.booksStartDay);
       setByCategory(res.byCategory);
       setTotal(res.total);
     } catch (e) {
@@ -478,6 +480,7 @@ export function ExpensesPage() {
       <Totals
         inFilter={totals}
         lifetime={lifetime}
+        booksStartDay={booksStartDay}
         // «باطل‌شده‌ها: پنهان» is the default, not a filter — counting it would
         // tell an admin they had narrowed something when they had not.
         filtered={Boolean(kind || categoryId || uncategorised || partyId || q || dated || voided !== 'hide')}
@@ -695,10 +698,13 @@ export function ExpensesPage() {
 function Totals({
   inFilter,
   lifetime,
+  booksStartDay,
   filtered,
 }: {
   inFilter: RevenueTotals;
   lifetime: RevenueTotals;
+  /** The fresh start's day: «کل دفتر» begins there, and says so. */
+  booksStartDay: string | null;
   /** Whether anything is actually narrowing the view. See the note below. */
   filtered: boolean;
 }) {
@@ -765,7 +771,13 @@ function Totals({
               filtered ? 'فقط ردیف‌های جدول پایین' : 'فیلتری فعال نیست',
               inFilter,
             )}
-            {line('کل دفتر', 'همهٔ ردیف‌ها، بدون توجه به فیلتر', lifetime)}
+            {line(
+              'کل دفتر',
+              booksStartDay
+                ? `از شروع دفتر (${dateOnly(`${booksStartDay}T12:00:00Z`)}) — بدون توجه به فیلتر`
+                : 'همهٔ ردیف‌ها، بدون توجه به فیلتر',
+              lifetime,
+            )}
           </tbody>
         </table>
       </div>

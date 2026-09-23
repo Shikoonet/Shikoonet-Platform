@@ -71,7 +71,10 @@ export function PartiesPage() {
       <div className="page-head">
         <div>
           <h2 className="page-head__title">اشخاص</h2>
-          <div className="page-head__sub">شرکا، تأمین‌کننده‌ها، همکارها و نماینده‌ها — هرکس که دفتر به او پول داده یا از او گرفته</div>
+          <div className="page-head__sub">
+            شرکا، تأمین‌کننده‌ها، همکارها و نماینده‌ها — هرکس که دفتر به او پول داده یا از او گرفته. مبلغ‌ها از
+            شروع دفتر است.
+          </div>
         </div>
         <button type="button" className="btn btn-primary" onClick={() => setEditing('new')}>
           شخص تازه
