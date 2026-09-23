@@ -563,6 +563,14 @@ describe('every write route, asked directly', () => {
     // from that renewal's snapshot. It changes an account on a panel, so
     // ADMIN-only; claimed once by `restored_at` and audited as
     // `RENEWAL_RESTORED`. `renewal-restore.test.ts` pins both.
-    expect(writeRoutes().length).toBe(184);
+    //
+    // 185, 2026-09-23: «شارژ کیف پول» on a late deposit. `POST /transactions/
+    // :id/credit-wallet` pays a deposit whose invoice expired into that
+    // customer's wallet, once, and queues the bot's top-up message. It moves
+    // money into a balance, so ADMIN-only in the handler like the wallet
+    // adjustment on the customer's page, and audited as
+    // `transaction.credited_to_wallet`. `expired-invoice-hint.test.ts` pins
+    // the credit, the refusal of a second one, and the REVIEWER 403.
+    expect(writeRoutes().length).toBe(185);
   });
 });

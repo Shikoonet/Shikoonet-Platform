@@ -718,6 +718,11 @@ export const api = {
       `/api/v1/transactions/${encodeURIComponent(transactionId)}/accept`,
       { method: 'POST' },
     ),
+  creditDepositToWallet: (transactionId: string, body: { userId: number; reason: string }) =>
+    req<{ ok: boolean; amountIrr: number; balanceIrr: number; notified: boolean }>(
+      `/api/v1/transactions/${encodeURIComponent(transactionId)}/credit-wallet`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   rejectTransaction: (transactionId: string, body: { reason: string; comment?: string }) =>
     req<{ ok: boolean; decision: 'REJECTED' }>(
       `/api/v1/transactions/${encodeURIComponent(transactionId)}/reject`,

@@ -448,6 +448,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const [assignIncome, setAssignIncome] = useState<IncomeItem | null>(null);
   const [declineTarget, setDeclineTarget] = useState<IncomeItem | null>(null);
   const [duplicateTarget, setDuplicateTarget] = useState<{ id: string; amountIrr: number | null } | null>(null);
+  const [creditWalletTarget, setCreditWalletTarget] = useState<IncomeItem | null>(null);
   const [bulkDeclineOpen, setBulkDeclineOpen] = useState(false);
   const [selectedIncome, setSelectedIncome] = useState<Set<string>>(new Set());
   const [selectedDeclined, setSelectedDeclined] = useState<Set<string>>(new Set());
@@ -1127,6 +1128,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                     }}
                     onDecline={() => setDeclineTarget(item)}
                     onDuplicate={() => setDuplicateTarget(item)}
+                    onCreditWallet={() => setCreditWalletTarget(item)}
                   />
                 ))}
               </ul>
@@ -1389,6 +1391,18 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   setDuplicateTarget(null);
                   setSelectedIncome(new Set());
                   setSelectedDeclined(new Set());
+                  cache.refetch(queryKey);
+                }}
+                onError={setError}
+              />
+            )}
+            {creditWalletTarget && (
+              <CreditWalletModal
+                item={creditWalletTarget}
+                onClose={() => setCreditWalletTarget(null)}
+                onDone={() => {
+                  setCreditWalletTarget(null);
+                  setSelectedIncome(new Set());
                   cache.refetch(queryKey);
                 }}
                 onError={setError}
@@ -3297,6 +3311,90 @@ function DuplicateDepositModal({
           </button>
           <button type="button" className="danger" disabled={busy} onClick={() => void submit()}>
             تکراری است
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * «شارژ کیف پول» — the customer paid an invoice after it expired, so no order
+ * is left to take the deposit. It goes to their wallet instead, once, and the
+ * bot tells them as it tells any top-up. `creditDepositToWallet` on the
+ * server has the rest.
+ */
+function CreditWalletModal({
+  item,
+  onClose,
+  onDone,
+  onError,
+}: {
+  item: IncomeItem;
+  onClose: () => void;
+  onDone: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const invoice = item.expiredInvoice;
+  const customer = invoice?.customer;
+  if (!invoice || !customer) return null;
+
+  async function submit() {
+    if (!customer || !reason.trim()) return;
+    setBusy(true);
+    try {
+      await api.creditDepositToWallet(item.id, { userId: customer.id, reason: reason.trim() });
+      onDone();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'credit_wallet_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-body">
+        <h2>این واریزی به کیف پول مشتری برود؟</h2>
+        <p>
+          مبلغ: <strong>{item.amountIrr == null ? '—' : formatTomanFromIrr(item.amountIrr)}</strong>
+        </p>
+        <p>
+          مشتری: <CustomerLink customer={customer} /> · فاکتور منقضی{' '}
+          <IdentifierText value={invoice.publicId} tone="hint" />
+        </p>
+        <p className="muted">
+          فاکتور منقضی شده و سفارشی نمانده که این پول به آن وصل شود. همین مبلغ یک بار به کیف پول مشتری
+          اضافه می‌شود و پیام «کیف پول شما شارژ شد» برایش می‌رود تا با موجودی‌اش دوباره خرید کند. واریزی
+          از «واریزی‌ها» بیرون می‌رود و در «دفتر بانک» فروش حساب می‌شود. از پنل برنمی‌گردد.
+        </p>
+        {invoice.others > 0 && (
+          <div className="alert alert-warning">
+            {count(invoice.others)} فاکتور منقضی دیگر هم با همین مبلغ و کارت جور است — مطمئن شو پول مال
+            همین مشتری است.
+          </div>
+        )}
+        <label>
+          دلیل
+          <input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="مثلاً: بعد از انقضای فاکتور واریز کرد"
+          />
+        </label>
+        <div className="modal-actions">
+          <button type="button" className="ghost" disabled={busy} onClick={onClose}>
+            انصراف
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy || !reason.trim()}
+            onClick={() => void submit()}
+          >
+            شارژ کیف پول
           </button>
         </div>
       </div>

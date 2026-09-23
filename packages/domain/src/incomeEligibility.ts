@@ -48,6 +48,23 @@ export const TX_INCOME_DECLINED = `
   )`;
 export const TX_OFF_BOOKS = TX_INCOME_DECLINED;
 
+/**
+ * The wallet entry a deposit credited by hand writes (`creditDepositToWallet`).
+ * Keyed by the deposit, so `wallet_entries.idempotency_key UNIQUE` is what
+ * lets one deposit reach a wallet once — and the key is also the link: the
+ * deposit is spent exactly when this entry exists.
+ */
+export function depositWalletKey(transactionId: string): string {
+  return `deposit:${transactionId}:wallet`;
+}
+
+/** Tx was credited to a customer's wallet by hand. Same key as `depositWalletKey`. */
+export const TX_WALLET_CREDITED = `
+  EXISTS (
+    SELECT 1 FROM wallet_entries we
+     WHERE we.idempotency_key = 'deposit:' || t.id || ':wallet'
+  )`;
+
 /** Canonical Income tab predicate (alias `t` = transaction_candidates). */
 export const INCOME_TX_WHERE = `
   t.direction = 'CREDIT'
@@ -56,7 +73,8 @@ export const INCOME_TX_WHERE = `
   AND NOT ${TX_BOT_CONSUMED}
   AND NOT ${TX_RESELLER_CLASSIFIED}
   AND NOT ${TX_ACTIVE_BOT_SUGGESTION}
-  AND NOT ${TX_INCOME_DECLINED}`;
+  AND NOT ${TX_INCOME_DECLINED}
+  AND NOT ${TX_WALLET_CREDITED}`;
 
 /**
  * What «واریزی‌ها» lists and counts: income the operator can still owe an

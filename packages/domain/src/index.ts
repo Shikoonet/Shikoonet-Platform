@@ -23,6 +23,7 @@ export * from './shopReport.js';
 export * from './incomeEligibility.js';
 export * from './classifyResellerTransaction.js';
 export * from './declineIncomeTransaction.js';
+export * from './creditDepositToWallet.js';
 export * from './paymentNotifications.js';
 export * from './financialAnalytics.js';
 export * from './accountDeviceInference.js';

@@ -251,3 +251,81 @@ describe("the expired invoice a late deposit probably belongs to", () => {
     });
   });
 });
+
+/**
+ * «شارژ کیف پول» — the door this hint was missing. The invoice is dead, so the
+ * deposit goes to the customer's balance, once, and the bot tells them.
+ * Deposit ids are fresh per run: a wallet entry is append-only, so a fixed id
+ * would find itself already credited on the next run of this file.
+ */
+describe("«شارژ کیف پول» on a late deposit", () => {
+  const REVIEWER = "reviewer-hint@example.com";
+
+  async function walletBalance(): Promise<number> {
+    const row = await baseEnv.DB.prepare(`SELECT balance_irr FROM wallets WHERE user_id = ?1`)
+      .bind(userId)
+      .first<{ balance_irr: number | string }>();
+    return Number(row?.balance_irr ?? 0);
+  }
+
+  function creditWallet(id: string, body: unknown, email = EMAIL) {
+    return app.fetch(
+      new Request(`https://example.com/api/v1/transactions/${id}/credit-wallet`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      envAs(email),
+    );
+  }
+
+  it("pays the deposit into the customer's wallet, messages them, and leaves «واریزی‌ها»", async () => {
+    const id = `t-credit-${crypto.randomUUID()}`;
+    await seedDeposit(id);
+    await seedInvoice("hint-credit");
+    const before = await walletBalance();
+
+    const res = await creditWallet(id, { userId, reason: "paid after the invoice expired" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, amountIrr: AMOUNT, notified: true });
+
+    expect(await walletBalance()).toBe(before + AMOUNT);
+    expect((await income()).map((r) => r.id)).not.toContain(id);
+    const note = await baseEnv.DB.prepare(
+      `SELECT body FROM bot_notifications WHERE dedupe_key = ?1`,
+    )
+      .bind(`deposit-wallet:${id}`)
+      .first<{ body: string }>();
+    expect(note?.body).toContain("کیف پول شما شارژ شد");
+    expect(note?.body).toContain(`${(AMOUNT / 10).toLocaleString("en-US")} تومان`);
+    const audit = await baseEnv.DB.prepare(
+      `SELECT actor_email FROM audit_logs WHERE action = 'transaction.credited_to_wallet' AND entity_id = ?1`,
+    )
+      .bind(id)
+      .first<{ actor_email: string }>();
+    expect(audit?.actor_email).toBe(EMAIL);
+
+    // Once: the second press is refused and moves nothing.
+    const again = await creditWallet(id, { userId, reason: "again" });
+    expect(again.status).toBe(409);
+    expect(await walletBalance()).toBe(before + AMOUNT);
+  });
+
+  it("is an ADMIN's act, and asks for a reason", async () => {
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at)
+       VALUES (?1, ?2, 'REVIEWER', 1, ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), REVIEWER, Date.now())
+      .run();
+    const id = `t-credit-${crypto.randomUUID()}`;
+    await seedDeposit(id);
+    const before = await walletBalance();
+
+    expect((await creditWallet(id, { userId, reason: "x" }, REVIEWER)).status).toBe(403);
+    expect((await creditWallet(id, { userId, reason: " " })).status).toBe(400);
+    expect((await creditWallet(id, { userId: 999_999_999, reason: "x" })).status).toBe(404);
+    expect(await walletBalance()).toBe(before);
+    expect((await income()).map((r) => r.id)).toContain(id);
+  });
+});
