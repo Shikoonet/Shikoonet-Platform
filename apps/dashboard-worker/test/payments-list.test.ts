@@ -1454,6 +1454,96 @@ describe('the customer behind a claim', () => {
     expect(paid('wal-none')).toBe(0);
   });
 
+  /**
+   * Sam, 2026-09-23, from production: a customer pressed «پرداخت کردم» on a
+   * 330,000 renewal, then bought the same plan new with a 30% code and paid
+   * 231,000 to THAT invoice's card. The review page showed the 231,000 receipt
+   * under «۳۳۰٬۰۰۰» and nothing about the second order. Now the claim carries
+   * the customer's orders from the day around it, this one marked, each with
+   * its card, code and wallet share — and an order from three days before is
+   * not «around» it.
+   */
+  it('lists the customer’s other orders around the claim, with card, code and wallet', async () => {
+    const tg = 900_000_778;
+    const u = await baseEnv.DB.prepare(
+      `INSERT INTO users (telegram_id, username, registered_at) VALUES (?1, 'near', now())
+       ON CONFLICT (telegram_id) DO UPDATE SET username = EXCLUDED.username RETURNING id`,
+    )
+      .bind(tg)
+      .first<{ id: number }>();
+    const userId = Number(u!.id);
+    const order = async (publicId: string, kind: string, discount: number, status: string, age: string) =>
+      (await baseEnv.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status, plan_name_at_sale, created_at)
+         VALUES (?1, ?2, ?3, 3300000, 1, ?4::bigint, 3300000 - ?4::bigint, ?5, '2ماهه-50گیگ-330.000ت', now() - ?6::interval)
+         ON CONFLICT (public_id) DO UPDATE SET created_at = EXCLUDED.created_at RETURNING id`,
+      )
+        .bind(publicId, userId, kind, discount, status, age)
+        .first<{ id: number }>())!.id;
+    const payment = (publicId: string, orderId: number, amount: number, status: string, card: string) =>
+      baseEnv.DB.prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, assigned_card_number, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'CARD_TO_CARD', ?5, ?6, now()) ON CONFLICT (public_id) DO NOTHING`,
+      )
+        .bind(publicId, userId, orderId, amount, status, card)
+        .run();
+
+    const old = await order('near-old', 'NEW_PURCHASE', 0, 'COMPLETED', '3 days');
+    const renewal = await order('near-rnw', 'RENEWAL', 0, 'AWAITING_PAYMENT', '4 minutes');
+    const fresh = await order('near-new', 'NEW_PURCHASE', 990000, 'COMPLETED', '0 minutes');
+    await payment('near-p-old', old, 3300000, 'PAID', '6037990000001111');
+    await payment('near-p-rnw', renewal, 3300000, 'AWAITING_REVIEW', '5054161706277781');
+    await payment('near-p-new', fresh, 2210000, 'PAID', '5047061674698903');
+    const code = await baseEnv.DB.prepare(
+      `INSERT INTO discount_codes (code, kind, percent) VALUES ('NEAR30', 'PERCENT_OFF', 30)
+       ON CONFLICT (code) DO UPDATE SET percent = EXCLUDED.percent RETURNING id`,
+    ).first<{ id: number }>();
+    // No unique key to conflict on (uses_per_user retired the once-per-user
+    // index), so a second run of the file clears its own row first.
+    await baseEnv.DB.prepare(`DELETE FROM discount_redemptions WHERE order_id = ?1`).bind(fresh).run();
+    await baseEnv.DB.prepare(
+      `INSERT INTO discount_redemptions (code_id, user_id, order_id, amount_irr) VALUES (?1, ?2, ?3, 990000)`,
+    )
+      .bind(code!.id, userId, fresh)
+      .run();
+    await baseEnv.DB.prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, idempotency_key)
+       VALUES (?1, -100000, 'PURCHASE', ?2, 'test:near-new:reserve') ON CONFLICT (idempotency_key) DO NOTHING`,
+    )
+      .bind(userId, fresh)
+      .run();
+    await seedClaim('near-c', { status: 'PENDING', customerReference: String(tg) });
+    await baseEnv.DB.prepare(
+      `UPDATE payment_claims SET external_order_id = 'shikoo:near-p-rnw', expected_amount_irr = 3300000 WHERE id = 'near-c'`,
+    ).run();
+
+    const body = await get('tab=all&range=all');
+    const item = body.items.find((i) => i.id === 'near-c') as unknown as {
+      nearbyOrders: Array<{
+        publicId: string;
+        kind: string;
+        totalIrr: number;
+        cardLast4: string | null;
+        code: string | null;
+        walletIrr: number;
+        discountIrr: number;
+        isThis: boolean;
+      }>;
+    };
+    expect(item.nearbyOrders.map((o) => o.publicId)).toEqual(['near-rnw', 'near-new']);
+    const [mine, other] = item.nearbyOrders;
+    expect(mine).toMatchObject({ kind: 'RENEWAL', totalIrr: 3300000, cardLast4: '7781', code: null, walletIrr: 0, isThis: true });
+    expect(other).toMatchObject({
+      kind: 'NEW_PURCHASE',
+      totalIrr: 2310000,
+      discountIrr: 990000,
+      cardLast4: '8903',
+      code: 'NEAR30',
+      walletIrr: 100000,
+      isThis: false,
+    });
+  });
+
   /*
    * Sam, 2026-09-23: the review page named the customer, the amount and the
    * card, and never what was bought — «تیتانیوم خریده یا وایرگارد یا

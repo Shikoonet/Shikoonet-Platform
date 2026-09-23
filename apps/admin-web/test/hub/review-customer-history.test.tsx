@@ -11,7 +11,7 @@ import { render, screen, within } from '@testing-library/react';
 import { createCache } from '../../src/hub/query.js';
 import { PaymentsView } from '../../src/hub/PaymentsView.js';
 import { RoleProvider } from '../../src/role.js';
-import type { PaymentItem } from '../../src/hub/paymentReview.js';
+import type { NearbyOrder, PaymentItem } from '../../src/hub/paymentReview.js';
 
 const BASE = Date.parse('2026-09-02T09:00:00Z');
 
@@ -108,6 +108,74 @@ describe('who is paying', () => {
     expect(within(page).getByText('خرید جدید')).toBeTruthy();
     // Still a way to them: a search by id, since there is no card to open.
     expect(within(page).getByRole('link', { name: '555000111' }).getAttribute('href')).toContain('q=555000111');
+  });
+});
+
+/**
+ * Sam, 2026-09-23: a 330,000 renewal claim held a 231,000 receipt, because the
+ * customer had bought the same plan new with a 30% code four minutes later and
+ * paid THAT invoice. The page now lists the orders around the claim, this one
+ * marked, each with its card, code and wallet share — and names the code on
+ * the claim's own order under «پرداخت».
+ */
+describe('the orders around the claim', () => {
+  const nearby = (over: Partial<NearbyOrder>): NearbyOrder => ({
+    publicId: 'o',
+    kind: 'RENEWAL',
+    status: 'AWAITING_PAYMENT',
+    totalIrr: 3_300_000,
+    createdAt: BASE,
+    planName: '2ماهه-50گیگ-330.000ت',
+    cardLast4: '7781',
+    discountIrr: 0,
+    code: null,
+    walletIrr: 0,
+    isThis: true,
+    ...over,
+  });
+
+  it('shows the second order, its card, its code and its wallet share', async () => {
+    mockApi(
+      claim({
+        nearbyOrders: [
+          nearby({ publicId: 'rnw' }),
+          nearby({
+            publicId: 'new',
+            kind: 'NEW_PURCHASE',
+            status: 'COMPLETED',
+            totalIrr: 2_310_000,
+            discountIrr: 990_000,
+            cardLast4: '8903',
+            code: 'OFF30',
+            walletIrr: 100_000,
+            isThis: false,
+            createdAt: BASE + 240_000,
+          }),
+        ],
+      }),
+    );
+    renderReview();
+
+    const list = await screen.findByTestId('nearby-orders');
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText(/همین پرداخت/)).toBeTruthy();
+    expect(within(rows[0]!).getByText('…7781')).toBeTruthy();
+    expect(within(rows[1]!).queryByText(/همین پرداخت/)).toBeNull();
+    expect(within(rows[1]!).getByText(/^۲\. خرید جدید/)).toBeTruthy();
+    expect(within(rows[1]!).getByText('…8903')).toBeTruthy();
+    expect(within(rows[1]!).getByText('کد OFF30')).toBeTruthy();
+    expect(within(rows[1]!).getByText(/کیف پول ۱۰٬۰۰۰ تومان/)).toBeTruthy();
+    expect(within(rows[1]!).getByText('تکمیل شده')).toBeTruthy();
+  });
+
+  it('draws nothing when this is the only order, and names the claim’s own code', async () => {
+    mockApi(claim({ nearbyOrders: [nearby({ discountIrr: 990_000, code: 'OFF30' })] }));
+    renderReview();
+
+    const page = await screen.findByTestId('review-page');
+    expect(within(page).queryByTestId('nearby-orders')).toBeNull();
+    expect(within(page).getByText(/۹۹٬۰۰۰ تومان — کد OFF30/)).toBeTruthy();
   });
 });
 
