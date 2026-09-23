@@ -880,6 +880,45 @@ describe('review drawer', () => {
     expect(within(drawer).getAllByRole('radio')).toHaveLength(2);
   });
 
+  // Sam, 2026-09-23: «تیتانیوم خریده یا وایرگارد» — at the top, beside the
+  // title, before anything else on the page.
+  it('names the service and the plan in the page bar', async () => {
+    mockApi({
+      needs_review: [{ ...ambiguous, serviceName: 'تیتانیوم', planName: 'یک‌ماهه ۵۰ گیگ' }],
+    });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
+    const drawer = await openReviewPanel();
+    const bar = drawer.querySelector('.review-page__bar') as HTMLElement;
+    expect(within(bar).getByText('تیتانیوم')).toBeTruthy();
+    expect(within(bar).getByText('یک‌ماهه ۵۰ گیگ')).toBeTruthy();
+  });
+
+  // Imported plans often carry the service's own name; saying it twice in a
+  // row says nothing more.
+  it('does not repeat a plan named like its service, and says nothing without either', async () => {
+    mockApi({
+      needs_review: [{ ...ambiguous, serviceName: 'وایرگارد', planName: 'وایرگارد' }],
+    });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
+    const drawer = await openReviewPanel();
+    const bar = drawer.querySelector('.review-page__bar') as HTMLElement;
+    expect(within(bar).getAllByText('وایرگارد')).toHaveLength(1);
+    expect(bar.querySelector('.review-page__service')).not.toBeNull();
+  });
+
+  it('draws no service line for a payment that bought none', async () => {
+    mockApi({ needs_review: [{ ...ambiguous, serviceName: null, planName: null }] });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
+    const drawer = await openReviewPanel();
+    expect(drawer.querySelector('.review-page__service')).toBeNull();
+  });
+
   it('cannot verify manually until the operator picks a transaction', async () => {
     mockApi({ needs_review: [ambiguous] });
     renderView();

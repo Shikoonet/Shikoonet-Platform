@@ -255,6 +255,13 @@ export interface PaymentItem {
   isNew?: boolean;
   /** Business classification (NEW_PURCHASE / RENEWAL / UNKNOWN). */
   purchaseType?: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP' | 'UNKNOWN';
+  /**
+   * What the payment is for: the service («تیتانیوم», «وایرگارد») and the plan
+   * as it was sold (0089). Null on an imported Mirzabot claim, on a wallet
+   * top-up, and from a worker that predates the field.
+   */
+  serviceName?: string | null;
+  planName?: string | null;
   /** Raw Mirzabot step (e.g. getconfigafterpay); null on the platform's own claims. */
   operationType?: string | null;
   /** When an operator last sent the customer a ready-made message, and which (#320). */

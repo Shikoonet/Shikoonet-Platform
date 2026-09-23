@@ -400,6 +400,10 @@ type ClaimRow = {
   // What the balance already put toward the order, in IRR. Zero for an
   // imported Mirzabot claim, which has no order here.
   wallet_paid_irr: number;
+  // What the payment is for — NULL on an imported Mirzabot claim, which has
+  // no order here, and on a wallet top-up, which buys no service.
+  service_name: string | null;
+  plan_name: string | null;
   effective_ts: number;
   // NULL on an imported Mirzabot claim the backfill could not classify; the
   // bot writes it from the order's kind (0069).
@@ -1702,6 +1706,32 @@ export function registerMirzabotRoutes(
                  FROM payments wp
                  JOIN wallet_entries w ON w.order_id = wp.order_id AND w.kind = 'PURCHASE'
                 WHERE c.external_order_id = 'shikoo:' || wp.public_id) AS wallet_paid_irr,
+              -- What was bought, for the top of the review page (Sam,
+              -- 2026-09-23: «تیتانیوم خریده یا وایرگارد یا اوپن‌وی‌پی‌ان»). A
+              -- purchase or renewal names its plan; an add-on names none and
+              -- points at the subscription it extends, so it is read from
+              -- there. The service is the catalogue's name now; the plan is
+              -- the one frozen on the order at sale (0089), so a later tier
+              -- change does not rewrite what this payment was for.
+              --
+              -- The payment is found by its public_id, not by gluing the
+              -- prefix onto every row of payments: the glued form is an
+              -- expression the UNIQUE index on public_id cannot serve, so
+              -- each claim on the page would scan the table.
+              (SELECT COALESCE(op.name, sp.name)
+                 FROM payments np JOIN orders o ON o.id = np.order_id
+                 LEFT JOIN product_plans opl ON opl.id = o.plan_id
+                 LEFT JOIN products op ON op.id = opl.product_id
+                 LEFT JOIN subscriptions s ON s.id = o.target_subscription_id
+                 LEFT JOIN product_plans spl ON spl.id = s.plan_id
+                 LEFT JOIN products sp ON sp.id = spl.product_id
+                WHERE c.external_order_id LIKE 'shikoo:%'
+                  AND np.public_id = substring(c.external_order_id FROM 8)) AS service_name,
+              (SELECT COALESCE(o.plan_name_at_sale, s.plan_name_at_sale)
+                 FROM payments np JOIN orders o ON o.id = np.order_id
+                 LEFT JOIN subscriptions s ON s.id = o.target_subscription_id
+                WHERE c.external_order_id LIKE 'shikoo:%'
+                  AND np.public_id = substring(c.external_order_id FROM 8)) AS plan_name,
               ${EFFECTIVE_TS} AS effective_ts
        ${claimsFrom}
        WHERE ${where.join(' AND ')}
@@ -1900,6 +1930,8 @@ export function registerMirzabotRoutes(
           matchStatus: row.match_status,
           suspectReason: row.suspect_reason,
           purchaseType: row.purchase_type ?? 'UNKNOWN',
+          serviceName: row.service_name ?? null,
+          planName: row.plan_name ?? null,
           operationType: row.operation_type ?? null,
           messagedAt: row.messaged_at ?? null,
           messagedTemplate: row.messaged_template ?? null,
