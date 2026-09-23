@@ -30,7 +30,7 @@ import {
   productId,
   providerId,
 } from './helpers/shop.js';
-import { invalidateShopSettings } from '../src/settings.js';
+import { CUSTOM_EMOJI_SETTING, invalidateShopSettings } from '../src/settings.js';
 import { invalidateBotContent } from '../src/botContent.js';
 import { TEXTS } from '@shikoo/contracts';
 import { creditRenewalCashback } from '../src/wallet.js';
@@ -581,7 +581,24 @@ describe('choosing what to renew', () => {
       ['renew', 'بازگشت ⬅️', 2, null],
       ['menu', 'منو ⬅️', 3, null],
     ] as const;
+    // Premium on, pinned: the switch is a shared row another suite may have
+    // left either way, and with it off the tag would land as its fallback.
+    const premium = (value: 'true' | null) =>
+      value === null
+        ? db
+            .prepare(`DELETE FROM settings WHERE scope = ?1 AND key = ?2`)
+            .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key)
+            .run()
+        : db
+            .prepare(
+              `INSERT INTO settings (scope, key, value) VALUES (?1, ?2, ?3::jsonb)
+               ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+            )
+            .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key, value)
+            .run();
     try {
+      await premium('true');
+      invalidateShopSettings();
       for (const [action, label, row, style] of saved) {
         await db
           .prepare(
@@ -601,14 +618,17 @@ describe('choosing what to renew', () => {
         callback_data: `rord:${subId}:${sold}`,
         style: 'success',
       });
-      // The admin's wording, `{plan}` filled. Premium is off in this suite, so
-      // the custom emoji lands as its own fallback — the tag-to-icon half is
-      // `custom-emoji.test.ts`'s, for every chrome button alike.
-      expect(rows[1]?.[0]?.text).toMatch(/^✅ همین پلن — .+ 1 ماهه 50 گیگ$/);
+      // The admin's wording, `{plan}` filled, the premium emoji kept for
+      // `keyboardFor` to turn into the button's icon (`custom-emoji.test.ts`).
+      expect(rows[1]?.[0]?.text).toMatch(
+        /^<tg-emoji emoji-id="5368324170671202286">✅<\/tg-emoji> همین پلن — .+ 1 ماهه 50 گیگ$/,
+      );
       // Once: the chrome button replaces the data row, it does not join it.
       expect(rows.flat().filter((b) => b.callback_data?.startsWith('rord:'))).toHaveLength(1);
     } finally {
       await db.prepare(`DELETE FROM bot_keyboard_buttons WHERE menu = 'renewPlans'`).run();
+      await premium(null);
+      invalidateShopSettings();
       invalidateBotContent();
       menu.resetContent();
     }
