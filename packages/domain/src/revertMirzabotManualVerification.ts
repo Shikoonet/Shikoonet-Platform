@@ -180,11 +180,11 @@ async function loadClaimCandidate(
                  JOIN financial_accounts fa ON fa.id = pc.financial_account_id
                 WHERE pc.card_digits = c.card_digits LIMIT 1) AS mapped_account_status,
               fa.status AS target_account_status,
-              EXISTS(
+              (EXISTS(
                 SELECT 1 FROM reconciliation_matches m
                  WHERE m.payment_claim_id = c.id
                    AND m.status IN ${CONSUMING_MATCH_STATUSES}
-              ) AS order_already_verified
+              ))::int AS order_already_verified
        FROM payment_claims c
        LEFT JOIN financial_accounts fa ON fa.id = c.target_financial_account_id
        WHERE c.id = ?1 AND c.source_system = ?2`,
@@ -248,11 +248,11 @@ async function loadCompetingClaims(
               (SELECT fa.status FROM payment_cards pc
                  JOIN financial_accounts fa ON fa.id = pc.financial_account_id
                 WHERE pc.card_digits = c.card_digits LIMIT 1) AS mapped_account_status,
-              EXISTS(
+              (EXISTS(
                 SELECT 1 FROM reconciliation_matches m
                  WHERE m.payment_claim_id = c.id
                    AND m.status IN ${CONSUMING_MATCH_STATUSES}
-              ) AS order_already_verified
+              ))::int AS order_already_verified
        FROM payment_claims c
        WHERE c.source_system = ?1
          AND c.status IN ('PENDING','MATCH_SUGGESTED')
@@ -302,11 +302,11 @@ async function loadAccountTransactions(
     .prepare(
       `SELECT t.id, t.direction, t.amount_irr, t.financial_account_id, t.bank_timestamp,
               t.processing_disposition,
-              EXISTS(
+              (EXISTS(
                 SELECT 1 FROM reconciliation_matches m
                  WHERE m.transaction_candidate_id = t.id
                    AND m.status IN ${CONSUMING_MATCH_STATUSES}
-              ) AS consumed
+              ))::int AS consumed
        FROM transaction_candidates t
        WHERE t.financial_account_id = ?1
          AND t.direction = 'CREDIT'
