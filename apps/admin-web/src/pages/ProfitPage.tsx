@@ -80,7 +80,9 @@ export function ProfitPage() {
             {data
               ? data.startMs === null
                 ? 'از ابتدا تا همین لحظه'
-                : `${fa(data.startMs)} تا ${fa(data.endMs! - 1)}` +
+                : data.startMs === data.endMs
+                  ? 'این بازه پیش از شروع دفتر است — هیچ درآمد و هزینه‌ای در آن حساب نمی‌شود'
+                  : `${fa(data.startMs)} تا ${fa(data.endMs! - 1)}` +
                   (data.booksStartMs !== null && data.startMs <= data.booksStartMs
                     ? ' — از شروع دفتر؛ پیش از آن حساب نمی‌شود'
                     : '')
@@ -391,7 +393,7 @@ function windowDays(d: ShopProfit): { from: string; to: string } {
   const today = jalaliToIsoDate(toJalali(Date.now()));
   return {
     from: d.startMs === null ? today : jalaliToIsoDate(toJalali(d.startMs)),
-    to: d.endMs === null ? today : jalaliToIsoDate(toJalali(Math.min(d.endMs - 1, Date.now()))),
+    to: d.endMs === null ? today : jalaliToIsoDate(toJalali(d.endMs - 1)),
   };
 }
 
@@ -450,6 +452,16 @@ function SplitForm({ d, onDone, onError }: { d: ShopProfit; onDone: (m: string) 
     }
   }
   const previewTotal = preview?.reduce((a, s) => a + s.amountToman, 0) ?? 0;
+
+  // A window wholly before the fresh start comes back empty (`sinceBooks`):
+  // there is no profit in it to divide.
+  if (d.startMs !== null && d.startMs === d.endMs) {
+    return (
+      <p className="muted" style={{ marginBlockStart: 16 }} data-testid="split-form">
+        این بازه پیش از شروع دفتر است؛ سودی در آن حساب نمی‌شود که تقسیم شود.
+      </p>
+    );
+  }
 
   return (
     <div style={{ marginBlockStart: 16 }} data-testid="split-form">
