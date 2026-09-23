@@ -732,7 +732,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
       throw new Error(j.error === undefined ? `${r.status}` : actionErrorText(j, reviewing));
     }
     closeReview();
-    cache.refetch(queryKey, QK.suggested, QK.today);
+    // «سابقه» too: a reconcile or a write-off moves the row there, and without
+    // it the row left the queue and appeared nowhere until the next poll.
+    cache.refetch(queryKey, continuityHistoryKey, QK.suggested, QK.today);
   }
 
   /*
