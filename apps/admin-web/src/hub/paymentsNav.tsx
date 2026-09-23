@@ -100,9 +100,11 @@ const REVIEW_TABS = [
   },
   {
     value: 'continuity' as const,
-    label: 'حالت تداوم',
-    shortLabel: 'تداوم',
-    countKey: 'continuity' as const,
+    // Every order delivered before its money — Continuity or by hand. It was
+    // Continuity only, and the 18 hand deliveries of 2026-09-23 had no tab.
+    label: 'در انتظار تطبیق',
+    shortLabel: 'تطبیق',
+    countKey: 'continuityPending' as const,
     Icon: IconContinuity,
   },
   {
@@ -293,13 +295,12 @@ export function PrimaryOpsNav({
   counts: Record<string, number | undefined> | undefined;
   onChange: (group: Level1Group) => void;
 }) {
+  // The work, and only the work — the same three the «بررسی‌نشده» strip adds
+  // up. It summed the retired needs_review/waiting/suspected_fake keys and
+  // every bot auto-verification ever made: «۱۰۲۵» on production on
+  // 2026-09-23, of which 934 were finished sales and the open queue was 1.
   const reviewTotal =
-    (counts?.income ?? 0) +
-    (counts?.needsReview ?? 0) +
-    (counts?.waiting ?? 0) +
-    (counts?.suspectedFake ?? 0) +
-    (counts?.continuityPending ?? 0) +
-    (counts?.botAutoVerified ?? 0);
+    (counts?.income ?? 0) + (counts?.open ?? 0) + (counts?.continuityPending ?? 0);
   const paymentsTotal = (counts?.manuallyVerified ?? 0) + (counts?.declinedIncome ?? 0);
 
   return (

@@ -605,14 +605,25 @@ export function MarkResellerModal({
   );
 }
 
+/**
+ * An order already closed without its deposit: delivered by hand
+ * (`FULFILLED_UNRECONCILED`) or «تایید دستی» with no bank row. It can take
+ * this deposit only as evidence — verified at once, nothing delivered again.
+ */
+function isClosedWithoutDeposit(c: PaymentItem): boolean {
+  return c.claimStatus === 'FULFILLED_UNRECONCILED' || c.claimStatus === 'VERIFIED';
+}
+
 export function AssignToPaymentModal({
   transactionId,
   transactionAmountIrr,
+  transactionAccountId,
   onClose,
   onError,
 }: {
   transactionId: string;
   transactionAmountIrr: number | null;
+  transactionAccountId: string | null;
   onClose: () => void;
   onError: (msg: string) => void;
 }) {
@@ -625,23 +636,31 @@ export function AssignToPaymentModal({
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    Promise.all([
-      fetch('/api/v1/payments?tab=needs_review&range=all').then((r) => r.json()),
-      fetch('/api/v1/payments?tab=suspected_fake&range=all').then((r) => r.json()),
-      fetch('/api/v1/payments?tab=waiting&range=all').then((r) => r.json()),
-    ])
-      .then(([a, b, c]) => {
-        const items = [
-          ...((a as PaymentsResponseLite).items ?? []),
-          ...((b as PaymentsResponseLite).items ?? []),
-          ...((c as PaymentsResponseLite).items ?? []),
-        ] as PaymentItem[];
+    const get = (qs: string) =>
+      fetch(`/api/v1/payments?${qs}&range=all`)
+        .then((r) => r.json())
+        .then((j) => ((j as PaymentsResponseLite).items ?? []) as PaymentItem[]);
+    // Every undecided order: the four queues «در انتظار بررسی» is split into.
+    const open = ['open', 'awaiting_receipt', 'parked', 'messaged'].map((t) => get(`tab=${t}`));
+    // Closed orders still missing their deposit — only on this deposit's
+    // account, the one `verifyMirzabotClaim` will accept.
+    const acct = transactionAccountId ? `&accountId=${encodeURIComponent(transactionAccountId)}` : null;
+    const closed = acct
+      ? [
+          get(`tab=all&status=FULFILLED_UNRECONCILED${acct}`),
+          get(`tab=manually_verified${acct}`).then((items) =>
+            items.filter((c) => c.claimStatus === 'VERIFIED' && c.matchedTransaction == null),
+          ),
+        ]
+      : [];
+    Promise.all([...open, ...closed])
+      .then((lists) => {
         const byId = new Map<string, PaymentItem>();
-        for (const item of items) byId.set(item.id, item);
+        for (const item of lists.flat()) byId.set(item.id, item);
         setClaims([...byId.values()]);
       })
       .catch(() => setClaims([]));
-  }, []);
+  }, [transactionAccountId]);
 
   const filteredClaims = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -672,7 +691,7 @@ export function AssignToPaymentModal({
         body: JSON.stringify({
           transactionId,
           reason: reason.trim(),
-          verifyAfterAssign: verify,
+          verifyAfterAssign: selectedClosed || verify,
         }),
       });
       const j = (await r.json()) as { ok: boolean; error?: string };
@@ -686,6 +705,7 @@ export function AssignToPaymentModal({
   }
 
   const selected = useMemo(() => claims.find((c) => c.id === claimId), [claims, claimId]);
+  const selectedClosed = selected != null && isClosedWithoutDeposit(selected);
   const receivedToman = transactionAmountIrr != null ? Math.floor(transactionAmountIrr / 10) : null;
   const expectedToman = selected?.expectedAmountToman ?? null;
   const differenceToman =
@@ -719,7 +739,12 @@ export function AssignToPaymentModal({
             <option value="">پرداخت باز را انتخاب کن…</option>
             {filteredClaims.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.orderId} · {formatToman(c.expectedAmountToman)} · {c.reviewState}
+                {c.orderId} · {formatToman(c.expectedAmountToman)} ·{' '}
+                {c.claimStatus === 'FULFILLED_UNRECONCILED'
+                  ? 'تحویل دستی، بی‌واریزی'
+                  : c.claimStatus === 'VERIFIED'
+                    ? 'تایید دستی، بی‌واریزی'
+                    : c.reviewState}
                 {c.telegramUsername ? ` · @${c.telegramUsername}` : ''}
               </option>
             ))}
@@ -754,11 +779,18 @@ export function AssignToPaymentModal({
           دلیل (الزامی)
           <input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
         </label>
-        <label className="checkbox">
-          <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} />
-          تایید بعد از تخصیص
-        </label>
-        {overpayment && verify && (
+        {selectedClosed ? (
+          <p className="muted">
+            این سفارش قبلاً بسته شده؛ واریزی فقط به‌عنوان مدرکش وصل می‌شود و چیزی دوباره تحویل
+            نمی‌شود.
+          </p>
+        ) : (
+          <label className="checkbox">
+            <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} />
+            تایید بعد از تخصیص
+          </label>
+        )}
+        {overpayment && verify && !selectedClosed && (
           <p className="muted">
             تایید با مبلغ دقیق برای اضافه‌پرداخت شکست می‌خورد — بدون تایید تخصیص بده و بعد دستی
             تطبیق کن.

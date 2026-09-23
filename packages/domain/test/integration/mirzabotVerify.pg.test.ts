@@ -539,3 +539,80 @@ describe('the fulfilment notice', () => {
     expect(await notices()).toEqual([]);
   });
 });
+
+/*
+ * «تایید دستی» without a bank row leaves the claim VERIFIED with no match.
+ * A human may attach its deposit afterwards (2026-09-23); nothing else may,
+ * and attaching it is evidence — the order was sold when it was verified.
+ */
+describe('a claim verified by hand, without its deposit', () => {
+  async function verifyByHand(id: string) {
+    await db.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = ?1`).bind(id).run();
+  }
+  async function notices() {
+    return (
+      (await db.prepare(`SELECT id FROM webhook_deliveries`).all<{ id: string }>()).results ?? []
+    );
+  }
+
+  it('takes its deposit from a human, as evidence: no notice, nothing re-sold', async () => {
+    await verifyByHand('claim-1');
+    const res = await verifyMirzabotClaim(db, {
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'ADMIN_APPROVED',
+      actorEmail: 'sam@example.com',
+      enqueueWebhook: true,
+    });
+    expect(res).toMatchObject({ ok: true, reconciled: true });
+    expect(await claimStatus('claim-1')).toBe('VERIFIED');
+    expect(await txStatus('tx-1')).toBe('APPROVED');
+    // Asked for a notice and still none: the order was fulfilled when it was
+    // verified, and a second `payment.verified` would sell it twice.
+    expect(await notices()).toEqual([]);
+  });
+
+  it('is never touched by the matcher', async () => {
+    await verifyByHand('claim-1');
+    const res = await verifyMirzabotClaim(db, {
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
+    });
+    expect(res).toEqual({ ok: false, error: 'CLAIM_ALREADY_VERIFIED' });
+    expect(await txStatus('tx-1')).toBe('PARSED');
+  });
+
+  it('takes one deposit, not two', async () => {
+    await verifyByHand('claim-1');
+    const first = await verifyMirzabotClaim(db, {
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'ADMIN_APPROVED',
+    });
+    const second = await verifyMirzabotClaim(db, {
+      claimId: 'claim-1',
+      transactionId: 'tx-2',
+      mode: 'ADMIN_APPROVED',
+    });
+    expect(first.ok).toBe(true);
+    expect(second).toEqual({ ok: false, error: 'CLAIM_ALREADY_VERIFIED' });
+    expect(await txStatus('tx-2')).toBe('PARSED');
+  });
+
+  it('lets the database refuse a second deposit racing the first', async () => {
+    await verifyByHand('claim-1');
+    const [a, b] = await Promise.all([
+      verifyMirzabotClaim(db, { claimId: 'claim-1', transactionId: 'tx-1', mode: 'ADMIN_APPROVED' }),
+      verifyMirzabotClaim(db, { claimId: 'claim-1', transactionId: 'tx-2', mode: 'ADMIN_APPROVED' }),
+    ]);
+    expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+    const consumed = await db
+      .prepare(
+        `SELECT COUNT(*)::int AS n FROM reconciliation_matches
+          WHERE payment_claim_id = 'claim-1' AND status IN ('CONFIRMED','AUTO_VERIFIED')`,
+      )
+      .first<number>('n');
+    expect(consumed).toBe(1);
+  });
+});

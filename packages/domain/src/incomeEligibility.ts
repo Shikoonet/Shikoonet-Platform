@@ -59,6 +59,33 @@ export const INCOME_TX_WHERE = `
   AND NOT ${TX_INCOME_DECLINED}`;
 
 /**
+ * What «واریزی‌ها» lists and counts: income the operator can still owe an
+ * answer about. `INCOME_TX_WHERE` minus two kinds of row it never could:
+ *
+ *   - a credit before the fresh start. «دفتر بانک» and every money report
+ *     start there (`booksStartMs`); the queue did not, and on production
+ *     (2026-09-23) 17 of its 33 rows were from before the books opened —
+ *     rows no screen would ever ask about again.
+ *   - a credit on a books-only account (`customer_visible = 0`, 0090). No
+ *     customer is ever shown that card, so nothing on it is a customer's
+ *     payment: it is the shop moving its own money (Sam: «تنخواه» is filled
+ *     from our other accounts and pays the running costs). Its tag belongs
+ *     in «دفتر بانک». 29.9M of the 52.1M the queue showed that day.
+ *
+ * Only the queue. Eligibility (`isIncomeEligible`, off-books) keeps
+ * `INCOME_TX_WHERE`: «خارج از دفتر» on a tenkhah credit, or on one from
+ * before the start, must still be accepted.
+ */
+export const INCOME_QUEUE_TX_WHERE = `
+  ${INCOME_TX_WHERE}
+  AND COALESCE(t.bank_timestamp, t.created_at)
+      >= COALESCE((SELECT MIN(aob.created_at) FROM account_opening_balances aob), 0)
+  AND NOT EXISTS (
+    SELECT 1 FROM financial_accounts qfa
+     WHERE qfa.id = t.financial_account_id AND qfa.customer_visible = 0
+  )`;
+
+/**
  * Bank income for summary: every valid CREDIT row in range, whatever it was
  * matched to — minus what the operator took off the books. Until 2026-09-17
  * that last clause was missing, and a 10.6M Toman transfer between Sam's own

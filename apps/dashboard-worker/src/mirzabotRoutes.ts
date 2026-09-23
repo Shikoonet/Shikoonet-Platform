@@ -197,6 +197,19 @@ const PENDING_CLAIM = `c.status IN ('PENDING','MATCH_SUGGESTED')`;
  * and so never lands here: the product has shipped and a receipt is no longer
  * a condition of anything.
  */
+/**
+ * «تحویل‌شده، در انتظار تطبیق»: delivered before the bank said so, by
+ * Continuity OR by hand (`fulfil-without-payment`). The tab used to ask for
+ * `fulfilment_mode = 'CONTINUITY'` alone, and on production (2026-09-23) all
+ * 18 such claims were MANUAL: delivered, still owed their deposit, and on no
+ * tab and no badge — reachable only through «همه» with a status filter.
+ *
+ * «Waiting» is the status itself, not `reconciled_at IS NULL`: a delivered
+ * claim rejected afterwards also has no reconciliation, and it is waiting for
+ * nothing.
+ */
+const FULFILLED_WITHOUT_PAYMENT = `c.fulfilment_mode IS NOT NULL`;
+const AWAITING_RECONCILIATION = `c.status = 'FULFILLED_UNRECONCILED'`;
 const AWAITING_RECEIPT = `${PENDING_CLAIM} AND c.parked_at IS NULL AND c.messaged_at IS NULL AND c.receipt_url_or_r2_key IS NULL`;
 /**
  * «پیام داده‌شده» (#320): still undecided, but an operator has sent the
@@ -792,9 +805,8 @@ export async function loadCounts(
          ${REVIEW_STATE_CASE} AS review_state,
          COUNT(*) AS n,
          SUM(CASE WHEN ${EFFECTIVE_TS} BETWEEN ?2 AND ?3 THEN 1 ELSE 0 END) AS n_today,
-         SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' THEN 1 ELSE 0 END) AS continuity_n,
-         SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' AND c.reconciled_at IS NULL
-                  THEN 1 ELSE 0 END) AS continuity_pending_n,
+         SUM(CASE WHEN ${FULFILLED_WITHOUT_PAYMENT} THEN 1 ELSE 0 END) AS continuity_n,
+         SUM(CASE WHEN ${AWAITING_RECONCILIATION} THEN 1 ELSE 0 END) AS continuity_pending_n,
          SUM(CASE WHEN ${PARKED} THEN 1 ELSE 0 END) AS parked_n,
          SUM(CASE WHEN ${AWAITING_RECEIPT} THEN 1 ELSE 0 END) AS awaiting_receipt_n,
          SUM(CASE WHEN ${MESSAGED} THEN 1 ELSE 0 END) AS messaged_n
@@ -1520,8 +1532,8 @@ export function registerMirzabotRoutes(
       // …and the half the operator has written to (#320).
       if (tab === 'messaged') where.push(MESSAGED);
       if (tab === 'continuity') {
-        where.push(`c.fulfilment_mode = 'CONTINUITY'`);
-        if (continuityState === 'pending') where.push(`c.reconciled_at IS NULL`);
+        where.push(FULFILLED_WITHOUT_PAYMENT);
+        if (continuityState === 'pending') where.push(AWAITING_RECONCILIATION);
         if (continuityState === 'history') where.push(`c.reconciled_at IS NOT NULL`);
       }
 
