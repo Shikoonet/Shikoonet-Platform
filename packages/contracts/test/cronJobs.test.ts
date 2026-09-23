@@ -54,9 +54,14 @@ describe('the cron job registry', () => {
   });
 
   it('gives every number a usable range', () => {
+    // Named, like the destructive pair below: the one number whose zero the
+    // bot reads as an answer («no code») rather than refusing it.
+    const zeroMeansOff = new Set(['nudge_discount_percent']);
     for (const job of CRON_JOBS) {
       for (const n of job.numbers) {
-        expect(n.min, `${job.key}.${n.key} min`).toBeGreaterThan(0);
+        expect(n.min, `${job.key}.${n.key} min`).toBe(
+          zeroMeansOff.has(n.key) ? 0 : Math.max(1, n.min),
+        );
         expect(n.max, `${job.key}.${n.key} max`).toBeGreaterThan(n.min);
       }
     }

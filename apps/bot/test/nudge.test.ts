@@ -9,6 +9,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { nudgeNeverBought } from '../src/nudge.js';
+import { checkCode } from '../src/discount.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { invalidateShopSettings } from '../src/settings.js';
 import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
@@ -95,11 +96,18 @@ beforeEach(async () => {
   await db.prepare(`DELETE FROM users`).run();
   await setSetting('cron_nudge_never_bought', 'true');
   await setSetting('nudge_after_days', '3');
+  // The plain nudge unless a test asks for the code. Set, not left to the
+  // row 0097 writes, so the texts asserted above cannot depend on it.
+  await setSetting('nudge_discount_percent', '0');
+  await setSetting('nudge_discount_days', '2');
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
   await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key LIKE 'cron_%'`).run();
+  // Back to what 0097 writes, for whichever suite reads the shared sim next.
+  await setSetting('nudge_discount_percent', '20');
+  await setSetting('nudge_discount_days', '2');
   invalidateShopSettings();
 });
 
@@ -217,5 +225,108 @@ describe('once, for ever', () => {
     // Everybody, exactly once.
     const counts = await Promise.all(made.map(nudged));
     expect(counts.every((c) => c === 1)).toBe(true);
+  });
+});
+
+describe('the personal code', () => {
+  /** The code as `discount.ts` would judge it at checkout — the bot's own gate, not ours. */
+  async function judge(userId: number, typed: string, at: number) {
+    return db.withSession(async (tx) =>
+      checkCode(
+        tx,
+        userId,
+        false,
+        typed,
+        { kind: 'BUY', priceIrr: 1_000_000, productId: null, providerId: await providerId('sim-vip') },
+        at,
+      ),
+    );
+  }
+
+  function codeIn(text: string | undefined): string {
+    const m = /کد: (TR[A-Z0-9]{6})/.exec(text ?? '');
+    expect(m, `no code in: ${text}`).not.toBeNull();
+    return m![1]!;
+  }
+
+  it('sends a 20% code that only this person can use, for two days from the send', async () => {
+    await setSetting('nudge_discount_percent', '20');
+    const { userId, telegramId } = await starter(10);
+    const other = await starter(10);
+
+    expect(await nudgeNeverBought(db, NOW_MS)).toBe(2);
+    const note = (await pendingNotifications()).find((n) => n.chatId === telegramId);
+    expect(note?.text).toContain('20٪');
+    expect(note?.text).toContain('2 روز');
+    const code = codeIn(note?.text);
+
+    const row = await db
+      .prepare(
+        `SELECT kind, percent::float AS percent, target_user_id, first_purchase_only,
+                (extract(epoch FROM expires_at) * 1000)::bigint AS expires_ms
+           FROM discount_codes WHERE code = ?1`,
+      )
+      .bind(code)
+      .first<{ kind: string; percent: number; target_user_id: number; first_purchase_only: boolean; expires_ms: string }>();
+    expect(row).toMatchObject({ kind: 'PERCENT_OFF', percent: 20, target_user_id: userId, first_purchase_only: true });
+    expect(Number(row!.expires_ms)).toBe(NOW_MS + 2 * DAY);
+
+    // Twenty percent of a million, for them, until the deadline — and for
+    // nobody else, and not a moment after.
+    const own = await judge(userId, code, NOW_MS + DAY);
+    expect(own.ok && own.discountIrr).toBe(200_000);
+    expect(await judge(other.userId, code, NOW_MS + DAY)).toMatchObject({ ok: false });
+    expect(await judge(userId, code, NOW_MS + 2 * DAY)).toMatchObject({ ok: false, reason: 'EXPIRED' });
+  });
+
+  it('gives each person their own code', async () => {
+    await setSetting('nudge_discount_percent', '20');
+    const a = await starter(10);
+    const b = await starter(10);
+
+    await nudgeNeverBought(db, NOW_MS);
+    const notes = await pendingNotifications();
+    const codeA = codeIn(notes.find((n) => n.chatId === a.telegramId)?.text);
+    const codeB = codeIn(notes.find((n) => n.chatId === b.telegramId)?.text);
+    expect(codeA).not.toBe(codeB);
+  });
+
+  it('still works for somebody whose only order is the free trial', async () => {
+    // Sam's audience in so many words: «سرویس تست گرفتن و اشتراک تهیه نکردن».
+    // First-purchase-only must not read the trial as the first purchase.
+    await setSetting('nudge_discount_percent', '20');
+    const { userId, telegramId } = await starter(10);
+    await tries(userId);
+
+    await nudgeNeverBought(db, NOW_MS);
+    const code = codeIn((await pendingNotifications()).find((n) => n.chatId === telegramId)?.text);
+    expect((await judge(userId, code, NOW_MS)).ok).toBe(true);
+  });
+
+  it('mints nothing at 0%, and sends the plain nudge', async () => {
+    const { userId, telegramId } = await starter(10);
+
+    expect(await nudgeNeverBought(db, NOW_MS)).toBe(1);
+    const note = (await pendingNotifications()).find((n) => n.chatId === telegramId);
+    expect(note?.text).toContain('هنوز خریدی نکرده‌اید');
+    const minted = await db
+      .prepare(`SELECT count(*)::int AS n FROM discount_codes WHERE target_user_id = ?1`)
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(minted?.n).toBe(0);
+  });
+
+  it('mints one code per person, however many sweeps run', async () => {
+    await setSetting('nudge_discount_percent', '20');
+    const { userId } = await starter(10);
+
+    await nudgeNeverBought(db, NOW_MS);
+    await nudgeNeverBought(db, NOW_MS);
+    await nudgeNeverBought(db, NOW_MS + 30 * DAY);
+    const minted = await db
+      .prepare(`SELECT count(*)::int AS n FROM discount_codes WHERE target_user_id = ?1`)
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(minted?.n).toBe(1);
   });
 });

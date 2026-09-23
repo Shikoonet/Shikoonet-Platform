@@ -1879,6 +1879,18 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'یک بار به هر کسی که استارت کرده و بعد از N روز نخریده',
   },
+  // The same nudge when the cron's discount percent is above zero, and the
+  // layout of Sam's screenshot, 2026-09-23. A text of its own rather than a
+  // `{code}` slot in the one above: every placeholder is required, so adding
+  // one there would turn a shop's saved wording invalid and silently swap it
+  // for the default.
+  NUDGE_NEVER_BOUGHT_CODE: {
+    default:
+      '{name} عزیز\n\nهنوز اشتراکی تهیه نکرده‌اید. اگر سرویس تست را گرفتید و کیفیت یا سرعتش مشکلی داشت، بگویید تا بررسی کنیم.\n\nبرای اولین خریدتان {percent} تخفیف شخصی گذاشته‌ایم:\n\n🎟 کد: {code}\n⏰ اعتبار تا {days} روز دیگر\n👤 این کد فقط برای اکانت شماست.',
+    placeholders: ['name', 'percent', 'code', 'days'],
+    screen: 'warnings',
+    hint: 'همان یادآوری، وقتی درصد تخفیفِ کرون بیشتر از صفر است — کد برای هر نفر جدا ساخته می‌شود',
+  },
   // --- ضد-اسپم ---------------------------------------------------------------
   // `index.php:307` — ۳۵ پیام در یک دقیقه و کاربر مسدود می‌شود. متن مشتری از
   // `users.spam.spamedMessage` لگاسی می‌آید و متن کانال از `spamedReport`.

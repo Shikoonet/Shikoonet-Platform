@@ -3106,6 +3106,25 @@ export function neverBoughtNudge(): string {
   return TEXTS_NOW.raw('NUDGE_NEVER_BOUGHT');
 }
 
+/**
+ * The nudge with a personal code in it. The name is the one piece of
+ * personalisation, and it is the one Sam's screenshot has; a customer whose
+ * name was never stored (0083) is «کاربر».
+ */
+export function neverBoughtNudgeWithCode(
+  name: string | null,
+  percent: number,
+  code: string,
+  days: number,
+): string {
+  return TEXTS_NOW.render('NUDGE_NEVER_BOUGHT_CODE', {
+    name: name?.trim() || 'کاربر',
+    percent: `${percent.toLocaleString('en-US')}٪`,
+    code,
+    days: days.toLocaleString('en-US'),
+  });
+}
+
 export function serviceRemovedExpired(serviceName: string, days: number): string {
   return TEXTS_NOW.render('CRON_SERVICE_REMOVED', {
     service: serviceName,
