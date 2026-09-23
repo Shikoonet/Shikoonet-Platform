@@ -13,7 +13,7 @@
  * both is letting them file an account on a server the customer did not buy.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   api,
   ApiError,
@@ -720,6 +720,11 @@ export function ShelfPapers({
   withNote?: boolean;
 }) {
   const w = useAdminWriteProps();
+  // Per card, not per page: «سرویس‌ها» can have two services' drawers open at
+  // once, each with this card, and one fixed `papers-file` id sent the second
+  // card's label to the FIRST card's input — so the file was filed under the
+  // other config (CodeRabbit on #428).
+  const uid = useId();
   const [items, setItems] = useState<ShelfAttachment[]>([]);
   const [note, setNote] = useState('');
   const [savedNote, setSavedNote] = useState('');
@@ -795,11 +800,11 @@ export function ShelfPapers({
 
       {withNote && (
         <>
-          <label className="form-label" htmlFor="papers-note">
+          <label className="form-label" htmlFor={`${uid}-note`}>
             توضیح — زیر پیام تحویل
           </label>
           <textarea
-            id="papers-note"
+            id={`${uid}-note`}
             className="form-control"
             rows={3}
             value={note}
@@ -878,11 +883,11 @@ export function ShelfPapers({
 
       <div className="filters" style={{ marginBlockStart: 16 }}>
         <div className="grow">
-          <label className="form-label" htmlFor="papers-file">
+          <label className="form-label" htmlFor={`${uid}-file`}>
             فایل (مثلاً .ovpn)، عکس یا ویدیو — تا ۴۸ مگابایت؛ ویدیو به‌صورت ویدیو می‌رود
           </label>
           <input
-            id="papers-file"
+            id={`${uid}-file`}
             ref={picker}
             type="file"
             className="form-control"
@@ -903,11 +908,11 @@ export function ShelfPapers({
           )}
         </div>
         <div className="grow">
-          <label className="form-label" htmlFor="papers-link">
+          <label className="form-label" htmlFor={`${uid}-link`}>
             یا لینک پست کانال — برای فایل بزرگ‌تر
           </label>
           <input
-            id="papers-link"
+            id={`${uid}-link`}
             className="form-control ltr"
             value={postLink}
             onChange={(e) => setPostLink(e.target.value)}

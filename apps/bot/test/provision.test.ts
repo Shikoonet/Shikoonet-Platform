@@ -313,6 +313,8 @@ describe("a panel plan's papers", () => {
     const order = await paidOrder();
     const plan = await planId('sim-vip-1m-50');
     const filed: number[] = [];
+    // Pinned, not read live (rule 5): the sweep takes its `now` from the clock.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-22T09:00:00Z'));
     try {
       for (const [kind, name] of [
         ['video', 'install.mp4'],
@@ -343,6 +345,7 @@ describe("a panel plan's papers", () => {
       for (const id of filed) {
         await db.prepare(`DELETE FROM shelf_attachments WHERE id = ?1`).bind(id).run();
       }
+      clock.mockRestore();
     }
   });
 });
