@@ -1627,7 +1627,8 @@ function EntryForm({
    * None of it is required: an old row, or a bill paid from somewhere the
    * phone does not watch, is still a row.
    */
-  const [accountId, setAccountId] = useState<string>(row?.financialAccountId ?? prefill?.account ?? '');
+  const heldAccount = row?.financialAccountId ?? prefill?.account ?? '';
+  const [accountId, setAccountId] = useState<string>(heldAccount);
   const [fee, setFee] = useState(row && row.feeIrr > 0 ? String(row.feeIrr / 10) : '');
   const [withdrawalId, setWithdrawalId] = useState<string>(row?.transactionCandidateId ?? prefill?.tx ?? '');
   const [accounts, setAccounts] = useState<AccountListItem[]>([]);
@@ -1654,13 +1655,17 @@ function EntryForm({
     hubApi
       .accounts()
       .then((r) => {
-        if (live) setAccounts(r.items.filter((a) => a.active === 1 && a.status === 'ACTIVE'));
+        // Plus the account this form already holds: a withdrawal opened
+        // from «دفتر بانک» (or a row being edited) can be on an account
+        // retired since, and the picker read «مشخص نشده» while the save
+        // still sent that account (shikoo-dev, 3 Mehr 1405).
+        if (live) setAccounts(r.items.filter((a) => (a.active === 1 && a.status === 'ACTIVE') || a.id === heldAccount));
       })
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [outflow]);
+  }, [outflow, heldAccount]);
 
   const spentOnIso = jalaliToIsoDate(jDate);
   useEffect(() => {
