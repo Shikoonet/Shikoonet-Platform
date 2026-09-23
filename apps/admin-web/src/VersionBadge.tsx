@@ -51,20 +51,19 @@ export function VersionBadge() {
 
   useEffect(() => {
     const ac = new AbortController();
-    probe(ac.signal)
-      .then((d) => d && setInfo(d))
-      .catch(() => {
-        /* badge is cosmetic; a failed probe just hides it */
-      });
-    return () => ac.abort();
-  }, []);
-
-  useEffect(() => {
-    if (!info) return;
+    // The first answer is this page's build (the server sends `index.html`
+    // `no-store`, so a page is never older than the server that served it).
+    // Scheduled whether or not that first answer comes: a probe that failed
+    // during a deploy used to switch the check off for the life of the tab.
+    let loadedWith: string | null = null;
     const check = () => {
-      probe()
+      probe(ac.signal)
         .then((d) => {
-          if (d && d.version !== info.version) setNewer(d.version);
+          if (!d) return;
+          if (loadedWith === null) {
+            loadedWith = d.version;
+            setInfo(d);
+          } else if (d.version !== loadedWith) setNewer(d.version);
         })
         .catch(() => {
           /* a deploy in progress answers nothing for a moment; ask again later */
@@ -73,13 +72,15 @@ export function VersionBadge() {
     const onVisible = () => {
       if (document.visibilityState === 'visible') check();
     };
+    check();
     const timer = setInterval(check, RECHECK_MS);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
+      ac.abort();
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [info]);
+  }, []);
 
   if (!info) return null;
   const isProd = info.env === 'production';

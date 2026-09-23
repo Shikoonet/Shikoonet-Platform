@@ -42,4 +42,16 @@ describe('VersionBadge', () => {
     // The badge itself still names the build this page is running.
     expect(screen.getByText('vaaaaaaa')).toBeTruthy();
   });
+
+  // CodeRabbit on #445: a first probe that failed (a deploy restarting the
+  // server) never scheduled a second one, so that tab was never warned.
+  it('keeps asking when the first answer never came', async () => {
+    fetchMock.mockImplementationOnce(async () => new Response('bad gateway', { status: 502 }));
+    render(<VersionBadge />);
+    await act(() => vi.advanceTimersByTimeAsync(2 * 60 * 1000 + 1));
+    expect(await screen.findByText('vaaaaaaa')).toBeTruthy();
+    served = 'bbbbbbb2222';
+    await act(() => vi.advanceTimersByTimeAsync(2 * 60 * 1000 + 1));
+    expect((await screen.findByTestId('new-version')).textContent).toContain('bbbbbbb');
+  });
 });

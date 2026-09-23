@@ -249,13 +249,25 @@ export function ExpensesPage() {
   // the form on that account, that day, that amount. From a withdrawal the
   // bank did text, `tx` links the form to that SMS and `kind` may ask for a
   // partner's draw instead of a cost (Sam, 1 Mehr: «دکمه روی برداشت‌ها»).
-  const prefill = useMemo(() => {
+  //
+  // Used once. Kept past the first form, the next «ردیف تازه» opened on the
+  // same withdrawal again — already explained, and the server refuses a
+  // second link.
+  const [prefill, setPrefill] = useState(() => {
     const q = new URLSearchParams(window.location.search);
     const account = q.get('account');
     if (!account) return null;
     const kind = q.get('kind') === 'PARTNER_DRAW' ? ('PARTNER_DRAW' as const) : undefined;
     return { account, amount: q.get('amount') ?? '', date: q.get('date') ?? '', tx: q.get('tx') ?? '', kind };
-  }, []);
+  });
+  const dropPrefill = () => {
+    if (!prefill) return;
+    setPrefill(null);
+    const q = new URLSearchParams(window.location.search);
+    for (const k of ['account', 'amount', 'date', 'tx', 'kind']) q.delete(k);
+    const rest = q.toString();
+    window.history.replaceState(window.history.state, '', window.location.pathname + (rest ? `?${rest}` : ''));
+  };
   const [editing, setEditing] = useState<RevenueAdjustmentRow | 'new' | null>(prefill ? 'new' : null);
   const [posting, setPosting] = useState<ExpenseRecurrence | null>(null);
   const [managing, setManaging] = useState<'categories' | 'recurrences' | null>(null);
@@ -409,9 +421,13 @@ export function ExpensesPage() {
             categories={activeCategories}
             parties={parties}
             scopes={scopes}
-            onClose={() => setEditing(null)}
+            onClose={() => {
+              setEditing(null);
+              dropPrefill();
+            }}
             onSaved={async (msg) => {
               setEditing(null);
+              dropPrefill();
               setDone(msg);
               await load();
             }}
