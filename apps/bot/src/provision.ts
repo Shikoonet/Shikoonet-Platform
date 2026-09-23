@@ -1639,6 +1639,8 @@ async function renew(
   let cashbackIrr: number | null = null;
 
   await db.withSession(async (tx) => {
+    // Before the UPDATE below overwrites the row it falls back on.
+    await snapshotRenewal(tx, row.order_id, row.target_subscription_id!, mode, result.before, now);
     await tx
       .prepare(
         `UPDATE subscriptions
@@ -1696,6 +1698,85 @@ async function renew(
   });
 
   return say(menu.serviceRenewed(serviceName, expiresAt, cashbackIrr));
+}
+
+const GB = 1024 ** 3;
+
+/**
+ * What the account was just before this renewal, and what the renewal burned
+ * — one `renewal_snapshots` row (0096), for the dashboard's history and its
+ * «برگرداندن».
+ *
+ * The panel's own figures when the adapter read them a moment ago; the row's
+ * when it did not (a retry that found the renewal already applied), which are
+ * at most one sync interval old. What burns follows the mode, and must keep
+ * agreeing with `marzban.ts` `renew`: RESET zeroes the counter and restarts
+ * the clock, so the unused volume and the remaining time go; the mode that
+ * keeps volume loses only the time; ADD loses nothing. An unmetered account
+ * has no unused volume to lose. A held account's time is the days it was
+ * waiting to start (#325).
+ *
+ * `ON CONFLICT DO NOTHING`: one row per order, and a retried order keeps the
+ * first — the one written before anything had changed.
+ */
+async function snapshotRenewal(
+  tx: D1DatabaseSession,
+  orderId: number,
+  subscriptionId: number,
+  mode: ReturnType<typeof renewModeFor>,
+  before:
+    | { usedBytes: number | null; limitBytes: number | null; expireMs: number | null; heldMs: number | null }
+    | undefined,
+  now: number,
+): Promise<void> {
+  const stored = await tx
+    .prepare(
+      `SELECT plan_name_at_sale, used_bytes, volume_gb, expires_at
+         FROM subscriptions WHERE id = ?1`,
+    )
+    .bind(subscriptionId)
+    .first<{
+      plan_name_at_sale: string | null;
+      used_bytes: number | string | null;
+      volume_gb: number | string | null;
+      expires_at: string | null;
+    }>();
+  const storedGb = stored?.volume_gb == null ? null : Number(stored.volume_gb);
+  const used = before
+    ? before.usedBytes
+    : stored?.used_bytes == null
+      ? null
+      : Number(stored.used_bytes);
+  const limit = before ? before.limitBytes : storedGb !== null && storedGb > 0 ? Math.round(storedGb * GB) : null;
+  const expireMs = before
+    ? before.expireMs
+    : stored?.expires_at == null
+      ? null
+      : Date.parse(stored.expires_at);
+  const leftMs =
+    before?.heldMs != null ? before.heldMs : expireMs === null ? 0 : Math.max(0, expireMs - now);
+  const lostBytes = mode === 'RESET' && limit !== null ? Math.max(0, limit - (used ?? 0)) : 0;
+  const lostMs = mode === 'ADD' ? 0 : leftMs;
+  await tx
+    .prepare(
+      `INSERT INTO renewal_snapshots
+         (order_id, subscription_id, mode, plan_name_before, used_bytes_before,
+          limit_bytes_before, expires_at_before, lost_bytes, lost_ms)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7::timestamptz, ?8, ?9)
+       ON CONFLICT (order_id) DO NOTHING`,
+    )
+    .bind(
+      orderId,
+      subscriptionId,
+      mode,
+      stored?.plan_name_at_sale ?? null,
+      used,
+      limit,
+      expireMs === null ? null : new Date(expireMs).toISOString(),
+      lostBytes,
+      Math.round(lostMs),
+    )
+    .run();
 }
 
 /**

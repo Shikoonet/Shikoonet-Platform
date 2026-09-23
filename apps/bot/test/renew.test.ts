@@ -31,6 +31,8 @@ import {
   providerId,
 } from './helpers/shop.js';
 import { invalidateShopSettings } from '../src/settings.js';
+import { invalidateBotContent } from '../src/botContent.js';
+import { TEXTS } from '@shikoo/contracts';
 import { creditRenewalCashback } from '../src/wallet.js';
 import { formatToman } from '../src/money.js';
 
@@ -61,6 +63,7 @@ function press(updateId: number, telegramId: number, data: string): TelegramUpda
 interface PanelAccount {
   expire?: string | number | null;
   data_limit?: number;
+  used_traffic?: number;
   note?: string;
 }
 
@@ -521,6 +524,181 @@ describe('choosing what to renew', () => {
     expect(inside).toContain(`rord:${subId}:${await planId('sim-vip-1m-20')}`);
     expect(inside).toContain(`rord:${subId}:${sold}`);
     expect(section.replies[0]?.text).toContain('سطح سرویس را انتخاب کنید');
+  });
+
+  it('words the matched button short, and opens with the warning boxed and bold', async () => {
+    /*
+     * Sam, 2026-09-23: «فقط تمدید با همین پلن رو نشون بده و خیلی کوتاه بنویسه،
+     * مثلا سرویس الماس یک ماه ده گیگ» — the button carried the product, the
+     * legacy plan name and the price. And «با تمدید… مصرف قبلی صفر می‌گردد»
+     * has to be the first thing the eye lands on.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const sold = await planId('sim-vip-1m-50');
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-short`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      planId: sold,
+    });
+    // The expected words from the catalogue row itself, not from the code.
+    const plan = await db
+      .prepare(
+        `SELECT p.name, pl.duration_days, pl.volume_gb::float8 AS volume_gb
+           FROM product_plans pl JOIN products p ON p.id = pl.product_id WHERE pl.id = ?1`,
+      )
+      .bind(sold)
+      .first<{ name: string; duration_days: number; volume_gb: number }>();
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
+
+    const first = out.replies[0]?.keyboard?.[0]?.[0];
+    expect(first?.callback_data).toBe(`rord:${subId}:${sold}`);
+    expect(first?.text).toBe(
+      `✅ تمدید با همین پلن — ${plan!.name.replace(/^سرویس\s+/, '')} ` +
+        `${plan!.duration_days / 30} ماهه ${plan!.volume_gb} گیگ`,
+    );
+    expect(first?.text).not.toContain('تومان');
+    expect(out.replies[0]?.text.startsWith(`<blockquote><b>${TEXTS.RENEW_MODE_RESET.default}</b></blockquote>`)).toBe(true);
+  });
+
+  it('draws the matched button from the saved keyboard — wording, colour and place', async () => {
+    // Sam, 2026-09-23: «چیدمان این دکمه‌ها رو عوض بکنم، رنگشون رو عوض بکنم،
+    // لوگوی پریمیوم ایموجی بدم از توی داشبورد».
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const sold = await planId('sim-vip-1m-50');
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-saved`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      planId: sold,
+    });
+    const saved = [
+      ['rnwl', '🛍 پلن‌های دیگر {family}', 0, null],
+      ['rord', '<tg-emoji emoji-id="5368324170671202286">✅</tg-emoji> همین پلن — {plan}', 1, 'success'],
+      ['renew', 'بازگشت ⬅️', 2, null],
+      ['menu', 'منو ⬅️', 3, null],
+    ] as const;
+    try {
+      for (const [action, label, row, style] of saved) {
+        await db
+          .prepare(
+            `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible, style)
+             VALUES ('renewPlans', ?1, ?2, ?3, 0, true, ?4)`,
+          )
+          .bind(action, label, row, style)
+          .run();
+      }
+      invalidateBotContent();
+
+      const out = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
+
+      const rows = out.replies[0]?.keyboard ?? [];
+      expect(rows[0]?.[0]?.callback_data).toBe(`rnwl:${subId}`);
+      expect(rows[1]?.[0]).toMatchObject({
+        callback_data: `rord:${subId}:${sold}`,
+        style: 'success',
+      });
+      // The admin's wording, `{plan}` filled. Premium is off in this suite, so
+      // the custom emoji lands as its own fallback — the tag-to-icon half is
+      // `custom-emoji.test.ts`'s, for every chrome button alike.
+      expect(rows[1]?.[0]?.text).toMatch(/^✅ همین پلن — .+ 1 ماهه 50 گیگ$/);
+      // Once: the chrome button replaces the data row, it does not join it.
+      expect(rows.flat().filter((b) => b.callback_data?.startsWith('rord:'))).toHaveLength(1);
+    } finally {
+      await db.prepare(`DELETE FROM bot_keyboard_buttons WHERE menu = 'renewPlans'`).run();
+      invalidateBotContent();
+      menu.resetContent();
+    }
+  });
+
+  it('keeps the matched button on a keyboard saved before it could be edited', async () => {
+    // A saved menu replaces the code's whole layout, so a shop that arranged
+    // this screen before `rord` was chrome has no row for it. Without the data
+    // row standing in, the screen would have lost its one way to renew.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const sold = await planId('sim-vip-1m-50');
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-old`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      planId: sold,
+    });
+    try {
+      await db
+        .prepare(
+          `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+           VALUES ('renewPlans', 'menu', 'منو ⬅️', 0, 0, true)`,
+        )
+        .run();
+      invalidateBotContent();
+
+      const out = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
+
+      const first = out.replies[0]?.keyboard?.[0]?.[0];
+      expect(first?.callback_data).toBe(`rord:${subId}:${sold}`);
+      expect(first?.text).toMatch(/^✅ تمدید با همین پلن — /);
+    } finally {
+      await db.prepare(`DELETE FROM bot_keyboard_buttons WHERE menu = 'renewPlans'`).run();
+      invalidateBotContent();
+      menu.resetContent();
+    }
+  });
+
+  it('«پلن‌های دیگر» follows the shop’s category order, not the price', async () => {
+    /*
+     * Sam, 2026-09-23: «اول وایرگارد رو نشون میده؛ وایرگاردها بیاد پایین
+     * سرویس‌های اصلی». With every migrated sort_order at 0 the list fell
+     * through to price, and the cheap tier led. A category the shop lists
+     * last keeps its tier last, however cheap.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-wg`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+    });
+    const code = `renew-wireguard-${telegramId}`;
+    const category = await db
+      .prepare(
+        `INSERT INTO product_categories (name, sort_order)
+         VALUES (?1, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM product_categories))
+         RETURNING id`,
+      )
+      .bind(`وایرگارد ${telegramId}`)
+      .first<{ id: number }>();
+    try {
+      const product = await db
+        .prepare(
+          `INSERT INTO products (code, name, kind, category_id, provider_id, status, sort_order, attrs)
+           VALUES (?1, 'وایرگارد', 'vpn', ?2, ?3, 'ACTIVE', 0, '{}') RETURNING id`,
+        )
+        .bind(code, category!.id, panelId)
+        .first<{ id: number }>();
+      // Cheaper than anything else on the panel.
+      const cheap = await db
+        .prepare(
+          `INSERT INTO product_plans (product_id, name, price_irr, duration_days, volume_gb, user_limit, status, sort_order)
+           VALUES (?1, 'وایرگارد ۱ ماهه', 10, 30, 10, 1, 'ACTIVE', 0) RETURNING id`,
+        )
+        .bind(product!.id)
+        .first<{ id: number }>();
+
+      const out = await handleUpdate(db, press(updateId, telegramId, `rnwl:${subId}`));
+
+      const data = (out.replies[0]?.keyboard?.flat() ?? [])
+        .map((b) => b.callback_data ?? '')
+        .filter((d) => d.startsWith('rord:') || d.startsWith('rnwp:'));
+      expect(data.length).toBeGreaterThan(1);
+      expect(data.at(-1)).toBe(`rord:${subId}:${cheap!.id}`);
+    } finally {
+      await db.prepare(`DELETE FROM products WHERE code = ?1`).bind(code).run();
+      await db.prepare(`DELETE FROM product_categories WHERE id = ?1`).bind(category!.id).run();
+    }
   });
 
   it('finds the plan by size and length when the sale forgot it — but only an unambiguous one', async () => {
@@ -1055,6 +1233,79 @@ describe('applying it', () => {
     expect(notes.some((n) => n.chatId === target.telegramId)).toBe(true);
   });
 
+  /** The one `renewal_snapshots` row a renewal order leaves (0096). */
+  async function snapshotsOf(subId: number) {
+    const rows = await db
+      .prepare(
+        `SELECT mode, used_bytes_before, limit_bytes_before, expires_at_before, lost_bytes, lost_ms
+           FROM renewal_snapshots WHERE subscription_id = ?1`,
+      )
+      .bind(subId)
+      .all<{
+        mode: string;
+        used_bytes_before: number;
+        limit_bytes_before: number | null;
+        expires_at_before: string | null;
+        lost_bytes: number;
+        lost_ms: number;
+      }>();
+    return rows.results.map((r) => ({
+      ...r,
+      used_bytes_before: Number(r.used_bytes_before),
+      limit_bytes_before: r.limit_bytes_before === null ? null : Number(r.limit_bytes_before),
+      lost_bytes: Number(r.lost_bytes),
+      lost_ms: Number(r.lost_ms),
+    }));
+  }
+
+  it('RESET writes down what the account had, as the panel had it, and what burned', async () => {
+    // Sam, 2026-09-23: «هیستوری از سرویس قبلی… چند گیگش رو مصرف کرده بوده از
+    // چند گیگ و چقدر زمانش مونده بوده». The panel's figures, not the row's —
+    // the row says 20 GB used (the fixture), the panel says 12.
+    const target = await paidRenewal();
+    const panel = fakePanel({
+      [target.username]: {
+        expire: new Date(NOW_MS + 5 * DAY).toISOString(),
+        data_limit: 50 * GIB,
+        used_traffic: 12 * GIB,
+      },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    const [snap, ...more] = await snapshotsOf(target.subId);
+    expect(more).toHaveLength(0);
+    expect(snap).toMatchObject({
+      mode: 'RESET',
+      used_bytes_before: 12 * GIB,
+      limit_bytes_before: 50 * GIB,
+      lost_bytes: 38 * GIB,
+      lost_ms: 5 * DAY,
+    });
+    expect(Date.parse(snap!.expires_at_before!)).toBe(NOW_MS + 5 * DAY);
+  });
+
+  it('ADD keeps everything, so it records the renewal and nothing burned', async () => {
+    await setPanelConfig(panelId, {
+      Methodextend: 'اضافه شدن زمان و حجم به ماه بعد',
+      status_extend: 'on_extend',
+    });
+    const target = await paidRenewal({ expiresInDays: 5 });
+    const panel = fakePanel({
+      [target.username]: {
+        expire: new Date(NOW_MS + 5 * DAY).toISOString(),
+        data_limit: 50 * GIB,
+        used_traffic: 12 * GIB,
+      },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(await snapshotsOf(target.subId)).toEqual([
+      expect.objectContaining({ mode: 'ADD', used_bytes_before: 12 * GIB, lost_bytes: 0, lost_ms: 0 }),
+    ]);
+  });
+
   it('brings a service on hold back to ACTIVE — the way the PHP wrote `active` after an extend', async () => {
     const target = await paidRenewal({ status: 'ON_HOLD', expiresInDays: null });
     const panel = fakePanel({
@@ -1272,6 +1523,8 @@ describe('applying it', () => {
     expect(panel.puts).toHaveLength(1);
     const sub = await subscriptionRow(target.subId);
     expect(Date.parse(sub!.expires_at!)).toBe(NOW_MS + 35 * DAY);
+    // One history row for one order, however often the sweep ran it.
+    expect(await snapshotsOf(target.subId)).toHaveLength(1);
   });
 
   it('leaves the order payable and says nothing when the panel is down', async () => {

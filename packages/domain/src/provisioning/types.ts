@@ -155,6 +155,20 @@ export interface ProvisionOk {
   expiresAt?: Date | null;
   volumeGb?: number | null;
   /**
+   * The account as the panel held it just before a renewal changed it — what
+   * `renewal_snapshots` keeps, so a renewal made by mistake can be undone by
+   * hand (Sam, 2026-09-23). Only `renew` fills it in, and only when it changed
+   * something: a retry that finds the renewal already applied has no «before»
+   * left to read. `null` fields are «unmetered» / «no date», as elsewhere.
+   */
+  before?: {
+    usedBytes: number | null;
+    limitBytes: number | null;
+    expireMs: number | null;
+    /** The days an `on_hold` account is waiting to start, in ms (#325). */
+    heldMs: number | null;
+  };
+  /**
    * The account is waiting for its first connection (#325): created
    * `on_hold`, or found already `on_hold` by a retry. What the panel did,
    * not what was asked — so the subscription row can say ON_HOLD only when
