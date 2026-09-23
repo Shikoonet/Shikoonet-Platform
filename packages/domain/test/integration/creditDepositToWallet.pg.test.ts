@@ -13,7 +13,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createPostgresD1 } from '@shikoo/db';
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
-import { creditDepositToWallet } from '../../src/creditDepositToWallet.js';
+import { creditDepositInSession, creditDepositToWallet } from '../../src/creditDepositToWallet.js';
 import { verifyMirzabotClaim } from '../../src/mirzabotVerify.js';
 import { INCOME_TX_WHERE } from '../../src/incomeEligibility.js';
 
@@ -169,6 +169,22 @@ describe('creditDepositToWallet', () => {
     expect(await credit({ userId: 999_999 })).toEqual({ ok: false, error: 'USER_NOT_FOUND' });
     expect(await credit({ transactionId: 'tx-none' })).toEqual({ ok: false, error: 'TRANSACTION_NOT_FOUND' });
     expect(await balance()).toBe(0);
+  });
+
+  it('writes no message of its own when the caller sends one (the bot’s wrong-amount sweep)', async () => {
+    const res = await db.withSession((tx) =>
+      creditDepositInSession(tx, {
+        transactionId: 'tx-late',
+        userId,
+        actorEmail: 'system',
+        reason: 'wrong amount',
+        message: null,
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, amountIrr: AMOUNT, notified: false });
+    expect(await balance()).toBe(AMOUNT);
+    const notes = await db.prepare(`SELECT count(*)::int AS n FROM bot_notifications`).first<{ n: number }>();
+    expect(notes?.n).toBe(0);
   });
 });
 

@@ -404,6 +404,43 @@ describe('PHASE 8 — integration: SUGGESTED path', () => {
     expect(settledBy?.transaction_candidate_id).toBe('tx-spent-b');
   });
 
+  /**
+   * The same for a deposit that went to a wallet (#441, and the bot's
+   * wrong-amount sweep): it has no match, only a wallet entry keyed on it,
+   * and it made the next same-amount claim AMBIGUOUS_TRANSACTIONS.
+   */
+  it('a transaction credited to a wallet is not a candidate either', async () => {
+    const accountId = 'acc-int-wallet';
+    await seedAccountWithCard(accountId, '6037997512345695');
+    await seedTransaction(accountId, 1_000_000, BASE_MS + 20_000, 'tx-wallet-spent');
+    const user = await env.DB.prepare(
+      `INSERT INTO users (telegram_id, registered_at) VALUES (791000001, now())
+       ON CONFLICT (telegram_id) DO UPDATE SET telegram_id = EXCLUDED.telegram_id
+       RETURNING id`,
+    ).first<{ id: number }>();
+    await env.DB.prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, note, idempotency_key)
+       VALUES (?1, 1000000, 'TOPUP', 'late deposit', 'deposit:tx-wallet-spent:wallet')
+       ON CONFLICT (idempotency_key) DO NOTHING`,
+    )
+      .bind(user!.id)
+      .run();
+
+    const body = claimBody({
+      orderId: 'ord-wallet-next',
+      cardNumber: '6037-9975-1234-5695',
+      paidClickedAt: BASE_MS + 30_000,
+      receiptSubmittedAt: BASE_MS + 31_000,
+    });
+    await signedPost(body, body.eventId);
+    await seedTransaction(accountId, 1_000_000, BASE_MS + 40_000, 'tx-wallet-own');
+    const run = await rematch(accountId, 1_000_000, 'tx-wallet-own', BASE_MS + 40_000);
+
+    expect(run.autoVerifiedCount).toBe(1);
+    const claim = await claimByOrder('ord-wallet-next');
+    expect(claim?.status).toBe('VERIFIED');
+  });
+
   it('a claim held in WAIT is settled as NO_TRANSACTION_AFTER_10M once waiting expires', async () => {
     const accountId = 'acc-int-wait';
     await seedAccountWithCard(accountId, '6037997512345693');

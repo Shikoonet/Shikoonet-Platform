@@ -214,7 +214,6 @@ export function IncomeRow({
   onMarkReseller: () => void;
   onDecline: () => void;
   onDuplicate: () => void;
-  /** Offered only with an expired invoice whose customer is known. */
   onCreditWallet?: () => void;
 }) {
   const masked = maskAccountHint(item.accountHint);
@@ -270,9 +269,10 @@ export function IncomeRow({
         <button type="button" className="ghost hub-list-row__action" onClick={onAssign}>
           تخصیص
         </button>
-        {/* The expired invoice left no order to take the money; its customer
-            gets it as balance instead. Only where the hint names a customer. */}
-        {onCreditWallet && item.expiredInvoice?.customer && (
+        {/* Money no order can take — an expired invoice, a wrong amount —
+            goes to a customer's balance instead. On every deposit; the
+            dialog asks whose when the hint does not say. */}
+        {onCreditWallet && (
           <button type="button" className="ghost hub-list-row__action" onClick={onCreditWallet}>
             شارژ کیف پول
           </button>

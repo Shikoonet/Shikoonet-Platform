@@ -508,6 +508,12 @@ export const TEXTS = {
     screen: 'checkout',
     hint: 'مبلغی که باید واریز شود — روی هر چهار فاکتور',
   },
+  CHECKOUT_AMOUNT_RIAL: {
+    default: '🏦 به ریال: {amount}',
+    placeholders: ['amount'],
+    screen: 'checkout',
+    hint: 'همان مبلغ به ریال، زیر مبلغ تومانی — اپ بانک ریال می‌خواهد و مشتری‌ها عدد تومان را آن‌جا می‌زدند',
+  },
   CHECKOUT_CARD_LABEL: {
     default: '🏦 شمارهٔ کارت:',
     placeholders: [],
@@ -628,6 +634,38 @@ export const TEXTS = {
     placeholders: [],
     screen: 'checkout',
     hint: 'هشدار واریز نکردن به کارت کهنه — فاکتور قدیمی هنوز در چت مشتری است',
+  },
+  WRONG_AMOUNT_TITLE: {
+    default: '⚠️ مبلغ واریزی شما با مبلغ فاکتور یکی نبود.',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'خط اول پیامی که وقتی مشتری مبلغ دیگری واریز کرده جای فاکتور می‌نشیند — پولش به کیف پولش رفته',
+  },
+  WRONG_AMOUNT_LINE: {
+    default: 'قرار بود {expected} واریز کنید، ولی {paid} واریز کرده‌اید.',
+    placeholders: ['expected', 'paid'],
+    screen: 'checkout',
+    hint: 'خط دوم همان پیام، بولد و در کادر — مبلغ فاکتور و مبلغی که واقعاً رسید',
+  },
+  WRONG_AMOUNT_TO_WALLET: {
+    default: '💰 مبلغ واریزی شما به کیف پولتان برگشت. موجودی فعلی: {balance}',
+    placeholders: ['balance'],
+    screen: 'checkout',
+    hint: 'همان پیام — موجودی کیف پول بعد از برگشت پول',
+  },
+  WRONG_AMOUNT_TOP_UP: {
+    default:
+      'می‌توانید مابه‌التفاوت ({amount}) را در کیف پول شارژ کنید و دوباره اقدام به خرید کنید؛ این بار دکمهٔ «پرداخت از کیف پول» را بزنید.',
+    placeholders: ['amount'],
+    screen: 'checkout',
+    hint: 'خط آخر همان پیام وقتی کمتر از فاکتور واریز شده',
+  },
+  WRONG_AMOUNT_ENOUGH: {
+    default:
+      'موجودی کیف پول شما برای همین خرید کافی است؛ دوباره اقدام به خرید کنید و این بار دکمهٔ «پرداخت از کیف پول» را بزنید.',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'خط آخر همان پیام وقتی بیشتر از فاکتور واریز شده',
   },
   ORDER_NOT_PAYABLE: {
     default:
