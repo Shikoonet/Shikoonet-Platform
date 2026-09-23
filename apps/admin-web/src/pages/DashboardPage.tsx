@@ -147,7 +147,7 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId, search?: string) =>
           tone="tone-green"
           icon="money"
           value={tomanCompact(data.revenueIrr + data.revenueAdjustmentIrr)}
-          label="درآمد کل"
+          label={data.booksStartMs === null ? 'درآمد کل' : 'درآمد از شروع دفتر'}
           // The adjustment is named rather than absorbed, exactly as
           // `panel/index.php:72-75` names it. A figure that silently differs
           // from the sum of the orders is one an admin stops trusting the first

@@ -1031,6 +1031,10 @@ export function registerRevenueRoutes(
    * a figure nobody asked for.
    */
   app.get('/api/v1/admin/revenue-adjustments/parties', async (c) => {
+    // From the fresh start on, like every other money figure (`sinceBooks`):
+    // «حسام ۳۷۷ میلیون برداشته» was the old books, and beside a running
+    // account that starts at zero it read as money he still has to answer for.
+    const startDay = await booksStartDay(c.env.DB);
     const rows = await c.env.DB.prepare(
       `SELECT pa.id, pa.name, pa.roles, pa.share_percent, pa.active, pa.note,
               COALESCE(SUM(b.fee_irr - b.amount_irr) FILTER (WHERE b.kind = 'PARTNER_DRAW'), 0) AS drawn_irr,
@@ -1039,10 +1043,12 @@ export function registerRevenueRoutes(
               count(b.id)::int AS row_count,
               max(b.spent_on)::text AS last_on
          FROM parties pa
-         LEFT JOIN shop_books b ON b.party_id = pa.id
+         LEFT JOIN shop_books b ON b.party_id = pa.id${startDay ? ' AND b.spent_on >= ?1::date' : ''}
         GROUP BY pa.id
         ORDER BY pa.active DESC, pa.name`,
-    ).all<{
+    )
+      .bind(...(startDay ? [startDay] : []))
+      .all<{
       id: number;
       name: string;
       roles: string[];

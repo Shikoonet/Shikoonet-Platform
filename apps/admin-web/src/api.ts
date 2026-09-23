@@ -3621,6 +3621,8 @@ export const api = {
       revenueIrr: number;
       /** Signed, and NOT included in `revenueIrr` — the dashboard adds them. */
       revenueAdjustmentIrr: number;
+      /** The fresh start: both figures above begin here. */
+      booksStartMs: number | null;
       ordersToday: number;
       walletHeldIrr: number;
       walletOwedToShopIrr: number;

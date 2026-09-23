@@ -16,7 +16,7 @@ import type { EnvName } from '@shikoo/contracts';
 
 import type { Hono } from 'hono';
 import type { D1Database } from '@shikoo/database';
-import { parseStatsDay, parseStatsRange, shopReport, shopStats } from '@shikoo/domain';
+import { booksStartMs, parseStatsDay, parseStatsRange, shopReport, shopStats, tehranDateStringFromMs } from '@shikoo/domain';
 import { tehranDayFromUtc } from '@shikoo/domain';
 import { loadCounts } from './mirzabotRoutes.js';
 
@@ -172,10 +172,25 @@ export function registerAdminOverviewRoutes(
     // view is where that rule lives, so no reader has to remember it —
     // `verify.ts` deliberately reads the table instead, because it is asking
     // whether the import landed every Rial rather than what the books say.
+    //
+    // From the fresh start on, like `revenueIrr` beside it (`shopStats`). Until
+    // 2026-09-23 this summed the whole ledger while the revenue had already been
+    // cut at the start, and production's card read «−۸۹۹ میلیون»: 130 million of
+    // sales since 28 Shahrivar less a billion of costs from before it.
+    //
+    // And never a partner's draw (0092): it is the profit being divided, not an
+    // adjustment to what was earned. Subtracting it here moved «درآمد کل» every
+    // time a partner was paid.
+    const start = await booksStartMs(db);
+    const startDay = start === null ? null : tehranDateStringFromMs(start);
     const adjustment = await db
       // Less the bank's fee on each expense: what left the account, the same
       // arithmetic as the ledger page's «هزینه» (revenueRoutes `TOTALS_SQL`).
-      .prepare(`SELECT COALESCE(SUM(amount_irr - fee_irr), 0) AS net FROM shop_books`)
+      .prepare(
+        `SELECT COALESCE(SUM(amount_irr - fee_irr), 0) AS net FROM shop_books
+          WHERE kind <> 'PARTNER_DRAW'${startDay ? ' AND spent_on >= ?1::date' : ''}`,
+      )
+      .bind(...(startDay ? [startDay] : []))
       .first<{ net: string | number }>();
 
     const recentCustomers = await db
@@ -240,6 +255,8 @@ export function registerAdminOverviewRoutes(
       activeSubscriptions: stats.activeSubscriptions,
       revenueIrr: stats.revenueIrr,
       revenueAdjustmentIrr: Number(adjustment?.net ?? 0),
+      /** The fresh start: both figures above begin here. */
+      booksStartMs: start,
       ordersToday: stats.ordersToday,
       walletHeldIrr: stats.walletHeldIrr,
       walletOwedToShopIrr: stats.walletOwedToShopIrr,
