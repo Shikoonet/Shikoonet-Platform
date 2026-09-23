@@ -262,6 +262,28 @@ describe('refreshing what the customer sees', () => {
     expect((await readService(gone))?.subscription_url).toBeNull();
   });
 
+  it('stops asking once a whole round goes unanswered — the sweep runs inside the poll loop', async () => {
+    // Each lookup may wait out the full timeout. A panel that lists and then
+    // hangs on every single-account read must cost one round, not ten.
+    const userId = await makeCustomer(nextTelegramId());
+    const names = Array.from({ length: 25 }, (_, i) => `u_hang${i}`);
+    for (const name of names) await makeService(userId, panelId, { publicId: `sync-${name}`, username: name });
+    const panel = fakePanel(names.map((username) => ({ username, used: 1, url: null })));
+    const asked: string[] = [];
+    const hanging = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (/\/api\/user\/[^/?]+$/.test(String(input))) {
+        asked.push(String(input));
+        throw new Error('The operation was aborted due to timeout');
+      }
+      return panel.fetchImpl(input, init);
+    }) as typeof globalThis.fetch;
+
+    const summary = await syncSubscriptions(db, hanging, NOW_MS);
+
+    expect(summary.linked).toBe(0);
+    expect(asked).toHaveLength(10);
+  });
+
   it('does not ask again for a row that already has its link', async () => {
     const userId = await makeCustomer(nextTelegramId());
     await makeService(userId, panelId, {
