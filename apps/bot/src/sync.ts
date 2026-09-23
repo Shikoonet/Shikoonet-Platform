@@ -63,6 +63,16 @@ export const SYNC_INTERVAL_MS = 10 * 60 * 1000;
  *  array of a few thousand entries; this keeps each one boring. */
 const CHUNK = 500;
 
+/**
+ * Links asked for one account at a time, per sweep, across every panel.
+ *
+ * The sweep runs inline in the poll loop, so this is what it may cost: ten in
+ * flight, ten rounds, a few seconds every ten minutes. The 6,364 imported rows
+ * missing a link on 2026-09-23 drain in about eleven hours; after that only a
+ * purchase whose panel returned no link ever lands here.
+ */
+export const LINKS_PER_SWEEP = 100;
+
 interface ProviderRow {
   id: number;
   code: string;
@@ -81,9 +91,11 @@ export interface SyncSummary {
   updated: number;
   /** Providers that could not be listed. Their rows are untouched. */
   failed: number;
+  /** Rows that had no link and got one from `accountLinks`. */
+  linked: number;
 }
 
-const NOTHING: SyncSummary = { panels: 0, updated: 0, failed: 0 };
+const NOTHING: SyncSummary = { panels: 0, updated: 0, failed: 0, linked: 0 };
 
 /**
  * True when it is worth asking the panels again.
@@ -132,7 +144,8 @@ export async function syncSubscriptions(
     )
     .all<ProviderRow>();
 
-  const summary: SyncSummary = { panels: 0, updated: 0, failed: 0 };
+  const summary: SyncSummary = { panels: 0, updated: 0, failed: 0, linked: 0 };
+  let linkBudget = LINKS_PER_SWEEP;
 
   for (const row of results ?? []) {
     const adapter = adapterFor(row.kind);
@@ -160,9 +173,63 @@ export async function syncSubscriptions(
 
     summary.panels++;
     summary.updated += await writeAccounts(db, row.id, listed.accounts);
+
+    if (adapter.accountLinks && linkBudget > 0) {
+      const linked = await fillMissingLinks(db, row.id, listed.accounts, linkBudget, (names) =>
+        adapter.accountLinks!(provider, names),
+      );
+      linkBudget -= linked.asked;
+      summary.linked += linked.filled;
+    }
   }
 
   return summary;
+}
+
+/**
+ * Asks the panel, one account at a time, for the links its listing left out.
+ *
+ * Only rows the listing just matched: an account the panel no longer holds
+ * would be asked for on every sweep and answer 404 every time. Random order,
+ * so an account whose read never yields a link costs its share of the budget
+ * and cannot starve the rows behind it. Written only where the column is
+ * still NULL — a purchase or a revoke that wrote one meanwhile wins.
+ */
+async function fillMissingLinks(
+  db: D1Database,
+  providerId: number,
+  accounts: RemoteAccount[],
+  budget: number,
+  ask: (usernames: string[]) => Promise<Map<string, string> | null>,
+): Promise<{ asked: number; filled: number }> {
+  const { results } = await db
+    .prepare(
+      `SELECT remote_username FROM subscriptions
+        WHERE provider_id = ?1
+          AND status IN ('ACTIVE', 'ON_HOLD')
+          AND subscription_url IS NULL
+          AND remote_username = ANY(?2::text[])
+        ORDER BY random()
+        LIMIT ?3`,
+    )
+    .bind(providerId, accounts.map((a) => a.username), budget)
+    .all<{ remote_username: string }>();
+  const names = (results ?? []).map((r) => r.remote_username);
+  if (names.length === 0) return { asked: 0, filled: 0 };
+
+  const links = await ask(names);
+  if (links === null || links.size === 0) return { asked: names.length, filled: 0 };
+  const result = await db
+    .prepare(
+      `UPDATE subscriptions s SET subscription_url = v.url, updated_at = now()
+         FROM unnest(?2::text[], ?3::text[]) AS v(username, url)
+        WHERE s.provider_id = ?1
+          AND s.remote_username = v.username
+          AND s.subscription_url IS NULL`,
+    )
+    .bind(providerId, [...links.keys()], [...links.values()])
+    .run();
+  return { asked: names.length, filled: result.meta.changes };
 }
 
 /**

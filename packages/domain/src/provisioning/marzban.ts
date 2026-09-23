@@ -1441,6 +1441,28 @@ export const marzbanAdapter: ProvisioningAdapter = {
     }
   },
 
+  async accountLinks(provider: ProviderContext, usernames: string[]): Promise<Map<string, string> | null> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return null;
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const links = new Map<string, string>();
+      // ponytail: fixed batches of 10 in flight; a pool if one slow account holds up its batch
+      for (let at = 0; at < usernames.length; at += 10) {
+        await Promise.all(
+          usernames.slice(at, at + 10).map(async (username) => {
+            const found = await getUser(provider, auth.token, username).catch(() => null);
+            const url = found?.state === 'found' ? absoluteSubUrl(found.user.subscription_url, base) : null;
+            if (url !== null) links.set(username, url);
+          }),
+        );
+      }
+      return links;
+    } catch {
+      return null;
+    }
+  },
+
   async listAccounts(provider: ProviderContext): Promise<AccountsResult> {
     try {
       const auth = await login(provider);

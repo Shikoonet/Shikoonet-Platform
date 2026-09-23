@@ -555,6 +555,18 @@ export interface ProvisioningAdapter {
   listAccounts?(provider: ProviderContext): Promise<AccountsResult>;
 
   /**
+   * The subscription link of each named account, asked one account at a time.
+   *
+   * `listAccounts` should be enough and on the live panel it is not: its
+   * `/api/users` rows carry no `subscription_url`, so the 6,364 services
+   * imported from the PHP bot — which arrived with no link — were synced every
+   * ten minutes and never got one (2026-09-23). A single-account read does
+   * carry it. An account that fails or has no link is simply absent from the
+   * map; `null` only when the panel could not be reached at all.
+   */
+  accountLinks?(provider: ProviderContext, usernames: string[]): Promise<Map<string, string> | null>;
+
+  /**
    * The groups this panel offers, as the panel itself reports them.
    *
    * The reason this belongs on the adapter rather than in a script: a group id
