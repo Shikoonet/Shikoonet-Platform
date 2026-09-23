@@ -35,14 +35,20 @@ export function assertTransitionTransaction(from: TransactionStatus, to: Transac
  *
  *   PENDING ─┬─► MATCH_SUGGESTED ─┬─► VERIFIED
  *            │                    │
- *            └────────────────────┴─► FULFILLED_UNRECONCILED ──► VERIFIED
+ *            └────────────────────┴─► FULFILLED_UNRECONCILED ─┬─► VERIFIED
+ *                                                             └─► WRITTEN_OFF
  *
- * `FULFILLED_UNRECONCILED` is the only non-terminal state below `VERIFIED`, and
- * it has exactly one exit. Delivery already happened when the claim entered it,
- * so the move to `VERIFIED` is reconciliation — the bank finally agreeing — and
- * must never be read as a reason to deliver again. It cannot be rejected or
- * expired: the customer is holding the product, and pretending otherwise would
- * let a later sweep withdraw a state the world has already seen.
+ * `FULFILLED_UNRECONCILED` is the only non-terminal state below `VERIFIED`.
+ * Delivery already happened when the claim entered it, so the move to
+ * `VERIFIED` is reconciliation — the bank finally agreeing — and must never be
+ * read as a reason to deliver again. It cannot be rejected or expired: the
+ * customer is holding the product, and pretending otherwise would let a later
+ * sweep withdraw a state the world has already seen.
+ *
+ * `WRITTEN_OFF` is the other way out, and it withdraws nothing either: the
+ * product stays delivered, and an admin has said no money is coming — a test
+ * purchase, a gift (0098). It takes the claim out of the matcher's live set,
+ * so no later credit is spent on it.
  */
 const CLAIM_TRANSITIONS: Record<ClaimStatus, readonly ClaimStatus[]> = {
   PENDING: [
@@ -61,7 +67,8 @@ const CLAIM_TRANSITIONS: Record<ClaimStatus, readonly ClaimStatus[]> = {
     'PENDING',
     'EXPIRED',
   ],
-  FULFILLED_UNRECONCILED: ['VERIFIED'],
+  FULFILLED_UNRECONCILED: ['VERIFIED', 'WRITTEN_OFF'],
+  WRITTEN_OFF: [], // terminal
   VERIFIED: [], // terminal
   REJECTED: [], // terminal
   FAKE_RECEIPT: [], // terminal

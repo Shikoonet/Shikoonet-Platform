@@ -73,6 +73,12 @@ export type ClaimStatus =
    * to it afterwards, which is reconciliation, not a second sale.
    */
   | 'FULFILLED_UNRECONCILED'
+  /**
+   * Delivered, and an admin has said no money is coming — a test purchase, a
+   * gift. The other exit from `FULFILLED_UNRECONCILED`; terminal, and outside
+   * the matcher's live set so no later credit is spent on it (0098).
+   */
+  | 'WRITTEN_OFF'
   | 'REJECTED'
   | 'FAKE_RECEIPT'
   | 'EXPIRED';
