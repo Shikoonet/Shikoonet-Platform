@@ -5,7 +5,7 @@ import {
   MIRZABOT_SOURCE,
   type MirzabotClaimPayload,
 } from '@shikoo/contracts';
-import { normalizeCardDigits, tomanToIrr } from '@shikoo/domain';
+import { normalizeCardDigits, tomanToIrr, TX_WALLET_CREDITED } from '@shikoo/domain';
 import {
   evaluateMirzabotGroup,
   recordMirzabotSuspect,
@@ -160,11 +160,13 @@ async function loadTxPool(
     .prepare(
       `SELECT t.id, t.direction, t.amount_irr, t.financial_account_id, t.bank_timestamp,
               t.processing_disposition,
+              -- Spent on an order, or credited to a wallet (#441, and the
+              -- wrong-amount sweep in the bot). Either way it is nobody's now.
               (EXISTS(
                 SELECT 1 FROM reconciliation_matches m
                  WHERE m.transaction_candidate_id = t.id
                    AND m.status IN ('CONFIRMED','AUTO_VERIFIED')
-              ))::int AS consumed
+              ) OR ${TX_WALLET_CREDITED})::int AS consumed
        FROM transaction_candidates t
        WHERE t.financial_account_id = ?1
          AND t.direction = 'CREDIT'

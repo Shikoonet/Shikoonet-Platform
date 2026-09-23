@@ -27,6 +27,7 @@ import { nudgeNeverBought } from './nudge.js';
 import { remindMissingReceipt } from './receiptReminder.js';
 import type { CronJobKey } from '@shikoo/contracts';
 import { expireUnpaidOrders } from './expire.js';
+import { creditWrongAmounts } from './wrongAmount.js';
 import {
   BROADCAST_BATCH,
   claimBroadcastBatch,
@@ -1055,6 +1056,10 @@ export async function run(
         const { moved } = await downgradeExpired(db);
         return moved;
       });
+      // A transfer that is not its invoice's amount goes to the wallet
+      // (`wrongAmount.ts`). Ahead of the expiry below, which would otherwise
+      // be the next thing to close that order.
+      await sweep('crediting wrong amounts to the wallet', () => creditWrongAmounts(db));
       // Last, because it is the only sweep that closes something rather than
       // advancing it, and an order settled or delivered earlier in this same
       // cycle must have moved out of AWAITING_PAYMENT before this looks.
