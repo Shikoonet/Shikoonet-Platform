@@ -159,8 +159,25 @@ export async function reassignMirzabotTransaction(
   if (!target || target.source_system !== MIRZABOT_SOURCE) {
     return { ok: false, error: 'CLAIM_NOT_FOUND' };
   }
-  if (!ELIGIBLE_CLAIM_STATUSES.has(target.status)) {
+  // A closed order — delivered by hand (FULFILLED_UNRECONCILED) or verified by
+  // hand with no bank row (VERIFIED) — can take its deposit only as evidence,
+  // through `verifyMirzabotClaim`. A SUGGESTED link on it would sit there for
+  // ever: nothing reviews a closed order again.
+  const closed = target.status === 'FULFILLED_UNRECONCILED' || target.status === 'VERIFIED';
+  if (!ELIGIBLE_CLAIM_STATUSES.has(target.status) && !(closed && args.verifyAfterAssign)) {
     return { ok: false, error: 'CLAIM_NOT_ELIGIBLE' };
+  }
+  // …and only one that has no bank row yet. Refused here, before the batch
+  // below detaches anyone else's suggestion, not later inside `verify`.
+  if (target.status === 'VERIFIED') {
+    const evidence = await db
+      .prepare(
+        `SELECT id FROM reconciliation_matches
+         WHERE payment_claim_id = ?1 AND status IN ${CONSUMING_MATCH_STATUSES}`,
+      )
+      .bind(args.targetClaimId)
+      .first<{ id: string }>();
+    if (evidence) return { ok: false, error: 'CLAIM_NOT_ELIGIBLE' };
   }
 
   const consuming = await consumerOf(db, args.transactionId);

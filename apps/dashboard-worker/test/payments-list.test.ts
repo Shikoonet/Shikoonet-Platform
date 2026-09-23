@@ -5,7 +5,7 @@
  * from what the matcher already wrote to payment_claims / reconciliation_matches.
  */
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -32,8 +32,8 @@ beforeAll(async () => {
   await baseEnv.DB.prepare(
     `INSERT OR IGNORE INTO financial_accounts
      (id, bank_name, display_name, owner_label, account_type, active, status, account_hint,
-      parser_configuration, created_at, updated_at)
-     VALUES (?1,'Melli','Melli Main',NULL,'CARD',1,'ACTIVE','6006','{}',?2,?2)`,
+      parser_configuration, created_at, updated_at, customer_visible)
+     VALUES (?1,'Melli','Melli Main',NULL,'CARD',1,'ACTIVE','6006','{}',?2,?2,1)`,
   )
     .bind(ACCOUNT, now)
     .run();
@@ -276,8 +276,17 @@ describe('GET /api/v1/payments', () => {
       fulfilmentMode: 'CONTINUITY',
       reconciledAt: base - 20_000,
     });
+    // Delivered by hand, still owed its deposit: the same wait as Continuity
+    // and the same tab. It used to be on none (production, 2026-09-23: 18).
     await seedClaim('c-manual-mode', {
       status: 'FULFILLED_UNRECONCILED',
+      paidClickedAt: base - 40_000,
+      fulfilmentMode: 'MANUAL',
+    });
+    // Delivered, then rejected: no reconciliation, and waiting for nothing.
+    await seedClaim('c-manual-rejected', {
+      status: 'REJECTED',
+      paidClickedAt: base - 50_000,
       fulfilmentMode: 'MANUAL',
     });
     await seedClaim('c-ordinary');
@@ -295,14 +304,18 @@ describe('GET /api/v1/payments', () => {
       'tab=continuity&continuityState=history&range=all&pageSize=1&page=2',
     );
 
+    const pendingPage3 = await get(
+      'tab=continuity&continuityState=pending&range=all&pageSize=1&page=3',
+    );
     expect(pendingPage1.items.map((i) => i.id)).toEqual(['c-cont-pending']);
     expect(pendingPage2.items.map((i) => i.id)).toEqual(['c-cont-pending-old']);
-    expect(pendingPage1.total).toBe(2);
+    expect(pendingPage3.items.map((i) => i.id)).toEqual(['c-manual-mode']);
+    expect(pendingPage1.total).toBe(3);
     expect(historyPage1.items.map((i) => i.id)).toEqual(['c-cont-reconciled']);
     expect(historyPage2.items.map((i) => i.id)).toEqual(['c-cont-reconciled-old']);
     expect(historyPage1.total).toBe(2);
-    expect(pendingPage1.counts.continuity).toBe(4);
-    expect(pendingPage1.counts.continuityPending).toBe(2);
+    expect(pendingPage1.counts.continuity).toBe(6);
+    expect(pendingPage1.counts.continuityPending).toBe(3);
     expect(pendingPage1.items[0]).toMatchObject({
       fulfilmentMode: 'CONTINUITY',
       fulfilledAt: base + 1_000,
@@ -434,8 +447,8 @@ describe('GET /api/v1/payments', () => {
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO financial_accounts
          (id, bank_name, display_name, owner_label, account_type, active, status, account_hint,
-          parser_configuration, created_at, updated_at)
-       VALUES ('acc-rotated','Melli','Rotated',NULL,'CARD',1,'ACTIVE','7007','{}',?1,?1)`,
+          parser_configuration, created_at, updated_at, customer_visible)
+       VALUES ('acc-rotated','Melli','Rotated',NULL,'CARD',1,'ACTIVE','7007','{}',?1,?1,1)`,
     )
       .bind(now)
       .run();
@@ -498,8 +511,8 @@ describe('GET /api/v1/payments', () => {
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO financial_accounts
          (id, bank_name, display_name, owner_label, account_type, active, status, account_hint,
-          parser_configuration, created_at, updated_at)
-       VALUES ('acc-elsewhere','Melli','Elsewhere',NULL,'CARD',1,'ACTIVE','8008','{}',?1,?1)`,
+          parser_configuration, created_at, updated_at, customer_visible)
+       VALUES ('acc-elsewhere','Melli','Elsewhere',NULL,'CARD',1,'ACTIVE','8008','{}',?1,?1,1)`,
     )
       .bind(now)
       .run();
@@ -2098,6 +2111,89 @@ describe('the income tabs count what they did not send', () => {
   it('the total agrees with the badge the tab draws', async () => {
     const body = await get('tab=income&range=all&pageSize=2');
     expect(body.total).toBe(body.counts.income);
+  });
+});
+
+/*
+ * On production, 2026-09-23, «واریزی‌ها» said 33 deposits and 52.1M toman
+ * had no order. 17 of them were from before «دفتر بانک» opened, and 29.9M
+ * was «تنخواه» — the petty-cash account no customer is ever shown, filled
+ * from our own accounts (Sam). Neither is a question for this queue.
+ */
+describe('what «واریزی‌ها» does not ask about', () => {
+  const BOOKS_ONLY = 'acc-books-only';
+
+  beforeAll(async () => {
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO financial_accounts
+       (id, bank_name, display_name, owner_label, account_type, active, status, account_hint,
+        parser_configuration, created_at, updated_at, customer_visible)
+       VALUES (?1,'Mehr','Tankhah',NULL,'ACCOUNT',1,'ACTIVE','3369','{}',?2,?2,0)`,
+    )
+      .bind(BOOKS_ONLY, now)
+      .run();
+  });
+
+  beforeEach(async () => {
+    await baseEnv.DB.prepare(`DELETE FROM account_opening_balances`).run();
+    await baseEnv.DB.prepare(`DELETE FROM income_declined_transactions`).run();
+  });
+  afterAll(async () => {
+    await baseEnv.DB.prepare(`DELETE FROM account_opening_balances`).run();
+  });
+
+  async function openBooksAt(at: number) {
+    await baseEnv.DB.prepare(
+      `INSERT INTO account_opening_balances
+         (financial_account_id, balance_irr, as_of, created_by, created_at)
+       VALUES (?1, 0, ?2, 'sam@example.com', ?2)`,
+    )
+      .bind(ACCOUNT, at)
+      .run();
+  }
+
+  it('starts where the books start', async () => {
+    const base = Date.now();
+    await seedTx('before-books', base - 2 * 3_600_000);
+    await seedTx('after-books', base - 60_000);
+
+    // No fresh start yet: nothing to cut at, both are asked about.
+    expect((await get('tab=income&range=all')).counts.income).toBe(2);
+
+    await openBooksAt(base - 3_600_000);
+    const body = await get('tab=income&range=all');
+    expect(body.items.map((i) => i.id)).toEqual(['after-books']);
+    expect(body.counts.income).toBe(1);
+    expect(body.total).toBe(1);
+    expect(body.counts.incomeUnread).toBe(1);
+  });
+
+  it('leaves a books-only account to «دفتر بانک», which can still take it off the books', async () => {
+    const base = Date.now();
+    await seedTx('customer-card', base - 60_000);
+    await seedTx('tankhah-fill', base - 30_000);
+    await baseEnv.DB.prepare(
+      `UPDATE transaction_candidates SET financial_account_id = ?1 WHERE id = 'tankhah-fill'`,
+    )
+      .bind(BOOKS_ONLY)
+      .run();
+
+    const body = await get('tab=income&range=all');
+    expect(body.items.map((i) => i.id)).toEqual(['customer-card']);
+    expect(body.counts.income).toBe(1);
+    expect(body.counts.incomeUnread).toBe(1);
+
+    // Only the queue changed. «خارج از دفتر — جابه‌جایی» on it is still accepted.
+    const r = await app.fetch(
+      new Request('https://example.com/api/v1/transactions/tankhah-fill/decline-income', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ category: 'TRANSFER' }),
+      }),
+      envAs(),
+    );
+    expect(r.status).toBe(200);
   });
 });
 

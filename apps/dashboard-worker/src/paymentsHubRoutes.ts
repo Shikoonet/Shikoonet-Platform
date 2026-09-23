@@ -12,7 +12,7 @@ import {
   declineAllActiveIncome,
   declineIncomeBulk,
   declineIncomeTransaction,
-  INCOME_TX_WHERE,
+  INCOME_QUEUE_TX_WHERE,
   BANK_INCOME_TX_WHERE,
   BANK_OUTFLOW_TX_WHERE,
   historyRangeBounds,
@@ -391,7 +391,7 @@ export async function loadIncomeItems(
               fa.display_name AS account_display, fa.bank_name AS account_bank, fa.account_hint
        FROM transaction_candidates t
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
-       WHERE ${INCOME_TX_WHERE}${rangeFilter.sql}${search}
+       WHERE ${INCOME_QUEUE_TX_WHERE}${rangeFilter.sql}${search}
        -- The id breaks the tie, and it is what makes OFFSET safe. Two rows
        -- with the same timestamp have no defined order between them, so a
        -- plain timestamp sort can hand page 2 a row page 1 already showed and
@@ -462,7 +462,7 @@ export async function loadIncomeTotals(
       `SELECT COUNT(*) AS count, COALESCE(SUM(t.amount_irr), 0) AS amount_irr
        FROM transaction_candidates t
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
-       WHERE ${INCOME_TX_WHERE}${rangeFilter.sql}${search}`,
+       WHERE ${INCOME_QUEUE_TX_WHERE}${rangeFilter.sql}${search}`,
     )
     .bind(...binds)
     .first<{ count: number; amount_irr: number }>();
@@ -671,7 +671,7 @@ export async function loadIncomeCount(db: D1Database, q: string | null = null) {
     .prepare(
       `SELECT COUNT(*) AS n FROM transaction_candidates t
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
-       WHERE ${INCOME_TX_WHERE}${search}`,
+       WHERE ${INCOME_QUEUE_TX_WHERE}${search}`,
     )
     .bind(...binds)
     .first<{ n: number }>();

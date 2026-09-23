@@ -1422,6 +1422,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
               <AssignToPaymentModal
                 transactionId={assignIncome.id}
                 transactionAmountIrr={assignIncome.amountIrr}
+                transactionAccountId={assignIncome.accountId}
                 onClose={() => {
                   setAssignIncome(null);
                   cache.refetch(queryKey);
@@ -1466,7 +1467,7 @@ function emptyText(tab: PaymentTab, q = ''): string {
   if (tab === 'declined_income') return 'در این بازه واریزی ردشده‌ای نیست.';
   if (tab === 'waiting') return 'پرداختی در انتظار نیست.';
   if (tab === 'suspected_fake') return 'پرداختی بدون واریزی منطبق نمانده است.';
-  if (tab === 'continuity') return 'در این بازه سفارشی با حالت تداوم تحویل نشده است.';
+  if (tab === 'continuity') return 'در این بازه سفارشی پیش از رسیدن پول تحویل نشده است.';
   if (tab === 'bot_auto_verified') return 'در این بازه پرداختی با تایید خودکار ربات نیست.';
   if (tab === 'manually_verified') return 'در این بازه پرداختی با تایید دستی نیست.';
   if (tab === 'reseller') return 'در این بازه پرداخت نمایندگی نیست.';
@@ -2256,7 +2257,9 @@ function ContinuityRow({
           <span className="hub-list-row__identity">
             <NewBadge isNew={isNew} />
             <PaymentRowIdentity item={item} />
-            <span className="status-pill status-pill--fulfilled_unreconciled">حالت تداوم</span>
+            <span className="status-pill status-pill--fulfilled_unreconciled">
+              {item.fulfilmentMode === 'MANUAL' ? 'تحویل دستی' : 'حالت تداوم'}
+            </span>
           </span>
           <span className="hub-list-row__amount tabular-nums">
             {formatToman(item.expectedAmountToman)}
@@ -2271,7 +2274,8 @@ function ContinuityRow({
             {reconciled ? 'تطبیق‌شده' : 'در انتظار تطبیق'}
           </StatusBadge>
           <span className="payment-reason__text">
-            {item.fulfilmentReason ?? 'تحویل خودکار در حالت تداوم'}
+            {item.fulfilmentReason ??
+              (item.fulfilmentMode === 'MANUAL' ? 'تحویل دستی بدون پرداخت' : 'تحویل خودکار در حالت تداوم')}
           </span>
           {/*
             Beside the reason it was delivered, not instead of it — the two
@@ -3377,7 +3381,7 @@ function UnreviewedStrip({
   if (!counts) return null;
   const parts: Array<{ n: number; label: string; tab: PaymentTab }> = [
     { n: counts.open ?? 0, label: 'رسید در انتظار بررسی', tab: 'open' },
-    { n: counts.continuityPending ?? 0, label: 'تحویل تداوم بدون تطبیق بانکی', tab: 'continuity' },
+    { n: counts.continuityPending ?? 0, label: 'تحویل‌شده بدون تطبیق بانکی', tab: 'continuity' },
     { n: counts.income ?? 0, label: 'واریزی بدون سفارش', tab: 'income' },
   ];
   const total = parts.reduce((sum, p) => sum + p.n, 0);

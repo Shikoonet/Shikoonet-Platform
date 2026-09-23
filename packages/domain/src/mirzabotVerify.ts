@@ -136,14 +136,37 @@ export async function verifyMirzabotClaim(
     .first<ClaimRow>();
   if (!claim || claim.source_system !== MIRZABOT_SOURCE)
     return { ok: false, error: 'CLAIM_NOT_FOUND' };
-  if (claim.status === 'VERIFIED') return { ok: false, error: 'CLAIM_ALREADY_VERIFIED' };
+  /**
+   * «تایید دستی» without a bank row (`verifyMirzabotClaimWithoutTransaction`)
+   * closes the order and leaves its deposit on «واریزی‌ها» for ever — five
+   * such pairs on production on 2026-09-23, same account, same amount, a
+   * minute apart. Sam: «وقتی تایید میشه یعنی پول به حساب اومده». So a human
+   * may attach that deposit afterwards, exactly like a Continuity claim
+   * meeting its SMS: evidence only, `reconciling`, nothing delivered or
+   * announced again. Never the matcher — auto never touches a closed order —
+   * and never a claim that already has its bank row.
+   */
+  let handVerified = false;
+  if (claim.status === 'VERIFIED') {
+    if (args.mode !== 'ADMIN_APPROVED') return { ok: false, error: 'CLAIM_ALREADY_VERIFIED' };
+    const evidence = await db
+      .prepare(
+        `SELECT id FROM reconciliation_matches
+         WHERE payment_claim_id = ?1 AND status IN ${CONSUMING_MATCH_STATUSES}`,
+      )
+      .bind(claim.id)
+      .first<{ id: string }>();
+    if (evidence) return { ok: false, error: 'CLAIM_ALREADY_VERIFIED' };
+    handVerified = true;
+  }
   /**
    * A claim delivered without evidence is still matchable — that is the entire
    * point of `FULFILLED_UNRECONCILED`, and refusing it here would strand every
    * Continuity row in the reconciliation queue for ever. What it must NOT do is
    * deliver again, which is `reconciling` below.
    */
-  const reconciling = claim.status === 'FULFILLED_UNRECONCILED' || claim.fulfilled_at !== null;
+  const reconciling =
+    handVerified || claim.status === 'FULFILLED_UNRECONCILED' || claim.fulfilled_at !== null;
   if (!ELIGIBLE_CLAIM_STATUSES.has(claim.status) && !reconciling) {
     return { ok: false, error: 'CLAIM_NOT_ELIGIBLE' };
   }
@@ -231,9 +254,14 @@ export async function verifyMirzabotClaim(
    * one that arrives later waits, re-checks its own status guard against
    * VERIFIED, and updates nothing.
    */
-  const CLAIM_LIVE = `EXISTS (SELECT 1 FROM payment_claims
-                              WHERE id = ?3
-                                AND status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED'))`;
+  // A hand-verified claim is live while it is still VERIFIED: a reopen that
+  // got in first (VERIFIED → PENDING) makes every statement a no-op. The
+  // claim's one-confirmed-match index refuses a second deposit racing this one.
+  const CLAIM_LIVE = handVerified
+    ? `EXISTS (SELECT 1 FROM payment_claims WHERE id = ?3 AND status = 'VERIFIED')`
+    : `EXISTS (SELECT 1 FROM payment_claims
+                WHERE id = ?3
+                  AND status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED'))`;
   const statements = [
     db
       .prepare(`SELECT id FROM payment_claims WHERE id = ?1 FOR UPDATE`)
@@ -348,7 +376,10 @@ export async function verifyMirzabotClaim(
       .bind(claim.id)
       .first<string>('status');
     const stillLive =
-      after !== null && (ELIGIBLE_CLAIM_STATUSES.has(after) || after === 'FULFILLED_UNRECONCILED');
+      after !== null &&
+      (ELIGIBLE_CLAIM_STATUSES.has(after) ||
+        after === 'FULFILLED_UNRECONCILED' ||
+        (handVerified && after === 'VERIFIED'));
     return { ok: false, error: stillLive ? 'TRANSACTION_ALREADY_CONSUMED' : 'CLAIM_NOT_ELIGIBLE' };
   }
 

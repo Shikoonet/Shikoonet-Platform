@@ -4,7 +4,7 @@
 
 import type { D1Database } from '@shikoo/database';
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
-import { INCOME_TX_WHERE } from './incomeEligibility.js';
+import { INCOME_QUEUE_TX_WHERE } from './incomeEligibility.js';
 
 const PENDING_CLAIM = `c.status IN ('PENDING','MATCH_SUGGESTED')`;
 /**
@@ -108,7 +108,7 @@ export async function getIncomeUnreadCount(db: D1Database, actorEmail: string): 
   const row = await db
     .prepare(
       `SELECT COUNT(*) AS c FROM transaction_candidates t
-       WHERE ${INCOME_TX_WHERE}
+       WHERE ${INCOME_QUEUE_TX_WHERE}
          AND NOT EXISTS (
            SELECT 1 FROM dashboard_payment_event_reads r
             WHERE r.actor_email = ?1 AND r.event_key = 'income:' || t.id
@@ -160,7 +160,7 @@ export async function markPaymentEventsReadAll(
 
   if (tab === 'income') {
     const rows = await db
-      .prepare(`SELECT t.id FROM transaction_candidates t WHERE ${INCOME_TX_WHERE}`)
+      .prepare(`SELECT t.id FROM transaction_candidates t WHERE ${INCOME_QUEUE_TX_WHERE}`)
       .all<{ id: string }>();
     keys = (rows.results ?? []).map((r) => incomeEventKey(r.id));
   } else if (tab === 'reseller') {

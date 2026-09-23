@@ -314,3 +314,142 @@ describe('transaction reassignment', () => {
     expect(r.status).toBe(400);
   });
 });
+
+/*
+ * Sam, 2026-09-23: «وقتی تایید میشه یعنی پول به حساب اومده». An order closed
+ * by hand without its bank row — «تایید دستی» or a hand delivery — could never
+ * take the deposit afterwards, which then sat in «واریزی‌ها» for ever (five
+ * such pairs on production that day). Attaching it is evidence only.
+ */
+describe('a deposit for an order already closed by hand', () => {
+  const HAND_VERIFIED_META = JSON.stringify({
+    telegramUserId: '560573543',
+    _revertSnapshot: { claimStatus: 'PENDING', suspectReason: null, suspectMetadataJson: '{}' },
+  });
+
+  async function matchesOf(txId: string) {
+    const r = await baseEnv.DB.prepare(
+      `SELECT payment_claim_id, status FROM reconciliation_matches WHERE transaction_candidate_id = ?1`,
+    )
+      .bind(txId)
+      .all<{ payment_claim_id: string; status: string }>();
+    return r.results ?? [];
+  }
+
+  async function statusOf(table: 'payment_claims' | 'transaction_candidates', id: string) {
+    return baseEnv.DB.prepare(`SELECT status FROM ${table} WHERE id = ?1`)
+      .bind(id)
+      .first<string>('status');
+  }
+
+  it('attaches to a hand-verified order: confirmed, the order stays verified', async () => {
+    await seedClaim('c-hand', { status: 'VERIFIED', suspect: null, meta: HAND_VERIFIED_META });
+    await seedTx('t-late');
+
+    const r = await reassign('c-hand', {
+      transactionId: 't-late',
+      reason: 'the deposit of the order verified by hand',
+      verifyAfterAssign: true,
+    });
+    expect(r.status).toBe(200);
+    expect(await matchesOf('t-late')).toEqual([{ payment_claim_id: 'c-hand', status: 'CONFIRMED' }]);
+    expect(await statusOf('payment_claims', 'c-hand')).toBe('VERIFIED');
+    expect(await statusOf('transaction_candidates', 't-late')).toBe('APPROVED');
+  });
+
+  it('refuses a hand-verified order that already has its bank row', async () => {
+    await seedClaim('c-has-row', { status: 'VERIFIED', suspect: null });
+    await seedTx('t-first');
+    await seedTx('t-second');
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT INTO reconciliation_matches
+         (id, transaction_candidate_id, payment_claim_id, score, matching_reasons_json,
+          mismatch_reasons_json, status, created_at, updated_at)
+       VALUES ('m-first', 't-first', 'c-has-row', 1.0, '[]', '[]', 'CONFIRMED', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    // Someone else's suggestion on the second deposit, which a refusal must
+    // leave alone: the check comes before the batch that detaches it.
+    await seedClaim('c-other');
+    await seedSuggestedMatch('m-other', 't-second', 'c-other');
+
+    const r = await reassign('c-has-row', {
+      transactionId: 't-second',
+      reason: 'a second deposit',
+      verifyAfterAssign: true,
+    });
+    expect(r.status).toBe(409);
+    expect(((await r.json()) as { error: string }).error).toBe('claim_not_eligible');
+    expect(await matchesOf('t-second')).toEqual([{ payment_claim_id: 'c-other', status: 'SUGGESTED' }]);
+  });
+
+  it('never leaves a closed order a suggestion', async () => {
+    await seedClaim('c-closed', { status: 'VERIFIED', suspect: null });
+    await seedTx('t-suggest');
+    const r = await reassign('c-closed', {
+      transactionId: 't-suggest',
+      reason: 'maybe',
+      verifyAfterAssign: false,
+    });
+    expect(r.status).toBe(409);
+    expect(await matchesOf('t-suggest')).toEqual([]);
+  });
+
+  it('reconciles an order delivered by hand', async () => {
+    await seedClaim('c-delivered', { status: 'PENDING', suspect: null });
+    const at = Date.now();
+    await baseEnv.DB.prepare(
+      `UPDATE payment_claims
+          SET status = 'FULFILLED_UNRECONCILED', fulfilled_at = ?2, fulfilment_mode = 'MANUAL',
+              fulfilled_by = 'op@example.com', fulfilment_reason = 'customer called'
+        WHERE id = ?1`,
+    )
+      .bind('c-delivered', at)
+      .run();
+    await seedTx('t-evidence');
+
+    const r = await reassign('c-delivered', {
+      transactionId: 't-evidence',
+      reason: 'its deposit',
+      verifyAfterAssign: true,
+    });
+    expect(r.status).toBe(200);
+    const claim = await baseEnv.DB.prepare(
+      `SELECT status, reconciled_at FROM payment_claims WHERE id = 'c-delivered'`,
+    ).first<{ status: string; reconciled_at: number | null }>();
+    expect(claim?.status).toBe('VERIFIED');
+    expect(claim?.reconciled_at).not.toBeNull();
+    expect(await matchesOf('t-evidence')).toEqual([
+      { payment_claim_id: 'c-delivered', status: 'CONFIRMED' },
+    ]);
+  });
+
+  it('a reopen afterwards hands the deposit back with the order', async () => {
+    await seedClaim('c-reopen', { status: 'VERIFIED', suspect: null, meta: HAND_VERIFIED_META });
+    await seedTx('t-reopen');
+    expect(
+      (
+        await reassign('c-reopen', {
+          transactionId: 't-reopen',
+          reason: 'its deposit',
+          verifyAfterAssign: true,
+        })
+      ).status,
+    ).toBe(200);
+
+    const reopened = await app.fetch(
+      new Request('https://example.com/api/v1/payment-claims/c-reopen/reopen-manual-verification', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'wrong order' }),
+      }),
+      envAs(),
+    );
+    expect(reopened.status).toBe(200);
+    expect(await statusOf('payment_claims', 'c-reopen')).not.toBe('VERIFIED');
+    expect(await matchesOf('t-reopen')).toEqual([{ payment_claim_id: 'c-reopen', status: 'REJECTED' }]);
+    expect(await statusOf('transaction_candidates', 't-reopen')).not.toBe('APPROVED');
+  });
+});

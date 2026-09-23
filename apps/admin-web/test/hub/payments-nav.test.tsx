@@ -90,13 +90,14 @@ describe('Payments grouped navigation', () => {
     // three tabs — and, more to the point, without a fourth population of
     // pending claims that belonged to none of them going uncounted.
     expect(within(hub).getByRole('tab', { name: /در انتظار بررسی 6/i })).toBeTruthy();
-    expect(within(hub).getByRole('tab', { name: /حالت تداوم 4/i })).toBeTruthy();
+    expect(within(hub).getByRole('tab', { name: /در انتظار تطبیق 2/i })).toBeTruthy();
     expect(within(hub).getByRole('tab', { name: /تایید خودکار ربات 10/i })).toBeTruthy();
     const reviewTab = opsNav().getByRole('tab', { name: 'بررسی' });
-    // Only the two unreconciled Continuity rows add work to the primary badge;
-    // reconciled history stays available in its tab without double-counting
-    // rows that also belong to Bot Auto Verified.
-    expect(reviewTab.textContent).toContain('22');
+    // The work and only the work: income 4 + open 6 + continuityPending 2, the
+    // same three the «بررسی‌نشده» strip adds. It was 22 — the retired keys and
+    // the 10 bot auto-verifications, finished sales (production read «۱۰۲۵»
+    // with one open claim, 2026-09-23).
+    expect(reviewTab.textContent).toBe('بررسی12');
   });
 
   it('updates Review sub-tab counts on poll without reload', async () => {
@@ -154,7 +155,7 @@ describe('Payments grouped navigation', () => {
     const strip = await screen.findByRole('status', { name: 'پرداخت‌های بررسی‌نشده' });
     expect(within(strip).getByText('۱۲')).toBeTruthy();
     expect(within(strip).getByText(/پرداخت بررسی‌نشده/)).toBeTruthy();
-    fireEvent.click(within(strip).getByRole('button', { name: /تحویل تداوم بدون تطبیق/ }));
+    fireEvent.click(within(strip).getByRole('button', { name: /تحویل‌شده بدون تطبیق/ }));
     expect(window.location.search).toContain('tab=continuity');
     // Re-found: the surface re-renders on a tab change.
     const again = await screen.findByRole('status', { name: 'پرداخت‌های بررسی‌نشده' });
@@ -169,9 +170,9 @@ describe('Payments grouped navigation', () => {
     expect(within(strip).getByText('همهٔ پرداخت‌ها بررسی شده‌اند.')).toBeTruthy();
   });
 
-  it('selects the separate حالت تداوم review tab', async () => {
+  it('selects the separate «در انتظار تطبیق» review tab', async () => {
     render(<PaymentsView cache={createCache()} />);
-    fireEvent.click(await hubNav().findByRole('tab', { name: /حالت تداوم 4/i }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار تطبیق 2/i }));
     const pending = await screen.findByRole('region', { name: 'در انتظار تطبیق بانکی' });
     const history = screen.getByRole('region', { name: 'سابقه تطبیق‌شده' });
     expect(within(pending).getByText('موردی در انتظار تطبیق بانکی نیست.')).toBeTruthy();

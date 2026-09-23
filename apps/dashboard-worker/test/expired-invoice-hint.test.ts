@@ -42,8 +42,8 @@ beforeAll(async () => {
   ]) {
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO financial_accounts
-       (id, bank_name, display_name, owner_label, account_type, active, status, parser_configuration, created_at, updated_at)
-       VALUES (?1,'Melli',?2,NULL,'CARD',1,'ACTIVE','{}',?3,?3)`,
+       (id, bank_name, display_name, owner_label, account_type, active, status, parser_configuration, created_at, updated_at, customer_visible)
+       VALUES (?1,'Melli',?2,NULL,'CARD',1,'ACTIVE','{}',?3,?3,1)`,
     )
       .bind(id, name, now)
       .run();
