@@ -550,6 +550,13 @@ describe('every write route, asked directly', () => {
     // prefix, so a READ_ONLY operator never reaches them; ADMIN-only in the
     // handler like the rest of the ledger, and audited as `party.added` /
     // `party.edited`. `people-and-profit.test.ts` pins both.
-    expect(writeRoutes().length).toBe(181);
+    //
+    // 182–183, 2026-09-23: «تقسیم سود» (0095). `POST /admin/revenue-adjustments/
+    // distributions` records a profit split (a `dryRun` writes nothing) and
+    // `POST …/distributions/:id/void` marks one as a mistake. Same prefix, so
+    // READ_ONLY never reaches them; ADMIN-only in the handler, audited as
+    // `profit_distribution.added` / `.voided`. `people-and-profit.test.ts`
+    // pins both.
+    expect(writeRoutes().length).toBe(183);
   });
 });
