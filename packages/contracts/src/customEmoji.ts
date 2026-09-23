@@ -43,15 +43,20 @@ const ANY_TAG = /<[^>]*>/;
  * happened to detect it itself, and Telegram does not do that on a message sent
  * with `parse_mode` — so a plan whose badge is a custom emoji lost the
  * affordance. `<code>` makes it an entity of our own, and `<blockquote>` is the
- * box the card, the amount and the holder sit in. `<b>` is the renewal
- * screen's warning that the old quota burns (Sam, 2026-09-23). All three are
- * inert markup: what is between them is escaped like any other text.
+ * box the card, the amount and the holder sit in. Both are inert markup: what
+ * is between them is escaped like any other text.
+ *
+ * Bold only as a bold BOX — `<blockquote><b>` … `</b></blockquote>`, the
+ * renewal screen's warning that the old quota burns (Sam, 2026-09-23). Never
+ * a bare `<b>`: error stacks and admin texts carry those as characters, and
+ * one unclosed would make Telegram refuse the whole message.
  */
-const FORMAT_TAG = /<\/?(?:b|code|blockquote)>/;
-const FORMAT_TAGS = /<\/?(?:b|code|blockquote)>/g;
+const FORMAT_TAG = /<\/?(?:code|blockquote)>/;
+const FORMAT_TAGS = /<blockquote><b>|<\/b><\/blockquote>|<\/?(?:code|blockquote)>/g;
 
 /** Every piece `toTelegramHtml` lets through as markup. */
-const MARKUP = /<tg-emoji\s+emoji-id="(\d{1,24})">([^<>]{1,16})<\/tg-emoji>|<\/?(?:b|code|blockquote)>/g;
+const MARKUP =
+  /<tg-emoji\s+emoji-id="(\d{1,24})">([^<>]{1,16})<\/tg-emoji>|<blockquote><b>([\s\S]*?)<\/b><\/blockquote>|<\/?(?:code|blockquote)>/g;
 
 export type CustomEmojiProblem =
   | { kind: 'NOT_ALLOWED' }
@@ -143,9 +148,14 @@ export function toTelegramHtml(text: string): string {
   for (const m of text.matchAll(MARKUP)) {
     out += escape(text.slice(at, m.index));
     out +=
-      m[1] === undefined
-        ? m[0]
-        : `<tg-emoji emoji-id="${m[1]}">${escape(m[2] as string)}</tg-emoji>`;
+      m[1] !== undefined
+        ? `<tg-emoji emoji-id="${m[1]}">${escape(m[2] as string)}</tg-emoji>`
+        : m[3] !== undefined
+          ? // The box whole, never its halves: a stray `</b>` in front of the
+            // box's end must not close a bold nobody opened. Its inside is
+            // any other text — a custom emoji kept, everything else escaped.
+            `<blockquote><b>${toTelegramHtml(m[3])}</b></blockquote>`
+          : m[0];
     at = m.index + m[0].length;
   }
   return out + escape(text.slice(at));

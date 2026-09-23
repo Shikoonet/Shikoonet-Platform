@@ -151,10 +151,20 @@ describe('the bot’s own formatting — #322', () => {
     expect(toTelegramHtml(BOXED)).toBe(
       'قیمت &lt; ۱۰۰\n<blockquote>کارت:\n<code>6037-9975</code></blockquote>',
     );
-    // Only these tags, and only bare. An attribute or any other tag is still
-    // text. `<b>` joined them on 2026-09-23 for the renewal screen's warning.
-    expect(toTelegramHtml('<b>x</b> <b class="y">z <i>w</i> <code class="y">z')).toBe(
-      '<b>x</b> &lt;b class=&quot;y&quot;&gt;z &lt;i&gt;w&lt;/i&gt; &lt;code class=&quot;y&quot;&gt;z',
+    // Only these two tags, and only bare. An attribute or any other tag is
+    // still text — the admin-typed `<b>` case has not moved.
+    expect(toTelegramHtml('<b>x</b> <code class="y">z')).toBe(
+      '&lt;b&gt;x&lt;/b&gt; &lt;code class=&quot;y&quot;&gt;z',
+    );
+  });
+
+  it('lets bold through only as the bold box the renewal warning is drawn in', () => {
+    expect(toTelegramHtml('<blockquote><b>حجم < صفر</b></blockquote>')).toBe(
+      '<blockquote><b>حجم &lt; صفر</b></blockquote>',
+    );
+    // The box's own halves are markup; a bold on its own is still text.
+    expect(toTelegramHtml('<blockquote>x <b>y</b></blockquote>')).toBe(
+      '<blockquote>x &lt;b&gt;y&lt;/b&gt;</blockquote>',
     );
   });
 

@@ -646,7 +646,7 @@ function keyboardHasCustomEmoji(keyboard?: InlineKeyboard): boolean {
  * an unescaped `<` in a Persian sentence would have ridden along with an emoji
  * that happened to be on a button.
  *
- * "Markup" is a custom emoji OR the bot's own `<b>`/`<code>`/`<blockquote>` — the
+ * "Markup" is a custom emoji OR the bot's own `<code>`/`<blockquote>` — the
  * invoice carries the latter so its card number is an entity we set, not one
  * Telegram may or may not detect (#322).
  */
