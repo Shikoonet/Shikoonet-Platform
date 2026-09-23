@@ -182,9 +182,11 @@ export async function alertLateDeposits(db: Db, nowMs: number): Promise<number> 
             .bind(hint.customer.id, amountIrr, hint.invoiceAt)
             .first<{ public_id: string; status: string }>();
     const who = hint.customer ? (hint.customer.username ? `@${hint.customer.username}` : hint.customer.telegramId) : 'نامعلوم';
+    // Toman rounded down, as «واریزی‌ها» shows it (`loadIncomeItems`), so the
+    // operator finds the same number on the row this message sends them to.
     const lines = [
       '💸 پول بعد از منقضی شدن فاکتور رسید',
-      `${FA_NUMBER.format(Math.round(amountIrr / 10))} تومان — ${t.display_name}، ${FA_WHEN.format(Number(t.bank_timestamp))}`,
+      `${FA_NUMBER.format(Math.floor(amountIrr / 10))} تومان — ${t.display_name}، ${FA_WHEN.format(Number(t.bank_timestamp))}`,
       `فاکتور ${hint.publicId} (منقضی، ${FA_WHEN.format(hint.invoiceAt)}) — مشتری ${who}`,
       ...(hint.others > 0 ? [`${FA_NUMBER.format(hint.others)} فاکتور منقضی دیگر هم با همین مبلغ هست.`] : []),
       open

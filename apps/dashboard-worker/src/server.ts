@@ -161,6 +161,14 @@ export function start(): { stop: () => Promise<void> } {
   // URLs land back inside this mount. `rewriteRequestPath` strips the prefix
   // because `dist/` has no `admin/` directory in it.
   const adminRoot = process.env.ADMIN_DIST ?? join(process.cwd(), '../admin-web/dist');
+  // The page is never kept by the browser; the hashed assets it names can be.
+  // Without a header a restored tab could run yesterday's bundle, and the
+  // version check in `VersionBadge` — which takes its first answer as this
+  // page's build — would take today's server for it and never warn.
+  app.use('/admin/*', async (c, next) => {
+    await next();
+    if (c.res.headers.get('Content-Type')?.startsWith('text/html')) c.header('Cache-Control', 'no-store');
+  });
   app.use(
     '/admin/assets/*',
     serveStatic({ root: adminRoot, rewriteRequestPath: (p) => p.slice('/admin'.length) }),

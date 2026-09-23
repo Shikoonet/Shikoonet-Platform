@@ -488,6 +488,11 @@ describe('opened from a withdrawal in «دفتر بانک»', () => {
       financialAccountId: 'acc-resalat',
       transactionCandidateId: 'tx-7m',
     });
+    // Used once (CodeRabbit on #445): the next new row starts empty, and the
+    // address no longer names the withdrawal a reload would open again.
+    await waitFor(() => expect(window.location.search).toBe(''));
+    fireEvent.click(await screen.findByRole('button', { name: 'ثبت ردیف تازه' }));
+    expect(((await screen.findByLabelText('مبلغ (تومان)')) as HTMLInputElement).value).toBe('');
   });
 
   it('is a cost when no kind is asked for', async () => {
