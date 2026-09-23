@@ -102,6 +102,13 @@ interface ClaimPoolRow {
  * is picked up on the next matcher run. FULFILLED_UNRECONCILED is live here:
  * delivery happened, but matching the later bank credit is still required to
  * close its reconciliation task.
+ *
+ * `::int` on the EXISTS here and in `loadTxPool`, and it is not cosmetic
+ * (issue #424). SQLite answered 0/1; Postgres answers a real boolean, so
+ * `=== 1` was false for every row since the move — a transaction that had
+ * already settled a claim looked free to the next claim of the same amount,
+ * and that claim went to review instead of verifying. The partial unique
+ * index still refused a second settle; nothing was paid twice.
  */
 async function loadClaimPool(db: D1Database, amountIrr: number): Promise<MirzabotClaimCandidate[]> {
   const rows = await db
@@ -116,11 +123,11 @@ async function loadClaimPool(db: D1Database, amountIrr: number): Promise<Mirzabo
               (SELECT fa.status FROM payment_cards pc
                  JOIN financial_accounts fa ON fa.id = pc.financial_account_id
                 WHERE pc.card_digits = c.card_digits LIMIT 1) AS mapped_account_status,
-              EXISTS(
+              (EXISTS(
                 SELECT 1 FROM reconciliation_matches m
                  WHERE m.payment_claim_id = c.id
                    AND m.status IN ('CONFIRMED','AUTO_VERIFIED')
-              ) AS order_already_verified
+              ))::int AS order_already_verified
        FROM payment_claims c
        WHERE c.source_system = ?1
          AND c.status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')
@@ -153,11 +160,11 @@ async function loadTxPool(
     .prepare(
       `SELECT t.id, t.direction, t.amount_irr, t.financial_account_id, t.bank_timestamp,
               t.processing_disposition,
-              EXISTS(
+              (EXISTS(
                 SELECT 1 FROM reconciliation_matches m
                  WHERE m.transaction_candidate_id = t.id
                    AND m.status IN ('CONFIRMED','AUTO_VERIFIED')
-              ) AS consumed
+              ))::int AS consumed
        FROM transaction_candidates t
        WHERE t.financial_account_id = ?1
          AND t.direction = 'CREDIT'

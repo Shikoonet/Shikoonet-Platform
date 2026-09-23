@@ -363,6 +363,47 @@ describe('PHASE 8 — integration: SUGGESTED path', () => {
     expect(claim?.status).not.toBe('VERIFIED');
   });
 
+  /**
+   * Issue #424. The pool read «consumed» as `EXISTS(...) === 1`, and Postgres
+   * answers a real boolean — so a transaction that had already settled one
+   * claim still looked free to the next claim of the same amount on the same
+   * account, and that claim, with its own transfer, was never 1↔1.
+   */
+  it('a transaction that already settled a claim is not a candidate for the next one', async () => {
+    const accountId = 'acc-int-spent';
+    await seedAccountWithCard(accountId, '6037997512345694');
+    const post = async (orderId: string, at: number) => {
+      const body = claimBody({
+        orderId,
+        cardNumber: '6037-9975-1234-5694',
+        paidClickedAt: at,
+        receiptSubmittedAt: at + 1000,
+      });
+      await signedPost(body, body.eventId);
+    };
+
+    await post('ord-spent-a', BASE_MS);
+    await seedTransaction(accountId, 1_000_000, BASE_MS + 20_000, 'tx-spent-a');
+    expect((await rematch(accountId, 1_000_000, 'tx-spent-a', BASE_MS + 20_000)).autoVerifiedCount).toBe(1);
+
+    // A minute later, same amount, same account: tx-spent-a is inside B's
+    // window and must not count.
+    await post('ord-spent-b', BASE_MS + 60_000);
+    await seedTransaction(accountId, 1_000_000, BASE_MS + 80_000, 'tx-spent-b');
+    const run = await rematch(accountId, 1_000_000, 'tx-spent-b', BASE_MS + 80_000);
+    expect(run.autoVerifiedCount).toBe(1);
+
+    const claim = await claimByOrder('ord-spent-b');
+    expect(claim?.status).toBe('VERIFIED');
+    const settledBy = await env.DB.prepare(
+      `SELECT transaction_candidate_id FROM reconciliation_matches
+        WHERE payment_claim_id = ?1 AND status = 'AUTO_VERIFIED'`,
+    )
+      .bind(claim!.id)
+      .first<{ transaction_candidate_id: string }>();
+    expect(settledBy?.transaction_candidate_id).toBe('tx-spent-b');
+  });
+
   it('a claim held in WAIT is settled as NO_TRANSACTION_AFTER_10M once waiting expires', async () => {
     const accountId = 'acc-int-wait';
     await seedAccountWithCard(accountId, '6037997512345693');
