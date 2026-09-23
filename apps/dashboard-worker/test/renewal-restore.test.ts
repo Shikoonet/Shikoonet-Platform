@@ -22,6 +22,8 @@ const TG_BASE = FIXTURE_TG_BASE + 997_000_000;
 const PANEL_CODE = 'zz-restore-panel';
 const GIB = 1024 ** 3;
 const DAY = 86_400_000;
+/** The clock, pinned: the route's `renewFrom` and every panel date below read it. */
+const NOW = Date.UTC(2026, 8, 23, 12, 0, 0);
 
 function envAs(email: string) {
   return { ...baseEnv, TEST_ACCESS_USER: email };
@@ -69,7 +71,10 @@ let seq = 0;
 let panelId: number;
 
 /** A customer with one service that was renewed, and the snapshot that renewal left. */
-async function renewed(lost: { bytes: number; ms: number }) {
+async function renewed(
+  lost: { bytes: number; ms: number },
+  status: 'ACTIVE' | 'DISABLED' = 'ACTIVE',
+) {
   const telegramId = TG_BASE + ++seq;
   const user = await baseEnv.DB.prepare(
     `INSERT INTO users (telegram_id, username, status, registered_at)
@@ -80,10 +85,13 @@ async function renewed(lost: { bytes: number; ms: number }) {
   const sub = await baseEnv.DB.prepare(
     `INSERT INTO subscriptions (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
                                 remote_username, volume_gb, used_bytes, status, purchased_at, expires_at)
-     VALUES (?1, ?2, ?3, 'الماس ۱ ماهه', 1000000, 'ali_42', 50, 0, 'ACTIVE', now(), now())
+     VALUES (?1, ?2, ?3, 'الماس ۱ ماهه', 1000000, 'ali_42', 50, 0, ?4, now(), ?5::timestamptz)
      RETURNING id`,
   )
-    .bind(`zzrestore-${telegramId}`, user!.id, panelId)
+    // Our row's expiry from the pinned clock, not the database's `now()`: the
+    // route keeps the later of ours and the panel's, and a real clock that has
+    // passed NOW would win that comparison.
+    .bind(`zzrestore-${telegramId}`, user!.id, panelId, status, new Date(NOW - DAY).toISOString())
     .first<{ id: number }>();
   const order = await baseEnv.DB.prepare(
     `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, total_irr, status, target_subscription_id, plan_name_at_sale)
@@ -142,6 +150,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(NOW);
   await deleteFixtureUsers(TG_BASE);
 });
 
@@ -160,8 +169,10 @@ afterAll(async () => {
 
 describe('POST /api/v1/admin/renewals/:id/restore', () => {
   it('adds the burned volume and days onto the account as the panel holds it — once', async () => {
-    const r = await renewed({ bytes: 30 * GIB, ms: 5 * DAY });
-    const expire = Math.floor((Date.now() + 30 * DAY) / 1000);
+    // Switched off by the customer (#366): the restore wakes it on the panel,
+    // so the row must say so too.
+    const r = await renewed({ bytes: 30 * GIB, ms: 5 * DAY }, 'DISABLED');
+    const expire = Math.floor((NOW + 30 * DAY) / 1000);
     const puts = fakePanel({ expire, data_limit: 50 * GIB });
 
     const res = await restore(r.snapshotId);
@@ -172,11 +183,12 @@ describe('POST /api/v1/admin/renewals/:id/restore', () => {
     expect(puts[0]?.['data_limit']).toBe(80 * GIB);
     expect(puts[0]?.['expire']).toBe(expire + 5 * 86_400);
     const sub = await baseEnv.DB.prepare(
-      `SELECT volume_gb::float8 AS gb, expires_at FROM subscriptions WHERE id = ?1`,
+      `SELECT volume_gb::float8 AS gb, expires_at, status FROM subscriptions WHERE id = ?1`,
     )
       .bind(r.subId)
-      .first<{ gb: number; expires_at: string }>();
+      .first<{ gb: number; expires_at: string; status: string }>();
     expect(sub?.gb).toBe(80);
+    expect(sub?.status).toBe('ACTIVE');
     expect(Date.parse(sub!.expires_at)).toBe((expire + 5 * 86_400) * 1000);
     expect(await snapshot(r.snapshotId)).toMatchObject({ restored_by: ADMIN });
     const audit = await baseEnv.DB.prepare(
@@ -212,7 +224,7 @@ describe('POST /api/v1/admin/renewals/:id/restore', () => {
   it('is refused for a reviewer, and nothing is claimed', async () => {
     const r = await renewed({ bytes: GIB, ms: DAY });
     const puts = fakePanel({
-      expire: Math.floor(Date.now() / 1000) + 86_400,
+      expire: Math.floor(NOW / 1000) + 86_400,
       data_limit: 50 * GIB,
     });
 
@@ -223,7 +235,7 @@ describe('POST /api/v1/admin/renewals/:id/restore', () => {
 
   it('releases the claim when the panel refuses, so the button works again', async () => {
     const r = await renewed({ bytes: GIB, ms: DAY });
-    fakePanel({ expire: Math.floor(Date.now() / 1000) + 86_400, data_limit: 50 * GIB }, true);
+    fakePanel({ expire: Math.floor(NOW / 1000) + 86_400, data_limit: 50 * GIB }, true);
 
     expect((await restore(r.snapshotId)).status).toBe(502);
     expect((await snapshot(r.snapshotId))?.restored_at).toBeNull();
@@ -232,7 +244,7 @@ describe('POST /api/v1/admin/renewals/:id/restore', () => {
   it('has nothing to give back for a renewal that burned nothing', async () => {
     const r = await renewed({ bytes: 0, ms: 0 });
     const puts = fakePanel({
-      expire: Math.floor(Date.now() / 1000) + 86_400,
+      expire: Math.floor(NOW / 1000) + 86_400,
       data_limit: 50 * GIB,
     });
 

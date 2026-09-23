@@ -1023,7 +1023,8 @@ export function registerCustomerRoutes(
         providerConfig: panel.provider.config,
         planAttrs: {},
         mode: 'ADD',
-        renewFrom: new Date(),
+        // `Date.now()`, not `new Date()`: the one clock a test can pin.
+        renewFrom: new Date(Date.now()),
       },
       panel.provider,
     );
@@ -1041,6 +1042,9 @@ export function registerCustomerRoutes(
           `UPDATE subscriptions
               SET volume_gb      = COALESCE(?2, volume_gb),
                   expires_at     = GREATEST(?3::timestamptz, expires_at),
+                  -- The adapter sent «status: active» to the panel, so a row
+                  -- the customer had switched off follows it (#366).
+                  status         = CASE WHEN status = 'DISABLED' THEN 'ACTIVE' ELSE status END,
                   notify         = '{}'::jsonb,
                   last_synced_at = NULL,
                   updated_at     = now()
