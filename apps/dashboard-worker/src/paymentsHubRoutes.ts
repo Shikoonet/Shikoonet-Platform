@@ -25,6 +25,7 @@ import {
   isPaymentEventUnread,
   type HistoryRange,
   type D1Database as DomainD1Database,
+  loadExpiredInvoiceHints,
 } from '@shikoo/domain';
 import type { EnvName } from '@shikoo/contracts';
 import { IRR_PER_TOMAN, MIRZABOT_SOURCE, Texts } from '@shikoo/contracts';
@@ -112,6 +113,10 @@ export function searchLikeBind(q: string): string {
  * The «واریزی‌ها» half of the search: the tracking number, the account it
  * landed on, and the amount whole — as the operator reads it (toman) or as
  * the SMS printed it (rial). `fa` must be joined by the caller.
+ *
+ * And the deposit's own id, whole: «وصل کن به سفارش» on a «دفتر بانک» row
+ * opens this tab on exactly that deposit. Equality, never LIKE — an id holds
+ * digits, and «100» must keep meaning the amount.
  */
 function incomeSearchClause(q: string | null, p: (v: unknown) => string): string {
   if (!q) return '';
@@ -119,7 +124,7 @@ function incomeSearchClause(q: string | null, p: (v: unknown) => string): string
   return ` AND (${searchLikeSql(
     ['t.transaction_reference', 'fa.account_hint', 'fa.display_name'],
     like,
-  )} OR (t.amount_irr / 10)::text = ${p(q)} OR t.amount_irr::text = ${p(q)})`;
+  )} OR (t.amount_irr / 10)::text = ${p(q)} OR t.amount_irr::text = ${p(q)} OR t.id = ${p(q)})`;
 }
 
 /**
@@ -273,99 +278,9 @@ export async function loadDeclinedIncomeCount(db: D1Database) {
   return row?.n ?? 0;
 }
 
-/** How late a deposit may arrive and still be read as «that invoice». */
-export const EXPIRED_INVOICE_HINT_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-export interface ExpiredInvoiceHint {
-  publicId: string;
-  /** Epoch ms the invoice was issued. */
-  invoiceAt: number;
-  customer: { id: number; telegramId: string; username: string | null } | null;
-  /** Other expired invoices that fit the same deposit — 0 when this one is alone. */
-  others: number;
-}
-
-/**
- * «Probably invoice X» on a deposit nobody claimed (#275).
- *
- * Since #274 an invoice expires with the card hold (ten minutes by default)
- * and «پرداخت کردم» after that opens no claim. A customer who pays late
- * anyway lands here, in «واریزی‌ها», and the operator had to guess which
- * invoice the money was for. This names the guess: an EXPIRED card-to-card
- * invoice for the same amount, on a card mapped to the account the SMS
- * came in on, issued in the 24 hours before the bank stamped the deposit.
- *
- * Only an invoice whose ORDER expired. A card checkout also closes as
- * `EXPIRED` when the customer pays the order from their balance instead
- * (`handle.ts`, the wallet button) — the order is PAID and nobody is late
- * with anything, yet the row looked exactly like an unpaid invoice and was
- * named against a stranger's deposit of the same amount on the same account
- * (#339: an operator's own wallet purchase, offered as the owner of a
- * deposit three hours later). The order's status is what says the money is
- * still owed; the payment's alone does not.
- *
- * A hint and nothing more. It is not a match, it verifies nothing, and the
- * rule «auto-verify only for an isolated 1↔1 pair in the five-minute
- * window» is untouched — an expired invoice has no claim to match. The
- * newest fitting invoice is named; `others` says how many more fit, so a
- * regular's third attempt is not presented as certain.
- *
- * One query for the page, `ANY(?1)` over its ids, like `expire.ts`.
- */
-export async function loadExpiredInvoiceHints(
-  db: D1Database,
-  txIds: string[],
-): Promise<Map<string, ExpiredInvoiceHint>> {
-  const out = new Map<string, ExpiredInvoiceHint>();
-  if (txIds.length === 0) return out;
-  const rows = await db
-    .prepare(
-      `SELECT DISTINCT ON (t.id)
-              t.id AS tx_id,
-              p.public_id,
-              (EXTRACT(EPOCH FROM p.created_at) * 1000)::bigint AS invoice_at,
-              u.id AS user_id, u.telegram_id, u.username,
-              COUNT(*) OVER (PARTITION BY t.id) AS fitting
-         FROM transaction_candidates t
-         JOIN payments p
-           ON p.status = 'EXPIRED'
-          AND p.method = 'CARD_TO_CARD'
-          AND p.amount_irr = t.amount_irr
-          AND p.created_at >  to_timestamp((t.bank_timestamp - ?2) / 1000.0)
-          AND p.created_at <= to_timestamp(t.bank_timestamp / 1000.0)
-         JOIN payment_cards pc
-           ON pc.card_digits = p.assigned_card_number
-          AND pc.financial_account_id = t.financial_account_id
-         LEFT JOIN users u ON u.id = p.user_id
-        WHERE t.id = ANY(?1)
-          AND t.bank_timestamp IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM orders o
-                           WHERE o.id = p.order_id AND o.status <> 'EXPIRED')
-        ORDER BY t.id, p.created_at DESC`,
-    )
-    .bind(txIds, EXPIRED_INVOICE_HINT_WINDOW_MS)
-    .all<{
-      tx_id: string;
-      public_id: string;
-      invoice_at: number;
-      user_id: number | null;
-      telegram_id: number | string | null;
-      username: string | null;
-      fitting: number;
-    }>();
-  for (const r of rows.results ?? []) {
-    out.set(r.tx_id, {
-      publicId: r.public_id,
-      invoiceAt: r.invoice_at,
-      customer:
-        r.user_id != null && r.telegram_id != null
-          ? { id: r.user_id, telegramId: String(r.telegram_id), username: r.username }
-          : null,
-      others: Math.max(0, Number(r.fitting) - 1),
-    });
-  }
-  return out;
-}
+// «Probably invoice X» (#275) lives in `@shikoo/domain` (`lateDeposits.ts`)
+// since 1 Mehr 1405, so the late-deposit alert reads the same guess the
+// operator is shown here.
 
 export async function loadIncomeItems(
   db: D1Database,

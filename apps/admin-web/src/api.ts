@@ -940,6 +940,12 @@ export interface BankMovement {
   expense: { id: number; note: string | null } | null;
   /** Who wrote a manual row. */
   by?: string;
+  /** On an `sms` row: the server would accept «خارج از دفتر» on it. */
+  offBooksEligible?: boolean;
+  /** On an `sms` credit: it is in «واریزی‌ها» now, where a deposit is given its owner. */
+  inQueue?: boolean;
+  /** On an `sms` credit classified to a reseller: whose. */
+  reseller?: string | null;
 }
 
 export interface RevenueAdjustmentRow {

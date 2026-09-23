@@ -246,12 +246,15 @@ export function ExpensesPage() {
 
   // «دفتر بانک» sends the operator here to explain a withdrawal the bank
   // showed and never texted: ?account=&amount=<toman>&date=YYYY-MM-DD opens
-  // the form on that account, that day, that amount.
+  // the form on that account, that day, that amount. From a withdrawal the
+  // bank did text, `tx` links the form to that SMS and `kind` may ask for a
+  // partner's draw instead of a cost (Sam, 1 Mehr: «دکمه روی برداشت‌ها»).
   const prefill = useMemo(() => {
     const q = new URLSearchParams(window.location.search);
     const account = q.get('account');
     if (!account) return null;
-    return { account, amount: q.get('amount') ?? '', date: q.get('date') ?? '' };
+    const kind = q.get('kind') === 'PARTNER_DRAW' ? ('PARTNER_DRAW' as const) : undefined;
+    return { account, amount: q.get('amount') ?? '', date: q.get('date') ?? '', tx: q.get('tx') ?? '', kind };
   }, []);
   const [editing, setEditing] = useState<RevenueAdjustmentRow | 'new' | null>(prefill ? 'new' : null);
   const [posting, setPosting] = useState<ExpenseRecurrence | null>(null);
@@ -1557,7 +1560,7 @@ function EntryForm({
   /** Posting one instalment of this template, rather than typing a free row. */
   recurrence?: ExpenseRecurrence | null;
   /** Arriving from «دفتر بانک» with the hole already measured. */
-  prefill?: { account: string; amount: string; date: string } | null;
+  prefill?: { account: string; amount: string; date: string; tx?: string; kind?: 'PARTNER_DRAW' | undefined } | null;
   categories: ExpenseCategory[];
   parties: Party[];
   scopes: ExpenseScopes;
@@ -1568,7 +1571,7 @@ function EntryForm({
   // Who and what-for — the template's when posting an instalment of one.
   const [refs, setRefs] = useState<Refs>(() => refsFrom(row ?? recurrence));
   // A recurring cost is always spending, and its category is the template's.
-  const [kind, setKind] = useState<LedgerKind>(recurrence ? 'EXPENSE' : (row?.kind ?? 'EXPENSE'));
+  const [kind, setKind] = useState<LedgerKind>(recurrence ? 'EXPENSE' : (row?.kind ?? prefill?.kind ?? 'EXPENSE'));
   const [currency, setCurrency] = useState<Currency>(row?.currency ?? 'IRR');
   /**
    * The amount as it stands, exactly — fraction and all.
@@ -1610,7 +1613,7 @@ function EntryForm({
    */
   const [accountId, setAccountId] = useState<string>(row?.financialAccountId ?? prefill?.account ?? '');
   const [fee, setFee] = useState(row && row.feeIrr > 0 ? String(row.feeIrr / 10) : '');
-  const [withdrawalId, setWithdrawalId] = useState<string>(row?.transactionCandidateId ?? '');
+  const [withdrawalId, setWithdrawalId] = useState<string>(row?.transactionCandidateId ?? prefill?.tx ?? '');
   const [accounts, setAccounts] = useState<AccountListItem[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalOption[]>([]);
   // Noon UTC, so parsing a date-only string cannot land on the previous day in

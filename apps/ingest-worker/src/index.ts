@@ -15,7 +15,7 @@ import {
 } from './integrations/mirzabot.js';
 import { flushWebhookDeliveries } from './integrations/webhook.js';
 import type { MirzabotClaimPayload } from '@shikoo/contracts';
-import { clientIp, createLogger, type RateLimit } from '@shikoo/domain';
+import { alertLateDeposits, clientIp, createLogger, type RateLimit } from '@shikoo/domain';
 
 export interface Env {
   DB: D1Database;
@@ -346,5 +346,14 @@ export async function runScheduledSweep(env: Env): Promise<void> {
     // whose order the legacy bot was never successfully told about, and it will
     // not be retried again — see the outbox note in `webhook.ts`.
     log.error('webhook.dead', { notices: flushed.dead });
+  }
+  // A deposit for an invoice that had already expired: tell the report group
+  // once, and say what to press (Sam, 1 Mehr 1405 — an alert, never an
+  // automatic credit). Its own try: a failure here must not stop the sweep
+  // that finalises waiting claims.
+  try {
+    await alertLateDeposits(env.DB, Date.now());
+  } catch (err) {
+    log.error('late_deposit.alert_failed', {}, err);
   }
 }

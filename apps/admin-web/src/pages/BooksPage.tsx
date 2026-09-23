@@ -731,13 +731,19 @@ function MovementState({ m }: { m: BankMovement }) {
     );
   }
   if (m.direction === 'CREDIT') {
-    return m.matched ? (
-      <span className="badge badge-active">فروش</span>
-    ) : (
-      <span className="badge">واریز وصل‌نشده</span>
-    );
+    if (m.matched) return <span className="badge badge-active">فروش</span>;
+    // Classified in «واریزی‌ها» to a reseller: customer income all the same,
+    // and until 1 Mehr indistinguishable here from money nobody had claimed.
+    if (m.reseller) return <span className="badge badge-active">نمایندگی — {m.reseller}</span>;
+    return <span className="badge">واریز وصل‌نشده</span>;
   }
   return <span className="badge badge-warning">برداشت بی‌توضیح</span>;
+}
+
+/** «هزینه‌ها», its form open on this withdrawal: the account, the amount, the day, and the SMS itself. */
+function withdrawalHref(accountId: string, m: BankMovement): string {
+  const day = jalaliToIsoDate(toJalali(m.bankTimestamp));
+  return `/admin/expenses?account=${encodeURIComponent(accountId)}&amount=${Math.round(m.amountIrr / 10)}&date=${day}&tx=${encodeURIComponent(m.id)}`;
 }
 
 /** A movement the bank's balances imply but no row carries: found between two SMS. */
@@ -834,7 +840,7 @@ function Movements({
         <div className="muted">
           هر پیامک بانک، و آنچه دفتر درباره‌اش می‌گوید.
           {open > 0 &&
-            ` ${count(open)} برداشت هنوز توضیح ندارد: یا در «هزینه‌ها» ثبت و به همین پیامک وصل کن، یا این‌جا خارج از دفتر بزن.`}
+            ` ${count(open)} برداشت هنوز توضیح ندارد: کنارش «هزینه» یا «برداشت شریک» را بزن، یا «خارج از دفتر».`}
           {holes.length > 0 &&
             ` ${count(holes.length)} جا موجودی بانک با پیامک‌ها نمی‌خواند — ردیف خاکستری را توضیح بده.`}
         </div>
@@ -891,7 +897,33 @@ function Movements({
                       <MovementState m={m} />
                     </td>
                     <td className="cell-actions" style={{ whiteSpace: 'nowrap' }}>
-                      {canWrite && m.kind === 'sms' && !m.matched && !m.expense && !m.offBooks && (
+                      {/* A deposit is given its owner in «واریزی‌ها» only: open it there, on this one row. */}
+                      {m.kind === 'sms' && m.direction === 'CREDIT' && m.inQueue && (
+                        <a
+                          className="btn btn-sm"
+                          style={{ marginInlineEnd: 6 }}
+                          href={`/admin/payments?tab=income&q=${encodeURIComponent(m.id)}`}
+                          title="در «واریزی‌ها» باز می‌شود — آن‌جا به سفارش یا کیف پول وصلش کن"
+                        >
+                          وصل کن به سفارش
+                        </a>
+                      )}
+                      {/* A withdrawal the bank texted and nothing explains: the ledger form, already on this SMS. */}
+                      {canWrite && m.kind === 'sms' && m.direction === 'DEBIT' && !m.expense && !m.offBooks && (
+                        <>
+                          <a className="btn btn-sm" style={{ marginInlineEnd: 6 }} href={withdrawalHref(accountId, m)}>
+                            هزینه
+                          </a>
+                          <a
+                            className="btn btn-sm"
+                            style={{ marginInlineEnd: 6 }}
+                            href={`${withdrawalHref(accountId, m)}&kind=PARTNER_DRAW`}
+                          >
+                            برداشت شریک
+                          </a>
+                        </>
+                      )}
+                      {canWrite && m.kind === 'sms' && m.offBooksEligible && (
                         <button type="button" className="btn btn-sm" onClick={() => onTag({ kind: 'sms', movement: m })}>
                           خارج از دفتر
                         </button>

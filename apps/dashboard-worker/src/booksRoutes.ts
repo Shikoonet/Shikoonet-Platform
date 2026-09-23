@@ -44,6 +44,8 @@ import {
   withdrawalsNear,
   type AccountStatement,
   type OffBooksCategory,
+  INCOME_QUEUE_TX_WHERE,
+  OFF_BOOKS_ELIGIBLE_TX_WHERE,
   TX_WALLET_CREDITED,
 } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
@@ -361,8 +363,18 @@ export function registerBooksRoutes(
               -- hand — a bot top-up is matched to its order, so both read the same.
               (EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.transaction_candidate_id = t.id
                          AND m.status IN ('CONFIRMED','AUTO_VERIFIED'))
-               OR ${TX_WALLET_CREDITED}) AS matched
+               OR ${TX_WALLET_CREDITED}) AS matched,
+              -- What the row's buttons may offer, asked of the same predicates
+              -- the routes check, so the page never shows a button the server
+              -- refuses (a reseller credit offered «خارج از دفتر», 409).
+              (${OFF_BOOKS_ELIGIBLE_TX_WHERE}) AS off_books_eligible,
+              -- In «واریزی‌ها» right now: the one place a deposit is given an
+              -- owner. The row links there only when the link would find it.
+              (${INCOME_QUEUE_TX_WHERE}) AS in_queue,
+              r.name AS reseller_name
          FROM transaction_candidates t
+         LEFT JOIN reseller_transactions rtx ON rtx.transaction_candidate_id = t.id
+         LEFT JOIN resellers r ON r.id = rtx.reseller_id
          LEFT JOIN income_declined_transactions idt
                 ON idt.transaction_candidate_id = t.id AND idt.restored_at IS NULL
          LEFT JOIN revenue_adjustments ra
@@ -386,6 +398,9 @@ export function registerBooksRoutes(
         expense_note: string | null;
         fee_irr: string | number;
         matched: boolean;
+        off_books_eligible: boolean;
+        in_queue: boolean;
+        reseller_name: string | null;
       }>();
     const manual = await c.env.DB.prepare(
       `SELECT id, direction, amount_irr, moved_at, category, note, created_by
@@ -438,6 +453,11 @@ export function registerBooksRoutes(
         balanceIrr: r.balance_irr == null ? null : Number(r.balance_irr),
         bankTimestamp: Number(r.bank_timestamp),
         matched: r.matched === true,
+        offBooksEligible: r.off_books_eligible === true,
+        inQueue: r.in_queue === true,
+        // «نمایندگی»: classified to a reseller in «واریزی‌ها». Still the
+        // customer income it always was; the label says whose.
+        reseller: r.reseller_name,
         offBooks: r.off_books_category
           ? { category: r.off_books_category, categoryFa: OFF_BOOKS_CATEGORY_FA[r.off_books_category], note: r.off_books_note }
           : null,
