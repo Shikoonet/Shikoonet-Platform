@@ -14,7 +14,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
-import { StockPage } from '../src/pages/StockPage.js';
+import { ShelfPapers, StockPage } from '../src/pages/StockPage.js';
 
 const stock = vi.fn(async () => ({
   ok: true,
@@ -297,12 +297,12 @@ describe('a shelf’s papers', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'پیوست‌ها (۲)' }));
     await waitFor(() => expect(shelfAttachments).toHaveBeenCalledWith(7));
     await screen.findByText('client.ovpn');
-    return document.querySelector('#papers-file') as HTMLInputElement;
+    return screen.getByLabelText(/^فایل \(مثلاً \.ovpn\)/) as HTMLInputElement;
   }
 
   it('shows the note and the files in order, and sends a video as a video', async () => {
     const input = await openPapers();
-    expect((document.querySelector('#papers-note') as HTMLTextAreaElement).value).toBe(
+    expect((screen.getByLabelText('توضیح — زیر پیام تحویل') as HTMLTextAreaElement).value).toBe(
       'فایل را در OpenVPN Connect وارد کن.',
     );
     const names = [...document.querySelectorAll('td.ltr')].map((td) => td.textContent);
@@ -321,5 +321,32 @@ describe('a shelf’s papers', () => {
     fireEvent.change(input, { target: { files: [big] } });
     await screen.findByText(/در کانال بگذارش/);
     expect(uploadShelfAttachment).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * «سرویس‌ها» can have two services' drawers open at once, each with its own
+ * papers card. With one fixed id per page, the second card's label pointed at
+ * the FIRST card's input, and the file was filed under the other config
+ * (CodeRabbit on #428). Each card owns its inputs now.
+ */
+describe('two papers cards on one page', () => {
+  it('sends each card\'s file to its own plan', async () => {
+    render(
+      <RoleProvider role="ADMIN">
+        <ShelfPapers shelf={{ planId: 7, planName: 'یک', productName: 'A' }} onClose={() => {}} onChanged={() => {}} withNote={false} />
+        <ShelfPapers shelf={{ planId: 8, planName: 'دو', productName: 'B' }} onClose={() => {}} onChanged={() => {}} withNote={false} />
+      </RoleProvider>,
+    );
+    await waitFor(() => expect(shelfAttachments).toHaveBeenCalledWith(8));
+
+    const inputs = screen.getAllByLabelText(/^فایل \(مثلاً \.ovpn\)/) as HTMLInputElement[];
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]!.id).not.toBe(inputs[1]!.id);
+
+    // Through the SECOND card's label — the path that used to reach the first.
+    fireEvent.change(inputs[1]!, { target: { files: [new File(['x'], 'two.ovpn')] } });
+    await waitFor(() => expect(uploadShelfAttachment).toHaveBeenCalledTimes(1));
+    expect(uploadShelfAttachment.mock.calls[0]![0]).toBe(8);
   });
 });

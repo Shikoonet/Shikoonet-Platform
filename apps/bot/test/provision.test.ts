@@ -302,6 +302,54 @@ describe('the WireGuard config after a purchase', () => {
   });
 });
 
+/*
+ * A plan on a real panel carries papers as a shelf does (Sam, 2026-09-22):
+ * a WireGuard service's install video and client installer, filed from
+ * «سرویس‌ها». The dashboard used to refuse to file them for a panel plan;
+ * this is the proof that the bot, which never checked, sends them.
+ */
+describe("a panel plan's papers", () => {
+  it('are sent after the service message of a new purchase, in the order filed', async () => {
+    const order = await paidOrder();
+    const plan = await planId('sim-vip-1m-50');
+    const filed: number[] = [];
+    // Pinned, not read live (rule 5): the sweep takes its `now` from the clock.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-22T09:00:00Z'));
+    try {
+      for (const [kind, name] of [
+        ['video', 'install.mp4'],
+        ['document', 'wireguard-installer.exe'],
+      ] as const) {
+        const row = await db
+          .prepare(
+            `INSERT INTO shelf_attachments (plan_id, kind, file_id, file_name, size_bytes)
+             VALUES (?1, ?2, ?3, ?4, 1) RETURNING id`,
+          )
+          .bind(plan, kind, `file-${name}`, name)
+          .first<{ id: number }>();
+        filed.push(Number(row!.id));
+      }
+
+      await provisionPaidOrders(db, fakePanel().fetchImpl);
+
+      const keys = (await pendingNotifications())
+        .map((n) => n.dedupeKey)
+        .filter((k) => k.startsWith(`provision:${order.publicId}`));
+      expect(keys).toEqual([
+        `provision:${order.publicId}`,
+        ...filed.map((id) => `provision:${order.publicId}:att:${id}`),
+      ]);
+    } finally {
+      // The plan is shared by every test in this file; papers left on it
+      // would ride along with every other delivery here.
+      for (const id of filed) {
+        await db.prepare(`DELETE FROM shelf_attachments WHERE id = ?1`).bind(id).run();
+      }
+      clock.mockRestore();
+    }
+  });
+});
+
 describe('delivering a paid order', () => {
   it('creates the account, records the subscription, and completes the order', async () => {
     const order = await paidOrder();

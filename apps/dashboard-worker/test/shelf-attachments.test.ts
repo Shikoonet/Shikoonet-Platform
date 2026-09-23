@@ -298,10 +298,26 @@ describe('filing a paper on a shelf', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('is only for a shelf — a plan on a real panel is not found', async () => {
+  /*
+   * Inverted on 2026-09-22. This test used to say a plan on a real panel was
+   * not found; Sam then wanted a WireGuard service's install video and client
+   * downloads sent after every sale, and a WireGuard service IS a panel plan.
+   * The bot never checked (`tell()` sends any plan's papers), so the rule was
+   * only ever the route's — and «سرویس‌ها» now opens this card from any
+   * config's drawer.
+   */
+  it('carries papers for a plan on a real panel too', async () => {
+    telegram({ document: { file_id: 'BQACAgWg', file_name: 'wireguard-installer.exe', file_size: 3 } });
+    const up = await upload(panelPlan, 'wireguard-installer.exe', 'document', new Uint8Array([1, 2, 3]));
+    expect(up.status).toBe(200);
+    const listed = (await (await list(panelPlan)).json()) as { items: { fileName: string }[] };
+    expect(listed.items.map((i) => i.fileName)).toEqual(['wireguard-installer.exe']);
+  });
+
+  it('still refuses a plan that does not exist', async () => {
     telegram({ document: { file_id: 'x' } });
-    expect((await upload(panelPlan, 'a.ovpn', 'document', new Uint8Array([1]))).status).toBe(404);
-    expect((await list(panelPlan)).status).toBe(404);
+    expect((await upload(987_654_321, 'a.ovpn', 'document', new Uint8Array([1]))).status).toBe(404);
+    expect((await list(987_654_321)).status).toBe(404);
     expect(calls).toHaveLength(0);
   });
 });
