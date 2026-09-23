@@ -5,6 +5,7 @@
  * from what the matcher already wrote to payment_claims / reconciliation_matches.
  */
 
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
@@ -1452,6 +1453,93 @@ describe('the customer behind a claim', () => {
         .walletPaidToman;
     expect(paid('wal-c')).toBe(5950);
     expect(paid('wal-none')).toBe(0);
+  });
+
+  /*
+   * Sam, 2026-09-23: the review page named the customer, the amount and the
+   * card, and never what was bought — «تیتانیوم خریده یا وایرگارد یا
+   * اوپن‌وی‌پی‌ان». The service is the catalogue's; the plan is the name frozen
+   * on the order at sale (0089), so the rename below must NOT reach it.
+   */
+  it('says which service and plan the payment is for', async () => {
+    const userId = await seedCustomer([]);
+    // Nothing between runs empties the catalogue, orders or payments, so every
+    // key here carries this run's own tag — a second run of the file must not
+    // collide with the first.
+    const run = randomUUID().slice(0, 8);
+    const cat = await baseEnv.DB.prepare(
+      `INSERT INTO product_categories (name, sort_order) VALUES (?1, 0) RETURNING id`,
+    )
+      .bind(`svc-cat-${run}`)
+      .first<{ id: number }>();
+    const product = await baseEnv.DB.prepare(
+      `INSERT INTO products (code, name, kind, category_id, status)
+       VALUES (?1, 'تیتانیوم', 'vpn', ?2, 'ACTIVE') RETURNING id`,
+    )
+      .bind(`svc-titanium-${run}`, cat!.id)
+      .first<{ id: number }>();
+    const plan = await baseEnv.DB.prepare(
+      `INSERT INTO product_plans (product_id, name, price_irr) VALUES (?1, 'یک‌ماهه ۵۰ گیگ', 1200000) RETURNING id`,
+    )
+      .bind(product!.id)
+      .first<{ id: number }>();
+
+    /**
+     * An order, its payment, and a claim that points at it. Awaiting payment,
+     * as an order under review is: the rows outlive this file, and a
+     * COMPLETED top-up here once moved `revenue.test`'s ledger-wide sum —
+     * completed orders include it, the overview's revenue rightly does not.
+     */
+    async function sale(tag: string, kind: string, planId: number | null, frozen: string | null, target: number | null) {
+      const order = await baseEnv.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, plan_name_at_sale, target_subscription_id,
+                             unit_price_irr, quantity, discount_irr, total_irr, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1200000, 1, 0, 1200000, 'AWAITING_PAYMENT') RETURNING id`,
+      )
+        .bind(`svc-o-${tag}-${run}`, userId, kind, planId, frozen, target)
+        .first<{ id: number }>();
+      await baseEnv.DB.prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+         VALUES (?1, ?2, ?3, 1200000, 'CARD_TO_CARD', 'PAID', now())`,
+      )
+        .bind(`svc-p-${tag}-${run}`, userId, order!.id)
+        .run();
+      await seedClaim(`svc-c-${tag}`, { status: 'VERIFIED', customerReference: String(TG) });
+      await baseEnv.DB.prepare(`UPDATE payment_claims SET external_order_id = ?1 WHERE id = ?2`)
+        .bind(`shikoo:svc-p-${tag}-${run}`, `svc-c-${tag}`)
+        .run();
+    }
+
+    await sale('new', 'NEW_PURCHASE', plan!.id, 'یک‌ماهه ۵۰ گیگ', null);
+    // Renamed after the sale: the payment keeps the name it was sold under.
+    await baseEnv.DB.prepare(`UPDATE product_plans SET name = 'الماس' WHERE id = ?1`).bind(plan!.id).run();
+
+    // An add-on names no plan; it extends a subscription, and that is the service.
+    const sub = await baseEnv.DB.prepare(
+      `INSERT INTO subscriptions (public_id, user_id, plan_id, plan_name_at_sale, price_irr, status, purchased_at)
+       VALUES (?1, ?2, ?3, 'یک‌ماهه ۵۰ گیگ', 1200000, 'ACTIVE', now()) RETURNING id`,
+    )
+      .bind(`svc-s-${run}`, userId, plan!.id)
+      .first<{ id: number }>();
+    await sale('vol', 'ADD_VOLUME', null, null, sub!.id);
+
+    // A top-up buys no service.
+    await sale('top', 'WALLET_TOPUP', null, null, null);
+    // An imported Mirzabot claim has no order here at all.
+    await seedClaim('svc-c-mirza', { status: 'VERIFIED', customerReference: String(TG) });
+
+    const body = await get('tab=all&range=all');
+    const of = (id: string) => {
+      const i = body.items.find((x) => x.id === id) as unknown as {
+        serviceName: string | null;
+        planName: string | null;
+      };
+      return { serviceName: i.serviceName, planName: i.planName };
+    };
+    expect(of('svc-c-new')).toEqual({ serviceName: 'تیتانیوم', planName: 'یک‌ماهه ۵۰ گیگ' });
+    expect(of('svc-c-vol')).toEqual({ serviceName: 'تیتانیوم', planName: 'یک‌ماهه ۵۰ گیگ' });
+    expect(of('svc-c-top')).toEqual({ serviceName: null, planName: null });
+    expect(of('svc-c-mirza')).toEqual({ serviceName: null, planName: null });
   });
 
   it('says nothing, not zero, when the reference matches no customer', async () => {

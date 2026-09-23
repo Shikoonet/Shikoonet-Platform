@@ -207,6 +207,25 @@ function PaymentIdentity({ item }: { item: PaymentItem }) {
 }
 
 /** «خرید جدید» or «تمدید» beside the title — the same buckets the auto-verified tab filters by. */
+/**
+ * What was bought, beside how it was bought (Sam, 2026-09-23): the review page
+ * named the customer, the amount and the card, and never the service — so
+ * telling a «تیتانیوم» payment from a «وایرگارد» one meant opening the order.
+ * The plan follows in a lighter weight, and is left out when it only repeats
+ * the service's name, which imported plans often do.
+ */
+function ReviewService({ item }: { item: PaymentItem }) {
+  const service = item.serviceName?.trim() || null;
+  const plan = item.planName?.trim() || null;
+  if (service === null && plan === null) return null;
+  return (
+    <span className="review-page__service">
+      {service && <strong>{service}</strong>}
+      {plan && plan !== service && <span className="muted">{plan}</span>}
+    </span>
+  );
+}
+
 function PurchaseTypeBadge({ item }: { item: PaymentItem }) {
   if (item.purchaseType === 'NEW_PURCHASE') return <span className="badge badge-info">خرید جدید</span>;
   if (item.purchaseType === 'RENEWAL') return <span className="badge">تمدید</span>;
@@ -700,6 +719,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 </button>
                 <h2 className="review-page__title">بررسی پرداخت</h2>
                 {reviewing && <PurchaseTypeBadge item={reviewing} />}
+                {reviewing && <ReviewService item={reviewing} />}
                 {/*
                   The fulfil action used to live here, in the page bar, and that
                   is half of why «هیچ کاری نمی‌شود کرد» was the report. It moved

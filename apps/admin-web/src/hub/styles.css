@@ -3388,6 +3388,7 @@
 
 .review-page__bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-md);
   padding-block-end: var(--space-sm);
@@ -3398,6 +3399,17 @@
   margin: 0;
   font-size: 1.05rem;
   font-weight: 600;
+}
+
+/* The service a payment is for, beside the page title — the one question the
+   page did not answer at a glance. Wraps under the title on a phone rather
+   than pushing the bar wider than the screen. */
+.review-page__service {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.6rem;
+  min-width: 0;
 }
 
 /* The panel is a stack of eight sections, each with a heading and exactly ONE
