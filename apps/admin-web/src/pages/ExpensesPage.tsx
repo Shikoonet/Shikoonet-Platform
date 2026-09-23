@@ -55,6 +55,7 @@ import {
   type JalaliDate,
 } from '@shikoo/contracts';
 import { DateField } from '../DateField.js';
+import { PeriodPicker, currentPeriod, periodDays, type Period } from '../PeriodPicker.js';
 import {
   api,
   ApiError,
@@ -240,6 +241,7 @@ export function ExpensesPage() {
   const [dated, setDated] = useState(false);
   const [jFrom, setJFrom] = useState<JalaliDate>(() => toJalali(Date.now() - 30 * 86_400_000));
   const [jTo, setJTo] = useState<JalaliDate>(() => toJalali(Date.now()));
+  const [period, setPeriod] = useState<Period>(() => currentPeriod());
 
   // «دفتر بانک» sends the operator here to explain a withdrawal the bank
   // showed and never texted: ?account=&amount=<toman>&date=YYYY-MM-DD opens
@@ -603,6 +605,15 @@ export function ExpensesPage() {
 
         {dated && (
           <div className="statsbar__dates" style={{ marginBlockEnd: 12 }}>
+            <PeriodPicker
+              value={period}
+              onChange={(next) => {
+                const d = periodDays(next);
+                setPeriod(next);
+                setJFrom(d.from);
+                setJTo(d.to);
+              }}
+            />
             <DateField label="از" value={jFrom} onChange={setJFrom} />
             <DateField label="تا" value={jTo} onChange={setJTo} />
           </div>

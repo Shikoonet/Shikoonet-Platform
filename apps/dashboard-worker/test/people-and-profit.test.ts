@@ -109,6 +109,14 @@ async function purge(): Promise<void> {
   await db.prepare(`DELETE FROM products WHERE code LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM product_categories WHERE name LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM provisioning_providers WHERE code LIKE ?1`).bind(`${P}%`).run();
+  await db
+    .prepare(
+      `DELETE FROM profit_distribution_shares WHERE distribution_id IN (
+         SELECT s.distribution_id FROM profit_distribution_shares s JOIN parties pa ON pa.id = s.party_id WHERE pa.name LIKE ?1)`,
+    )
+    .bind(`${P}%`)
+    .run();
+  await db.prepare(`DELETE FROM profit_distributions d WHERE NOT EXISTS (SELECT 1 FROM profit_distribution_shares s WHERE s.distribution_id = d.id)`).run();
   await db.prepare(`DELETE FROM parties WHERE name LIKE ?1`).bind(`${P}%`).run();
   await db.prepare(`DELETE FROM users WHERE username LIKE ?1`).bind(`${P}%`).run();
 }
@@ -418,5 +426,170 @@ describe('the ledger learns who, and what for', () => {
     const row = await one<{ provider_id: number; party_id: number }>(
       `SELECT provider_id, party_id FROM revenue_adjustments WHERE id = ?1`, posted.id);
     expect([Number(row.provider_id), Number(row.party_id)]).toEqual([ids.panelB, ids.host]);
+  });
+});
+
+/**
+ * «تقسیم سود» — Sam, 1 Mehr 1405: «آخر ماه پویان بیاد بگه ۴۰ میلیون تقسیم
+ * می‌کنم … چجوری ثبت کنیم که توی حساب همه شریکا بشینه؟»
+ *
+ * The balances are checked against the tables summed by hand, not against a
+ * second call to the route: allotted is `profit_distribution_shares`, drawn is
+ * the ledger's PARTNER_DRAW rows.
+ */
+describe('«تقسیم سود» and each partner’s running account', () => {
+  interface Account { partyId: number; allottedIrr: number; drawnIrr: number; balanceIrr: number }
+  const accounts = async () =>
+    ((await (await call('GET', `${BASE}/distributions`)).json()) as { accounts: Account[] }).accounts;
+  const of = (list: Account[], id: number | undefined) => list.find((a) => a.partyId === id)!;
+  const drawnBySql = async (id: number | undefined) =>
+    Number((await one<{ s: string | number }>(
+      `SELECT COALESCE(SUM(fee_irr - amount_irr), 0) AS s FROM shop_books WHERE party_id = ?1 AND kind = 'PARTNER_DRAW'`,
+      id,
+    )).s);
+  const split = (body: Record<string, unknown>, email = ADMIN) =>
+    call('POST', `${BASE}/distributions`, { fromDay: DAY, toDay: DAY, ...body }, email);
+
+  it('previews the total by percent in whole Toman, and writes nothing', async () => {
+    const before = await one<{ n: number }>(`SELECT count(*)::int AS n FROM profit_distributions`);
+    const res = await split({ totalToman: 1001, dryRun: true });
+    expect(res.status).toBe(200);
+    const r = (await res.json()) as { profitIrr: number; totalIrr: number; shares: Array<{ partyId: number; amountIrr: number }> };
+    // 60:40 of 1001 Toman = 600.6 / 400.4 → 600 / 400, the one left over to
+    // the larger fraction: 601 / 400. Then ×10 to Rial.
+    expect(r.shares.filter((s) => s.partyId === ids.hesam || s.partyId === ids.pouyan)).toEqual([
+      expect.objectContaining({ partyId: ids.hesam, amountIrr: 6_010 }),
+      expect.objectContaining({ partyId: ids.pouyan, amountIrr: 4_000 }),
+    ]);
+    expect(r.totalIrr).toBe(10_010);
+    // The day's profit, from the arithmetic at the top of this file.
+    expect(r.profitIrr).toBe(4_429_999);
+    expect((await one<{ n: number }>(`SELECT count(*)::int AS n FROM profit_distributions`)).n).toBe(before.n);
+  });
+
+  it('adds each share to the partner, and the balance is shares minus every draw', async () => {
+    const before = await accounts();
+    const res = await split({
+      shares: [
+        { partyId: ids.hesam, amountToman: 2_000_000 },
+        { partyId: ids.pouyan, amountToman: 1_500_000 },
+      ],
+      note: `${P}may`,
+    });
+    expect(res.status).toBe(200);
+    const { id } = (await res.json()) as { id: number };
+    const stored = await one<{ profit_irr: string; n: number; s: string }>(
+      `SELECT d.profit_irr, count(s.*)::int AS n, SUM(s.amount_irr) AS s
+         FROM profit_distributions d JOIN profit_distribution_shares s ON s.distribution_id = d.id
+        WHERE d.id = ?1 GROUP BY d.id`,
+      id,
+    );
+    expect([Number(stored.profit_irr), stored.n, Number(stored.s)]).toEqual([4_429_999, 2, 35_000_000]);
+
+    const after = await accounts();
+    for (const [pid, add] of [[ids.hesam, 20_000_000], [ids.pouyan, 15_000_000]] as const) {
+      expect(of(after, pid).allottedIrr - of(before, pid).allottedIrr).toBe(add);
+      expect(of(after, pid).drawnIrr).toBe(await drawnBySql(pid));
+      expect(of(after, pid).balanceIrr).toBe(of(after, pid).allottedIrr - of(after, pid).drawnIrr);
+    }
+
+    // Voided: the shares leave the account; a second void finds nothing.
+    expect((await call('POST', `${BASE}/distributions/${id}/void`, {})).status).toBe(200);
+    expect(of(await accounts(), ids.hesam).allottedIrr).toBe(of(before, ids.hesam).allottedIrr);
+    expect((await call('POST', `${BASE}/distributions/${id}/void`, {})).status).toBe(404);
+  });
+
+  it('refuses a share for someone who is not a partner, a total beside shares, and a reader', async () => {
+    const supplier = await split({ shares: [{ partyId: ids.host, amountToman: 5 }] });
+    expect(((await supplier.json()) as { error: string }).error).toBe('not_a_partner');
+    expect((await split({ totalToman: 10, shares: [{ partyId: ids.hesam, amountToman: 5 }] })).status).toBe(400);
+    expect((await split({ totalToman: 10 }, READER)).status).toBe(403);
+    expect((await call('GET', `${BASE}/distributions`, undefined, READER)).status).toBe(403);
+  });
+});
+
+/**
+ * The fresh start — Sam, 1 Mehr 1405: «هرچی درآمد و هزینه از قبل بوده پاک بشه».
+ * The books open on the day after `DAY`; the fixture's sales, costs and the
+ * 1,000,000 draw all fall before it, and the one expense on 05-11 is the only
+ * thing any report may still see. Last in the file: the opening row is global.
+ */
+describe('the fresh start cuts every money report', () => {
+  const ACCT = `${P}acct`;
+  // Tehran midnight starting 2026-05-11, stated as the wall clock, not computed.
+  const START = Date.parse('2026-05-11T00:00:00+03:30');
+
+  beforeAll(async () => {
+    const now = Date.now();
+    await db
+      .prepare(
+        `INSERT INTO financial_accounts
+           (id, bank_name, display_name, account_type, active, status, parser_configuration, created_at, updated_at)
+         VALUES (?1, 'Melli', ?1, 'CARD', 1, 'ACTIVE', '{}', ?2, ?2) ON CONFLICT (id) DO NOTHING`,
+      )
+      .bind(ACCT, now)
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO account_opening_balances (financial_account_id, balance_irr, as_of, created_by, created_at)
+         VALUES (?1, 1000, ?2, 'test', ?2)`,
+      )
+      .bind(ACCT, START)
+      .run();
+  });
+  afterAll(async () => {
+    await db.prepare(`DELETE FROM account_opening_balances WHERE financial_account_id = ?1`).bind(ACCT).run();
+    await db.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(ACCT).run();
+  });
+
+  it('«سود و زیان» sees nothing before the start', async () => {
+    const r = (await (await call('GET', `${BASE}/profit?range=between&day=${DAY}&to=2026-05-11`)).json()) as Profit & {
+      startMs: number;
+      booksStartMs: number;
+    };
+    expect([r.startMs, r.booksStartMs]).toEqual([START, START]);
+    // Only the 777,000 spent on 05-11; the 6,800,000 of sales was on 05-10.
+    expect([r.salesIrr, r.expensesIrr, r.drawsIrr]).toEqual([0, 777_000, 0]);
+    const wholly = (await (await call('GET', `${BASE}/profit?range=day&day=${DAY}`)).json()) as Profit;
+    expect([wholly.salesIrr, wholly.expensesIrr]).toEqual([0, 0]);
+  });
+
+  it('«هزینه‌ها» lists and totals from the start day on', async () => {
+    const list = (await (await call('GET', `${BASE}?q=${P}EXPENSE`)).json()) as {
+      items: Array<{ spentOn: string }>;
+      booksStartDay: string;
+      totals: { expensesIrr: number };
+    };
+    expect(list.booksStartDay).toBe('2026-05-11');
+    expect(list.items.every((i) => i.spentOn >= '2026-05-11')).toBe(true);
+    const sql = await one<{ s: string | number }>(
+      `SELECT COALESCE(SUM(amount_irr - fee_irr), 0) AS s FROM revenue_adjustments
+        WHERE note LIKE ?1 AND kind = 'EXPENSE' AND voided_at IS NULL AND spent_on >= '2026-05-11'`,
+      `${P}EXPENSE%`,
+    );
+    expect(list.totals.expensesIrr).toBe(Number(sql.s));
+  });
+
+  it('«آمار فروشگاه» sells nothing before the start', async () => {
+    const s = (await (await call('GET', `/api/v1/admin/stats?range=between&day=${DAY}&to=2026-05-11`)).json()) as {
+      startMs: number;
+      earnedIrr: number;
+    };
+    expect([s.startMs, s.earnedIrr]).toEqual([START, 0]);
+  });
+
+  it('a partner’s draws count from the start: the 05-10 draw is history', async () => {
+    const hesam = (((await (await call('GET', `${BASE}/distributions`)).json()) as {
+      accounts: Array<{ partyId: number; drawnIrr: number }>;
+    }).accounts).find((a) => a.partyId === ids.hesam)!;
+    const sql = await one<{ s: string | number }>(
+      `SELECT COALESCE(SUM(fee_irr - amount_irr), 0) AS s FROM shop_books
+        WHERE party_id = ?1 AND kind = 'PARTNER_DRAW' AND spent_on >= '2026-05-11'`,
+      ids.hesam,
+    );
+    expect(hesam.drawnIrr).toBe(Number(sql.s));
+    expect(hesam.drawnIrr).toBeLessThan(await (async () =>
+      Number((await one<{ s: string | number }>(
+        `SELECT SUM(fee_irr - amount_irr) AS s FROM shop_books WHERE party_id = ?1 AND kind = 'PARTNER_DRAW'`, ids.hesam)).s))());
   });
 });

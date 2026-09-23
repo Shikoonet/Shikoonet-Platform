@@ -101,6 +101,25 @@ export function parseStatsDay(raw: string | null | undefined): string | null {
 // the point: a month the two screens disagreed about would show up as two
 // different sales figures under the same Persian month name.
 
+/**
+ * `bounds` cut at the fresh start: nothing before the books opened counts.
+ *
+ * Sam, 1 Mehr 1405: «هرچی درآمد و هزینه از قبل بوده پاک بشه و با موجودی فعلی
+ * بانک‌هامون استارت بخوره». Nothing is deleted — the orders and the ledger keep
+ * their history — every money report just starts where the bank balances were
+ * written down (`openBooks`). «آمار کل» becomes «since the books opened», and a
+ * window wholly before the start comes back empty rather than wrong.
+ *
+ * The open end of «آمار کل» is the end of Tehran's today, not this instant:
+ * the expense filter compares whole days, and «now» as a day edge would drop
+ * everything spent today.
+ */
+export function sinceBooks(bounds: StatsBounds, startMs: number | null, nowMs: number): StatsBounds {
+  if (startMs === null) return bounds;
+  const end = bounds.end ?? tehranDayFromUtc(Math.max(nowMs, startMs)).end;
+  return { start: Math.min(Math.max(bounds.start ?? startMs, startMs), end), end };
+}
+
 export function statsRangeBounds(
   range: StatsRange,
   nowMs = Date.now(),

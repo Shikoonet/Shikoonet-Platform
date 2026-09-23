@@ -23,6 +23,7 @@ import { formatJalali, jalaliToIsoDate, toJalali, type JalaliDate } from '@shiko
 import { CustomerLink } from '../CustomerLink.js';
 import { BarChart } from '../BarChart.js';
 import { DateField } from '../DateField.js';
+import { PeriodPicker, currentPeriod, periodDays, type Period } from '../PeriodPicker.js';
 import {
   api,
   type CustomerListItem,
@@ -109,6 +110,17 @@ export function RangeBar(p: {
   jTo: JalaliDate;
   onTo: (d: JalaliDate) => void;
 }) {
+  // «دوره» is a `between` whose two days were picked by name. Held here, not
+  // by the page: the page only ever sees from/to, as it always did.
+  const [period, setPeriod] = useState<Period | null>(null);
+  const pick = (next: Period) => {
+    const d = periodDays(next);
+    setPeriod(next);
+    p.onFrom(d.from);
+    p.onTo(d.to);
+    p.onRange('between');
+  };
+  const inPeriod = period !== null && p.range === 'between';
   return (
     // Two rows, not one. Eight buttons and two date fields on a single
     // wrapping line put «تا» alone on a second row flush to the left, which
@@ -119,15 +131,31 @@ export function RangeBar(p: {
           <button
             key={r.id}
             type="button"
-            className={`btn ${p.range === r.id ? 'btn-primary' : ''}`}
-            onClick={() => p.onRange(r.id)}
+            className={`btn ${p.range === r.id && !inPeriod ? 'btn-primary' : ''}`}
+            onClick={() => {
+              setPeriod(null);
+              p.onRange(r.id);
+            }}
           >
             {r.label}
           </button>
         ))}
+        <button
+          type="button"
+          className={`btn ${inPeriod ? 'btn-primary' : ''}`}
+          onClick={() => pick(period ?? currentPeriod())}
+        >
+          ماه، فصل یا سال
+        </button>
       </div>
 
-      {(p.range === 'day' || p.range === 'between') && (
+      {inPeriod && (
+        <div className="statsbar__dates">
+          <PeriodPicker value={period} onChange={pick} />
+        </div>
+      )}
+
+      {!inPeriod && (p.range === 'day' || p.range === 'between') && (
         <div className="statsbar__dates">
           {p.range === 'day' ? (
             <DateField label="تاریخ" value={p.jDay} onChange={p.onDay} />

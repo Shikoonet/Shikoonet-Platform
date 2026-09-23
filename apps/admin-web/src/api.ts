@@ -709,9 +709,38 @@ export interface ExpenseScopes {
 }
 
 /** «سود و زیان» — see `packages/domain/src/shopProfit.ts`. Every figure is IRR. */
+/** One «تقسیم سود» (0095): a decision, not a payment. */
+export interface ProfitSplit {
+  id: number;
+  fromDay: string;
+  toDay: string;
+  /** The period's profit when the split was made — a record, not a limit. */
+  profitIrr: number | null;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+  voidedAt: string | null;
+  totalIrr: number;
+  shares: Array<{ partyId: number; name: string; sharePercent: number | null; amountIrr: number }>;
+}
+
+/** A partner's running account: every share allotted minus every draw taken. */
+export interface PartnerAccount {
+  partyId: number;
+  name: string;
+  sharePercent: number | null;
+  active: boolean;
+  allottedIrr: number;
+  drawnIrr: number;
+  /** Positive: the shop still owes him. */
+  balanceIrr: number;
+}
+
 export interface ShopProfit {
   startMs: number | null;
   endMs: number | null;
+  /** The fresh start; no figure here reaches before it. */
+  booksStartMs: number | null;
   salesIrr: number;
   revenueFixIrr: number;
   manualIncomeIrr: number;
@@ -1014,6 +1043,8 @@ export interface RevenueAdjustmentPage {
   totals: RevenueTotals;
   /** Over the whole ledger, whatever the filter says. The shop's position. */
   lifetime: RevenueTotals;
+  /** The Tehran day the books opened on: no row or total above reaches before it. */
+  booksStartDay: string | null;
   /**
    * The same figures over the window «آمار فروشگاه» is showing, or null when no
    * `range` was asked for or the range is unbounded («آمار کل»), in which case
@@ -2552,13 +2583,14 @@ export const api = {
       body: JSON.stringify({ category, ...(note ? { note } : {}) }),
     });
   },
-  openBooks(force = false) {
+  /** `asOf`: open at the start of that Tehran day (`YYYY-MM-DD`), not this instant. */
+  openBooks(force = false, asOf?: string) {
     return req<{
       ok: boolean;
       openedAt: number;
       walletIrr: number;
       accounts: Array<{ accountId: string; displayName: string; balanceIrr: number | null; asOf: number | null }>;
-    }>('/books/open', { method: 'POST', body: JSON.stringify({ force }) });
+    }>('/books/open', { method: 'POST', body: JSON.stringify({ force, ...(asOf ? { asOf } : {}) }) });
   },
   /** Off the books, with a reason — the same route the payments hub uses. */
   offBooks(transactionId: string, category: OffBooksCategory, reason?: string) {
@@ -2628,6 +2660,34 @@ export const api = {
     if (day) qs.set('day', day);
     if (to) qs.set('to', to);
     return req<ShopProfit & { ok: boolean }>(`/revenue-adjustments/profit?${qs}`);
+  },
+
+  profitSplits() {
+    return req<{ ok: boolean; items: ProfitSplit[]; accounts: PartnerAccount[] }>('/revenue-adjustments/distributions');
+  },
+
+  /** `dryRun` answers with the split and writes nothing. */
+  addProfitSplit(body: {
+    fromDay: string;
+    toDay: string;
+    totalToman?: number;
+    shares?: Array<{ partyId: number; amountToman: number }>;
+    note?: string;
+    dryRun?: boolean;
+  }) {
+    return req<{
+      ok: boolean;
+      id?: number;
+      fromDay: string;
+      toDay: string;
+      profitIrr: number;
+      totalIrr: number;
+      shares: Array<{ partyId: number; name: string; sharePercent: number | null; amountIrr: number }>;
+    }>('/revenue-adjustments/distributions', { method: 'POST', body: JSON.stringify(body) });
+  },
+
+  voidProfitSplit(id: number) {
+    return req<{ ok: boolean }>(`/revenue-adjustments/distributions/${id}/void`, { method: 'POST', body: '{}' });
   },
 
   expenseRecurrences() {
