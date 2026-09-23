@@ -303,3 +303,51 @@ describe('who may press these buttons', () => {
     expect(await serviceRow(service)).toMatchObject({ status: 'ACTIVE' });
   });
 });
+
+describe('a service opened without a link', () => {
+  // The 6,364 services imported on 2026-09-23 had none, and the sync sweep
+  // fills them 100 at a time. The customer looking at one should not wait.
+  async function linkless(telegramId: number): Promise<number> {
+    const userId = await makeCustomer(telegramId);
+    const service = await makeService(userId);
+    await db
+      .prepare(`UPDATE subscriptions SET subscription_url = NULL WHERE id = ?1`)
+      .bind(service)
+      .run();
+    return service;
+  }
+
+  it('asks the panel for it there and then, and keeps it', async () => {
+    const { updateId, telegramId } = ids();
+    const service = await linkless(telegramId);
+    const p = panel();
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `sub:${service}`), p.fetchImpl);
+
+    expect(p.calls[0]).toMatchObject({ method: 'GET' });
+    expect(out.replies[0]?.text).toContain('https://panel.test/sub/u_act/1');
+    expect((await serviceRow(service))?.subscription_url).toBe('https://panel.test/sub/u_act/1');
+  });
+
+  it('is the old screen when the panel does not give one', async () => {
+    const { updateId, telegramId } = ids();
+    const service = await linkless(telegramId);
+    const p = panel({ status: 500 });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `sub:${service}`), p.fetchImpl);
+
+    expect(out.replies[0]?.text).toContain('هنوز در دسترس نیست');
+    expect((await serviceRow(service))?.subscription_url).toBeNull();
+  });
+
+  it('does not ask the panel when the link is already there', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeService(userId);
+    const p = panel();
+
+    await handleUpdate(db, press(updateId, telegramId, `sub:${service}`), p.fetchImpl);
+
+    expect(p.calls).toHaveLength(0);
+  });
+});
