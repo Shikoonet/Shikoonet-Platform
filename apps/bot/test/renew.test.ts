@@ -416,6 +416,9 @@ describe('choosing what to renew', () => {
     }
   });
 
+  /** 280,000 Toman as a name or an invoice would write it, in either digit set. */
+  const QUOTED_280 = /(280|۲۸۰)[.,٬]?(000|۰۰۰)/;
+
   it('names the service without the price its legacy name quotes', async () => {
     // Production, 2026-09-16 23:37 UTC: a service sold as «…-280.000ت» renewed
     // onto a 399,000 plan. The intro and the invoice both printed the old name,
@@ -432,11 +435,13 @@ describe('choosing what to renew', () => {
 
     const intro = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
     expect(intro.replies[0]?.text).toContain('1ماهه-100گیگ-چند کاربر🚀');
-    expect(intro.replies[0]?.text).not.toContain('280');
+    // The price, not the digits: the invoice carries a random hex order id,
+    // and «7c65b28073» failed a bare `not.toContain('280')` on main, 2026-09-23.
+    expect(intro.replies[0]?.text).not.toMatch(QUOTED_280);
 
     const invoice = await handleUpdate(db, press(updateId + 1, telegramId, `rord:${subId}:${plan}`));
     expect(invoice.replies[0]?.text).toContain('تمدید سرویس: 1️⃣ 1ماهه-100گیگ-چند کاربر🚀');
-    expect(invoice.replies[0]?.text).not.toContain('280');
+    expect(invoice.replies[0]?.text).not.toMatch(QUOTED_280);
   });
 
   it('offers plans that carry both the service and the plan', async () => {
