@@ -275,6 +275,15 @@ export interface ShopSettings {
   /** How many days after `/start` somebody who never bought is nudged. */
   nudgeAfterDays: number;
   /**
+   * The percent on the personal code minted with each nudge; 0 is none.
+   *
+   * Falls back to 0, not to the 20 the migration writes: a code is money off,
+   * and a settings read that failed must not start minting them from a guess.
+   */
+  nudgeDiscountPercent: number;
+  /** Days the nudge's code stays valid, counted from the send. */
+  nudgeDiscountDays: number;
+  /**
    * Whether a customer must accept the shop's rules before anything else —
    * `setting.roll_Status`, which is `rolleon` in production.
    *
@@ -370,6 +379,8 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   removeAfterDays: 30,
   removeVolumeAfterDays: 17,
   nudgeAfterDays: 3,
+  nudgeDiscountPercent: 0,
+  nudgeDiscountDays: 2,
   requiresRules: false,
   customEmoji: false,
   // Null, and deliberately not a template. `planLabel.ts` says why: every
@@ -766,6 +777,14 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
         DEFAULT_SHOP_SETTINGS.removeVolumeAfterDays,
       ),
       nudgeAfterDays: wholeCount(num('nudge_after_days'), DEFAULT_SHOP_SETTINGS.nudgeAfterDays),
+      nudgeDiscountPercent: percent(
+        num('nudge_discount_percent'),
+        DEFAULT_SHOP_SETTINGS.nudgeDiscountPercent,
+      ),
+      nudgeDiscountDays: wholeCount(
+        num('nudge_discount_days'),
+        DEFAULT_SHOP_SETTINGS.nudgeDiscountDays,
+      ),
       // On only for the exact word, like `customEmoji` and unlike the three
       // legacy switches above. Those describe selling the shop has been doing
       // for years, so an unreadable value leaves it alone; this one puts a wall

@@ -60,7 +60,7 @@ export interface CronJobNumber {
   key: string;
   /** What the number means, in the operator's words. */
   label: string;
-  unit: 'روز' | 'گیگابایت' | 'ساعت';
+  unit: 'روز' | 'گیگابایت' | 'ساعت' | 'درصد';
   min: number;
   max: number;
 }
@@ -232,7 +232,7 @@ export const CRON_JOBS: readonly CronJob[] = [
   {
     key: 'nudge_never_bought',
     name: 'استارت کرد و نخرید',
-    what: 'به کسی که ربات را استارت کرده و بعد از این‌قدر روز هیچ خریدی نکرده، یک بار یادآوری می‌فرستد.',
+    what: 'به کسی که ربات را استارت کرده یا فقط سرویس تست گرفته و بعد از این‌قدر روز هیچ خریدی نکرده، یک بار یادآوری می‌فرستد. با درصد تخفیف بیشتر از صفر، برای هر نفر یک کد شخصیِ اولین خرید می‌سازد که از لحظهٔ ارسال این‌قدر روز اعتبار دارد.',
     toggle: CRON_TOGGLES.nudge_never_bought,
     numbers: [
       {
@@ -243,8 +243,26 @@ export const CRON_JOBS: readonly CronJob[] = [
         min: 1,
         max: 365,
       },
+      {
+        scope: 'bot',
+        key: 'nudge_discount_percent',
+        // Zero is the one real «off» among these numbers: the plain nudge,
+        // no code minted.
+        label: 'درصد تخفیف کد شخصی (۰ = بدون کد)',
+        unit: 'درصد',
+        min: 0,
+        max: 100,
+      },
+      {
+        scope: 'bot',
+        key: 'nudge_discount_days',
+        label: 'اعتبار کد از لحظهٔ ارسال',
+        unit: 'روز',
+        min: 1,
+        max: 30,
+      },
     ],
-    texts: ['NUDGE_NEVER_BOUGHT'],
+    texts: ['NUDGE_NEVER_BOUGHT', 'NUDGE_NEVER_BOUGHT_CODE'],
     // Sends a message to somebody who has never paid us anything. It takes
     // nothing away, so it is not in the same class as the two above it.
     destructive: false,
