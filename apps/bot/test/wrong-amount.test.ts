@@ -252,6 +252,13 @@ describe('anything short of plainly this customer’s stays for a person', () =>
     expect(await creditWrongAmounts(db)).toBe(0);
   });
 
+  it('does not reach back to a claim older than a day — that one is already an operator’s', async () => {
+    const inv = await claimedInvoice({ cardIrr: 650_000, ago: 25 * 60 * MINUTE });
+    await deposit(65_000, inv.clickedAt + 5_000);
+    expect(await creditWrongAmounts(db)).toBe(0);
+    expect(await balanceOf(inv.userId)).toBe(0);
+  });
+
   it('ignores a transfer outside five minutes of «پرداخت کردم»', async () => {
     const inv = await claimedInvoice({ cardIrr: 600_000 });
     await deposit(60_000, inv.clickedAt + 5 * MINUTE + 1_000);

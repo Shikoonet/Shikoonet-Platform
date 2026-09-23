@@ -45,6 +45,13 @@ import { refundOrder } from './wallet.js';
 /** How far back an invoice for the transfer's exact amount makes it somebody else's. */
 const OTHER_INVOICE_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How old a claim this sweep will still answer. Older ones were already in
+ * front of an operator before this existed; the first run on a live queue
+ * must not reach back and settle a month of them, messages and all.
+ */
+const RECENT_CLAIM_MS = 24 * 60 * 60 * 1000;
+
 const BATCH = 50;
 
 interface Candidate {
@@ -67,7 +74,7 @@ export async function creditWrongAmounts(db: D1Database, now: number = Date.now(
             AND c.status IN ('PENDING','MATCH_SUGGESTED')
             AND c.suspect_reason = 'NO_TRANSACTION_AFTER_10M'
             AND c.target_financial_account_id IS NOT NULL
-            AND c.paid_clicked_at IS NOT NULL
+            AND c.paid_clicked_at > ?5
        ),
        pairs AS (
          SELECT d.claim_id, d.payment_id, d.account_id, t.id AS tx_id, t.bank_timestamp AS at
@@ -98,7 +105,13 @@ export async function creditWrongAmounts(db: D1Database, now: number = Date.now(
                AND c2.paid_clicked_at BETWEEN pr.at - ?2 AND pr.at + ?2)
         LIMIT ?4`,
     )
-    .bind(MIRZABOT_SOURCE, AUTO_MATCH_MAX_TIME_DELTA_MS, OTHER_INVOICE_LOOKBACK_MS, BATCH)
+    .bind(
+      MIRZABOT_SOURCE,
+      AUTO_MATCH_MAX_TIME_DELTA_MS,
+      OTHER_INVOICE_LOOKBACK_MS,
+      BATCH,
+      now - RECENT_CLAIM_MS,
+    )
     .all<Candidate>();
 
   let credited = 0;
