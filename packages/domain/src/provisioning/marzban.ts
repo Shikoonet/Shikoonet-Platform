@@ -919,6 +919,12 @@ export const marzbanAdapter: ProvisioningAdapter = {
               ? null
               : new Date(expiresAtMs),
         volumeGb: dataLimit === 0 ? null : dataLimit / GB,
+        before: {
+          usedBytes: asByteCount(found.user.used_traffic),
+          limitBytes: quotaBytes(found.user.data_limit),
+          expireMs: expiryMs(found.user.expire),
+          heldMs: held ? (asByteCount(found.user.on_hold_expire_duration) ?? 0) * 1000 : null,
+        },
       };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

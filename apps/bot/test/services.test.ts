@@ -149,6 +149,41 @@ describe('the list', () => {
     expect(buttons.map((b) => b.callback_data)).toContain(`sub:${subId}`);
   });
 
+  it('names each row by its account and its tier, not by the legacy plan name', async () => {
+    // Sam, 2026-09-23: «نام کاربری رو نشون بده و جلوش بنویسه الماسه، تیتانیومه».
+    const { updateId, telegramId } = ids();
+    const userId = await customer(telegramId);
+    const subId = await makeService(userId, {
+      publicId: `svc-${telegramId}-tier`,
+      planName: '💎1ماهه-10گیگ-چند کاربر',
+      username: 'ali_42',
+    });
+    await db
+      .prepare(`UPDATE subscriptions SET provider_name_at_sale = 'سرویس الماس' WHERE id = ?1`)
+      .bind(subId)
+      .run();
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'mine'));
+
+    const row = out.replies[0]?.keyboard?.flat().find((b) => b.callback_data === `sub:${subId}`);
+    expect(row?.text).toBe('✅ ali_42 · الماس');
+  });
+
+  it('keeps the plan name for a service with no account on a panel', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await customer(telegramId);
+    const subId = await makeService(userId, {
+      publicId: `svc-${telegramId}-shelf`,
+      planName: 'اسپاتیفای یک‌ماهه',
+      username: null,
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'mine'));
+
+    const row = out.replies[0]?.keyboard?.flat().find((b) => b.callback_data === `sub:${subId}`);
+    expect(row?.text).toBe('✅ اسپاتیفای یک‌ماهه');
+  });
+
   it('puts a service whose date has passed below a live one', async () => {
     // Found by opening the real screen, not by this suite: three services, all
     // `status = 'ACTIVE'`, and the one four days expired sat at the top. The
@@ -159,12 +194,14 @@ describe('the list', () => {
     await makeService(userId, {
       publicId: `svc-${telegramId}-past`,
       planName: 'سرویس-گذشته',
+      username: 'سرویس-گذشته',
       expiresInDays: -4,
       purchasedAtMs: NOW_MS - DAY,
     });
     await makeService(userId, {
       publicId: `svc-${telegramId}-now`,
       planName: 'سرویس-جاری',
+      username: 'سرویس-جاری',
       expiresInDays: 10,
       purchasedAtMs: NOW_MS - 30 * DAY,
     });
@@ -203,12 +240,14 @@ describe('the list', () => {
     await makeService(userId, {
       publicId: `svc-${telegramId}-stale`,
       planName: 'سرویس-کهنه',
+      username: 'سرویس-کهنه',
       expiresAtMs: trueNow + 30 * DAY,
       purchasedAtMs: trueNow - DAY,
     });
     await makeService(userId, {
       publicId: `svc-${telegramId}-fresh`,
       planName: 'سرویس-تازه',
+      username: 'سرویس-تازه',
       expiresAtMs: trueNow + 90 * DAY,
       purchasedAtMs: trueNow - 30 * DAY,
     });
@@ -224,6 +263,7 @@ describe('the list', () => {
     await makeService(userId, {
       publicId: `svc-${telegramId}-drained`,
       planName: 'سرویس-خالی',
+      username: 'سرویس-خالی',
       volumeGb: 10,
       usedBytes: 10 * GIB,
       expiresInDays: 20,
@@ -232,6 +272,7 @@ describe('the list', () => {
     await makeService(userId, {
       publicId: `svc-${telegramId}-full`,
       planName: 'سرویس-پر',
+      username: 'سرویس-پر',
       volumeGb: 10,
       usedBytes: GIB,
       expiresInDays: 20,
@@ -251,11 +292,13 @@ describe('the list', () => {
       publicId: `svc-${telegramId}-dead`,
       status: 'DISABLED',
       planName: 'سرویس-خاموش',
+      username: 'سرویس-خاموش',
       purchasedAtMs: NOW_MS - DAY,
     });
     await makeService(userId, {
       publicId: `svc-${telegramId}-live`,
       planName: 'سرویس-زنده',
+      username: 'سرویس-زنده',
       purchasedAtMs: NOW_MS - 30 * DAY,
     });
 

@@ -557,6 +557,12 @@ describe('every write route, asked directly', () => {
     // READ_ONLY never reaches them; ADMIN-only in the handler, audited as
     // `profit_distribution.added` / `.voided`. `people-and-profit.test.ts`
     // pins both.
-    expect(writeRoutes().length).toBe(183);
+    //
+    // 184, 2026-09-23: `POST /admin/renewals/:id/restore` (0096). Adds back
+    // onto a customer's panel account the volume and days one renewal burned,
+    // from that renewal's snapshot. It changes an account on a panel, so
+    // ADMIN-only; claimed once by `restored_at` and audited as
+    // `RENEWAL_RESTORED`. `renewal-restore.test.ts` pins both.
+    expect(writeRoutes().length).toBe(184);
   });
 });
