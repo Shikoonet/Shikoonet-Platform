@@ -1423,6 +1423,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 transactionId={assignIncome.id}
                 transactionAmountIrr={assignIncome.amountIrr}
                 transactionAccountId={assignIncome.accountId}
+                transactionAt={assignIncome.bankTimestamp}
                 onClose={() => {
                   setAssignIncome(null);
                   cache.refetch(queryKey);
