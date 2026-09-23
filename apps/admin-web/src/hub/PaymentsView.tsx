@@ -64,6 +64,7 @@ import {
   StatusBadge,
 } from './paymentsComponents.js';
 import { api } from './api.js';
+import { api as adminApi } from '../api.js';
 import type { AnalyticsResponse } from './analytics.js';
 import {
   ALL_TAB_STATES,
@@ -3390,12 +3391,13 @@ function DuplicateDepositModal({
 }
 
 /**
- * «شارژ کیف پول» — the customer paid an invoice after it expired, so no order
- * is left to take the deposit. It goes to their wallet instead, once, and the
- * bot tells them as it tells any top-up. `creditDepositToWallet` on the
- * server has the rest.
+ * «شارژ کیف پول» — a deposit no order can take: the invoice expired first, or
+ * the customer sent the wrong amount. It goes to a customer's wallet instead,
+ * once, and the bot tells them as it tells any top-up. The expired-invoice
+ * hint names the customer when it can; otherwise the operator finds them by
+ * Telegram id or username. `creditDepositToWallet` on the server has the rest.
  */
-function CreditWalletModal({
+export function CreditWalletModal({
   item,
   onClose,
   onDone,
@@ -3406,11 +3408,24 @@ function CreditWalletModal({
   onDone: () => void;
   onError: (msg: string) => void;
 }) {
+  type Pick = { id: number; telegramId: number | string; username: string | null };
+  const invoice = item.expiredInvoice;
+  const [customer, setCustomer] = useState<Pick | null>(invoice?.customer ?? null);
+  const [query, setQuery] = useState('');
+  const [found, setFound] = useState<Pick[] | null>(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
-  const invoice = item.expiredInvoice;
-  const customer = invoice?.customer;
-  if (!invoice || !customer) return null;
+  const fromHint = invoice != null && invoice.customer?.id === customer?.id;
+
+  async function search() {
+    const q = query.trim();
+    if (!q) return;
+    try {
+      setFound((await adminApi.customers({ q, page: 1, pageSize: 5 })).items);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'customer_search_failed');
+    }
+  }
 
   async function submit() {
     if (!customer || !reason.trim()) return;
@@ -3432,16 +3447,48 @@ function CreditWalletModal({
         <p>
           مبلغ: <strong>{item.amountIrr == null ? '—' : formatTomanFromIrr(item.amountIrr)}</strong>
         </p>
-        <p>
-          مشتری: <CustomerLink customer={customer} /> · فاکتور منقضی{' '}
-          <IdentifierText value={invoice.publicId} tone="hint" />
-        </p>
+        {customer ? (
+          <p>
+            مشتری: <CustomerLink customer={customer} />
+            {fromHint && (
+              <>
+                {' '}
+                · فاکتور منقضی <IdentifierText value={invoice.publicId} tone="hint" />
+              </>
+            )}{' '}
+            <button type="button" className="ghost" disabled={busy} onClick={() => setCustomer(null)}>
+              تغییر مشتری
+            </button>
+          </p>
+        ) : (
+          <div>
+            <label>
+              مشتری (آیدی عددی یا یوزرنیم تلگرام)
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void search();
+                }}
+              />
+            </label>
+            <button type="button" className="ghost" disabled={!query.trim()} onClick={() => void search()}>
+              جستجو
+            </button>
+            {found?.length === 0 && <p className="muted">مشتری‌ای پیدا نشد.</p>}
+            {found?.map((c) => (
+              <button key={c.id} type="button" className="ghost" onClick={() => setCustomer(c)}>
+                {c.username ? `@${c.username}` : String(c.telegramId)}
+              </button>
+            ))}
+          </div>
+        )}
         <p className="muted">
-          فاکتور منقضی شده و سفارشی نمانده که این پول به آن وصل شود. همین مبلغ یک بار به کیف پول مشتری
-          اضافه می‌شود و پیام «کیف پول شما شارژ شد» برایش می‌رود تا با موجودی‌اش دوباره خرید کند. واریزی
-          از «واریزی‌ها» بیرون می‌رود و در «دفتر بانک» فروش حساب می‌شود. از پنل برنمی‌گردد.
+          سفارشی نمانده که این پول به آن وصل شود. همین مبلغ یک بار به کیف پول مشتری اضافه می‌شود و پیام
+          «کیف پول شما شارژ شد» برایش می‌رود تا با موجودی‌اش دوباره خرید کند. واریزی از «واریزی‌ها» بیرون
+          می‌رود و در «دفتر بانک» فروش حساب می‌شود. از پنل برنمی‌گردد.
         </p>
-        {invoice.others > 0 && (
+        {fromHint && invoice.others > 0 && (
           <div className="alert alert-warning">
             {count(invoice.others)} فاکتور منقضی دیگر هم با همین مبلغ و کارت جور است — مطمئن شو پول مال
             همین مشتری است.
@@ -3452,7 +3499,7 @@ function CreditWalletModal({
           <input
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="مثلاً: بعد از انقضای فاکتور واریز کرد"
+            placeholder="مثلاً: مبلغ را اشتباه واریز کرد"
           />
         </label>
         <div className="modal-actions">
@@ -3462,7 +3509,7 @@ function CreditWalletModal({
           <button
             type="button"
             className="primary"
-            disabled={busy || !reason.trim()}
+            disabled={busy || !customer || !reason.trim()}
             onClick={() => void submit()}
           >
             شارژ کیف پول
