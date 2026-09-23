@@ -28,6 +28,11 @@ export function formatToman(priceIrr: number): string {
   return `${toman.toLocaleString('en-US')} تومان`;
 }
 
+/** `1950000` -> `'1,950,000 ریال'` — the unit a banking app asks for. */
+export function formatRial(amountIrr: number): string {
+  return `${Math.round(amountIrr).toLocaleString('en-US')} ریال`;
+}
+
 /**
  * ۱۹۵ -> 195. Persian and Arabic-Indic digits both appear in these names.
  *

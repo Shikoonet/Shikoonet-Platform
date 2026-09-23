@@ -69,6 +69,7 @@ import {
   stripCustomEmoji,
 } from '@shikoo/contracts';
 import {
+  formatRial,
   formatToman,
   nameMentionsPrice,
   priceForUser,
@@ -1620,6 +1621,9 @@ function amountLines(cardIrr: number, walletIrr: number): string[] {
     lines.push(t.render('CHECKOUT_WALLET_PART', { amount: formatToman(walletIrr) }));
   }
   lines.push(t.render('CHECKOUT_AMOUNT', { amount: formatToman(cardIrr) }));
+  // The banking app asks in Rial. Two customers on 2026-09-23 typed the Toman
+  // figure there and sent a tenth of the price.
+  lines.push(t.render('CHECKOUT_AMOUNT_RIAL', { amount: formatRial(cardIrr) }));
   return lines;
 }
 
@@ -1834,6 +1838,36 @@ export function claimedInvoiceClosed(publicId: string): string {
     t.render('PAID_TRACKING_ID', { id: publicId }),
     '',
     t.raw('ORDER_DEADLINE_CLAIMED_BODY'),
+  ].join('\n');
+}
+
+/**
+ * A transfer that was not the invoice's amount, now in the customer's wallet
+ * (`wrongAmount.ts`). The two amounts first, bold and boxed, because that is
+ * the mistake to see; then what to do with the balance.
+ */
+export function wrongAmountCredited(args: {
+  expectedIrr: number;
+  paidIrr: number;
+  balanceIrr: number;
+  /** The order's price minus the balance now; zero or less means the balance covers it. */
+  shortIrr: number;
+}): string {
+  const t = TEXTS_NOW;
+  const line = t.render('WRONG_AMOUNT_LINE', {
+    expected: formatToman(args.expectedIrr),
+    paid: formatToman(args.paidIrr),
+  });
+  return [
+    t.raw('WRONG_AMOUNT_TITLE'),
+    '',
+    `<blockquote><b>${line}</b></blockquote>`,
+    '',
+    t.render('WRONG_AMOUNT_TO_WALLET', { balance: formatToman(args.balanceIrr) }),
+    '',
+    args.shortIrr > 0
+      ? t.render('WRONG_AMOUNT_TOP_UP', { amount: formatToman(args.shortIrr) })
+      : t.raw('WRONG_AMOUNT_ENOUGH'),
   ].join('\n');
 }
 
