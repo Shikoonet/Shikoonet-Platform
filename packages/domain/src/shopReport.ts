@@ -37,7 +37,8 @@
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { shopStats } from './shopStats.js';
-import { statsRangeBounds, type StatsRange } from './statsRange.js';
+import { booksStartMs } from './books.js';
+import { sinceBooks, statsRangeBounds, type StatsRange } from './statsRange.js';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -84,6 +85,8 @@ export interface ShopReport {
   /** The window actually measured. `null` on both means everything. */
   startMs: number | null;
   endMs: number | null;
+  /** The fresh start; the window above never reaches before it (`sinceBooks`). */
+  booksStartMs: number | null;
   /** One row per Tehran day of the window, for the chart. Never sparse. */
   byDay: ShopDay[];
 
@@ -181,7 +184,10 @@ export async function shopReport(
   day?: string | null,
   to?: string | null,
 ): Promise<ShopReport> {
-  const bounds = statsRangeBounds(range, nowMs, day, to);
+  // Money and flows from the fresh start on, like «سود و زیان»: «آمار کل» is
+  // «since the books opened». The stocks (`shopStats`) are stocks.
+  const booksStart = await booksStartMs(db);
+  const bounds = sinceBooks(statsRangeBounds(range, nowMs, day, to), booksStart, nowMs);
 
   const orders = rangeClause('o.completed_at', bounds, 1);
   const joins = rangeClause('registered_at', bounds, 1);
@@ -386,6 +392,7 @@ export async function shopReport(
     range,
     startMs: bounds.start,
     endMs: bounds.end,
+    booksStartMs: booksStart,
     byDay,
 
     newCustomers,

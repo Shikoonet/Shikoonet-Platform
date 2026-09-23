@@ -20,6 +20,8 @@
  *     2026-09-22 this query had no kind filter while `shopReport`'s
  *     `earned_irr` did, so the dashboard read 1,570,901,395 Toman and «آمار
  *     فروشگاه» 1,565,138,350 — the 5,763,045 between them was 22 top-ups.
+ *   * **revenue starts at the fresh start** (`booksStartMs`), the same cut
+ *     «سود و زیان» and «آمار فروشگاه» make — one «درآمد» on every screen.
  *   * **wallet** is summed as it stands, negative balances included. Netting
  *     them out would hide exactly the accounts worth looking at.
  *
@@ -29,6 +31,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { booksStartMs } from './books.js';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -36,7 +39,7 @@ export interface ShopStats {
   customers: number;
   customersToday: number;
   activeSubscriptions: number;
-  /** Lifetime, `COMPLETED` orders. */
+  /** `COMPLETED` orders since the books opened — lifetime before they ever did. */
   revenueIrr: number;
   /** The same measure, over Tehran's today. */
   revenueTodayIrr: number;
@@ -71,6 +74,7 @@ export interface ShopStats {
 const SINCE_TODAY = `date_trunc('day', now() AT TIME ZONE 'Asia/Tehran') AT TIME ZONE 'Asia/Tehran'`;
 
 export async function shopStats(db: Db): Promise<ShopStats> {
+  const booksStart = await booksStartMs(db);
   const [customers, subs, revenue, orders, wallet, claims] = await Promise.all([
     db
       .prepare(
@@ -87,8 +91,10 @@ export async function shopStats(db: Db): Promise<ShopStats> {
         `SELECT COALESCE(SUM(total_irr), 0)::bigint AS irr,
                 COALESCE(SUM(total_irr) FILTER (WHERE created_at >= ${SINCE_TODAY}), 0)::bigint
                   AS irr_today
-           FROM orders WHERE status = 'COMPLETED' AND kind NOT IN ('WALLET_TOPUP','TRANSFER')`,
+           FROM orders WHERE status = 'COMPLETED' AND kind NOT IN ('WALLET_TOPUP','TRANSFER')
+            ${booksStart === null ? '' : 'AND completed_at >= to_timestamp(?1 / 1000.0)'}`,
       )
+      .bind(...(booksStart === null ? [] : [booksStart]))
       .first<{ irr: number; irr_today: number }>(),
     db
       .prepare(`SELECT COUNT(*)::int AS n FROM orders WHERE created_at >= ${SINCE_TODAY}`)

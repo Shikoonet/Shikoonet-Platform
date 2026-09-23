@@ -83,7 +83,19 @@ import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import type { EnvName } from '@shikoo/contracts';
 import { jalaliPeriodLabel, nextJalaliDue } from '@shikoo/contracts';
-import { TX_OFF_BOOKS, parseStatsDay, parseStatsRange, shopProfit, statsRangeBounds } from '@shikoo/domain';
+import {
+  TX_OFF_BOOKS,
+  booksStartMs,
+  listDistributions,
+  partnerAccounts,
+  splitByPercent,
+  parseStatsDay,
+  parseStatsRange,
+  shopProfit,
+  sinceBooks,
+  statsRangeBounds,
+  tehranDateStringFromMs,
+} from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 /**
@@ -422,6 +434,26 @@ const AdjustmentQuery = z.object({
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
 });
 
+/**
+ * A profit split (0095): the period, and either the total to divide by the
+ * partners' percents or each partner's amount. Toman, like every other form.
+ */
+const DistributionBody = z
+  .object({
+    fromDay: ISO_DAY,
+    toDay: ISO_DAY,
+    totalToman: z.number().int().positive().max(MAX_ADJUSTMENT_TOMAN).optional(),
+    shares: z
+      .array(z.object({ partyId: z.number().int().positive(), amountToman: z.number().int().min(0).max(MAX_ADJUSTMENT_TOMAN) }).strict())
+      .min(1)
+      .max(20)
+      .optional(),
+    note: z.string().trim().max(500).optional(),
+    dryRun: z.boolean().optional(),
+  })
+  .strict()
+  .refine((b) => (b.totalToman === undefined) !== (b.shares === undefined), 'send totalToman or shares, not both');
+
 const CategoryBody = z
   .object({
     name: z.string().trim().min(1).max(60),
@@ -637,7 +669,18 @@ function shape(r: AdjustmentRow) {
  * figure above it — which is the misunderstanding this whole screen exists to
  * stop.
  */
-function ledgerWhere(q: z.infer<typeof AdjustmentQuery>): { sql: string; binds: unknown[] } {
+/**
+ * The Tehran day the books opened on, or null before they ever did. The list,
+ * its totals and the CSV start there, like every other money screen
+ * (`sinceBooks`): a row spent before the fresh start is history, not this
+ * period's. It is still in the table and still in its audit trail.
+ */
+async function booksStartDay(db: D1Database): Promise<string | null> {
+  const ms = await booksStartMs(db);
+  return ms === null ? null : tehranDateStringFromMs(ms);
+}
+
+function ledgerWhere(q: z.infer<typeof AdjustmentQuery>, startDay: string | null): { sql: string; binds: unknown[] } {
   const where: string[] = [];
   const binds: unknown[] = [];
   const p = (v: unknown) => {
@@ -657,6 +700,7 @@ function ledgerWhere(q: z.infer<typeof AdjustmentQuery>): { sql: string; binds: 
 
   // On `spent_on`, never on `created_at`: «چقدر در مرداد خرج کردم» asks when
   // the money left, not when somebody got round to typing it.
+  if (startDay) where.push(`ra.spent_on >= ${p(startDay)}::date`);
   if (q.from) where.push(`ra.spent_on >= ${p(q.from)}::date`);
   if (q.to) where.push(`ra.spent_on <= ${p(q.to)}::date`);
   if (q.q) where.push(`ra.note ILIKE ${p(`%${q.q}%`)}`);
@@ -1162,6 +1206,125 @@ export function registerRevenueRoutes(
     return c.json({ ok: true, ...report });
   });
 
+  // --- the profit split (0095) --------------------------------------------
+  //
+  // Under `/revenue-adjustments` for the reason the recurrences are: the prefix
+  // is what `access.ts` withholds from READ_ONLY. Before `/:id`, like them.
+
+  /** Every split, newest period first, and each partner's running account. */
+  app.get('/api/v1/admin/revenue-adjustments/distributions', async (c) => {
+    const [items, accounts] = await Promise.all([listDistributions(c.env.DB), partnerAccounts(c.env.DB)]);
+    return c.json({ ok: true, items, accounts });
+  });
+
+  /**
+   * «X تومان از سود این دوره تقسیم شود». Either the total, split by the
+   * partners' percents (`splitByPercent`), or the shares themselves when the
+   * person deciding changed one. `dryRun` answers with the split and writes
+   * nothing — the preview the form shows before «ثبت».
+   */
+  app.post('/api/v1/admin/revenue-adjustments/distributions', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const body = DistributionBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+    }
+    const given = body.data;
+    const [fromDay, toDay] = given.fromDay <= given.toDay ? [given.fromDay, given.toDay] : [given.toDay, given.fromDay];
+
+    const partners = (
+      await c.env.DB.prepare(
+        `SELECT id, name, share_percent, active FROM parties WHERE 'PARTNER' = ANY(roles) ORDER BY name`,
+      ).all<{ id: number; name: string; share_percent: string | number | null; active: boolean }>()
+    ).results ?? [];
+    const byId = new Map(partners.map((p) => [Number(p.id), p]));
+
+    let shares: Array<{ partyId: number; sharePercent: number | null; amountIrr: number }>;
+    if (given.shares) {
+      shares = [];
+      for (const s of given.shares) {
+        const p = byId.get(s.partyId);
+        if (!p || !p.active) return c.json({ ok: false, error: 'not_a_partner', detail: String(s.partyId) }, 400);
+        if (shares.some((x) => x.partyId === s.partyId)) return c.json({ ok: false, error: 'duplicate_partner' }, 400);
+        if (s.amountToman > 0) {
+          shares.push({
+            partyId: s.partyId,
+            sharePercent: p.share_percent === null ? null : Number(p.share_percent),
+            amountIrr: s.amountToman * IRR_PER_TOMAN,
+          });
+        }
+      }
+    } else {
+      // Split in whole Toman, then converted: a share of 13,333,333.3 Toman
+      // is one nobody can pay exactly, and the balance would never reach zero.
+      shares = splitByPercent(
+        given.totalToman!,
+        partners.map((p) => ({
+          partyId: Number(p.id),
+          sharePercent: p.share_percent === null ? null : Number(p.share_percent),
+          active: p.active,
+        })),
+      )
+        .filter((s) => s.amountIrr > 0)
+        .map((s) => ({ ...s, amountIrr: s.amountIrr * IRR_PER_TOMAN }));
+    }
+    if (shares.length === 0) return c.json({ ok: false, error: 'no_partner_shares' }, 400);
+
+    // What the screen would have said the profit was — kept beside the
+    // decision, never checked against it (0095).
+    const profit = await shopProfit(c.env.DB, 'between', Date.now(), fromDay, toDay);
+    const named = shares.map((s) => ({ ...s, name: byId.get(s.partyId)!.name }));
+    const totalIrr = shares.reduce((a, s) => a + s.amountIrr, 0);
+
+    if (given.dryRun) {
+      return c.json({ ok: true, dryRun: true, fromDay, toDay, profitIrr: profit.profitIrr, totalIrr, shares: named });
+    }
+
+    const id = await c.env.DB.withSession(async (tx) => {
+      const row = await tx
+        .prepare(
+          `INSERT INTO profit_distributions (from_day, to_day, profit_irr, note, created_by)
+           VALUES (?1::date, ?2::date, ?3, ?4, ?5) RETURNING id`,
+        )
+        .bind(fromDay, toDay, profit.profitIrr, given.note ?? '', ident.email)
+        .first<{ id: number }>();
+      for (const s of shares) {
+        await tx
+          .prepare(
+            `INSERT INTO profit_distribution_shares (distribution_id, party_id, share_percent, amount_irr)
+             VALUES (?1, ?2, ?3, ?4)`,
+          )
+          .bind(row!.id, s.partyId, s.sharePercent, s.amountIrr)
+          .run();
+      }
+      await audit(tx, ident, 'profit_distribution.added', 'PROFIT_DISTRIBUTION', String(row!.id), null,
+        { from_day: fromDay, to_day: toDay, profit_irr: profit.profitIrr, total_irr: totalIrr,
+          shares: shares.map((s) => ({ party_id: s.partyId, amount_irr: s.amountIrr })) },
+        null);
+      return Number(row!.id);
+    });
+    return c.json({ ok: true, id, fromDay, toDay, profitIrr: profit.profitIrr, totalIrr, shares: named });
+  });
+
+  /** A split typed by mistake. It stays, marked, like a voided ledger row. */
+  app.post('/api/v1/admin/revenue-adjustments/distributions/:id/void', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    // The guard is in the statement: a second void finds no live row.
+    const row = await c.env.DB.prepare(
+      `UPDATE profit_distributions SET voided_at = now(), voided_by = ?2
+        WHERE id = ?1 AND voided_at IS NULL RETURNING id`,
+    )
+      .bind(id, ident.email)
+      .first<{ id: number }>();
+    if (!row) return c.json({ ok: false, error: 'not_found_or_voided' }, 404);
+    await audit(c.env.DB, ident, 'profit_distribution.voided', 'PROFIT_DISTRIBUTION', String(id), null, { voided: true }, null);
+    return c.json({ ok: true });
+  });
+
   // --- recurring costs ----------------------------------------------------
   //
   // Registered before `/:id` for the same reason `/categories` is, and nested
@@ -1495,7 +1658,8 @@ export function registerRevenueRoutes(
     const q = AdjustmentQuery.safeParse(Object.fromEntries(new URL(c.req.url).searchParams));
     if (!q.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
 
-    const f = ledgerWhere(q.data);
+    const startDay = await booksStartDay(c.env.DB);
+    const f = ledgerWhere(q.data, startDay);
 
     const total = await c.env.DB.prepare(
       `SELECT COUNT(*)::int AS n FROM revenue_adjustments ra ${f.sql}`,
@@ -1546,8 +1710,11 @@ export function registerRevenueRoutes(
 
     // The lifetime figures, which the whole-ledger view still wants.
     const life = await c.env.DB.prepare(
-      `SELECT ${TOTALS_SQL} FROM revenue_adjustments ra WHERE ra.voided_at IS NULL`,
-    ).first<TotalsRow>();
+      `SELECT ${TOTALS_SQL} FROM revenue_adjustments ra
+        WHERE ra.voided_at IS NULL${startDay ? ' AND ra.spent_on >= ?1::date' : ''}`,
+    )
+      .bind(...(startDay ? [startDay] : []))
+      .first<TotalsRow>();
 
     /**
      * The same three figures over the window «آمار فروشگاه» is showing.
@@ -1570,11 +1737,15 @@ export function registerRevenueRoutes(
       // already mean this route's own spend-date filter. One name for two
       // windows is how a screen ends up filtering by one and totalling by the
       // other, which is the exact confusion this page exists to end.
-      const bounds = statsRangeBounds(
-        parseStatsRange(rangeParam),
+      const bounds = sinceBooks(
+        statsRangeBounds(
+          parseStatsRange(rangeParam),
+          Date.now(),
+          parseStatsDay(c.req.query('rangeDay')),
+          parseStatsDay(c.req.query('rangeTo')),
+        ),
+        await booksStartMs(c.env.DB),
         Date.now(),
-        parseStatsDay(c.req.query('rangeDay')),
-        parseStatsDay(c.req.query('rangeTo')),
       );
       if (bounds.start !== null && bounds.end !== null) {
         const win = await c.env.DB.prepare(
@@ -1600,6 +1771,8 @@ export function registerRevenueRoutes(
       /** Over the whole ledger, whatever the filter says. */
       lifetime: totals(life),
       rangeTotals,
+      /** The fresh start's Tehran day: nothing above reaches before it. */
+      booksStartDay: startDay,
       byCategory: (byCategory.results ?? []).map((r) => ({
         categoryId: r.category_id === null ? null : Number(r.category_id),
         name: r.name,
@@ -1630,7 +1803,8 @@ export function registerRevenueRoutes(
     const q = AdjustmentQuery.safeParse(Object.fromEntries(new URL(c.req.url).searchParams));
     if (!q.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
 
-    const f = ledgerWhere(q.data);
+    const startDay = await booksStartDay(c.env.DB);
+    const f = ledgerWhere(q.data, startDay);
     const rows = await c.env.DB.prepare(
       `SELECT ${SELECT_COLUMNS} ${FROM_LEDGER} ${f.sql}
         ORDER BY ra.spent_on DESC, ra.id DESC LIMIT ${EXPORT_MAX}`,

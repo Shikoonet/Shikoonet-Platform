@@ -11,15 +11,17 @@
  *      and the button that takes a movement off the books with a reason —
  *      the loan instalment, the relative's deposit, the transfer from our
  *      other account.
- *   3. The fresh start: the night the books opened, every account's balance
- *      written once as its opening. Before it, nothing counts.
+ *   3. The fresh start: the day the books opened, every account's balance
+ *      written once as its opening — the last the bank stated before that
+ *      day's midnight. Before it, nothing counts, here or on any money report.
  *
  * Nothing here computes a balance. Every balance is the bank's; the screen
  * explains, it never replaces.
  */
 
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { JALALI_MONTHS, jalaliToIsoDate, toJalali } from '@shikoo/contracts';
+import { JALALI_MONTHS, formatJalali, jalaliToEpochMs, jalaliToIsoDate, toJalali, type JalaliDate } from '@shikoo/contracts';
+import { DateField } from '../DateField.js';
 import {
   api,
   OFF_BOOKS_CATEGORY_FA,
@@ -140,11 +142,11 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
     [accounts, accountId],
   );
 
-  async function startFresh(force: boolean) {
+  async function startFresh(force: boolean, day: JalaliDate) {
     setStarting(true);
     setErr(null);
     try {
-      const r = await api.openBooks(force);
+      const r = await api.openBooks(force, jalaliToIsoDate(day));
       const missing = r.accounts.filter((a) => a.balanceIrr === null);
       setDone(
         `دفتر باز شد — کیف پول اول: ${toman(r.walletIrr)} از ${count(r.accounts.length - missing.length)} حساب` +
@@ -295,7 +297,7 @@ export function BooksPage({ role }: { role: PanelRole | null }) {
       )}
 
       {opening && (
-        <OpenedLine opening={opening} canWrite={canWrite} busy={starting} onReopen={() => startFresh(true)} />
+        <OpenedLine opening={opening} canWrite={canWrite} busy={starting} onReopen={(day) => startFresh(true, day)} />
       )}
 
       <div role="tablist" style={{ display: 'flex', gap: 8, marginBlock: 14 }}>
@@ -397,9 +399,10 @@ function FreshStartCard({
   missing: number;
   canWrite: boolean;
   busy: boolean;
-  onStart: (force: boolean) => void;
+  onStart: (force: boolean, day: JalaliDate) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [day, setDay] = useState<JalaliDate>(() => toJalali(Date.now()));
   return (
     <div className="card" style={{ marginBlockStart: 12, borderColor: 'var(--accent)' }} data-testid="fresh-start">
       <div className="card__head">
@@ -421,14 +424,15 @@ function FreshStartCard({
       {canWrite &&
         (confirming ? (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span>مطمئنی؟ این عدد به‌عنوان روز اول ثبت می‌شود.</span>
+            <DateField label="از ابتدای روز" value={day} onChange={setDay} />
+            <span>مطمئنی؟ موجودی هر حساب در نیمه‌شب {formatJalali(jalaliToEpochMs(day))} روز اول دفتر می‌شود.</span>
             <button
               type="button"
               className="btn btn-primary"
               disabled={busy}
               onClick={() => {
                 setConfirming(false);
-                onStart(false);
+                onStart(false, day);
               }}
             >
               بله، دفتر را باز کن
@@ -456,9 +460,10 @@ function OpenedLine({
   opening: BooksOpening;
   canWrite: boolean;
   busy: boolean;
-  onReopen: () => void;
+  onReopen: (day: JalaliDate) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [day, setDay] = useState<JalaliDate>(() => toJalali(Date.now()));
   return (
     <p className="muted" style={{ marginBlock: 4 }} data-testid="opened-line">
       دفتر از <strong>{dateTime(opening.openedAt)}</strong> باز است — کیف پول روز اول{' '}
@@ -466,15 +471,16 @@ function OpenedLine({
       {canWrite &&
         (confirming ? (
           <>
-            {' '}
-            همهٔ موجودی‌های اول از نو نوشته می‌شود و سابقهٔ پیش از آن از صورت‌حساب می‌رود.{' '}
+            <DateField label="از ابتدای روز" value={day} onChange={setDay} />
+            همهٔ موجودی‌های اول از نو نوشته می‌شود — آخرین موجودی بانک پیش از نیمه‌شب {formatJalali(jalaliToEpochMs(day))} —
+            و از آن روز به قبل هیچ درآمد و هزینه‌ای در هیچ گزارشی حساب نمی‌شود.{' '}
             <button
               type="button"
               className="btn btn-sm btn-danger"
               disabled={busy}
               onClick={() => {
                 setConfirming(false);
-                onReopen();
+                onReopen(day);
               }}
             >
               بله، از نو باز کن

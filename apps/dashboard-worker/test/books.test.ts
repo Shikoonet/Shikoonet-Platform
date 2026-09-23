@@ -672,4 +672,33 @@ describe('the fresh start', () => {
     };
     expect(moves.items.map((m) => m.amountIrr)).toEqual([1_990_000]);
   });
+
+  it('opens at the start of a chosen day: the balance before that midnight, and nothing after it is lost', async () => {
+    // Sam, 1 Mehr 1405: «از اول مهر». Pressed at noon, the books still open
+    // at midnight, so the morning's sale is in the new books.
+    await tx({ direction: 'CREDIT', amountIrr: 9_000_000, balanceIrr: 9_000_000, at: T(1) });
+    await tx({ direction: 'CREDIT', amountIrr: 2_000_000, balanceIrr: 11_000_000, at: T(3, 9) });
+    // The Tehran calendar day of T(3), from Intl rather than from our helpers.
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tehran' }).format(T(3, 9));
+    const midnight = Date.parse(`${day}T00:00:00+03:30`);
+    expect(midnight).toBeLessThan(T(3, 9));
+
+    const opened = await json('POST', '/api/v1/admin/books/open', { force: true, asOf: day });
+    expect(opened.status).toBe(200);
+    const o = (await opened.json()) as { openedAt: number; accounts: Array<{ accountId: string; balanceIrr: number | null; asOf: number | null }> };
+    expect(o.openedAt).toBe(midnight);
+    expect(o.accounts.find((a) => a.accountId === ACCT)).toMatchObject({ balanceIrr: 9_000_000, asOf: T(1) });
+    const status = (await (await get('/api/v1/admin/books/opening')).json()) as { opening: { openedAt: number } };
+    expect(status.opening.openedAt).toBe(midnight);
+
+    const s = ((await (await get(`/api/v1/admin/books/statement?month=${MONTH_Q}&accountId=${ACCT}`)).json()) as {
+      accounts: Array<{ customerIncome: { amountIrr: number }; closing: { balanceIrr: number }; gapIrr: number }>;
+    }).accounts[0]!;
+    expect([s.customerIncome.amountIrr, s.closing.balanceIrr, s.gapIrr]).toEqual([2_000_000, 11_000_000, 0]);
+
+    // A day that has not begun cannot be the start.
+    const future = await json('POST', '/api/v1/admin/books/open', { force: true, asOf: '2099-01-01' });
+    expect(future.status).toBe(400);
+    expect(((await future.json()) as { error: string }).error).toBe('as_of_in_future');
+  });
 });

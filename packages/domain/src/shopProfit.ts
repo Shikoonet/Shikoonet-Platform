@@ -49,7 +49,8 @@
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { LEGACY_SERVICE_NAME, ORDER_PRODUCT_JOINS, salesByService } from './shopReport.js';
-import { statsRangeBounds, type StatsRange } from './statsRange.js';
+import { booksStartMs } from './books.js';
+import { sinceBooks, statsRangeBounds, type StatsRange } from './statsRange.js';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -86,6 +87,8 @@ export interface ShopProfit {
   range: StatsRange;
   startMs: number | null;
   endMs: number | null;
+  /** The fresh start; nothing before it is in any figure below (`sinceBooks`). */
+  booksStartMs: number | null;
 
   salesIrr: number;
   revenueFixIrr: number;
@@ -157,7 +160,8 @@ export async function shopProfit(
   day?: string | null,
   to?: string | null,
 ): Promise<ShopProfit> {
-  const bounds = statsRangeBounds(range, nowMs, day, to);
+  const booksStart = await booksStartMs(db);
+  const bounds = sinceBooks(statsRangeBounds(range, nowMs, day, to), booksStart, nowMs);
   const spent = spentOnClause(bounds, 1);
   const gifted =
     bounds.start === null || bounds.end === null
@@ -342,6 +346,7 @@ export async function shopProfit(
     range,
     startMs: bounds.start,
     endMs: bounds.end,
+    booksStartMs: booksStart,
     salesIrr,
     revenueFixIrr,
     manualIncomeIrr,

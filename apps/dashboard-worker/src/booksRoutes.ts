@@ -560,7 +560,16 @@ export function registerBooksRoutes(
     return c.json({ ok: true, opening: await booksOpening(c.env.DB), now: await walletNow(c.env.DB, Date.now()) });
   });
 
-  const OpenBody = z.object({ force: z.boolean().optional() }).strict();
+  /**
+   * `asOf` opens the books at the start of a Tehran day already past — Sam,
+   * 1 Mehr 1405: «از اول مهر». The balances are the last the bank stated
+   * before that midnight, and every report starts there (`sinceBooks`).
+   * Without it, this instant, as before. When it was pressed is in the audit
+   * row; `created_at` is the start the books keep.
+   */
+  const OpenBody = z
+    .object({ force: z.boolean().optional(), asOf: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })
+    .strict();
 
   app.post('/api/v1/admin/books/open', async (c) => {
     const ident = c.get('identity');
@@ -568,7 +577,10 @@ export function registerBooksRoutes(
     const body = OpenBody.safeParse((await c.req.json().catch(() => ({}))) ?? {});
     if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const before = await booksOpening(c.env.DB);
-    const now = Date.now();
+    const pressed = Date.now();
+    const now = body.data.asOf ? tehranDayBoundsFromDate(body.data.asOf).start : pressed;
+    if (!Number.isFinite(now)) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    if (now > pressed) return c.json({ ok: false, error: 'as_of_in_future' }, 400);
     const r = await openBooks(c.env.DB, { actorEmail: ident.email, now, force: body.data.force === true });
     if (!r.ok) return c.json({ ok: false, error: r.error.toLowerCase() }, 409);
     await audit(
@@ -578,7 +590,7 @@ export function registerBooksRoutes(
       'BOOKS',
       String(now),
       before,
-      { openedAt: now, walletIrr: r.result.walletIrr, accounts: r.result.accounts.length },
+      { openedAt: now, pressedAt: pressed, walletIrr: r.result.walletIrr, accounts: r.result.accounts.length },
       body.data.force ? 'overwrite' : null,
     );
     return c.json({ ok: true, ...r.result });

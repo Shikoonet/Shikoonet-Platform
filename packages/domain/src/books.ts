@@ -24,7 +24,7 @@
  * exist, whatever the SMS history says.
  */
 
-import type { D1Database } from '@shikoo/database';
+import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { jalaliToEpochMs, toJalali, JALALI_MONTHS } from '@shikoo/contracts';
 import { jalaliMonthBounds, tehranDateStringFromMs } from './historyRange.js';
 import { BANK_INCOME_TX_WHERE, BANK_OUTFLOW_TX_WHERE, TX_OFF_BOOKS } from './incomeEligibility.js';
@@ -427,6 +427,14 @@ export async function booksOpening(db: D1Database): Promise<{ openedAt: number; 
     .first<{ opened_at: string | number | null; wallet: string | number; n: number }>();
   if (!row || row.n === 0 || row.opened_at == null) return null;
   return { openedAt: num(row.opened_at), walletIrr: num(row.wallet), accounts: row.n };
+}
+
+/** When the books opened — the instant every money report starts from (`sinceBooks`). */
+export async function booksStartMs(db: D1Database | D1DatabaseSession): Promise<number | null> {
+  const row = await db
+    .prepare(`SELECT MIN(created_at) AS at FROM account_opening_balances`)
+    .first<{ at: string | number | null }>();
+  return row?.at == null ? null : num(row.at);
 }
 
 /**
