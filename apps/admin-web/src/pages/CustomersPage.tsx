@@ -33,6 +33,7 @@ import {
   type WalletEntryRow,
   type CustomerHistoryRow,
   type OrderRow,
+  type RenewalRow,
   type SubscriptionRow,
 } from '../api.js';
 import { CopyButton } from '../CopyButton.js';
@@ -45,6 +46,7 @@ import {
   count,
   dateTime,
   entryNoteFa,
+  gigabytes,
   irrToToman,
   statusTone,
   toman,
@@ -94,6 +96,14 @@ function message(e: unknown): string {
     return e.detail ?? e.code;
   }
   return e instanceof Error ? e.message : String(e);
+}
+
+/** «۳٫۲ گیگ و ۱۲ روز» — what a renewal burned, or «—» for one that kept it all. */
+function lostFa(r: Pick<RenewalRow, 'lostBytes' | 'lostMs'>): string {
+  const parts: string[] = [];
+  if (r.lostBytes > 0) parts.push(gigabytes(r.lostBytes));
+  if (r.lostMs > 0) parts.push(`${count(Math.round(r.lostMs / 86_400_000))} روز`);
+  return parts.length === 0 ? '—' : parts.join(' و ');
 }
 
 /**
@@ -388,6 +398,7 @@ function CustomerDrawer({
   const [history, setHistory] = useState<CustomerHistoryRow[]>([]);
   const [payments, setPayments] = useState<CustomerPayments | null>(null);
   const [referral, setReferral] = useState<CustomerReferral | null>(null);
+  const [renewals, setRenewals] = useState<RenewalRow[]>([]);
   /**
    * What this customer bought, on this card.
    *
@@ -439,6 +450,7 @@ function CustomerDrawer({
       setEntries(d.entries);
       setPayments(d.payments);
       setReferral(d.referral);
+      setRenewals(d.renewals ?? []);
       // The field starts at what the customer already has, so «ذخیره» without
       // typing is a no-op rather than a silent reset to zero.
       setDiscount(String(d.customer.discountPercent));
@@ -596,6 +608,25 @@ function CustomerDrawer({
       setDone(tier === '' ? `نمایندگی ${who} برداشته شد.` : `سطح نمایندگی ${who} ذخیره شد.`);
       await load();
       onChanged();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restoreRenewal(r: RenewalRow) {
+    const what = lostFa(r);
+    if (!window.confirm(`${what} به اکانت ${r.remoteUsername ?? ''} اضافه شود؟ روی پنل اعمال می‌شود.`)) {
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.restoreRenewal(r.id);
+      setDone(`${what} به اکانت ${r.remoteUsername ?? ''} برگردانده شد.`);
+      await load();
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -1225,6 +1256,63 @@ function CustomerDrawer({
                       <span className={statusTone(v.status)}>
                         {SUB_STATUS_FA[v.status] ?? v.status}
                       </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* What each renewal replaced (0096) — Sam, 2026-09-23: «ببینم چند
+              گیگش رو مصرف کرده بوده از چند گیگ و چقدر زمانش مونده بوده». */}
+          <h4>تاریخچهٔ تمدید</h4>
+          <div className="table-wrap">
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th>زمان</th>
+                  <th>اکانت</th>
+                  <th>پلن قبلی ← جدید</th>
+                  <th>مصرف پیش از تمدید</th>
+                  <th>اعتبار پیش از تمدید</th>
+                  <th>سوخته</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {renewals.length === 0 && (
+                  <tr>
+                    <td className="empty" colSpan={7}>
+                      تمدیدی ثبت نشده است.
+                    </td>
+                  </tr>
+                )}
+                {renewals.map((r) => (
+                  <tr key={r.id}>
+                    <td>{dateTime(r.createdAt)}</td>
+                    <td className="ltr">{r.remoteUsername ?? '—'}</td>
+                    <td>
+                      {r.planBefore ?? '—'} ← {r.planAfter ?? '—'}
+                    </td>
+                    <td>
+                      {gigabytes(r.usedBytesBefore)} از{' '}
+                      {r.limitBytesBefore === null ? 'نامحدود' : gigabytes(r.limitBytesBefore)}
+                    </td>
+                    <td>{r.expiresAtBefore ? dateTime(r.expiresAtBefore) : '—'}</td>
+                    <td>{lostFa(r)}</td>
+                    <td>
+                      {r.restoredAt ? (
+                        <span className="badge badge-active">برگردانده شد</span>
+                      ) : r.lostBytes > 0 || r.lostMs > 0 ? (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={busy}
+                          onClick={() => void restoreRenewal(r)}
+                        >
+                          برگرداندن
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}

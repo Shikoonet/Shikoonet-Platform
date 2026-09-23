@@ -2144,6 +2144,9 @@ export interface ServiceListItem {
   expires_at: string | null;
   /** What was sold — the only clock a held service has until it is used (#325). */
   duration_days?: number | null;
+  /** The panel account and its tier — what a list row is named by. */
+  remote_username?: string | null;
+  provider_name_at_sale?: string | null;
 }
 
 /** Everything the detail screen shows. */
@@ -2210,6 +2213,23 @@ function shortName(name: string): string {
   return trimmed.length <= 38 ? trimmed : `${trimmed.slice(0, 37)}…`;
 }
 
+/**
+ * A list row's name: the account, and the tier it lives on — «user123 · الماس».
+ *
+ * Sam, 2026-09-23: the legacy plan name («💎1ماهه-10گیگ-چند کاربر») told a
+ * customer with three services nothing about which was which. The username is
+ * what tells them apart and the tier is what they bought. The tier is the
+ * «لوکیشن» (`provider_name_at_sale`) — the one name a migrated row has, since
+ * its `plan_id` is NULL — without the «سرویس» every row of it starts with.
+ * A service with no account (a shelf item) keeps the plan name.
+ */
+export function serviceLabel(service: ServiceListItem): string {
+  const user = service.remote_username?.trim();
+  if (!user) return shortName(service.plan_name_at_sale);
+  const tier = service.provider_name_at_sale?.trim().replace(/^سرویس\s+/, '');
+  return shortName(tier ? `${user} · ${tier}` : user);
+}
+
 export function myServicesTitle(total: number, page: number, pages: number): string {
   const t = TEXTS_NOW;
   const head = t.render('MY_SERVICES_TITLE', { total });
@@ -2233,7 +2253,7 @@ export function myServicesMenu(
     [
       ...services.map((service) => [
         {
-          text: `${STATE_GLYPH[serviceState(service, now)]} ${shortName(service.plan_name_at_sale)}`,
+          text: `${STATE_GLYPH[serviceState(service, now)]} ${serviceLabel(service)}`,
           callback_data: encode('sub', service.id),
         },
       ]),
@@ -2675,7 +2695,7 @@ export function renewMenu(
     [
       ...services.map((service) => [
         {
-          text: `${STATE_GLYPH[serviceState(service, now)]} ${shortName(service.plan_name_at_sale)}`,
+          text: `${STATE_GLYPH[serviceState(service, now)]} ${serviceLabel(service)}`,
           callback_data: encode('rnw', service.id),
         },
       ]),
@@ -2705,7 +2725,31 @@ export function renewIntro(
   closing: 'choose' | 'matched' | 'tier' = 'choose',
 ): string {
   const t = TEXTS_NOW;
+  // An ADD panel adds to whatever is left — but only if anything IS left. Seen
+  // on the real screen: a service four days past its date, on an ADD panel,
+  // promising the customer their remaining time would be kept. There was none.
+  // The adapter already anchors at today in that case; this is the sentence
+  // catching up with what it does.
+  const somethingLeft = service.expires_at !== null && Date.parse(service.expires_at) > now;
+  const promise =
+    mode === 'ADD' && somethingLeft
+      ? t.raw('RENEW_MODE_ADD')
+      : mode === 'ADD'
+        ? t.raw('RENEW_MODE_ADD_EXPIRED')
+        : mode === 'ADD_VOLUME_RESET_TIME'
+          ? // No «expired» variant: this mode's promise is about VOLUME, and
+            // volume is kept whether or not the clock had run out. The ADD
+            // sentence needs one because it promises remaining TIME, which an
+            // expired service does not have.
+            t.raw('RENEW_MODE_ADD_VOLUME_RESET_TIME')
+          : t.raw('RENEW_MODE_RESET');
   const lines = [
+    // First, bold and boxed. Sam, 2026-09-23: «مصرف قبلی صفر می‌گردد» sat in
+    // the middle of the message, below the fold for the customer who renews
+    // early by mistake. The frame is here rather than in the text's default,
+    // so an admin's own wording of it is framed too.
+    `<blockquote><b>${promise}</b></blockquote>`,
+    '',
     t.raw('RENEW_INTRO_TITLE'),
     '',
     // Without the price the legacy name quotes: the plan chosen below is
@@ -2721,25 +2765,7 @@ export function renewIntro(
       }),
     );
   }
-  // An ADD panel adds to whatever is left — but only if anything IS left. Seen
-  // on the real screen: a service four days past its date, on an ADD panel,
-  // promising the customer their remaining time would be kept. There was none.
-  // The adapter already anchors at today in that case; this is the sentence
-  // catching up with what it does.
-  const somethingLeft = service.expires_at !== null && Date.parse(service.expires_at) > now;
   lines.push(
-    '',
-    mode === 'ADD' && somethingLeft
-      ? t.raw('RENEW_MODE_ADD')
-      : mode === 'ADD'
-        ? t.raw('RENEW_MODE_ADD_EXPIRED')
-        : mode === 'ADD_VOLUME_RESET_TIME'
-          ? // No «expired» variant: this mode's promise is about VOLUME, and
-            // volume is kept whether or not the clock had run out. The ADD
-            // sentence needs one because it promises remaining TIME, which an
-            // expired service does not have.
-            t.raw('RENEW_MODE_ADD_VOLUME_RESET_TIME')
-          : t.raw('RENEW_MODE_RESET'),
     '',
     t.raw(
       closing === 'matched'
@@ -2766,6 +2792,22 @@ export function renewMatched(
   applied?: AppliedCode | null,
 ): string {
   return `${renewIntro(service, mode, now, 'matched')}\n\n${planDetail(plan, price, applied)}`;
+}
+
+/**
+ * «الماس 1 ماهه 10 گیگ» — the plan in as few words as say which it is.
+ *
+ * For the «تمدید با همین پلن» button. The full name there was the product and
+ * the legacy plan name and the price, three lines on a phone (Sam, 2026-09-23),
+ * and the message above the button already spells all of it out. Built from
+ * the plan's numbers rather than cut from its name, because the legacy name
+ * front-loads an emoji and «1ماهه-10گیگ-چند کاربر».
+ */
+export function shortPlan(plan: Pick<CatalogPlan, 'productName' | 'durationDays' | 'volumeGb'>): string {
+  const tier = plan.productName.trim().replace(/^سرویس\s+/, '');
+  return [tier, durationText(plan.durationDays), volumeText(plan.volumeGb)]
+    .filter((part) => part !== '')
+    .join(' ');
 }
 
 /** Renewal plans per screen — the same page size «سرویس های من» uses. */
@@ -2806,7 +2848,13 @@ export function renewPlanMenu(
   const pages = page === null ? 1 : Math.max(1, Math.ceil(plans.length / RENEW_PLANS_PER_PAGE));
   const at = page === null ? 1 : Math.min(Math.max(1, page), pages);
   const shown = page === null ? plans : plans.slice((at - 1) * RENEW_PLANS_PER_PAGE, at * RENEW_PLANS_PER_PAGE);
-  const keyboard: InlineKeyboard = shown.map((plan) => {
+  // The one matching plan is a confirmation, not a choice, and is drawn as
+  // the `rord` chrome button so the shop can word, colour and move it. A
+  // layout saved before that button existed does not carry it — a saved menu
+  // replaces the code's whole — and there the old data row stands in, or the
+  // screen would have lost its only way to renew.
+  const asChrome = matched && layout('renewPlans').some((b) => b.action === 'rord');
+  const keyboard: InlineKeyboard = (asChrome ? [] : shown).map((plan) => {
     const price = priceForUser(plan.priceIrr, discountPercent);
     // The listed price stays the listed price while a code is held: which plan
     // the code applies to is not known until one is chosen, and a button that
@@ -2823,9 +2871,10 @@ export function renewPlanMenu(
     const text = quoted ? label : `${label} — ${formatToman(price.totalIrr)}`;
     return [
       {
-        // The one matching plan is a confirmation, not a choice, and reads so.
-        text: matched ? `✅ تمدید با همین پلن — ${text}` : text,
+        text: matched ? `✅ تمدید با همین پلن — ${shortPlan(plan)}` : badged(plan.badge, text),
         callback_data: encode('rord', subscriptionId, plan.planId),
+        // The plan's colour from «محصولات», as on the buy screens.
+        ...styled(plan.buttonStyle),
       },
     ];
   });
@@ -2848,8 +2897,9 @@ export function renewPlanMenu(
       const quoted = price.discountIrr === 0 && nameMentionsPrice(label, tier.only.priceIrr);
       keyboard.push([
         {
-          text: quoted ? label : `${label} — ${formatToman(price.totalIrr)}`,
+          text: badged(tier.only.badge, quoted ? label : `${label} — ${formatToman(price.totalIrr)}`),
           callback_data: encode('rord', subscriptionId, tier.only.planId),
+          ...styled(tier.only.buttonStyle),
         },
       ]);
       continue;
@@ -2867,12 +2917,16 @@ export function renewPlanMenu(
               // Sam, 2026-09-13: «علاوه بر نمایش تمدید همین سرویس، یک دکمه باشه
               // که بفرسته سمت بخش vpnها» — one button, not the tiers inline.
               matched
-            : true,
+            : action === 'rord'
+              ? asChrome
+              : true,
     target: (action) =>
       action === 'renew' || action === 'menu'
         ? action
-        : encode(action as 'dsr' | 'dxr' | 'rnwl', subscriptionId),
-    values: { code: heldCode ?? '', family },
+        : action === 'rord'
+          ? encode('rord', subscriptionId, plans[0]!.planId)
+          : encode(action as 'dsr' | 'dxr' | 'rnwl', subscriptionId),
+    values: { code: heldCode ?? '', family, plan: asChrome ? shortPlan(plans[0]!) : '' },
   });
 }
 

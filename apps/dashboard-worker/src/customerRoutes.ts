@@ -41,10 +41,12 @@ import {
   adjustWallet,
   maskCardDigits,
   queueDirectMessage,
+  panelNoteFor,
   setCustomerReseller,
   setCustomerStatus,
 } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
+import { panelContext } from './panelRoutes.js';
 
 /**
  * A correction larger than the largest deposit the shop will accept is far more
@@ -640,6 +642,39 @@ export function registerCustomerRoutes(
         last_paid_at: number | null;
       }>();
 
+    /**
+     * What each renewal replaced (0096) — «چند گیگ از چند گیگ مصرف کرده بود و
+     * چقدر زمانش مونده بود» (Sam, 2026-09-23). The newest fifty: a customer
+     * who has renewed more often than that is asking about a recent one.
+     */
+    const renewals = await c.env.DB.prepare(
+      `SELECT r.id, r.created_at, r.mode, r.plan_name_before, o.plan_name_at_sale AS plan_name_after,
+              s.remote_username, r.used_bytes_before, r.limit_bytes_before,
+              r.expires_at_before, r.lost_bytes, r.lost_ms, r.restored_at, r.restored_by
+         FROM renewal_snapshots r
+         JOIN subscriptions s ON s.id = r.subscription_id
+         JOIN orders o        ON o.id = r.order_id
+        WHERE s.user_id = ?1
+        ORDER BY r.created_at DESC, r.id DESC
+        LIMIT 50`,
+    )
+      .bind(id)
+      .all<{
+        id: number;
+        created_at: string;
+        mode: string;
+        plan_name_before: string | null;
+        plan_name_after: string | null;
+        remote_username: string | null;
+        used_bytes_before: number | string | null;
+        limit_bytes_before: number | string | null;
+        expires_at_before: string | null;
+        lost_bytes: number | string;
+        lost_ms: number | string;
+        restored_at: string | null;
+        restored_by: string | null;
+      }>();
+
     const cards = (byCard.results ?? []).map((r) => ({
       // Never the full number, on any screen — the payments list holds the
       // same line.
@@ -682,6 +717,21 @@ export function registerCustomerRoutes(
         totalIrr: cards.reduce((n, c) => n + c.amountIrr, 0),
         byCard: cards,
       },
+      renewals: (renewals.results ?? []).map((r) => ({
+        id: Number(r.id),
+        createdAt: r.created_at,
+        mode: r.mode,
+        planBefore: r.plan_name_before,
+        planAfter: r.plan_name_after,
+        remoteUsername: r.remote_username,
+        usedBytesBefore: r.used_bytes_before === null ? null : Number(r.used_bytes_before),
+        limitBytesBefore: r.limit_bytes_before === null ? null : Number(r.limit_bytes_before),
+        expiresAtBefore: r.expires_at_before,
+        lostBytes: Number(r.lost_bytes),
+        lostMs: Number(r.lost_ms),
+        restoredAt: r.restored_at,
+        restoredBy: r.restored_by,
+      })),
       entries: (entries.results ?? []).map((e) => ({
         amountIrr: e.amount_irr,
         kind: e.kind,
@@ -879,6 +929,141 @@ export function registerCustomerRoutes(
     if (!outcome.changed) return c.json({ ok: true, changed: false, status });
 
     return c.json({ ok: true, changed: true, status });
+  });
+
+  // --- undo what a renewal burned ----------------------------------------
+
+  /**
+   * «برگرداندن» on a renewal in the drawer's history: adds back onto the
+   * account what that renewal threw away — the unused volume, the remaining
+   * days — as recorded in its `renewal_snapshots` row (0096). Sam, 2026-09-23:
+   * customers renew by mistake, and the old quota and time were gone.
+   *
+   * ADDED to the account as it is now, not rolled back to what it was: the
+   * renewal was paid for and stays; this returns only what it cost the
+   * customer on top. Through the adapter's own ADD, the path an extra-volume
+   * purchase takes, so the panel arithmetic is the one already proven there.
+   *
+   * The claim comes first — `restored_at IS NULL` in the UPDATE — so a double
+   * click, or two admins, give it back once. A panel that refuses releases the
+   * claim, and the button is there again.
+   */
+  app.post('/api/v1/admin/renewals/:id/restore', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    const db = c.env.DB;
+
+    const claimed = await db
+      .prepare(
+        `UPDATE renewal_snapshots SET restored_at = now(), restored_by = ?2
+          WHERE id = ?1 AND restored_at IS NULL AND (lost_bytes > 0 OR lost_ms > 0)
+          RETURNING subscription_id, lost_bytes, lost_ms`,
+      )
+      .bind(id, ident.email)
+      .first<{ subscription_id: number; lost_bytes: number | string; lost_ms: number | string }>();
+    if (!claimed) {
+      const exists = await db
+        .prepare(`SELECT restored_at FROM renewal_snapshots WHERE id = ?1`)
+        .bind(id)
+        .first<{ restored_at: string | null }>();
+      if (!exists) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json(
+        exists.restored_at
+          ? { ok: false, error: 'already_restored', detail: 'این تمدید قبلاً برگردانده شده است.' }
+          : { ok: false, error: 'nothing_to_restore', detail: 'این تمدید حجم یا زمانی نسوزانده که برگردد.' },
+        409,
+      );
+    }
+    const unclaim = () =>
+      db.prepare(`UPDATE renewal_snapshots SET restored_at = NULL, restored_by = NULL WHERE id = ?1`)
+        .bind(id)
+        .run();
+
+    const sub = await db
+      .prepare(
+        `SELECT s.id, s.remote_username, s.provider_id, u.telegram_id, u.username
+           FROM subscriptions s JOIN users u ON u.id = s.user_id
+          WHERE s.id = ?1`,
+      )
+      .bind(claimed.subscription_id)
+      .first<{
+        id: number;
+        remote_username: string | null;
+        provider_id: number | null;
+        telegram_id: number;
+        username: string | null;
+      }>();
+    const panel = sub?.provider_id == null ? null : await panelContext(db, Number(sub.provider_id));
+    if (!sub?.remote_username || !panel?.ok || !panel.adapter.renew) {
+      await unclaim();
+      return c.json(
+        {
+          ok: false,
+          error: 'panel',
+          detail: panel && !panel.ok ? panel.reason : 'این سرویس پنلی برای برگرداندن ندارد.',
+        },
+        502,
+      );
+    }
+
+    const lostBytes = Number(claimed.lost_bytes);
+    const lostMs = Number(claimed.lost_ms);
+    const result = await panel.adapter.renew(
+      {
+        username: sub.remote_username,
+        // Fractions are fine: the adapter works in bytes and milliseconds.
+        volumeGb: lostBytes / 1024 ** 3,
+        durationDays: lostMs / 86_400_000,
+        // Its own note, so the adapter's «already applied» check (the note it
+        // reads back) knows this restore and no other.
+        note: panelNoteFor(Number(sub.telegram_id), sub.username, `restore ${id}`),
+        providerConfig: panel.provider.config,
+        planAttrs: {},
+        mode: 'ADD',
+        // `Date.now()`, not `new Date()`: the one clock a test can pin.
+        renewFrom: new Date(Date.now()),
+      },
+      panel.provider,
+    );
+    if (!result.ok) {
+      await unclaim();
+      return c.json({ ok: false, error: 'panel', detail: `پنل نپذیرفت: ${result.reason}` }, 502);
+    }
+
+    const expiresAt = result.expiresAt ?? null;
+    await db.withSession(async (tx) => {
+      // As an extra-volume purchase writes it (`provision.ts`): GREATEST, so a
+      // panel clock that is wrong cannot shorten the row.
+      await tx
+        .prepare(
+          `UPDATE subscriptions
+              SET volume_gb      = COALESCE(?2, volume_gb),
+                  expires_at     = GREATEST(?3::timestamptz, expires_at),
+                  -- The adapter sent «status: active» to the panel, so a row
+                  -- the customer had switched off follows it (#366).
+                  status         = CASE WHEN status = 'DISABLED' THEN 'ACTIVE' ELSE status END,
+                  notify         = '{}'::jsonb,
+                  last_synced_at = NULL,
+                  updated_at     = now()
+            WHERE id = ?1`,
+        )
+        .bind(sub.id, result.volumeGb ?? null, expiresAt === null ? null : expiresAt.toISOString())
+        .run();
+      await audit(
+        tx,
+        ident,
+        'RENEWAL_RESTORED',
+        'subscription',
+        String(sub.id),
+        null,
+        { snapshotId: id, lostBytes, lostMs, volumeGb: result.volumeGb ?? null, expiresAt },
+        null,
+      );
+    });
+    return c.json({ ok: true, volumeGb: result.volumeGb ?? null, expiresAt });
   });
 
   // --- permanent discount -------------------------------------------------

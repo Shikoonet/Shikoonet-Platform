@@ -434,7 +434,7 @@ type PanelContext =
   | { ok: true; adapter: ProvisioningAdapter; provider: ProviderContext; code: string }
   | { ok: false; status: 404 | 200; reason: string };
 
-async function panelContext(db: D1Database, id: number): Promise<PanelContext> {
+export async function panelContext(db: D1Database, id: number): Promise<PanelContext> {
   const row = await db
     .prepare(
       `SELECT pr.id, pr.code, pr.name, pr.kind, pr.base_url, pr.secret_ref,

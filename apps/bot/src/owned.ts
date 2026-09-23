@@ -200,6 +200,8 @@ export interface RenewableSubscription {
   public_id: string;
   status: string;
   plan_name_at_sale: string;
+  /** The «لوکیشن» — the tier the list names beside the username. */
+  provider_name_at_sale: string | null;
   remote_username: string;
   expires_at: string | null;
   volume_gb: number | null;
@@ -282,7 +284,8 @@ const RENEWABLE = `
 `;
 
 const RENEWABLE_COLUMNS = `
-  s.id, s.public_id, s.status, s.plan_name_at_sale, s.remote_username, s.expires_at,
+  s.id, s.public_id, s.status, s.plan_name_at_sale, s.provider_name_at_sale,
+  s.remote_username, s.expires_at,
   s.volume_gb, s.used_bytes, s.plan_id, s.duration_days,
   COALESCE(
     (SELECT p.kind FROM product_plans pl JOIN products p ON p.id = pl.product_id

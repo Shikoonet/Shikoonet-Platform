@@ -367,14 +367,25 @@ export const MENUS = {
     ],
   },
   renewList: {
-    label: 'تمدید — انتخاب سرویس',
+    label: 'تمدید سرویس — انتخاب سرویس',
     hint: 'زیر فهرست سرویس‌های قابل تمدید',
     buttons: [BACK_TO_MENU],
   },
   renewPlans: {
-    label: 'تمدید — انتخاب پلن',
+    label: 'تمدید سرویس — انتخاب پلن',
     hint: 'زیر پلن‌هایی که سرویس با آن‌ها تمدید می‌شود',
     buttons: [
+      // Chrome rather than a data row so the admin can word it, colour it,
+      // give it a premium emoji and move it (Sam, 2026-09-23). `{plan}` is
+      // short — «الماس 1 ماهه 10 گیگ» — because the full legacy name made the
+      // button three lines long; the message above already spells the plan out.
+      {
+        action: 'rord',
+        label: '✅ تمدید با همین پلن — {plan}',
+        placeholders: ['plan'],
+        hint: 'فقط وقتی پلنی که سرویس با آن خریده شده هنوز فروخته می‌شود؛ همان را سفارش می‌دهد',
+        conditional: true,
+      },
       {
         action: 'dsr',
         label: '🏷 کد تخفیف دارم',

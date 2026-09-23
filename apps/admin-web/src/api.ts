@@ -187,6 +187,25 @@ export interface ReferrerTotals {
 
 export type ReferrerSort = 'invited' | 'buyers' | 'bought' | 'commission' | 'recent';
 
+/** One renewal and the account as it was just before it (0096). */
+export interface RenewalRow {
+  id: number;
+  createdAt: string;
+  mode: 'RESET' | 'ADD' | 'ADD_VOLUME_RESET_TIME' | string;
+  planBefore: string | null;
+  planAfter: string | null;
+  remoteUsername: string | null;
+  usedBytesBefore: number | null;
+  /** `null`: unmetered. */
+  limitBytesBefore: number | null;
+  expiresAtBefore: string | null;
+  /** What the renewal threw away — what «برگرداندن» adds back. */
+  lostBytes: number;
+  lostMs: number;
+  restoredAt: string | null;
+  restoredBy: string | null;
+}
+
 export interface CustomerDetail {
   id: number;
   telegramId: number;
@@ -2178,7 +2197,16 @@ export const api = {
       payments: CustomerPayments;
       entries: WalletEntryRow[];
       referral: CustomerReferral;
+      renewals: RenewalRow[];
     }>(`/customers/${id}`);
+  },
+
+  /** Adds back what one renewal burned (0096). ADMIN only. */
+  restoreRenewal(id: number) {
+    return req<{ ok: boolean; volumeGb: number | null; expiresAt: string | null }>(
+      `/renewals/${id}/restore`,
+      { method: 'POST' },
+    );
   },
 
   adjustWallet(id: number, body: { amountIrr: number; note: string; idempotencyKey: string }) {

@@ -158,6 +158,16 @@ describe('the bot’s own formatting — #322', () => {
     );
   });
 
+  it('lets bold through only as the bold box the renewal warning is drawn in', () => {
+    expect(toTelegramHtml('<blockquote><b>حجم < صفر</b></blockquote>')).toBe(
+      '<blockquote><b>حجم &lt; صفر</b></blockquote>',
+    );
+    // The box's own halves are markup; a bold on its own is still text.
+    expect(toTelegramHtml('<blockquote>x <b>y</b></blockquote>')).toBe(
+      '<blockquote>x &lt;b&gt;y&lt;/b&gt;</blockquote>',
+    );
+  });
+
   it('strips to the words when the message must land plain', () => {
     expect(stripMarkup(`${BOXED} ${FIRE}`)).toBe('قیمت < ۱۰۰\nکارت:\n6037-9975 \u{1F525}');
   });

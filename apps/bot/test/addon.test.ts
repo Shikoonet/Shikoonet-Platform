@@ -445,6 +445,12 @@ describe('buying extra volume', () => {
       .bind(service)
       .first<{ expires_at: string }>();
     expect(new Date(row!.expires_at).getTime()).toBe(ours.getTime());
+    // An add-on is not a renewal: nothing burned, nothing for «تاریخچهٔ تمدید».
+    const snapshots = await db
+      .prepare(`SELECT COUNT(*)::int AS n FROM renewal_snapshots WHERE subscription_id = ?1`)
+      .bind(service)
+      .first<{ n: number }>();
+    expect(snapshots?.n).toBe(0);
 
     // And so does the sentence. Compared against both renderings rather than
     // against a hand-written date: what is under test is WHICH date was

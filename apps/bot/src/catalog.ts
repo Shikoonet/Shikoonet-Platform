@@ -733,7 +733,14 @@ export async function plansOnPanel(
     .prepare(
       `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
         WHERE pr.id = ANY(?2) AND (?3::text IS NULL OR p.kind = ?3) AND ${PURCHASABLE}
-        ORDER BY p.sort_order, pl.sort_order, pl.price_irr`,
+        -- The shop's own arrangement: categories as «خرید اشتراک» lists
+        -- them, then the services inside each. The tier list under «پلن‌های
+        -- دیگر» is drawn in this order. It used to start at p.sort_order,
+        -- which is per category and 0 on every migrated row, so the list fell
+        -- through to price: Sam saw WireGuard above the main tiers
+        -- (2026-09-23). If WireGuard shares a category with them, its place
+        -- is the admin's to set in that category's layout editor.
+        ORDER BY cat.sort_order, cat.id, p.sort_order, p.id, pl.sort_order, pl.price_irr, pl.id`,
     )
     .bind(userId, providerIds, kind)
     .all<PlanRow>();
