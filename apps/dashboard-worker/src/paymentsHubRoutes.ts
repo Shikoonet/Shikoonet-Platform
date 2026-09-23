@@ -9,6 +9,7 @@ import {
   OFF_BOOKS_CATEGORIES,
   classifyResellerTransaction,
   createReseller,
+  creditDepositToWallet,
   declineAllActiveIncome,
   declineIncomeBulk,
   declineIncomeTransaction,
@@ -26,7 +27,7 @@ import {
   type D1Database as DomainD1Database,
 } from '@shikoo/domain';
 import type { EnvName } from '@shikoo/contracts';
-import { MIRZABOT_SOURCE } from '@shikoo/contracts';
+import { IRR_PER_TOMAN, MIRZABOT_SOURCE, Texts } from '@shikoo/contracts';
 
 /**
  * The tabs of «پرداخت‌ها», defined once.
@@ -851,6 +852,95 @@ export function registerPaymentsHubRoutes(
         parsed.data.reason ?? null,
         c.req.header('cf-ray') ?? null,
         now,
+      )
+      .run();
+
+    return c.json(result);
+  });
+
+  const CreditWalletBody = z
+    .object({
+      userId: z.number().int().positive(),
+      reason: z.string().trim().min(1).max(2000),
+    })
+    .strict();
+
+  /**
+   * «شارژ کیف پول مشتری» — a deposit with no order left to take it (the
+   * customer paid an invoice after it expired), paid into their wallet.
+   * `creditDepositToWallet` has the why and the locking.
+   *
+   * ADMIN only, like the wallet adjustment on the customer's page: this moves
+   * money into a customer's balance.
+   */
+  app.post('/api/v1/transactions/:transactionId/credit-wallet', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = CreditWalletBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const transactionId = c.req.param('transactionId');
+
+    const deposit = await c.env.DB.prepare(
+      `SELECT amount_irr, financial_account_id FROM transaction_candidates WHERE id = ?1`,
+    )
+      .bind(transactionId)
+      .first<{ amount_irr: number | null; financial_account_id: string | null }>();
+
+    // The bot's own top-up message (`menu.walletToppedUp`), from the same
+    // editable texts, so the customer reads what a bot top-up says.
+    const { results } = await c.env.DB.prepare(`SELECT key, value FROM bot_texts`).all<{
+      key: string;
+      value: string;
+    }>();
+    const texts = new Texts(Object.fromEntries((results ?? []).map((r) => [r.key, r.value])));
+    const toman = Math.round(Number(deposit?.amount_irr ?? 0) / IRR_PER_TOMAN);
+    const message = [
+      texts.raw('WALLET_TOPPED_UP_TITLE'),
+      '',
+      texts.render('WALLET_TOPPED_UP_AMOUNT', { amount: `${toman.toLocaleString('en-US')} تومان` }),
+      '',
+      texts.raw('WALLET_TOPPED_UP_FOOTER'),
+    ].join('\n');
+
+    const result = await creditDepositToWallet(c.env.DB as unknown as DomainD1Database, {
+      transactionId,
+      userId: parsed.data.userId,
+      actorEmail: ident.email,
+      reason: parsed.data.reason,
+      message,
+    });
+
+    if (!result.ok) {
+      const status =
+        result.error === 'TRANSACTION_NOT_FOUND' || result.error === 'USER_NOT_FOUND'
+          ? 404
+          : result.error === 'NOT_INCOME_ELIGIBLE'
+            ? 409
+            : 400;
+      return c.json({ ok: false, error: result.error.toLowerCase() }, status);
+    }
+
+    await c.env.DB.prepare(SQL.insertAudit)
+      .bind(
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        'transaction.credited_to_wallet',
+        'TRANSACTION',
+        transactionId,
+        JSON.stringify({
+          amountIrr: deposit?.amount_irr ?? null,
+          accountId: deposit?.financial_account_id ?? null,
+        }),
+        JSON.stringify({
+          userId: parsed.data.userId,
+          amountIrr: result.amountIrr,
+          balanceIrr: result.balanceIrr,
+          notified: result.notified,
+        }),
+        parsed.data.reason,
+        c.req.header('cf-ray') ?? null,
+        Date.now(),
       )
       .run();
 

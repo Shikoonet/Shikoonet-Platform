@@ -44,6 +44,7 @@ import {
   withdrawalsNear,
   type AccountStatement,
   type OffBooksCategory,
+  TX_WALLET_CREDITED,
 } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 import { csvCell } from './revenueRoutes.js';
@@ -356,8 +357,11 @@ export function registerBooksRoutes(
       `SELECT t.id, t.direction, t.amount_irr, t.balance_irr, t.bank_timestamp, t.status,
               idt.category AS off_books_category, idt.reason AS off_books_note,
               ra.id AS expense_id, ra.note AS expense_note, COALESCE(ra.fee_irr, 0) AS fee_irr,
-              EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.transaction_candidate_id = t.id
-                        AND m.status IN ('CONFIRMED','AUTO_VERIFIED')) AS matched
+              -- «فروش»: spent on an order, or paid into the customer wallet by
+              -- hand — a bot top-up is matched to its order, so both read the same.
+              (EXISTS (SELECT 1 FROM reconciliation_matches m WHERE m.transaction_candidate_id = t.id
+                         AND m.status IN ('CONFIRMED','AUTO_VERIFIED'))
+               OR ${TX_WALLET_CREDITED}) AS matched
          FROM transaction_candidates t
          LEFT JOIN income_declined_transactions idt
                 ON idt.transaction_candidate_id = t.id AND idt.restored_at IS NULL

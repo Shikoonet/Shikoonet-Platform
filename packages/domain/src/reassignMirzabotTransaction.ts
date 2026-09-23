@@ -8,6 +8,7 @@
 import type { D1Database, D1PreparedStatement } from '@shikoo/database';
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { verifyMirzabotClaim } from './mirzabotVerify.js';
+import { depositWalletKey } from './incomeEligibility.js';
 
 export type ReassignFailure =
   | 'REASON_REQUIRED'
@@ -148,6 +149,14 @@ export async function reassignMirzabotTransaction(
     .bind(args.transactionId)
     .first<{ id: string }>();
   if (reseller) return { ok: false, error: 'TRANSACTION_ALREADY_CONSUMED' };
+
+  // Paid into a customer's wallet (`creditDepositToWallet`). `verify` refuses
+  // it too, but the suggest-only path below never reaches `verify`.
+  const inWallet = await db
+    .prepare(`SELECT id FROM wallet_entries WHERE idempotency_key = ?1`)
+    .bind(depositWalletKey(args.transactionId))
+    .first<{ id: number }>();
+  if (inWallet) return { ok: false, error: 'TRANSACTION_ALREADY_CONSUMED' };
 
   const target = await db
     .prepare(

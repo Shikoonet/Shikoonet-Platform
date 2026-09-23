@@ -14,6 +14,7 @@ import {
   encodeRevertSnapshotForMetadata,
   type ManualVerificationRevertSnapshot,
 } from './revertMirzabotManualVerification.js';
+import { depositWalletKey } from './incomeEligibility.js';
 
 export type VerifyMode = 'AUTO_VERIFIED' | 'ADMIN_APPROVED';
 
@@ -74,6 +75,20 @@ interface TxRow {
 
 const ELIGIBLE_CLAIM_STATUSES = new Set(['PENDING', 'MATCH_SUGGESTED']);
 const CONSUMING_MATCH_STATUSES = "('CONFIRMED','AUTO_VERIFIED')";
+
+/**
+ * «This batch's match is in the table» — the condition every write after the
+ * match insert carries. That insert can be a silent no-op (the deposit went
+ * to a wallet under the row lock, or the claim stopped being live), and
+ * without this the claim would still turn VERIFIED and its delivery notice
+ * still be queued: an order sold on a deposit it does not hold.
+ */
+function matchWritten(txParam: number, claimParam: number): string {
+  return `EXISTS (SELECT 1 FROM reconciliation_matches
+                   WHERE transaction_candidate_id = ?${txParam}
+                     AND payment_claim_id = ?${claimParam}
+                     AND status IN ${CONSUMING_MATCH_STATUSES})`;
+}
 
 /**
  * The id a fulfilment notice gets, and the reason it is safe to write twice.
@@ -205,6 +220,15 @@ export async function verifyMirzabotClaim(
     .first<{ id: string }>();
   if (consumed) return { ok: false, error: 'TRANSACTION_ALREADY_CONSUMED' };
 
+  // Paid into a customer's wallet by hand (`creditDepositToWallet`): spent,
+  // just not on an order. Refused again inside the batch, under the row lock.
+  const walletKey = depositWalletKey(tx.id);
+  const inWallet = await db
+    .prepare(`SELECT id FROM wallet_entries WHERE idempotency_key = ?1`)
+    .bind(walletKey)
+    .first<{ id: number }>();
+  if (inWallet) return { ok: false, error: 'TRANSACTION_ALREADY_CONSUMED' };
+
   // The upsert below keys on (transaction, claim) and does not overwrite `id`,
   // so a row that already exists in a non-consuming state keeps the id it was
   // born with. Reading it first is what makes `matchId` below the id that will
@@ -266,6 +290,14 @@ export async function verifyMirzabotClaim(
     db
       .prepare(`SELECT id FROM payment_claims WHERE id = ?1 FOR UPDATE`)
       .bind(claim.id),
+    // The deposit's row too, before anything is written, because
+    // `creditDepositToWallet` takes the same lock: whichever gets it first
+    // commits, and the other then sees the committed row and writes nothing.
+    // A wallet entry has no index in common with a match, so without this
+    // both could pass their NOT EXISTS and one deposit would pay twice.
+    db
+      .prepare(`SELECT id FROM transaction_candidates WHERE id = ?1 FOR UPDATE`)
+      .bind(tx.id),
     db
       .prepare(
         `INSERT INTO reconciliation_matches
@@ -274,6 +306,7 @@ export async function verifyMirzabotClaim(
               reviewed_by, reviewed_at, created_at, updated_at)
            SELECT ?1, ?2, ?3, 1.0, ?4, ?5, ?6, ?7, ?8, ?8, ?8
            WHERE ${CLAIM_LIVE}
+             AND NOT EXISTS (SELECT 1 FROM wallet_entries WHERE idempotency_key = ?9)
            ON CONFLICT(transaction_candidate_id, payment_claim_id) DO UPDATE SET
              status = excluded.status,
              score = excluded.score,
@@ -284,12 +317,13 @@ export async function verifyMirzabotClaim(
              updated_at = excluded.updated_at
            WHERE reconciliation_matches.status NOT IN ${CONSUMING_MATCH_STATUSES}`,
       )
-      .bind(matchId, tx.id, claim.id, reasons, mismatchReasons, matchStatus, reviewer, now),
+      .bind(matchId, tx.id, claim.id, reasons, mismatchReasons, matchStatus, reviewer, now, walletKey),
     db
       .prepare(
         `UPDATE transaction_candidates SET status = 'APPROVED', updated_at = ?2
            WHERE id = ?1 AND status NOT IN ('APPROVED','REJECTED','IGNORED')
-             AND ${CLAIM_LIVE}`,
+             AND ${CLAIM_LIVE}
+             AND ${matchWritten(1, 3)}`,
       )
       .bind(tx.id, now, claim.id),
   ];
@@ -327,9 +361,10 @@ export async function verifyMirzabotClaim(
              (id, event_type, payload_json, attempt_count, status, next_attempt_at)
            SELECT ?1, 'PAYMENT_VERIFIED', ?2, 0, 'PENDING', ?4
            WHERE ${CLAIM_LIVE}
+             AND ${matchWritten(5, 3)}
            ON CONFLICT (id) DO NOTHING`,
         )
-        .bind(eventId, JSON.stringify(payload), claim.id, now),
+        .bind(eventId, JSON.stringify(payload), claim.id, now, tx.id),
     );
   }
 
@@ -345,9 +380,10 @@ export async function verifyMirzabotClaim(
              SET status = 'VERIFIED', suspect_reason = NULL, updated_at = ?2,
                  reconciled_at = CASE WHEN fulfilled_at IS NOT NULL
                                       THEN COALESCE(reconciled_at, ?2) ELSE reconciled_at END
-           WHERE id = ?1 AND status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')`,
+           WHERE id = ?1 AND status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')
+             AND ${matchWritten(3, 1)}`,
       )
-      .bind(claim.id, now),
+      .bind(claim.id, now, tx.id),
   );
 
   try {
