@@ -571,6 +571,13 @@ describe('every write route, asked directly', () => {
     // adjustment on the customer's page, and audited as
     // `transaction.credited_to_wallet`. `expired-invoice-hint.test.ts` pins
     // the credit, the refusal of a second one, and the REVIEWER 403.
-    expect(writeRoutes().length).toBe(185);
+    //
+    // 186, 2026-09-24: «بستن بدون پرداخت» (0098). `POST /suspects/:claimId/
+    // write-off` closes a delivered claim no money is coming for — an admin's
+    // test purchase, a gift. ADMIN-only in the handler although the REVIEWER
+    // works this queue: a role that can deliver without payment must not also
+    // be able to empty the queue that reports it. Audited as
+    // `claim.written_off`; `payments-list.test.ts` pins the REVIEWER 403.
+    expect(writeRoutes().length).toBe(186);
   });
 });
