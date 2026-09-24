@@ -444,6 +444,42 @@ describe('purchasablePlan answers the same question as the list', () => {
     expect(await purchasablePlan(db, returning, await planId('sim-vip-trial'))).toBeNull();
   });
 
+  it('lets the shop admin past both first-purchase gates, and not support', async () => {
+    // Sam, 2026-09-24: an admin owns services and still has to see and test the
+    // starter offer. Both roles own a subscription, so only the role differs.
+    const admin = await makeCustomer(811_004);
+    await giveSubscription(admin, 'catalog-sub-admin');
+    const support = await makeCustomer(811_005);
+    await giveSubscription(support, 'catalog-sub-support');
+    await db
+      .prepare(
+        `INSERT INTO admins (telegram_id, role, active) VALUES (811004, 'ADMIN', true), (811005, 'SUPPORT', true)
+         ON CONFLICT (telegram_id) DO UPDATE SET active = true, role = EXCLUDED.role`,
+      )
+      .run();
+    await db
+      .prepare(
+        `UPDATE provisioning_providers SET config = config || '{"newcomers_only": true}'::jsonb
+          WHERE code = 'sim-gold'`,
+      )
+      .run();
+    try {
+      expect(await purchasablePlan(db, admin, await planId('sim-vip-trial'))).not.toBeNull();
+      expect(await purchasablePlan(db, support, await planId('sim-vip-trial'))).toBeNull();
+      const gold = await providerId('sim-gold');
+      expect(await plansOnPanel(db, admin, [gold])).not.toEqual([]);
+      expect(await plansOnPanel(db, support, [gold])).toEqual([]);
+    } finally {
+      await db
+        .prepare(
+          `UPDATE provisioning_providers SET config = config - 'newcomers_only'
+            WHERE code = 'sim-gold'`,
+        )
+        .run();
+      await db.prepare(`DELETE FROM admins WHERE telegram_id IN (811004, 811005)`).run();
+    }
+  });
+
   it('allows a reseller the plan meant for them', async () => {
     expect(await purchasablePlan(db, reseller, await planId('sim-vip-reseller'))).not.toBeNull();
   });
