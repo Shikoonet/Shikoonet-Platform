@@ -315,6 +315,34 @@ describe('delivering it', () => {
     expect(dead?.fields).toMatchObject({ kind: 'report', destination: 'report' });
   });
 
+  it('does not alert for a customer who blocked the bot, and still does for a refused message', async () => {
+    // Six of nine alerts on 2026-09-23/24 were «bot was blocked by the user»:
+    // handled above, and nothing anyone can act on. A 400 is our message being
+    // refused — a bug — and must keep reaching the channel.
+    const levels: string[] = [];
+    setEventSink((record) => {
+      if (record.evt === 'notify.dead') levels.push(record.level);
+    });
+    try {
+      await put('provision:blocked-2');
+      await flush(
+        db,
+        apiThat(() => Promise.reject(new TelegramRejection('bot was blocked by the user', 403))),
+        { now: NOW },
+      );
+      await put('provision:refused-1');
+      await flush(
+        db,
+        apiThat(() => Promise.reject(new TelegramRejection("can't parse entities", 400))),
+        { now: NOW },
+      );
+    } finally {
+      setEventSink(null);
+    }
+
+    expect(levels).toEqual(['warn', 'error']);
+  });
+
   it('retries a 429 rather than giving up on it', async () => {
     // The mirror of the case above, and the reason the code reads the numeric
     // code instead of matching on the description text.

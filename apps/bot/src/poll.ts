@@ -901,6 +901,9 @@ export interface RunOptions {
    */
 }
 
+/** How long `getUpdates` may keep failing before it alerts rather than warns. */
+export const READ_OUTAGE_ALERT_MS = 5 * 60_000;
+
 export async function run(
   db: D1Database,
   api: TelegramApi,
@@ -936,6 +939,10 @@ export async function run(
    */
   let lastSyncAttemptMs = 0;
   let lastMeterAttemptMs = 0;
+  // When `getUpdates` started failing, or null while it answers. One failed
+  // read is a network blip the next cycle recovers from, and it was paging
+  // the alert channel; Telegram gone for minutes is the incident.
+  let readFailingSinceMs: number | null = null;
 
   // Beside the cycle, not inside it — see `drainBroadcasts`. Awaited after the
   // loop so `stop()` still means «everything this process was doing is done».
@@ -969,13 +976,16 @@ export async function run(
       let stalled = false;
       try {
         const result = await pollOnce(db, api, offset, timeoutSec, options.signal, attempts);
+        readFailingSinceMs = null;
         stalled = result.failed > 0 && result.offset === offset;
         offset = result.offset;
       } catch (err) {
         if (options.signal?.aborted) break;
-        log.error(
+        readFailingSinceMs ??= Date.now();
+        const failingMs = Date.now() - readFailingSinceMs;
+        log[failingMs >= READ_OUTAGE_ALERT_MS ? 'error' : 'warn'](
           'poll.read_failed',
-          { consequence: 'no updates this cycle; sweeps still run' },
+          { consequence: 'no updates this cycle; sweeps still run', failing_ms: failingMs },
           err,
         );
         // The same backoff a failed cycle used to take, kept: without it the
