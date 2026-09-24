@@ -16,7 +16,12 @@
  * sweep. Move it out when a panel's latency starts showing up as lock waits.
  */
 
-import { adapterFor, createLogger, type AccountAction } from '@shikoo/domain';
+import {
+  adapterFor,
+  createLogger,
+  type AccountAction,
+  type ProviderContext,
+} from '@shikoo/domain';
 import type { D1DatabaseSession } from '@shikoo/database';
 import { credentialsFor } from './provision.js';
 import { subscriptionOnPanelForUser, type OwnedSubscriptionOnPanel } from './owned.js';
@@ -39,6 +44,65 @@ function requestFor(action: ServiceAction, username: string): AccountAction {
     : { kind: 'SET_ENABLED', username, enabled: action === 'ENABLE' };
 }
 
+function providerFor(
+  service: OwnedSubscriptionOnPanel,
+  fetchImpl: typeof globalThis.fetch,
+): ProviderContext {
+  return {
+    id: service.provider_id ?? 0,
+    code: service.provider_code ?? String(service.provider_id ?? ''),
+    name: service.provider_name ?? 'panel',
+    baseUrl: service.provider_base_url,
+    credentials: credentialsFor(service.provider_secret_ref, service.provider_sealed),
+    config: service.provider_config ?? {},
+    fetch: fetchImpl,
+  };
+}
+
+/**
+ * A service opened without a link gets it from the panel there and then.
+ *
+ * The sync sweep backfills link-less rows 100 at a time, in random order, panel
+ * by panel — the 6,364 imported on 2026-09-23 take most of a day to drain, and
+ * a customer who opens «سرویس های من» meanwhile was told to message support.
+ * One GET for the one account they are looking at costs nothing next to that.
+ *
+ * Written only where the column is still NULL, like the sweep. Anything that
+ * goes wrong — no adapter, no credentials, a panel that does not answer, an
+ * account it does not know — is the screen as it was before: «لینک هنوز در
+ * دسترس نیست». Same transaction caveat as `actOnService`, bounded by the
+ * adapter's timeout.
+ */
+export async function withLinkFromPanel(
+  tx: D1DatabaseSession,
+  userId: number,
+  service: OwnedSubscriptionOnPanel,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+): Promise<OwnedSubscriptionOnPanel> {
+  if (
+    service.subscription_url ||
+    service.remote_username === null ||
+    service.provider_kind === null
+  ) {
+    return service;
+  }
+  const adapter = adapterFor(service.provider_kind);
+  if (!adapter.accountLinks) return service;
+  const links = await adapter
+    .accountLinks(providerFor(service, fetchImpl), [service.remote_username])
+    .catch(() => null);
+  const url = links?.get(service.remote_username);
+  if (!url) return service;
+  await tx
+    .prepare(
+      `UPDATE subscriptions SET subscription_url = ?3, updated_at = now()
+        WHERE id = ?1 AND user_id = ?2 AND subscription_url IS NULL`,
+    )
+    .bind(service.id, userId, url)
+    .run();
+  return { ...service, subscription_url: url };
+}
+
 export async function actOnService(
   tx: D1DatabaseSession,
   userId: number,
@@ -54,15 +118,10 @@ export async function actOnService(
     return { status: 'UNSUPPORTED', service };
   }
 
-  const result = await adapter.act(requestFor(action, service.remote_username), {
-    id: service.provider_id ?? 0,
-    code: service.provider_code ?? String(service.provider_id ?? ''),
-    name: service.provider_name ?? 'panel',
-    baseUrl: service.provider_base_url,
-    credentials: credentialsFor(service.provider_secret_ref, service.provider_sealed),
-    config: service.provider_config ?? {},
-    fetch: fetchImpl,
-  });
+  const result = await adapter.act(
+    requestFor(action, service.remote_username),
+    providerFor(service, fetchImpl),
+  );
   if (!result.ok) {
     // Logged here, where the panel's own sentence is produced and where its
     // audience is. It used to travel out to `handle.ts` and be printed on the

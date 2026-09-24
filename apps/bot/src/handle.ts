@@ -30,7 +30,7 @@ import {
   renewModeFor,
   sanitiseUsernamePart,
 } from '@shikoo/domain';
-import { actOnService } from './actions.js';
+import { actOnService, withLinkFromPanel } from './actions.js';
 import { decode, encode } from './callback.js';
 import type { CatalogCategory, CatalogPlan } from './catalog.js';
 import {
@@ -2902,8 +2902,9 @@ async function handleCallback(
       // Straight through owned.ts. This is the exact lookup Mirzabot does by id
       // alone on the `subscriptionurl_` button, which hands any customer any
       // other customer's config — BUGS-FOR-ADMIN.md item 8.
-      const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
-      if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      const found = await subscriptionOnPanelForUser(tx, user.id, action.id);
+      if (!found) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      const service = await withLinkFromPanel(tx, user.id, found, fetchImpl);
       return screen(
         menu.serviceDetail(service, Date.now()),
         menu.serviceDetailMenu(actionsFor(service, SHOP, tierFor(user))),
@@ -2912,8 +2913,9 @@ async function handleCallback(
 
     case 'qr': {
       if (action.id === undefined) return IGNORED;
-      const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
-      if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      const found = await subscriptionOnPanelForUser(tx, user.id, action.id);
+      if (!found) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      const service = await withLinkFromPanel(tx, user.id, found, fetchImpl);
       // A service with no link has nothing to encode. Sending a QR of an empty
       // string is a picture that scans to nothing, which is worse than saying so.
       //
