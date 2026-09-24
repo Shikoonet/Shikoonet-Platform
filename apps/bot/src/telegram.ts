@@ -490,6 +490,18 @@ function redact(message: string, token: string): string {
 }
 
 /**
+ * A network failure, with the reason Node keeps in `cause`: undici's own
+ * message is only «fetch failed», and that is all the alert channel ever
+ * showed — no way to tell a DNS failure from a reset from a timeout.
+ */
+function describeNetworkError(err: unknown, token: string): string {
+  const cause = (err as { cause?: unknown }).cause;
+  const code = (cause as { code?: unknown } | undefined)?.code;
+  const why = cause === undefined ? '' : ` (cause: ${String(cause)}${typeof code === 'string' ? ` [${code}]` : ''})`;
+  return redact(String(err) + why, token);
+}
+
+/**
  * Telegram's hard limit on a message body. Beyond it the call is rejected
  * outright, so the customer gets nothing at all.
  */
@@ -761,7 +773,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       });
     } catch (err) {
       // A network error's message can carry the URL, and the URL carries the token.
-      throw new Error(`telegram ${method} failed: ${redact(String(err), token)}`);
+      throw new Error(`telegram ${method} failed: ${describeNetworkError(err, token)}`);
     }
     return readEnvelope(method, response);
   }
@@ -782,7 +794,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
-      throw new Error(`telegram ${method} failed: ${redact(String(err), token)}`);
+      throw new Error(`telegram ${method} failed: ${describeNetworkError(err, token)}`);
     }
     return readEnvelope(method, response);
   }

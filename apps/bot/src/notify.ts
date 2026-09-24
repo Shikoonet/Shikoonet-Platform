@@ -448,7 +448,14 @@ export async function flush(
             });
         }
         result.dead += 1;
-        log.error(
+        // A customer who blocked the bot is an outcome, not a fault: handled
+        // above, and nobody can act on it. It filled the alert channel (six of
+        // nine alerts, 2026-09-23/24). A 400 is our message being refused, a
+        // 403 from the reports group is the bot removed from it, and running
+        // out of attempts is Telegram failing us — those still alert.
+        const blocked = err instanceof TelegramRejection && err.code === 403;
+        const customer = routeOf(row.dedupe_key).destination === 'customer';
+        log[blocked && customer ? 'warn' : 'error'](
           'notify.dead',
           {
             ref: String(row.id),

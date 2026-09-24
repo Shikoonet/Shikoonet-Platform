@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_UPDATE_ATTEMPTS, REPLY_RETRY_BUDGET_MS, pollOnce, pruneUpdates, run } from '../src/poll.js';
+import { MAX_UPDATE_ATTEMPTS, READ_OUTAGE_ALERT_MS, REPLY_RETRY_BUDGET_MS, pollOnce, pruneUpdates, run } from '../src/poll.js';
+import { setEventSink } from '@shikoo/domain';
 import type { Attempt } from '../src/poll.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
@@ -796,6 +797,46 @@ describe('run', () => {
     expect(offsets[0]).toBe(0);
     // The second cycle must ask for what comes after the update it just handled.
     expect(offsets[1]).toBe(updateId + 1);
+  });
+
+  it('warns on a failed read, and alerts only once Telegram has been gone for minutes', async () => {
+    // One «fetch failed» is a blip the next cycle recovers from, and it was
+    // paging the alert channel (2026-09-23/24). An outage is what alerts.
+    const controller = new AbortController();
+    const levels: string[] = [];
+    setEventSink((record) => {
+      if (record.evt === 'poll.read_failed') levels.push(record.level);
+    });
+    const t0 = 1_000_000;
+    let clock = t0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let calls = 0;
+    const api = stubApi({
+      getUpdates: async () => {
+        calls++;
+        if (calls === 2) clock = t0 + 60_000;
+        if (calls === 3) clock = t0 + READ_OUTAGE_ALERT_MS;
+        // The fourth read succeeds, which ends the outage; the fifth fails anew.
+        if (calls === 4) return [];
+        if (calls === 5) clock += 1;
+        if (calls === 6) controller.abort();
+        throw new Error('telegram getUpdates failed: TypeError: fetch failed');
+      },
+      sendMessage: async () => ({ messageId: null }),
+    });
+
+    try {
+      await run(db, api, { signal: controller.signal, timeoutSec: 1, backoffMs: 0 });
+    } finally {
+      setEventSink(null);
+      now.mockRestore();
+      errors.mockRestore();
+      warns.mockRestore();
+    }
+
+    expect(levels).toEqual(['warn', 'warn', 'error', 'warn']);
   });
 
   it('cancels the poll in flight rather than waiting it out', async () => {
