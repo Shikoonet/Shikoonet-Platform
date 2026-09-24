@@ -211,6 +211,31 @@ test('voiding says which way the ledger will move, and demands a reason', async 
   await expect(panel.getByRole('button', { name: 'بله، باطل کن' })).toBeEnabled();
 });
 
+/**
+ * «دکمه ابطال کار نمی‌کند» — Sam, 2026-09-24.
+ *
+ * It did work; it moved nothing. The form sits at the top of the page and the
+ * scroll to it ran only when the FIRST form opened, so «ابطال» on a second row
+ * swapped a form nobody could see. A short window makes the top of the page
+ * unreachable from the table, which is the whole bug.
+ */
+test('«ابطال» on a second row brings its form into view, with an empty reason', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 400 });
+  await page.goto('/admin/expenses');
+  const panel = page.locator('.card', { hasText: 'ابطال ردیف' });
+  const voids = page.getByRole('button', { name: 'ابطال' });
+
+  await voids.first().click();
+  await expect(panel).toBeInViewport();
+  await panel.locator('#void-reason').fill('e2e — نیمه‌کاره');
+
+  await voids.last().scrollIntoViewIfNeeded();
+  await expect(panel).not.toBeInViewport();
+  await voids.last().click();
+  await expect(panel).toBeInViewport();
+  await expect(panel.locator('#void-reason')).toHaveValue('');
+});
+
 test('a voided row leaves every total, stays on screen, and is kept in the log', async ({
   page,
 }) => {

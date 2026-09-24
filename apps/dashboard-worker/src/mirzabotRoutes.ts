@@ -1513,6 +1513,45 @@ export function registerMirzabotRoutes(
     const where = [`c.source_system = ${p(MIRZABOT_SOURCE)}`];
 
     /*
+     * «با رسید / بدون رسید» and «۲ روز / هفته / ماه / قدیمی‌تر» — Sam,
+     * 2026-09-24. On the two queues where the ball is in the customer's
+     * court, the rows with a picture are the ones to check for a fake, and
+     * the old ones are the ones to decide about. Only these two tabs: on
+     * `open` and `awaiting_receipt` the receipt IS the tab.
+     *
+     * The age is the payment's, `EFFECTIVE_TS`, in rolling days — «دو روز
+     * پیش» is 48 hours, not two Tehran midnights. Buckets do not overlap, so
+     * the four counts add up to the tab.
+     */
+    const facetTab =
+      !claimId && (tab === 'messaged' || (tab === 'continuity' && continuityState === 'pending'));
+    const DAY_MS = 86_400_000;
+    const receiptFacetSql = {
+      with: `c.receipt_url_or_r2_key IS NOT NULL`,
+      without: `c.receipt_url_or_r2_key IS NULL`,
+    };
+    const ageFacetSql = (() => {
+      if (!facetTab) return null;
+      const d2 = p(now - 2 * DAY_MS);
+      const d7 = p(now - 7 * DAY_MS);
+      const d30 = p(now - 30 * DAY_MS);
+      return {
+        '2d': `${EFFECTIVE_TS} >= ${d2}`,
+        '7d': `${EFFECTIVE_TS} < ${d2} AND ${EFFECTIVE_TS} >= ${d7}`,
+        '30d': `${EFFECTIVE_TS} < ${d7} AND ${EFFECTIVE_TS} >= ${d30}`,
+        older: `${EFFECTIVE_TS} < ${d30}`,
+      };
+    })();
+    const receiptParam = url.searchParams.get('receipt');
+    const receiptFacet =
+      facetTab && (receiptParam === 'with' || receiptParam === 'without') ? receiptParam : null;
+    const ageParam = url.searchParams.get('age');
+    const ageFacet =
+      ageFacetSql && ageParam && Object.hasOwn(ageFacetSql, ageParam)
+        ? (ageParam as keyof typeof ageFacetSql)
+        : null;
+
+    /*
      * `?claim=` answers with that one row and nothing else — no tab predicate,
      * no range, no ordering that could push it past the limit. Returning early
      * is the whole point: every filter below narrows, and any of them could
@@ -1624,7 +1663,11 @@ export function registerMirzabotRoutes(
         where.push(`c.purchase_type = ${p(purchaseTypeForQuery)}`);
       }
 
-      if (!OPEN_QUEUE_TABS.has(tab) && tab !== 'needs_review') {
+      // The age chips ARE the date filter on these two. Stacking the range on
+      // them would make «قدیمی‌تر» under «۷ روز اخیر» empty by construction,
+      // and «در انتظار تطبیق» is a queue in the `OPEN_QUEUE_TABS` sense: the
+      // oldest unreconciled delivery is the one that most needs chasing.
+      if (!OPEN_QUEUE_TABS.has(tab) && tab !== 'needs_review' && !facetTab) {
         const { start: rs, end: re } = historyRangeBounds(range, now, day);
         if (rs != null && re != null) {
           where.push(`${EFFECTIVE_TS} >= ${p(rs)} AND ${EFFECTIVE_TS} < ${p(re)}`);
@@ -1679,6 +1722,44 @@ export function registerMirzabotRoutes(
        -- hash join over the users table. Measured rather than assumed; see the
        -- commit message.
        LEFT JOIN users cu ON cu.telegram_id::text = c.customer_reference`;
+
+    /*
+     * The chip counts, over the tab before either chip narrows it. Each row of
+     * chips is counted under the OTHER row's choice, so «با رسید ۱۲» next to
+     * «تا یک هفته» means twelve with a receipt from that week.
+     */
+    let facets:
+      | {
+          receipt: { with: number; without: number };
+          age: { '2d': number; '7d': number; '30d': number; older: number };
+        }
+      | undefined;
+    if (ageFacetSql) {
+      const underAge = ageFacet ? ageFacetSql[ageFacet] : 'TRUE';
+      const underReceipt = receiptFacet ? receiptFacetSql[receiptFacet] : 'TRUE';
+      const f = await c.env.DB.prepare(
+        `SELECT COUNT(*) FILTER (WHERE ${receiptFacetSql.with} AND ${underAge})::int AS r_with,
+                COUNT(*) FILTER (WHERE ${receiptFacetSql.without} AND ${underAge})::int AS r_without,
+                COUNT(*) FILTER (WHERE ${ageFacetSql['2d']} AND ${underReceipt})::int AS a_2d,
+                COUNT(*) FILTER (WHERE ${ageFacetSql['7d']} AND ${underReceipt})::int AS a_7d,
+                COUNT(*) FILTER (WHERE ${ageFacetSql['30d']} AND ${underReceipt})::int AS a_30d,
+                COUNT(*) FILTER (WHERE ${ageFacetSql.older} AND ${underReceipt})::int AS a_older
+           ${claimsFrom} WHERE ${where.join(' AND ')}`,
+      )
+        .bind(...binds)
+        .first<Record<'r_with' | 'r_without' | 'a_2d' | 'a_7d' | 'a_30d' | 'a_older', number>>();
+      facets = {
+        receipt: { with: f?.r_with ?? 0, without: f?.r_without ?? 0 },
+        age: {
+          '2d': f?.a_2d ?? 0,
+          '7d': f?.a_7d ?? 0,
+          '30d': f?.a_30d ?? 0,
+          older: f?.a_older ?? 0,
+        },
+      };
+      if (receiptFacet) where.push(receiptFacetSql[receiptFacet]);
+      if (ageFacet) where.push(ageFacetSql[ageFacet]);
+    }
 
     const totalRow = await c.env.DB.prepare(
       `SELECT COUNT(*)::int AS n ${claimsFrom} WHERE ${where.join(' AND ')}`,
@@ -2107,6 +2188,7 @@ export function registerMirzabotRoutes(
       pageSize,
       total,
       referenceTransactions,
+      facets,
       counts: counts.total,
       summary: financialSummary,
     });

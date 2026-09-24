@@ -360,6 +360,9 @@ export interface FinancialSummary {
   unassignedIncome: { count: number; amountIrr: number };
 }
 
+export type ReceiptFacet = 'with' | 'without';
+export type AgeFacet = '2d' | '7d' | '30d' | 'older';
+
 export interface PaymentsResponse {
   ok: boolean;
   tab: PaymentTab;
@@ -382,6 +385,14 @@ export interface PaymentsResponse {
    * answer from «این شماره هرگز نرسیده».
    */
   referenceTransactions?: number | null;
+  /**
+   * Chip counts on «پیام داده‌شده» and «در انتظار تطبیق» only; absent on
+   * every other tab. Each row is counted under the other row's choice.
+   */
+  facets?: {
+    receipt: Record<ReceiptFacet, number>;
+    age: Record<AgeFacet, number>;
+  };
   counts: {
     needsReview: number;
     waiting: number;

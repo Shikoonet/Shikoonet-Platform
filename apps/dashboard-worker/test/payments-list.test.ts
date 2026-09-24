@@ -207,6 +207,10 @@ type PaymentsBody = {
   pageSize?: number;
   total?: number;
   referenceTransactions?: number | null;
+  facets?: {
+    receipt: { with: number; without: number };
+    age: { '2d': number; '7d': number; '30d': number; older: number };
+  };
   summary: {
     botAutoVerified: { payments: number; amountIrr: number };
     unassignedIncome: { count: number; amountIrr: number };
@@ -327,6 +331,81 @@ describe('GET /api/v1/payments', () => {
       reconciledAt: null,
     });
     expect(historyPage1.items[0]?.reconciledAt).toBe(base - 1_000);
+  });
+
+  it('splits «پیام داده‌شده» and «در انتظار تطبیق» by receipt and by the age of the payment', async () => {
+    const now = pinClock();
+    const H = 3_600_000;
+    const D = 24 * H;
+    // Messaged: one per age bucket, receipts on two of them. The ages sit an
+    // hour either side of the 2/7/30-day lines — counted by hand, not by the
+    // code under test.
+    const messaged: Array<[string, number, boolean]> = [
+      ['m-1d', now - 1 * D, true],
+      ['m-2d-edge', now - 2 * D + H, false],
+      ['m-3d', now - 2 * D - H, true],
+      ['m-10d', now - 10 * D, false],
+      ['m-40d', now - 40 * D, false],
+    ];
+    for (const [id, paidClickedAt, receipt] of messaged) {
+      await seedClaim(id, { paidClickedAt, receipt });
+      await baseEnv.DB.prepare(`UPDATE payment_claims SET messaged_at = ?2 WHERE id = ?1`)
+        .bind(id, now)
+        .run();
+    }
+    // Pending reconciliation, one of them far outside any range chip.
+    await seedClaim('r-1d', {
+      status: 'FULFILLED_UNRECONCILED',
+      fulfilmentMode: 'CONTINUITY',
+      paidClickedAt: now - 1 * D,
+    });
+    await seedClaim('r-40d', {
+      status: 'FULFILLED_UNRECONCILED',
+      fulfilmentMode: 'MANUAL',
+      paidClickedAt: now - 40 * D,
+      receipt: false,
+    });
+    const ids = (b: PaymentsBody) => b.items.map((i) => i.id).sort();
+
+    const all = await get('tab=messaged');
+    expect(ids(all)).toHaveLength(5);
+    expect(all.facets).toEqual({
+      receipt: { with: 2, without: 3 },
+      age: { '2d': 2, '7d': 1, '30d': 1, older: 1 },
+    });
+
+    const withReceipt = await get('tab=messaged&receipt=with');
+    expect(ids(withReceipt)).toEqual(['m-1d', 'm-3d']);
+    expect(withReceipt.total).toBe(2);
+    // The age row is counted under the receipt choice, and vice versa.
+    expect(withReceipt.facets?.age).toEqual({ '2d': 1, '7d': 1, '30d': 0, older: 0 });
+    expect(withReceipt.facets?.receipt).toEqual({ with: 2, without: 3 });
+
+    expect(ids(await get('tab=messaged&age=2d'))).toEqual(['m-1d', 'm-2d-edge']);
+    expect(ids(await get('tab=messaged&age=7d'))).toEqual(['m-3d']);
+    expect(ids(await get('tab=messaged&age=30d'))).toEqual(['m-10d']);
+    expect(ids(await get('tab=messaged&age=older&receipt=without'))).toEqual(['m-40d']);
+    const noReceiptThisWeek = await get('tab=messaged&age=2d&receipt=without');
+    expect(ids(noReceiptThisWeek)).toEqual(['m-2d-edge']);
+    expect(noReceiptThisWeek.facets?.receipt).toEqual({ with: 1, without: 1 });
+
+    // A value the chips never send narrows nothing.
+    expect(ids(await get('tab=messaged&age=1y&receipt=maybe'))).toHaveLength(5);
+
+    // «در انتظار تطبیق» is a queue: the range does not hide the 40-day-old one.
+    const pending = await get('tab=continuity&continuityState=pending&range=today');
+    expect(ids(pending)).toEqual(['r-1d', 'r-40d']);
+    expect(pending.facets).toEqual({
+      receipt: { with: 1, without: 1 },
+      age: { '2d': 1, '7d': 0, '30d': 0, older: 1 },
+    });
+    expect(ids(await get('tab=continuity&continuityState=pending&range=7d&age=older'))).toEqual([
+      'r-40d',
+    ]);
+    // History keeps its range and gets no chips; neither does any other tab.
+    const history = await get('tab=continuity&continuityState=history&range=today&receipt=with');
+    expect(history.facets).toBeUndefined();
+    expect((await get('tab=open&receipt=without')).facets).toBeUndefined();
   });
 
   it('all returns every bucket including waiting and no-transfer-found', async () => {

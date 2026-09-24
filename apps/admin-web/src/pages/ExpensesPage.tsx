@@ -363,14 +363,24 @@ export function ExpensesPage() {
    * for the panel to throw.
    */
   const formRef = useRef<HTMLDivElement>(null);
-  const formOpen = editing !== null || posting !== null || voidingRow !== null;
+  /*
+   * WHICH form is open, not whether one is. Keyed on a boolean, the scroll ran
+   * only on the first open: with a void form already up, «ابطال» on a row
+   * further down swapped the form at the top of the page and moved nothing —
+   * Sam, 2026-09-24: «دکمه ابطال کار نمی‌کند». The void itself always worked.
+   */
+  const openForm = [
+    editing === null ? '' : `edit:${editing === 'new' ? 'new' : editing.id}`,
+    posting ? `post:${posting.id}` : '',
+    voidingRow ? `void:${voidingRow.id}` : '',
+  ].join('');
   useEffect(() => {
-    if (!formOpen) return;
+    if (!openForm) return;
     const panel = formRef.current;
     const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     panel?.scrollIntoView?.({ behavior: still ? 'auto' : 'smooth', block: 'start' });
     panel?.focus?.({ preventScroll: true });
-  }, [formOpen]);
+  }, [openForm]);
 
   return (
     <>
@@ -454,6 +464,7 @@ export function ExpensesPage() {
 
         {voidingRow && (
           <VoidForm
+            key={voidingRow.id}
             row={voidingRow}
             onClose={() => setVoidingRow(null)}
             onDone={async (msg) => {
@@ -2320,6 +2331,9 @@ function VoidForm({
         placeholder="مثلاً دو بار ثبت شده بود"
         onChange={(e) => setReason(e.target.value)}
       />
+      <div className="muted" style={{ fontSize: 12 }}>
+        دست‌کم ۳ حرف — دکمهٔ تایید تا آن موقع خاموش است.
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBlockStart: 12 }}>
         <button
           type="button"
