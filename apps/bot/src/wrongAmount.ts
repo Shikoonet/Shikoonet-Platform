@@ -89,10 +89,6 @@ export async function creditWrongAmounts(db: D1Database, now: number = Date.now(
             AND t.bank_timestamp BETWEEN d.clicked - ?2 AND d.clicked + ?2
             AND t.amount_irr > 0
           WHERE ${INCOME_TX_WHERE}
-            -- Held back once already (the customer was credited by hand): the
-            -- report group was told, and asking again every poll changes nothing.
-            AND NOT EXISTS (SELECT 1 FROM bot_notifications bn
-                             WHERE bn.dedupe_key = 'report:paymentreport:hand-credited:' || t.id)
             -- Also what keeps an exact amount out: the customer's own invoice
             -- asks for exactly that, and the matcher owns it.
             AND NOT EXISTS (
@@ -106,6 +102,12 @@ export async function creditWrongAmounts(db: D1Database, now: number = Date.now(
        SELECT pr.claim_id, pr.payment_id, pr.tx_id
          FROM pairs pr
         WHERE (SELECT count(*) FROM pairs x WHERE x.claim_id = pr.claim_id) = 1
+          -- Held back once already (the customer was credited by hand): the
+          -- report group was told, and asking again every poll changes nothing.
+          -- Here and not in \`pairs\`: the held transfer still counts as one of
+          -- two, so a later transfer for the same claim is not «the only one».
+          AND NOT EXISTS (SELECT 1 FROM bot_notifications bn
+                           WHERE bn.dedupe_key = 'report:paymentreport:hand-credited:' || pr.tx_id)
           AND NOT EXISTS (
             SELECT 1 FROM payment_claims c2
              WHERE c2.id <> pr.claim_id

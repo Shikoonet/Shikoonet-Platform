@@ -98,10 +98,11 @@ async function handPaidCustomer(): Promise<number> {
      ON CONFLICT (telegram_id) DO UPDATE SET username = excluded.username RETURNING id`,
   ).first<{ id: number }>();
   await baseEnv.DB.prepare(
-    `INSERT INTO wallet_entries (user_id, amount_irr, kind, actor, note, idempotency_key)
-     VALUES (?1, ?2, 'ADMIN_ADJUST', 'sam@example.com', 'اشتباه واریزی', ?3)`,
+    `INSERT INTO wallet_entries (user_id, amount_irr, kind, actor, note, idempotency_key, created_at)
+     VALUES (?1, ?2, 'ADMIN_ADJUST', 'sam@example.com', 'اشتباه واریزی', ?3, to_timestamp(?4 / 1000.0))`,
   )
-    .bind(user!.id, AMOUNT, `admin-adjust:${user!.id}:${crypto.randomUUID()}`)
+    // 41 minutes after the deposit, as on production.
+    .bind(user!.id, AMOUNT, `admin-adjust:${user!.id}:${crypto.randomUUID()}`, DEPOSIT_AT + 41 * 60_000)
     .run();
   return user!.id;
 }

@@ -171,6 +171,33 @@ async function messageTo(telegramId: number): Promise<string | undefined> {
   return (await pendingNotifications()).find((n) => n.chatId === telegramId)?.text;
 }
 
+/** An operator's credit on the customer's page, stamped `at` (1 Mehr 1405: 41 minutes after the deposit). */
+async function creditByHand(userId: number, at: number): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, actor, note, idempotency_key, created_at)
+       VALUES (?1, 1000000, 'ADMIN_ADJUST', 'sam@example.com', 'اشتباه واریزی', ?2, to_timestamp(?3 / 1000.0))`,
+    )
+    .bind(userId, `admin-adjust:${userId}:${RUN}:${++seq}`, at)
+    .run();
+}
+
+/** A report group for the body of `fn`, only if this database has none; left as found. */
+async function withReportGroup(fn: () => Promise<void>): Promise<void> {
+  const ours = await db
+    .prepare(
+      `INSERT INTO settings (scope, key, value) VALUES ('bot', 'Channel_Report', '-100777'::jsonb)
+       ON CONFLICT (scope, key) DO NOTHING RETURNING key`,
+    )
+    .first<{ key: string }>();
+  try {
+    await fn();
+  } finally {
+    await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'report:paymentreport:hand-credited:wa-tx-%'`).run();
+    if (ours) await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
+  }
+}
+
 describe('a transfer that is not the invoice amount', () => {
   it('goes to the wallet, closes the invoice, and tells the customer both amounts in bold', async () => {
     // 199,000 Toman asked; the customer typed 199,000 into a Rial field.
@@ -335,23 +362,10 @@ describe('anything short of plainly this customer’s stays for a person', () =>
    * customer spent it; at 02:37 this sweep paid the same deposit in again.
    */
   it('leaves a transfer the customer was already credited for by hand, and tells the report group once', async () => {
-    // The report group, only if this database has none; left as found.
-    const ours = await db
-      .prepare(
-        `INSERT INTO settings (scope, key, value) VALUES ('bot', 'Channel_Report', '-100777'::jsonb)
-         ON CONFLICT (scope, key) DO NOTHING RETURNING key`,
-      )
-      .first<{ key: string }>();
-    try {
+    await withReportGroup(async () => {
       const inv = await claimedInvoice({ cardIrr: 10_000_000 });
       const tx = await deposit(1_000_000, inv.clickedAt - 40_000);
-      await db
-        .prepare(
-          `INSERT INTO wallet_entries (user_id, amount_irr, kind, actor, note, idempotency_key)
-           VALUES (?1, 1000000, 'ADMIN_ADJUST', 'sam@example.com', 'اشتباه واریزی', ?2)`,
-        )
-        .bind(inv.userId, `admin-adjust:${inv.userId}:${RUN}`)
-        .run();
+      await creditByHand(inv.userId, inv.clickedAt + MINUTE);
 
       expect(await creditWrongAmounts(db)).toBe(0);
       expect(await balanceOf(inv.userId)).toBe(1_000_000);
@@ -369,9 +383,22 @@ describe('anything short of plainly this customer’s stays for a person', () =>
       // Told once: the next sweep leaves it alone.
       expect(await creditWrongAmounts(db)).toBe(0);
       expect(await balanceOf(inv.userId)).toBe(1_000_000);
-    } finally {
-      await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'report:paymentreport:hand-credited:wa-tx-%'`).run();
-      if (ours) await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
-    }
+    });
+  });
+
+  // CodeRabbit on #450: the held transfer still counts. Dropped from the
+  // pairs instead, a second transfer for the same claim — after the hand
+  // credit, so the hand-credit check does not stop it — became «the only one».
+  it('a transfer held back still counts, so a later one for the same claim is not «the only one»', async () => {
+    await withReportGroup(async () => {
+      const inv = await claimedInvoice({ cardIrr: 10_000_000 });
+      await deposit(1_000_000, inv.clickedAt - 40_000);
+      await creditByHand(inv.userId, inv.clickedAt + MINUTE);
+      expect(await creditWrongAmounts(db)).toBe(0); // A: held back, reported
+
+      await deposit(1_500_000, inv.clickedAt + 2 * MINUTE); // B: after the hand credit
+      expect(await creditWrongAmounts(db)).toBe(0);
+      expect(await balanceOf(inv.userId)).toBe(1_000_000);
+    });
   });
 });
