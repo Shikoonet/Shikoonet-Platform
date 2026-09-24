@@ -526,6 +526,46 @@ describe('choosing what to renew', () => {
     expect(section.replies[0]?.text).toContain('سطح سرویس را انتخاب کنید');
   });
 
+  it('draws each tier with the badge and colour «محصولات» gives the service', async () => {
+    /*
+     * Sam, 2026-09-24: on the tier list «نمیتونم رنگشون رو عوض کنم یا ایموژی
+     * پریمیوم بذارم». A tier of several plans was drawn as its bare name, and
+     * a tier of one wore only its plan's badge — never the service's, which is
+     * what the buy flow's tier screen wears.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-b`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      planId: await planId('sim-vip-1m-50'),
+    });
+    const platinum = await productId('sim-vip-platinum');
+    const before = await db
+      .prepare(`SELECT badge, button_style FROM products WHERE id = ?1`)
+      .bind(platinum)
+      .first<{ badge: string | null; button_style: string | null }>();
+    const emoji = '<tg-emoji emoji-id="5368324170671202286">💎</tg-emoji>';
+    await db
+      .prepare(`UPDATE products SET badge = ?1, button_style = 'success' WHERE id = ?2`)
+      .bind(emoji, platinum)
+      .run();
+    try {
+      const out = await handleUpdate(db, press(updateId, telegramId, `rnwl:${subId}`));
+      const tier = out.replies[0]?.keyboard
+        ?.flat()
+        .find((b) => b.callback_data === `rnwp:${subId}:${platinum}`);
+      expect(tier?.text.startsWith(`${emoji} `)).toBe(true);
+      expect(tier?.style).toBe('success');
+    } finally {
+      await db
+        .prepare(`UPDATE products SET badge = ?1, button_style = ?2 WHERE id = ?3`)
+        .bind(before?.badge ?? null, before?.button_style ?? null, platinum)
+        .run();
+    }
+  });
+
   it('words the matched button short, and opens with the warning boxed and bold', async () => {
     /*
      * Sam, 2026-09-23: «فقط تمدید با همین پلن رو نشون بده و خیلی کوتاه بنویسه،

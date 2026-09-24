@@ -2002,14 +2002,22 @@ async function renewPlansScreen(
   // same collapse the buy flow makes. Walked on staging 2026-09-13: every
   // tier of the migrated shop is one price, so without this each switch was
   // a tap onto a screen with a single button.
+  //
+  // The badge and colour are the SERVICE's, from «محصولات» — the ones the
+  // buy flow's tier screen wears — so a tier looks the same in both places.
   const tiers = [...plans.reduce((m, p) => {
-    const t = m.get(p.productId) ?? { productId: p.productId, name: p.productName, only: null as CatalogPlan | null, n: 0 };
+    const t = m.get(p.productId) ?? {
+      productId: p.productId,
+      name: p.productName,
+      badge: p.productBadge ?? null,
+      buttonStyle: p.productButtonStyle ?? null,
+      only: null as CatalogPlan | null,
+      n: 0,
+    };
     t.n += 1;
     t.only = t.n === 1 ? p : null;
     return m.set(p.productId, t);
-  }, new Map<number, { productId: number; name: string; only: CatalogPlan | null; n: number }>()).values()].map(
-    ({ productId, name, only }) => ({ productId, name, only }),
-  );
+  }, new Map<number, menu.RenewTier & { n: number }>()).values()].map(({ n: _n, ...tier }) => tier);
   if (productId !== null) {
     const inTier = plans.filter((p) => p.productId === productId);
     if (inTier.length === 0) return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
