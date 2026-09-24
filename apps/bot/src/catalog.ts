@@ -445,6 +445,13 @@ export interface CatalogPlan {
   badge: string | null;
   /** The whole button's colour. Same field as a category's, same three names. */
   buttonStyle: ButtonStyle | null;
+  /**
+   * The SERVICE's own badge and colour — what «محصولات» sets on the tier
+   * button. The renewal's tier rows are built from plans, so they read it
+   * here. Optional so a plan written by hand in a test needs neither.
+   */
+  productBadge?: string | null;
+  productButtonStyle?: ButtonStyle | null;
   priceIrr: number;
   durationDays: number | null;
   volumeGb: number | null;
@@ -514,6 +521,8 @@ interface PlanRow {
   plan_name: string;
   badge: string | null;
   button_style: ButtonStyle | null;
+  product_badge: string | null;
+  product_button_style: ButtonStyle | null;
   price_irr: number;
   duration_days: number | null;
   volume_gb: number | null;
@@ -538,6 +547,8 @@ const PLAN_COLUMNS = `
   pl.name         AS plan_name,
   pl.badge        AS badge,
   pl.button_style AS button_style,
+  p.badge         AS product_badge,
+  p.button_style  AS product_button_style,
   pl.price_irr    AS price_irr,
   pl.duration_days AS duration_days,
   pl.volume_gb    AS volume_gb,
@@ -587,6 +598,8 @@ function toPlan(row: PlanRow): CatalogPlan {
     planName: row.plan_name,
     badge: row.badge,
     buttonStyle: row.button_style,
+    productBadge: row.product_badge,
+    productButtonStyle: row.product_button_style,
     priceIrr: row.price_irr,
     durationDays: row.duration_days,
     volumeGb: row.volume_gb,
