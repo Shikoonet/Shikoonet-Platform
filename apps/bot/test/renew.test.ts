@@ -1319,6 +1319,13 @@ describe('applying it', () => {
     const keptText = await said(kept.telegramId);
     expect(keptText).toContain(TEXTS.SERVICE_RENEWED_TITLE.default);
     expect(keptText).not.toContain(TEXTS.SERVICE_RENEWED_CHANGED_TITLE.default);
+
+    // A migrated row has no plan id: nothing says the plan changed, so the plain title.
+    const migrated = await paidRenewal({ planNameAtSale: 'سرویس واردشده' });
+    await provisionPaidOrders(db, fakeFor(migrated.username).fetchImpl, NOW_MS);
+    const migratedText = await said(migrated.telegramId);
+    expect(migratedText).toContain(TEXTS.SERVICE_RENEWED_TITLE.default);
+    expect(migratedText).not.toContain(TEXTS.SERVICE_RENEWED_CHANGED_TITLE.default);
   });
 
   /** The one `renewal_snapshots` row a renewal order leaves (0096). */
