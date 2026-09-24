@@ -188,6 +188,61 @@ describe('creditDepositToWallet', () => {
   });
 });
 
+/**
+ * 1 Mehr 1405, production: a customer sent a tenth of a 1,000,000 invoice at
+ * 20:15, an operator credited the 100,000 by hand from the customer's page at
+ * 20:56, the customer spent it at 21:01, and at 02:37 the bot's wrong-amount
+ * sweep paid the same deposit in again. A hand credit names no deposit, so
+ * nothing that read the deposit could tell.
+ */
+describe('a customer already credited by hand since the deposit', () => {
+  async function creditByHand(atMs: number | null) {
+    await db
+      .prepare(
+        `INSERT INTO wallet_entries (user_id, amount_irr, kind, actor, note, idempotency_key, created_at)
+         VALUES (?1, ?2, 'ADMIN_ADJUST', 'sam@example.com', 'اشتباه واریزی', 'admin-adjust:hand-1',
+                 COALESCE(to_timestamp(?3 / 1000.0), now()))`,
+      )
+      .bind(userId, AMOUNT, atMs)
+      .run();
+  }
+
+  it('refuses, names the hand credit, and moves no money', async () => {
+    await creditByHand(NOW + 41 * 60_000);
+    const res = await credit();
+    expect(res).toEqual({
+      ok: false,
+      error: 'HAND_CREDITED',
+      handCredit: { amountIrr: AMOUNT, note: 'اشتباه واریزی', actor: 'sam@example.com', at: NOW + 41 * 60_000 },
+    });
+    expect(await balance()).toBe(AMOUNT); // the hand credit, once
+    expect(await inIncomeQueue()).toBe(true);
+    const notes = await db.prepare(`SELECT count(*)::int AS n FROM bot_notifications`).first<{ n: number }>();
+    expect(notes?.n).toBe(0);
+  });
+
+  it('the bot’s own door refuses too', async () => {
+    await creditByHand(NOW + 41 * 60_000);
+    const res = await db.withSession((tx) =>
+      creditDepositInSession(tx, { transactionId: 'tx-late', userId, actorEmail: 'system', reason: 'wrong amount', message: null }),
+    );
+    expect(res).toMatchObject({ ok: false, error: 'HAND_CREDITED' });
+    expect(await balance()).toBe(AMOUNT);
+  });
+
+  it('credits anyway once the operator has been shown it', async () => {
+    await creditByHand(NOW + 41 * 60_000);
+    const res = await credit({ despiteHandCredit: true });
+    expect(res).toMatchObject({ ok: true, amountIrr: AMOUNT, balanceIrr: 2 * AMOUNT });
+    expect(await inIncomeQueue()).toBe(false);
+  });
+
+  it('a hand credit from before the deposit arrived is about something else', async () => {
+    await creditByHand(NOW - 60_000);
+    expect(await credit()).toMatchObject({ ok: true, balanceIrr: 2 * AMOUNT });
+  });
+});
+
 describe('one deposit, one use — the wallet and an order', () => {
   it('an order cannot be verified on a deposit that went to a wallet', async () => {
     await credit();

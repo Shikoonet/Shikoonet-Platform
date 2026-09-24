@@ -777,6 +777,8 @@ export function registerPaymentsHubRoutes(
     .object({
       userId: z.number().int().positive(),
       reason: z.string().trim().min(1).max(2000),
+      /** Sent only after the dialog showed the `hand_credited` answer and the operator went on. */
+      despiteHandCredit: z.boolean().optional(),
     })
     .strict();
 
@@ -823,9 +825,15 @@ export function registerPaymentsHubRoutes(
       actorEmail: ident.email,
       reason: parsed.data.reason,
       message,
+      despiteHandCredit: parsed.data.despiteHandCredit === true,
     });
 
     if (!result.ok) {
+      // The customer was credited by hand after this deposit arrived: say
+      // what, and let the operator decide rather than pay the same money twice.
+      if (result.error === 'HAND_CREDITED') {
+        return c.json({ ok: false, error: 'hand_credited', handCredit: result.handCredit }, 409);
+      }
       const status =
         result.error === 'TRANSACTION_NOT_FOUND' || result.error === 'USER_NOT_FOUND'
           ? 404
@@ -852,6 +860,8 @@ export function registerPaymentsHubRoutes(
           amountIrr: result.amountIrr,
           balanceIrr: result.balanceIrr,
           notified: result.notified,
+          // True when the operator was shown a hand credit since the deposit and went on.
+          despiteHandCredit: parsed.data.despiteHandCredit === true,
         }),
         parsed.data.reason,
         c.req.header('cf-ray') ?? null,

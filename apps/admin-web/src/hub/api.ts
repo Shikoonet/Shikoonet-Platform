@@ -718,7 +718,10 @@ export const api = {
       `/api/v1/transactions/${encodeURIComponent(transactionId)}/accept`,
       { method: 'POST' },
     ),
-  creditDepositToWallet: (transactionId: string, body: { userId: number; reason: string }) =>
+  creditDepositToWallet: (
+    transactionId: string,
+    body: { userId: number; reason: string; despiteHandCredit?: boolean },
+  ) =>
     req<{ ok: boolean; amountIrr: number; balanceIrr: number; notified: boolean }>(
       `/api/v1/transactions/${encodeURIComponent(transactionId)}/credit-wallet`,
       { method: 'POST', body: JSON.stringify(body) },

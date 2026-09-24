@@ -328,4 +328,50 @@ describe('anything short of plainly this customer’s stays for a person', () =>
     expect(await creditWrongAmounts(db)).toBe(1);
     expect(await balanceOf(inv.userId)).toBe(40_500);
   });
+
+  /**
+   * 1 Mehr 1405, production: 100,000 against a 1,000,000 invoice at 20:15; an
+   * operator credited it by hand from the customer's page at 20:56; the
+   * customer spent it; at 02:37 this sweep paid the same deposit in again.
+   */
+  it('leaves a transfer the customer was already credited for by hand, and tells the report group once', async () => {
+    // The report group, only if this database has none; left as found.
+    const ours = await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('bot', 'Channel_Report', '-100777'::jsonb)
+         ON CONFLICT (scope, key) DO NOTHING RETURNING key`,
+      )
+      .first<{ key: string }>();
+    try {
+      const inv = await claimedInvoice({ cardIrr: 10_000_000 });
+      const tx = await deposit(1_000_000, inv.clickedAt - 40_000);
+      await db
+        .prepare(
+          `INSERT INTO wallet_entries (user_id, amount_irr, kind, actor, note, idempotency_key)
+           VALUES (?1, 1000000, 'ADMIN_ADJUST', 'sam@example.com', 'اشتباه واریزی', ?2)`,
+        )
+        .bind(inv.userId, `admin-adjust:${inv.userId}:${RUN}`)
+        .run();
+
+      expect(await creditWrongAmounts(db)).toBe(0);
+      expect(await balanceOf(inv.userId)).toBe(1_000_000);
+      expect(await statuses(inv)).toEqual({ claim: 'MATCH_SUGGESTED', order: 'AWAITING_PAYMENT', payment: 'AWAITING_REVIEW' });
+      expect(await messageTo(inv.telegramId)).toBeUndefined();
+
+      const report = await db
+        .prepare(`SELECT body FROM bot_notifications WHERE dedupe_key = ?1`)
+        .bind(`report:paymentreport:hand-credited:${tx}`)
+        .first<{ body: string }>();
+      expect(report?.body).toContain('ربات این واریزی را به کیف پول نبرد');
+      expect(report?.body).toContain('۱۰۰٬۰۰۰ تومان دستی شارژ گرفته');
+      expect(report?.body).toContain('«اشتباه واریزی»');
+
+      // Told once: the next sweep leaves it alone.
+      expect(await creditWrongAmounts(db)).toBe(0);
+      expect(await balanceOf(inv.userId)).toBe(1_000_000);
+    } finally {
+      await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'report:paymentreport:hand-credited:wa-tx-%'`).run();
+      if (ours) await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
+    }
+  });
 });

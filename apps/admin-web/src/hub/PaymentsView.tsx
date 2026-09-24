@@ -3415,6 +3415,14 @@ export function CreditWalletModal({
   const [found, setFound] = useState<Pick[] | null>(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
+  // The server's `hand_credited`: this customer was credited by hand after
+  // the deposit arrived, so the money may already be theirs once.
+  const [handCredit, setHandCredit] = useState<{
+    amountIrr: number;
+    note: string | null;
+    actor: string | null;
+    at: number;
+  } | null>(null);
   const fromHint = invoice != null && invoice.customer?.id === customer?.id;
 
   async function search() {
@@ -3427,14 +3435,20 @@ export function CreditWalletModal({
     }
   }
 
-  async function submit() {
+  async function submit(despiteHandCredit = false) {
     if (!customer || !reason.trim()) return;
     setBusy(true);
     try {
-      await api.creditDepositToWallet(item.id, { userId: customer.id, reason: reason.trim() });
+      await api.creditDepositToWallet(item.id, {
+        userId: customer.id,
+        reason: reason.trim(),
+        ...(despiteHandCredit ? { despiteHandCredit: true } : {}),
+      });
       onDone();
     } catch (e) {
-      onError(e instanceof Error ? e.message : 'credit_wallet_failed');
+      const body = (e as { body?: { error?: string; handCredit?: NonNullable<typeof handCredit> } }).body;
+      if (body?.error === 'hand_credited' && body.handCredit) setHandCredit(body.handCredit);
+      else onError(e instanceof Error ? e.message : 'credit_wallet_failed');
     } finally {
       setBusy(false);
     }
@@ -3456,7 +3470,15 @@ export function CreditWalletModal({
                 · فاکتور منقضی <IdentifierText value={invoice.publicId} tone="hint" />
               </>
             )}{' '}
-            <button type="button" className="ghost" disabled={busy} onClick={() => setCustomer(null)}>
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy}
+              onClick={() => {
+                setCustomer(null);
+                setHandCredit(null);
+              }}
+            >
               تغییر مشتری
             </button>
           </p>
@@ -3502,17 +3524,26 @@ export function CreditWalletModal({
             placeholder="مثلاً: مبلغ را اشتباه واریز کرد"
           />
         </label>
+        {handCredit && (
+          <div className="alert alert-error" role="alert" data-testid="hand-credited">
+            این مشتری بعد از این واریزی <strong>{formatTomanFromIrr(handCredit.amountIrr)}</strong> دستی شارژ
+            گرفته — {dateTime(handCredit.at)}
+            {handCredit.actor ? `، ${handCredit.actor}` : ''}
+            {handCredit.note ? `، «${handCredit.note}»` : ''}. اگر همان پول بوده، شارژ نکن؛ وگرنه این پول دو
+            بار به کیف پولش می‌رود.
+          </div>
+        )}
         <div className="modal-actions">
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
             انصراف
           </button>
           <button
             type="button"
-            className="primary"
+            className={handCredit ? 'danger' : 'primary'}
             disabled={busy || !customer || !reason.trim()}
-            onClick={() => void submit()}
+            onClick={() => void submit(handCredit !== null)}
           >
-            شارژ کیف پول
+            {handCredit ? 'می‌دانم، باز هم شارژ کن' : 'شارژ کیف پول'}
           </button>
         </div>
       </div>
