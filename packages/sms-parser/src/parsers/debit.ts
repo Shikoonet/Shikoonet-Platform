@@ -78,9 +78,14 @@ function extractRef(text: string): string | null {
   return m ? (m[1] ?? null) : null;
 }
 
+/**
+ * Only a card the text names. It also used to take «the last four-digit
+ * number», which is the year of the date as often as not: 2026-09-24 it read
+ * «1405» out of «1405/7/2» and «تیر ماه 1405», an account called 1405 was
+ * minted, and withdrawals of three of our accounts went to it. No hint is an
+ * honest answer; the row waits for a person or a named parser.
+ */
 function extractAccountHint(text: string): string | null {
   const card = text.match(/(?:کارت|card)[:\s]*\*+(\d{4})/i);
-  if (card) return card[1]!;
-  const digits = text.match(/\b(\d{4})\b(?!.*\b\d{4}\b)/);
-  return digits ? digits[1]! : null;
+  return card ? card[1]! : null;
 }

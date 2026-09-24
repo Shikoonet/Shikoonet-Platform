@@ -32,9 +32,11 @@ import { parseIrr } from '../normalize.js';
 import { detectedIdentifierFromRaw } from '../identifier.js';
 
 // A deposit is «واریز مبلغ N ریال» / «به <account>»; a withdrawal is
-// «برداشت مبلغ N <reason>» / «از <account>» (the reason is a word such as
-// خریدکالا). Withdrawals have been read since 2026-09-19.
-const AMOUNT_RE = /^(واريز|واریز|برداشت)\s*مبلغ\s*:?\s*([\d,،]+)(?:\s*ریال|\s*ريال)?(?:\s+[^\d\s]+)?\s*$/;
+// «برداشت مبلغ N <reason>» / «از <account>» (the reason is words such as
+// خریدکالا or «انتقال وجه»). Withdrawals have been read since 2026-09-19; a
+// two-word reason since 2026-09-24, when «انتقال وجه» fell to generic-debit
+// and a 20,000,000 IRR transfer out landed on an account called «1405».
+const AMOUNT_RE = /^(واريز|واریز|برداشت)\s*مبلغ\s*:?\s*([\d,،]+)(?:\s*ریال|\s*ريال)?(?:\s+[^\d\s]+)*\s*$/;
 const ACCOUNT_RE = /^(?:به|از)\s*:?\s*(.+)$/;
 const BALANCE_RE = /^مانده\s*:?\s*([\d,،\s]+?)\s*$/;
 // JY/M(M)/D(D)  — full Jalali date (year given explicitly)

@@ -89,11 +89,10 @@ function extractRef(text: string): string | null {
 }
 
 function extractAccountHint(text: string): string | null {
-  // Last 4 of card OR last 4 of account, often printed as "کارت 1234" or "به کارت 1234".
+  // A card the text names, and nothing else: «the last four-digit number» was
+  // the year of the date as often as not (see debit.ts, 2026-09-24).
   const card = text.match(/(?:کارت|card)[:\s]*\*+(\d{4})/i);
-  if (card) return card[1]!;
-  const digits = text.match(/\b(\d{4})\b(?!.*\b\d{4}\b)/);
-  return digits ? digits[1]! : null;
+  return card ? card[1]! : null;
 }
 
 // keep normalize referenced (the parser pipeline may rely on it elsewhere)
