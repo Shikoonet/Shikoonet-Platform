@@ -89,6 +89,8 @@ interface PendingOrder {
   target_downgraded_at: string | null;
   target_groups_before: unknown;
   target_name: string | null;
+  /** The plan the service was on before this order; null on a migrated row. */
+  target_plan_id: number | null;
   target_volume_gb: number | null;
   target_expires_at: string | null;
   plan_name: string | null;
@@ -630,6 +632,7 @@ export async function provisionPaidOrders(
               o.target_subscription_id AS target_subscription_id,
               s.remote_username AS target_username,
               s.plan_name_at_sale AS target_name,
+              s.plan_id       AS target_plan_id,
               s.volume_gb     AS target_volume_gb,
               s.expires_at    AS target_expires_at,
               s.downgraded_at AS target_downgraded_at,
@@ -1697,7 +1700,14 @@ async function renew(
     cashbackIrr = await creditRenewalCashback(tx, row.order_id, renewCashbackPercent);
   });
 
-  return say(menu.serviceRenewed(serviceName, expiresAt, cashbackIrr));
+  // The plan just written onto the row, not the one it was read with: a
+  // customer who moved to another service was told the old one's name.
+  // Changed only when both ids are known — a migrated row has none, and its
+  // legacy name differs from the catalog's even on the same plan.
+  const changed = row.target_plan_id !== null && row.target_plan_id !== row.plan_id;
+  return say(
+    menu.serviceRenewed(row.plan_name ?? row.product_name ?? serviceName, expiresAt, cashbackIrr, changed),
+  );
 }
 
 const GB = 1024 ** 3;

@@ -1352,6 +1352,12 @@ export const TEXTS = {
     screen: 'renew',
     hint: 'خط اول بعد از تمدید موفق',
   },
+  SERVICE_RENEWED_CHANGED_TITLE: {
+    default: '♻️ سرویس شما به سرویس جدید تمدید شد.',
+    placeholders: [],
+    screen: 'renew',
+    hint: 'خط اول بعد از تمدید موفق، وقتی مشتری سرویس دیگری برای تمدید انتخاب کرده — نام سرویس جدید زیرش می‌آید',
+  },
   SERVICE_RENEWED_SERVICE: {
     default: '🔐 {service}',
     placeholders: ['service'],
