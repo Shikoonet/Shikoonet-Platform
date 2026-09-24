@@ -3044,10 +3044,12 @@ export function serviceRenewed(
   expiresAt: Date | null,
   /** The renewal cashback just credited, when the shop pays one. */
   cashbackIrr: number | null = null,
+  /** Renewed onto a different plan than the service was on. */
+  changed = false,
 ): string {
   const t = TEXTS_NOW;
   const lines = [
-    t.raw('SERVICE_RENEWED_TITLE'),
+    t.raw(changed ? 'SERVICE_RENEWED_CHANGED_TITLE' : 'SERVICE_RENEWED_TITLE'),
     '',
     t.render('SERVICE_RENEWED_SERVICE', { service: serviceName }),
   ];

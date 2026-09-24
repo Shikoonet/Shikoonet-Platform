@@ -175,9 +175,9 @@ async function makeService(
     volumeGb?: number | null;
     usedBytes?: number | null;
     /** What the service remembers of its sale; null is every migrated row. */
-    planId?: number | null;
+    planId?: number | null | undefined;
     durationDays?: number | null;
-    planNameAtSale?: string;
+    planNameAtSale?: string | undefined;
     status?: 'ACTIVE' | 'ON_HOLD' | 'DISABLED';
   },
 ): Promise<number> {
@@ -1223,6 +1223,8 @@ describe('applying it', () => {
       expiresInDays?: number | null;
       volumeGb?: number | null;
       status?: 'ACTIVE' | 'ON_HOLD' | 'DISABLED';
+      planId?: number | null;
+      planNameAtSale?: string;
     } = {},
   ) {
     const { updateId, telegramId } = ids();
@@ -1233,6 +1235,8 @@ describe('applying it', () => {
       expiresInDays: options.expiresInDays === undefined ? 5 : options.expiresInDays,
       volumeGb: options.volumeGb === undefined ? 50 : options.volumeGb,
       status: options.status ?? 'ACTIVE',
+      planId: options.planId,
+      planNameAtSale: options.planNameAtSale,
     });
     const plan = await planId('sim-vip-1m-50');
     await handleUpdate(db, press(updateId, telegramId, `rord:${subId}:${plan}`));
@@ -1291,6 +1295,37 @@ describe('applying it', () => {
     expect(sub?.last_synced_at).toBeNull();
     expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
     expect(notes.some((n) => n.chatId === target.telegramId)).toBe(true);
+  });
+
+  it('names the plan renewed INTO, and says it changed when the customer moved to another', async () => {
+    // Production, 2026-09-24: a first-purchase service renewed onto a
+    // different one was told «سرویس شما تمدید شد» under the OLD plan's name.
+    const named = async (plan: number) =>
+      (await db.prepare(`SELECT name FROM product_plans WHERE id = ?1`).bind(plan).first<{ name: string }>())!.name;
+    const said = async (telegramId: number) =>
+      (await pendingNotifications()).find((n) => n.chatId === telegramId)?.text ?? '';
+    const fakeFor = (username: string) =>
+      fakePanel({ [username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB } });
+
+    const moved = await paidRenewal({ planId: await planId('sim-vip-1m-20'), planNameAtSale: 'خرید اول 🎁' });
+    await provisionPaidOrders(db, fakeFor(moved.username).fetchImpl, NOW_MS);
+    const movedText = await said(moved.telegramId);
+    expect(movedText).toContain(TEXTS.SERVICE_RENEWED_CHANGED_TITLE.default);
+    expect(movedText).toContain(await named(moved.plan));
+    expect(movedText).not.toContain('خرید اول');
+
+    const kept = await paidRenewal({ planId: await planId('sim-vip-1m-50'), planNameAtSale: 'همان پلن' });
+    await provisionPaidOrders(db, fakeFor(kept.username).fetchImpl, NOW_MS);
+    const keptText = await said(kept.telegramId);
+    expect(keptText).toContain(TEXTS.SERVICE_RENEWED_TITLE.default);
+    expect(keptText).not.toContain(TEXTS.SERVICE_RENEWED_CHANGED_TITLE.default);
+
+    // A migrated row has no plan id: nothing says the plan changed, so the plain title.
+    const migrated = await paidRenewal({ planNameAtSale: 'سرویس واردشده' });
+    await provisionPaidOrders(db, fakeFor(migrated.username).fetchImpl, NOW_MS);
+    const migratedText = await said(migrated.telegramId);
+    expect(migratedText).toContain(TEXTS.SERVICE_RENEWED_TITLE.default);
+    expect(migratedText).not.toContain(TEXTS.SERVICE_RENEWED_CHANGED_TITLE.default);
   });
 
   /** The one `renewal_snapshots` row a renewal order leaves (0096). */
