@@ -87,6 +87,26 @@ beforeEach(async () => {
   await baseEnv.DB.prepare(`DELETE FROM raw_sms_events`).run();
 });
 
+/**
+ * A customer an operator already credited by hand from their page, after the
+ * deposit — 1 Mehr 1405. Its own user: a wallet entry cannot be deleted, and
+ * `latepayer` must stay uncredited for the tests above.
+ */
+async function handPaidCustomer(): Promise<number> {
+  const user = await baseEnv.DB.prepare(
+    `INSERT INTO users (telegram_id, username, registered_at) VALUES (990002, 'handpaid', now())
+     ON CONFLICT (telegram_id) DO UPDATE SET username = excluded.username RETURNING id`,
+  ).first<{ id: number }>();
+  await baseEnv.DB.prepare(
+    `INSERT INTO wallet_entries (user_id, amount_irr, kind, actor, note, idempotency_key, created_at)
+     VALUES (?1, ?2, 'ADMIN_ADJUST', 'sam@example.com', 'اشتباه واریزی', ?3, to_timestamp(?4 / 1000.0))`,
+  )
+    // 41 minutes after the deposit, as on production.
+    .bind(user!.id, AMOUNT, `admin-adjust:${user!.id}:${crypto.randomUUID()}`, DEPOSIT_AT + 41 * 60_000)
+    .run();
+  return user!.id;
+}
+
 async function seedDeposit(
   id: string,
   account: string | null = ACCOUNT,
@@ -330,6 +350,39 @@ describe("«شارژ کیف پول» on a late deposit", () => {
     expect(await walletBalance()).toBe(before);
     expect((await income()).map((r) => r.id)).toContain(id);
   });
+
+  it("refuses a customer credited by hand since the deposit, names it, and pays only when told to go on", async () => {
+    const handId = await handPaidCustomer();
+    const balanceOf = async () =>
+      Number(
+        (await baseEnv.DB.prepare(`SELECT balance_irr FROM wallets WHERE user_id = ?1`)
+          .bind(handId)
+          .first<{ balance_irr: number | string }>())?.balance_irr ?? 0,
+      );
+    const id = `t-credit-${crypto.randomUUID()}`;
+    await seedDeposit(id);
+    const before = await balanceOf();
+
+    const refused = await creditWallet(id, { userId: handId, reason: "wrong amount" });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({
+      ok: false,
+      error: "hand_credited",
+      handCredit: { amountIrr: AMOUNT, note: "اشتباه واریزی", actor: "sam@example.com" },
+    });
+    expect(await balanceOf()).toBe(before);
+    expect((await income()).map((r) => r.id)).toContain(id);
+
+    const paid = await creditWallet(id, { userId: handId, reason: "a different payment", despiteHandCredit: true });
+    expect(paid.status).toBe(200);
+    expect(await balanceOf()).toBe(before + AMOUNT);
+    const audit = await baseEnv.DB.prepare(
+      `SELECT after_json FROM audit_logs WHERE action = 'transaction.credited_to_wallet' AND entity_id = ?1`,
+    )
+      .bind(id)
+      .first<{ after_json: string }>();
+    expect(JSON.parse(audit!.after_json)).toMatchObject({ userId: handId, despiteHandCredit: true });
+  });
 });
 
 /**
@@ -404,6 +457,19 @@ describe("the late deposit reaches the report group, once", () => {
     const [row] = await alerts();
     expect(row?.body).toContain("hint-alert-new");
     expect(row?.body).toContain("«تخصیص»");
+    expect(row?.body).not.toContain("«شارژ کیف پول»");
+  });
+
+  it("says the customer was already credited by hand, instead of sending the operator to credit them", async () => {
+    const handId = await handPaidCustomer();
+    await seedDeposit("t-alert-hand");
+    await seedInvoice("hint-alert-hand", { order: "EXPIRED", user: handId });
+
+    expect(await at(DEPOSIT_AT + HOUR)).toBe(1);
+    const [row] = await alerts();
+    expect(row?.body).toContain("@handpaid");
+    expect(row?.body).toContain("۲۵۰٬۰۰۰ تومان دستی شارژ گرفته");
+    expect(row?.body).toContain("«اشتباه واریزی»");
     expect(row?.body).not.toContain("«شارژ کیف پول»");
   });
 

@@ -164,6 +164,18 @@ describe('GET /api/v1/admin/customers', () => {
     expect(byHandleBody.items.map((i) => i.id)).toContain(id);
   });
 
+  // A Persian keyboard types Persian digits; «۳۴۹۴۴۸۵۷۱» found nobody on
+  // production (2 Mehr 1405) while «349448571» found the customer.
+  it('finds a telegram id typed in Persian or Arabic digits', async () => {
+    const { id, telegramId } = await makeCustomer('findme_fa');
+    const fa = String(telegramId).replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]!);
+    const ar = String(telegramId).replace(/\d/g, (d) => '٠١٢٣٤٥٦٧٨٩'[Number(d)]!);
+    for (const q of [fa, ar]) {
+      const res = await app.request(`/api/v1/admin/customers?q=${encodeURIComponent(q)}`, {}, envAs(ADMIN));
+      expect(((await res.json()) as { items: { id: number }[] }).items.map((i) => i.id)).toContain(id);
+    }
+  });
+
   it('filters by status', async () => {
     await makeCustomer('st_active');
     const blocked = await makeCustomer('st_blocked', { status: 'BLOCKED' });

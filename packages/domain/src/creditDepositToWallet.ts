@@ -31,11 +31,51 @@ export type CreditDepositFailure =
   | 'REASON_REQUIRED'
   | 'TRANSACTION_NOT_FOUND'
   | 'NOT_INCOME_ELIGIBLE'
-  | 'USER_NOT_FOUND';
+  | 'USER_NOT_FOUND'
+  | 'HAND_CREDITED';
+
+/** A credit made by hand on the customer's page after the deposit arrived. */
+export interface HandCredit {
+  amountIrr: number;
+  note: string | null;
+  actor: string | null;
+  /** Epoch ms. */
+  at: number;
+}
 
 export type CreditDepositResult =
   | { ok: true; amountIrr: number; balanceIrr: number; notified: boolean }
-  | { ok: false; error: CreditDepositFailure };
+  | { ok: false; error: Exclude<CreditDepositFailure, 'HAND_CREDITED'> }
+  | { ok: false; error: 'HAND_CREDITED'; handCredit: HandCredit };
+
+/**
+ * The newest positive hand credit to this customer since `sinceMs`.
+ *
+ * A wallet adjustment on the customer's page names no deposit, so nothing
+ * that reads the deposit can tell it was already paid. 1 Mehr 1405,
+ * production: a customer sent a tenth of a 1,000,000 invoice at 20:15, Sam
+ * credited the 100,000 by hand at 20:56, the customer spent it at 21:01, and
+ * at 02:37 the wrong-amount sweep paid the same deposit in again.
+ */
+export async function handCreditSince(
+  db: D1Database | D1DatabaseSession,
+  userId: number,
+  sinceMs: number,
+): Promise<HandCredit | null> {
+  const row = await db
+    .prepare(
+      `SELECT amount_irr, note, actor, (EXTRACT(EPOCH FROM created_at) * 1000)::bigint AS at
+         FROM wallet_entries
+        WHERE user_id = ?1 AND kind = 'ADMIN_ADJUST' AND amount_irr > 0
+          AND created_at >= to_timestamp(?2 / 1000.0)
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .bind(userId, sinceMs)
+    .first<{ amount_irr: number | string; note: string | null; actor: string | null; at: number | string }>();
+  return row
+    ? { amountIrr: Number(row.amount_irr), note: row.note, actor: row.actor, at: Number(row.at) }
+    : null;
+}
 
 export async function creditDepositToWallet(
   db: D1Database,
@@ -46,6 +86,8 @@ export async function creditDepositToWallet(
     reason: string;
     /** The customer's message, rendered by the caller; sent only to an ACTIVE customer. */
     message: string;
+    /** The operator has seen the hand credit `HAND_CREDITED` named and credits anyway. */
+    despiteHandCredit?: boolean;
   },
 ): Promise<CreditDepositResult> {
   const reason = args.reason.trim();
@@ -64,6 +106,8 @@ export async function creditDepositInSession(
     reason: string;
     /** Null when the caller writes its own message in the same transaction. */
     message: string | null;
+    /** Credit even though `handCreditSince` finds one; only an operator who was shown it. */
+    despiteHandCredit?: boolean;
   },
 ): Promise<CreditDepositResult> {
   // The lock first, then every check: a verify that got in first has
@@ -75,17 +119,27 @@ export async function creditDepositInSession(
   if (!locked) return { ok: false, error: 'TRANSACTION_NOT_FOUND' };
 
   const deposit = await tx
-    .prepare(`SELECT t.amount_irr FROM transaction_candidates t WHERE t.id = ?1 AND ${INCOME_TX_WHERE}`)
+    .prepare(
+      `SELECT t.amount_irr, COALESCE(t.bank_timestamp, t.created_at) AS at
+         FROM transaction_candidates t WHERE t.id = ?1 AND ${INCOME_TX_WHERE}`,
+    )
     .bind(args.transactionId)
-    .first<{ amount_irr: number | string | null }>();
+    .first<{ amount_irr: number | string | null; at: number | string }>();
   const amountIrr = Number(deposit?.amount_irr ?? 0);
   if (!deposit || !(amountIrr > 0)) return { ok: false, error: 'NOT_INCOME_ELIGIBLE' };
 
+  // `adjustWallet` locks the same row, so a hand credit is either committed
+  // and seen below, or waits for this one to finish.
   const user = await tx
     .prepare(`SELECT id FROM users WHERE id = ?1 FOR UPDATE`)
     .bind(args.userId)
     .first<{ id: number }>();
   if (!user) return { ok: false, error: 'USER_NOT_FOUND' };
+
+  if (!args.despiteHandCredit) {
+    const handCredit = await handCreditSince(tx, args.userId, Number(deposit.at));
+    if (handCredit) return { ok: false, error: 'HAND_CREDITED', handCredit };
+  }
 
   const credited = await tx
     .prepare(

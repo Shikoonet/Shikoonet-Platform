@@ -1,14 +1,19 @@
 const PERSIAN_DIGITS = '۰۱۲۳۴۵۶۷۸۹';
 const ARABIC_DIGITS = '٠١٢٣٤٥٦٧٨٩';
 
-/** Normalize Iranian payment card input to exactly 16 ASCII digits, or null. */
-export function normalizeCardDigits(input: string): string | null {
-  let s = input.trim();
+/** Persian and Arabic-Indic digits as ASCII — what a Persian keyboard types into a search box. */
+export function asciiDigits(input: string): string {
+  let s = input;
   for (let i = 0; i < 10; i++) {
     s = s.replaceAll(PERSIAN_DIGITS[i]!, String(i));
     s = s.replaceAll(ARABIC_DIGITS[i]!, String(i));
   }
-  const digits = s.replace(/\D/g, '');
+  return s;
+}
+
+/** Normalize Iranian payment card input to exactly 16 ASCII digits, or null. */
+export function normalizeCardDigits(input: string): string | null {
+  const digits = asciiDigits(input.trim()).replace(/\D/g, '');
   if (digits.length !== 16) return null;
   return digits;
 }

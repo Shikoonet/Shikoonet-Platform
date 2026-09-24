@@ -20,7 +20,12 @@
  *     amount — otherwise it may be somebody else's correct payment, early,
  *     late or hand-delivered;
  *   - the only such transfer for this claim, and no other open claim on the
- *     account was pressed near it.
+ *     account was pressed near it;
+ *   - the customer was not credited by hand since the transfer came in
+ *     (`creditDepositInSession` refuses, `HAND_CREDITED`): 1 Mehr 1405, an
+ *     operator paid a tenth-of-the-price transfer into the wallet from the
+ *     customer's page, the customer spent it, and this paid it in again. The
+ *     deposit then stays in «واریزی‌ها» and the report group is told once.
  *
  * Anything short of that stays where it was, for a person. A wrong guess here
  * is a stranger's money in this customer's wallet; a missed one is an
@@ -37,7 +42,7 @@
 import { randomUUID } from 'node:crypto';
 import type { D1Database } from '@shikoo/database';
 import { AUTO_MATCH_MAX_TIME_DELTA_MS, MIRZABOT_SOURCE } from '@shikoo/contracts';
-import { creditDepositInSession, INCOME_TX_WHERE } from '@shikoo/domain';
+import { alertHandCreditedDeposit, creditDepositInSession, INCOME_TX_WHERE } from '@shikoo/domain';
 import * as menu from './menu.js';
 import { enqueue } from './notify.js';
 import { refundOrder } from './wallet.js';
@@ -97,6 +102,12 @@ export async function creditWrongAmounts(db: D1Database, now: number = Date.now(
        SELECT pr.claim_id, pr.payment_id, pr.tx_id
          FROM pairs pr
         WHERE (SELECT count(*) FROM pairs x WHERE x.claim_id = pr.claim_id) = 1
+          -- Held back once already (the customer was credited by hand): the
+          -- report group was told, and asking again every poll changes nothing.
+          -- Here and not in \`pairs\`: the held transfer still counts as one of
+          -- two, so a later transfer for the same claim is not «the only one».
+          AND NOT EXISTS (SELECT 1 FROM bot_notifications bn
+                           WHERE bn.dedupe_key = 'report:paymentreport:hand-credited:' || pr.tx_id)
           AND NOT EXISTS (
             SELECT 1 FROM payment_claims c2
              WHERE c2.id <> pr.claim_id
@@ -164,7 +175,18 @@ async function creditOne(db: D1Database, c: Candidate, now: number): Promise<boo
       reason,
       message: null,
     });
-    if (!credit.ok) return false;
+    if (!credit.ok) {
+      if (credit.error === 'HAND_CREDITED') {
+        await alertHandCreditedDeposit(tx, {
+          txId: c.tx_id,
+          userId: order.user_id,
+          invoicePublicId: order.public_id,
+          expectedIrr: Number(order.expected_irr),
+          handCredit: credit.handCredit,
+        });
+      }
+      return false;
+    }
 
     await tx
       .prepare(`UPDATE payment_claims SET status = 'EXPIRED', updated_at = ?2 WHERE id = ?1`)

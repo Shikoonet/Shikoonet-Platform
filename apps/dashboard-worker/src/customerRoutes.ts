@@ -39,6 +39,7 @@ import { MAX_SINGLE_PAYMENT_IRR, MIRZABOT_SOURCE, Texts } from '@shikoo/contract
 import {
   MAX_MESSAGE_LENGTH,
   adjustWallet,
+  asciiDigits,
   maskCardDigits,
   queueDirectMessage,
   panelNoteFor,
@@ -84,7 +85,9 @@ const TIER_COLUMNS = `t.code AS tier_code, t.name AS tier_name,
               COALESCE(t.discount_percent, u.discount_percent) AS effective_discount_percent`;
 
 const ListQuery = z.object({
-  q: z.string().trim().max(64).optional(),
+  // Persian digits folded: the admin types a Telegram id on a Persian keyboard
+  // and «۳۴۹۴۴۸۵۷۱» found nobody (production, 2 Mehr 1405).
+  q: z.string().trim().max(64).transform(asciiDigits).optional(),
   status: z.enum(['ACTIVE', 'BLOCKED']).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(25),
@@ -121,7 +124,8 @@ const REFERRAL_PURCHASE = `o.kind NOT IN ('WALLET_TOPUP', 'TRIAL')
  * referrer among 17k customers. Same shape as `ListQuery`, same reasons.
  */
 const ReferrersQuery = z.object({
-  q: z.string().trim().max(64).optional(),
+  // Digits folded, as in `ListQuery`.
+  q: z.string().trim().max(64).transform(asciiDigits).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(25),
   /** Only referrers at least one of whose referrals has actually bought. */

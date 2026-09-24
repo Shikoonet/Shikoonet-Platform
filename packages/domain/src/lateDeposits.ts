@@ -21,6 +21,7 @@
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { reportTopicKey } from '@shikoo/contracts';
 import { INCOME_QUEUE_TX_WHERE } from './incomeEligibility.js';
+import { handCreditSince, type HandCredit } from './creditDepositToWallet.js';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -152,15 +153,9 @@ export async function alertLateDeposits(db: Db, nowMs: number): Promise<number> 
   );
   if (hints.size === 0) return 0;
 
-  const settings = await db
-    .prepare(`SELECT key, value FROM settings WHERE scope = 'bot' AND key IN ('Channel_Report', ?1)`)
-    .bind(reportTopicKey('paymentreport'))
-    .all<{ key: string; value: unknown }>();
-  const setting = (key: string) => Number(settings.results.find((r) => r.key === key)?.value);
-  const chatId = setting('Channel_Report');
   // No report group, nowhere to say it; the deposit is still in «واریزی‌ها».
-  if (!Number.isSafeInteger(chatId) || chatId === 0) return 0;
-  const topic = setting(reportTopicKey('paymentreport'));
+  const target = await paymentReportTarget(db);
+  if (!target) return 0;
 
   let queued = 0;
   for (const t of txs) {
@@ -181,27 +176,99 @@ export async function alertLateDeposits(db: Db, nowMs: number): Promise<number> 
             )
             .bind(hint.customer.id, amountIrr, hint.invoiceAt)
             .first<{ public_id: string; status: string }>();
+    // Credited by hand since the deposit came in: then «شارژ کیف پول» would
+    // pay the same money a second time, so the message says so instead.
+    const hand = hint.customer === null ? null : await handCreditSince(db, hint.customer.id, Number(t.bank_timestamp));
     const who = hint.customer ? (hint.customer.username ? `@${hint.customer.username}` : hint.customer.telegramId) : 'نامعلوم';
     // Toman rounded down, as «واریزی‌ها» shows it (`loadIncomeItems`), so the
     // operator finds the same number on the row this message sends them to.
     const lines = [
       '💸 پول بعد از منقضی شدن فاکتور رسید',
-      `${FA_NUMBER.format(Math.floor(amountIrr / 10))} تومان — ${t.display_name}، ${FA_WHEN.format(Number(t.bank_timestamp))}`,
+      `${toman(amountIrr)} تومان — ${t.display_name}، ${FA_WHEN.format(Number(t.bank_timestamp))}`,
       `فاکتور ${hint.publicId} (منقضی، ${FA_WHEN.format(hint.invoiceAt)}) — مشتری ${who}`,
       ...(hint.others > 0 ? [`${FA_NUMBER.format(hint.others)} فاکتور منقضی دیگر هم با همین مبلغ هست.`] : []),
-      open
-        ? `این مشتری فاکتور باز ${open.public_id} با همین مبلغ دارد${open.status === 'AWAITING_REVIEW' ? ' (رسیدش در انتظار بررسی است)' : ''}: اگر همین پول است، در «پرداخت‌ها › واریزی‌ها» آن را به همان سفارش «تخصیص» کن.`
-        : 'در «پرداخت‌ها › واریزی‌ها» روی این واریزی «شارژ کیف پول» بزن تا پولش به کیف پول مشتری برود.',
+      hand
+        ? handCreditLine(hand)
+        : open
+          ? `این مشتری فاکتور باز ${open.public_id} با همین مبلغ دارد${open.status === 'AWAITING_REVIEW' ? ' (رسیدش در انتظار بررسی است)' : ''}: اگر همین پول است، در «پرداخت‌ها › واریزی‌ها» آن را به همان سفارش «تخصیص» کن.`
+          : 'در «پرداخت‌ها › واریزی‌ها» روی این واریزی «شارژ کیف پول» بزن تا پولش به کیف پول مشتری برود.',
     ];
-    const written = await db
-      .prepare(
-        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, message_thread_id)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (dedupe_key) DO NOTHING`,
-      )
-      .bind(lateDepositDedupeKey(t.id), chatId, lines.join('\n'), Number.isSafeInteger(topic) && topic > 0 ? topic : null)
-      .run();
-    queued += written.meta.changes;
+    queued += await queuePaymentReport(db, target, lateDepositDedupeKey(t.id), lines);
   }
   return queued;
+}
+
+/** One alert per deposit the bot held back. */
+export function handCreditedDedupeKey(txId: string): string {
+  return `report:paymentreport:hand-credited:${txId}`;
+}
+
+/**
+ * The wrong-amount sweep (`apps/bot/src/wrongAmount.ts`) found its deposit's
+ * customer credited by hand since the deposit came in, and left the deposit
+ * where it is. Says so to the report group, once. Returns 1 when queued.
+ */
+export async function alertHandCreditedDeposit(
+  db: Db,
+  args: { txId: string; userId: number; invoicePublicId: string; expectedIrr: number; handCredit: HandCredit },
+): Promise<number> {
+  const target = await paymentReportTarget(db);
+  if (!target) return 0;
+  const row = await db
+    .prepare(
+      `SELECT t.amount_irr, COALESCE(t.bank_timestamp, t.created_at) AS at, fa.display_name,
+              u.username, u.telegram_id
+         FROM transaction_candidates t
+         JOIN financial_accounts fa ON fa.id = t.financial_account_id
+         JOIN users u ON u.id = ?2
+        WHERE t.id = ?1`,
+    )
+    .bind(args.txId, args.userId)
+    .first<{ amount_irr: number | string; at: number | string; display_name: string; username: string | null; telegram_id: number | string }>();
+  if (!row) return 0;
+  const lines = [
+    '✋ ربات این واریزی را به کیف پول نبرد',
+    `${toman(Number(row.amount_irr))} تومان — ${row.display_name}، ${FA_WHEN.format(Number(row.at))}`,
+    `فاکتور ${args.invoicePublicId} (${toman(args.expectedIrr)} تومان) — مشتری ${row.username ? `@${row.username}` : String(row.telegram_id)}`,
+    'مبلغ با فاکتور یکی نبود و ربات معمولاً آن را به کیف پول مشتری می‌برد.',
+    handCreditLine(args.handCredit),
+    'اگر همان پول نبوده، در «پرداخت‌ها › واریزی‌ها» روی این واریزی «شارژ کیف پول» بزن.',
+  ];
+  return queuePaymentReport(db, target, handCreditedDedupeKey(args.txId), lines);
+}
+
+function toman(irr: number): string {
+  return FA_NUMBER.format(Math.floor(irr / 10));
+}
+
+function handCreditLine(h: HandCredit): string {
+  const who = [FA_WHEN.format(h.at), h.actor, h.note ? `«${h.note}»` : null].filter(Boolean).join('، ');
+  return `⚠️ این مشتری بعد از این واریزی ${toman(h.amountIrr)} تومان دستی شارژ گرفته (${who}). اگر همان پول بوده، دوباره شارژ نکن؛ وگرنه دو بار پرداخت می‌شود.`;
+}
+
+type ReportTarget = { chatId: number; thread: number | null };
+
+/** The report group and its «💰 گزارش مالی» topic, or null when none is set. */
+async function paymentReportTarget(db: Db): Promise<ReportTarget | null> {
+  const settings = await db
+    .prepare(`SELECT key, value FROM settings WHERE scope = 'bot' AND key IN ('Channel_Report', ?1)`)
+    .bind(reportTopicKey('paymentreport'))
+    .all<{ key: string; value: unknown }>();
+  const setting = (key: string) => Number(settings.results.find((r) => r.key === key)?.value);
+  const chatId = setting('Channel_Report');
+  if (!Number.isSafeInteger(chatId) || chatId === 0) return null;
+  const topic = setting(reportTopicKey('paymentreport'));
+  return { chatId, thread: Number.isSafeInteger(topic) && topic > 0 ? topic : null };
+}
+
+async function queuePaymentReport(db: Db, target: ReportTarget, dedupeKey: string, lines: string[]): Promise<number> {
+  const written = await db
+    .prepare(
+      `INSERT INTO bot_notifications (dedupe_key, chat_id, body, message_thread_id)
+       VALUES (?1, ?2, ?3, ?4)
+       ON CONFLICT (dedupe_key) DO NOTHING`,
+    )
+    .bind(dedupeKey, target.chatId, lines.join('\n'), target.thread)
+    .run();
+  return written.meta.changes;
 }
