@@ -21,6 +21,13 @@ const VERSION_NAME = /^\W*(V\s?\d+(?:\.\d+){1,3})\b/i;
 const VERSION_TITLE = /\bV\s?\d+(?:\.\d+){1,3}\b/i;
 /** A config link starts with its scheme; an HTML page's URLs sit inside tags. */
 const LINK = /^[a-z][a-z0-9+.-]*:\/\//i;
+/**
+ * A server's name starts with its country's flag. Read off the live panel,
+ * 2026-09-26: every server in every group does, and the lines that do not are
+ * a notice («قبل از اتصال به هر سرور یکبار به روز رسانی کنید») and
+ * WireGuard's key name («wgtrukey») — neither is a server to name to a customer.
+ */
+const SERVER = /^\p{Regional_Indicator}{2}/u;
 const CACHE_MS = 5 * 60_000;
 const FAILURE_CACHE_MS = 60_000;
 /** Short on purpose: the support bot is waiting on this answer with a customer on the line. */
@@ -90,7 +97,7 @@ export function namesFromLinks(body: string, profileTitle: string | null): Subsc
       version = v;
       continue;
     }
-    if (!servers.includes(name)) servers.push(name);
+    if (SERVER.test(name) && !servers.includes(name)) servers.push(name);
   }
   if (version === null && profileTitle !== null) {
     const title = profileTitle.startsWith('base64:')

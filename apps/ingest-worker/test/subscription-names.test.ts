@@ -38,8 +38,30 @@ describe('namesFromLinks', () => {
     expect(namesFromLinks(noVersion, null)?.version).toBeNull();
   });
   it('does not take «V2» in a server name for a version', () => {
-    const body = `trojan://s@h.example:443#${enc('Germany V2')}`;
-    expect(namesFromLinks(body, null)).toEqual({ version: null, servers: ['Germany V2'] });
+    const body = `trojan://s@h.example:443#${enc('🇩🇪 Germany V2')}`;
+    expect(namesFromLinks(body, null)).toEqual({ version: null, servers: ['🇩🇪 Germany V2'] });
+  });
+  it('reads the live panel’s shape: the version line, a notice, flagged servers, a WireGuard key', () => {
+    // Names exactly as the live panel served them on 2026-09-26 (read with
+    // Sam's permission); addresses and keys replaced. The first line carries
+    // the account's name and usage after the version, and the second is a
+    // notice — neither is a server. WireGuard's one line is a key name.
+    const live = [
+      `vless://0@h.example:443#${enc('V3.7.8.3 🆔: (test-000000) ⁦📊(204.8 MB)⁩ ⏰(0⁩)  ')}`,
+      `vless://0@h.example:443#${enc('قبل از اتصال به هر سرور یکبار به روز رسانی کنید')}`,
+      `vless://0@h.example:443#${enc('🇩🇪 Germany 1')}`,
+      `ss://0@h.example:443#${enc('🇺🇸 4 x ضریب مصرف ')}`,
+      `vless://0@h.example:443#${enc('🇹🇷 Turkey 2')}`,
+    ].join('\n');
+    expect(namesFromLinks(live, 'base64:U2hp')).toEqual({
+      version: 'V3.7.8.3',
+      servers: ['🇩🇪 Germany 1', '🇺🇸 4 x ضریب مصرف', '🇹🇷 Turkey 2'],
+    });
+    expect(JSON.stringify(namesFromLinks(live, null))).not.toContain('test-000000');
+    expect(namesFromLinks('wireguard://0@h.example:51820#wgtrukey', 'base64:U2hp')).toEqual({
+      version: null,
+      servers: [],
+    });
   });
   it('answers null for an HTML page even when it carries URLs — final review, 2026-09-26', () => {
     // A 200 login page from the panel used to become «servers» such as

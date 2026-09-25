@@ -142,12 +142,18 @@ describe('a slow or dead panel does not hold the support bot', () => {
     const many = (async (input: string | URL | Request) => {
       const m = /many-(\d+)\/links$/.exec(String(input));
       return m
-        ? new Response(bodyFor(['🔄 V3.7.8.1', `S${m[1]}`]), { status: 200 })
+        ? new Response(bodyFor(['🔄 V3.7.8.1', `🇩🇪 S${m[1]}`]), { status: 200 })
         : new Response('', { status: 404 });
     }) as unknown as typeof fetch;
     const json = (await (await call({ telegram_id: TG + 2 }, { SUBSCRIPTION_FETCH: many })).json()) as {
       own: { servers: string[] }[];
     };
-    expect(json.own.map((o) => o.servers[0])).toEqual(['S7', 'S6', 'S5', 'S4', 'S3']);
+    expect(json.own.map((o) => o.servers[0])).toEqual([
+      '🇩🇪 S7',
+      '🇩🇪 S6',
+      '🇩🇪 S5',
+      '🇩🇪 S4',
+      '🇩🇪 S3',
+    ]);
   });
 });
