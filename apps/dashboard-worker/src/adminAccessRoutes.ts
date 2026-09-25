@@ -51,29 +51,89 @@ import type { D1Database } from '@shikoo/database';
 import {
   ADMIN_PERMISSIONS,
   ADMIN_PERMISSION_FA,
+  SECTION_IDS,
   cleanPermissions,
+  isBuiltInGroup,
   permissionsOf,
   type BotAdminRole,
+  type SectionLevel,
 } from '@shikoo/contracts';
+import { hashPassword, passwordProblem } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
+import { confirmPassword } from './operatorSession.js';
 import { faNum } from './fa.js';
 
 const ACCESS_ROLES = ['ADMIN', 'REVIEWER', 'READ_ONLY'] as const;
 const BOT_ROLES = ['OWNER', 'ADMIN', 'SUPPORT'] as const;
 
+/** The built-in group a legacy role names — what the panel still sends. */
+const GROUP_OF_ROLE = { ADMIN: 'admin', REVIEWER: 'reviewer', READ_ONLY: 'read_only' } as const;
+
 const AccessUserCreate = z
   .object({
     email: z.string().trim().toLowerCase().email().max(200),
     displayName: z.string().trim().max(120).nullable().default(null),
-    role: z.enum(ACCESS_ROLES),
+    // One or the other: `role` for the built-in groups, `groupId` for any.
+    role: z.enum(ACCESS_ROLES).optional(),
+    groupId: z.string().min(1).max(64).optional(),
+    // Without one the account cannot sign in until `operator.ts
+    // set-password` gives it one — as before.
+    password: z.string().max(200).optional(),
+    totpRequired: z.boolean().default(false),
+    currentPassword: z.string().max(200).optional(),
   })
-  .strict();
+  .strict()
+  .refine((b) => (b.role === undefined) !== (b.groupId === undefined), 'role or groupId');
 
 const AccessUserPatch = z
   .object({
     role: z.enum(ACCESS_ROLES).optional(),
+    groupId: z.string().min(1).max(64).optional(),
     active: z.boolean().optional(),
     displayName: z.string().trim().max(120).nullable().optional(),
+    password: z.string().max(200).optional(),
+    totpRequired: z.boolean().optional(),
+    resetTotp: z.literal(true).optional(),
+    currentPassword: z.string().max(200).optional(),
+  })
+  .strict()
+  .refine((b) => !(b.role && b.groupId), 'role or groupId')
+  .refine(
+    (b) => Object.keys(b).some((k) => k !== 'currentPassword'),
+    'no fields to change',
+  );
+
+const SECTION_LEVELS = ['none', 'view', 'edit'] as const;
+
+/**
+ * A custom group's permissions: every key a section, «none» dropped.
+ *
+ * «دسترسی‌ها» may be read but never edited by a custom group — edit there is
+ * setting another operator's password or rewriting your own group. The CHECK
+ * in migration 0100 says the same; this says it with a sentence.
+ */
+const GroupPermissions = z
+  .record(z.string(), z.enum(SECTION_LEVELS))
+  .refine((p) => Object.keys(p).every((k) => (SECTION_IDS as readonly string[]).includes(k)), {
+    message: 'بخش ناشناخته',
+  })
+  .refine((p) => p.access !== 'edit', { message: 'ویرایش «دسترسی‌ها» فقط برای گروه مدیر است.' })
+  .transform(
+    (p) =>
+      Object.fromEntries(Object.entries(p).filter(([, v]) => v !== 'none')) as Record<
+        string,
+        SectionLevel
+      >,
+  );
+
+const AccessGroupCreate = z
+  .object({ name: z.string().trim().min(1).max(60), permissions: GroupPermissions })
+  .strict();
+
+const AccessGroupPatch = z
+  .object({
+    name: z.string().trim().min(1).max(60).optional(),
+    permissions: GroupPermissions.optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -150,6 +210,42 @@ async function lockingSurvivors<T>(
   });
 }
 
+function builtIn(c: { json: (body: unknown, status: 409) => Response }) {
+  return c.json(
+    {
+      ok: false,
+      error: 'built_in',
+      detail: 'گروه‌های پیش‌فرض همان نقش‌های قبلی‌اند و عوض نمی‌شوند؛ گروه تازه بسازید.',
+    },
+    409,
+  );
+}
+
+async function groupExists(db: D1Database, id: string): Promise<boolean> {
+  return (await db.prepare(`SELECT 1 FROM access_groups WHERE id = ?1`).bind(id).first()) !== null;
+}
+
+/**
+ * The acting operator's own password, asked again before handing somebody a
+ * way in. A session is a bearer token; without this a stolen cookie ends in an
+ * account with a password the thief chose. `null` when it checks out.
+ */
+async function reauth(
+  db: D1Database,
+  ident: Ident,
+  current: string | undefined,
+): Promise<Response | null> {
+  if (!current) {
+    return Response.json(
+      { ok: false, error: 'current_password_required', detail: 'رمز خودتان را وارد کنید.' },
+      { status: 401 },
+    );
+  }
+  const r = await confirmPassword(db, ident.email, current);
+  if (r.ok) return null;
+  return Response.json({ ok: false, error: r.error, until: r.until }, { status: r.status });
+}
+
 export function registerAdminAccessRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
@@ -161,9 +257,25 @@ export function registerAdminAccessRoutes(
    * broken panel rather than as a boundary. Readable by every role on purpose:
    * a reader must be able to find out that they are a reader.
    */
-  app.get('/api/v1/admin/me', (c) => {
+  app.get('/api/v1/admin/me', async (c) => {
     const ident = c.get('identity');
-    return c.json({ ok: true, email: ident.email, role: ident.role });
+    const row = await c.env.DB.prepare(
+      `SELECT g.id, g.name, u.totp_enabled, u.totp_required
+         FROM access_users u JOIN access_groups g ON g.id = u.group_id
+        WHERE u.email = ?1`,
+    )
+      .bind(ident.email)
+      .first<{ id: string; name: string; totp_enabled: boolean; totp_required: boolean }>();
+    return c.json({
+      ok: true,
+      email: ident.email,
+      role: ident.role,
+      groupId: row?.id ?? null,
+      groupName: row?.name ?? null,
+      // null for a built-in group: the panel draws those from `role`, as before.
+      perms: ident.perms ?? null,
+      totp: { enabled: Boolean(row?.totp_enabled), required: Boolean(row?.totp_required) },
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -172,16 +284,21 @@ export function registerAdminAccessRoutes(
 
   app.get('/api/v1/admin/access-users', async (c) => {
     const rows = await c.env.DB.prepare(
-      `SELECT id, email, display_name, role, active, created_at, updated_at
+      `SELECT id, email, display_name, role, group_id, active, created_at, updated_at,
+              totp_enabled, totp_required, password_hash IS NOT NULL AS has_password
          FROM access_users ORDER BY role, email`,
     ).all<{
       id: string;
       email: string;
       display_name: string | null;
       role: string;
+      group_id: string;
       active: number;
       created_at: number;
       updated_at: number;
+      totp_enabled: boolean;
+      totp_required: boolean;
+      has_password: boolean;
     }>();
     return c.json({
       ok: true,
@@ -191,7 +308,11 @@ export function registerAdminAccessRoutes(
         email: r.email,
         displayName: r.display_name,
         role: r.role,
+        groupId: r.group_id,
         active: r.active === 1,
+        totpEnabled: r.totp_enabled,
+        totpRequired: r.totp_required,
+        hasPassword: r.has_password,
         createdAt: Number(r.created_at),
         updatedAt: Number(r.updated_at),
       })),
@@ -209,17 +330,31 @@ export function registerAdminAccessRoutes(
         400,
       );
     }
-    const { email, displayName, role } = body.data;
+    const { email, displayName, password, totpRequired } = body.data;
+    const groupId = body.data.groupId ?? GROUP_OF_ROLE[body.data.role!];
+    if (!(await groupExists(c.env.DB, groupId))) {
+      return c.json({ ok: false, error: 'unknown_group' }, 400);
+    }
+    let hash: string | null = null;
+    if (password !== undefined) {
+      const problem = passwordProblem(password);
+      if (problem) return c.json({ ok: false, error: 'weak_password', detail: problem }, 400);
+      const again = await reauth(c.env.DB, ident, body.data.currentPassword);
+      if (again) return again;
+      hash = await hashPassword(password);
+    }
     const now = Date.now();
     const id = crypto.randomUUID();
 
+    // `role` follows `group_id` — the trigger from migration 0100 writes it.
     const row = await c.env.DB.prepare(
-      `INSERT INTO access_users (id, email, display_name, role, active, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)
-       ON CONFLICT (email) DO NOTHING RETURNING id`,
+      `INSERT INTO access_users (id, email, display_name, group_id, password_hash,
+                                 password_updated_at, totp_required, active, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, CASE WHEN ?5::text IS NULL THEN NULL ELSE now() END, ?6, 1, ?7, ?7)
+       ON CONFLICT (email) DO NOTHING RETURNING id, role`,
     )
-      .bind(id, email, displayName, role, now)
-      .first<{ id: string }>();
+      .bind(id, email, displayName, groupId, hash, totpRequired, now)
+      .first<{ id: string; role: string }>();
     if (!row) {
       return c.json(
         { ok: false, error: 'duplicate_email', detail: 'این ایمیل از قبل در فهرست هست.' },
@@ -234,7 +369,7 @@ export function registerAdminAccessRoutes(
       'ACCESS_USER',
       id,
       null,
-      { email, role },
+      { email, role: row.role, group: groupId, totp_required: totpRequired, password_set: hash !== null },
       null,
     );
     return c.json({ ok: true, id }, 201);
@@ -254,7 +389,8 @@ export function registerAdminAccessRoutes(
     }
 
     const before = await c.env.DB.prepare(
-      `SELECT id, email, display_name, role, active FROM access_users WHERE id = ?1`,
+      `SELECT id, email, display_name, role, group_id, active, totp_required
+         FROM access_users WHERE id = ?1`,
     )
       .bind(id)
       .first<{
@@ -262,30 +398,92 @@ export function registerAdminAccessRoutes(
         email: string;
         display_name: string | null;
         role: string;
+        group_id: string;
         active: number;
+        totp_required: boolean;
       }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
-    const role = body.data.role ?? (before.role as (typeof ACCESS_ROLES)[number]);
+    const { password, resetTotp } = body.data;
+    const groupId =
+      body.data.groupId ?? (body.data.role ? GROUP_OF_ROLE[body.data.role] : before.group_id);
+    if (groupId !== before.group_id && !(await groupExists(c.env.DB, groupId))) {
+      return c.json({ ok: false, error: 'unknown_group' }, 400);
+    }
     const active = body.data.active ?? before.active === 1;
     const displayName =
       body.data.displayName === undefined ? before.display_name : body.data.displayName;
+    const totpRequired = body.data.totpRequired ?? before.totp_required;
 
-    // The whole rule in one statement: the writer is not this row, and either
-    // this row stays an active ADMIN or somebody else already is one.
-    const done = await lockingSurvivors(c.env.DB, 'access_users', (tx) =>
-      tx
+    // Handing out a way in. Never for yourself — «رمز عبور» on your own card
+    // asks for the old one — and never for an admin, whose account the CLI
+    // on the server is the only thing allowed to reset.
+    const credentials = password !== undefined || resetTotp === true;
+    let hash: string | null = null;
+    if (credentials) {
+      if (before.email === ident.email || before.group_id === 'admin' || groupId === 'admin') {
+        return c.json(
+          {
+            ok: false,
+            error: 'admin_credentials',
+            detail:
+              'رمز یا ورود دومرحله‌ای خودتان و مدیرها از این‌جا عوض نمی‌شود — از کارت «رمز عبور» یا CLI سرور.',
+          },
+          409,
+        );
+      }
+      if (password !== undefined) {
+        const problem = passwordProblem(password);
+        if (problem) return c.json({ ok: false, error: 'weak_password', detail: problem }, 400);
+      }
+      const again = await reauth(c.env.DB, ident, body.data.currentPassword);
+      if (again) return again;
+      if (password !== undefined) hash = await hashPassword(password);
+    }
+
+    const done = await lockingSurvivors(c.env.DB, 'access_users', async (tx) => {
+      const row = await tx
         .prepare(
           `UPDATE access_users
-              SET role = ?2, active = ?3, display_name = ?4, updated_at = ?5
+              SET group_id = ?2, active = ?3, display_name = ?4, updated_at = ?5,
+                  totp_required = ?7,
+                  password_hash       = COALESCE(?8::text, password_hash),
+                  password_updated_at = CASE WHEN ?8::text IS NULL THEN password_updated_at ELSE now() END,
+                  failed_attempts     = CASE WHEN ?8::text IS NULL THEN failed_attempts ELSE 0 END,
+                  locked_until        = CASE WHEN ?8::text IS NULL THEN locked_until ELSE NULL END,
+                  totp_secret    = CASE WHEN ?9::boolean THEN NULL  ELSE totp_secret END,
+                  totp_enabled   = CASE WHEN ?9::boolean THEN false ELSE totp_enabled END,
+                  totp_last_step = CASE WHEN ?9::boolean THEN NULL  ELSE totp_last_step END
             WHERE id = ?1
               AND email <> ?6
-              AND ((?2 = 'ADMIN' AND ?3 = 1) OR ${KEEPS_AN_ADMIN})
-            RETURNING id`,
+              AND ((?2 = 'admin' AND ?3 = 1) OR ${KEEPS_AN_ADMIN})
+            RETURNING id, role`,
         )
-        .bind(id, role, active ? 1 : 0, displayName, Date.now(), ident.email)
-        .first<{ id: string }>(),
-    );
+        .bind(
+          id,
+          groupId,
+          active ? 1 : 0,
+          displayName,
+          Date.now(),
+          ident.email,
+          totpRequired,
+          hash,
+          resetTotp === true,
+        )
+        .first<{ id: string; role: string }>();
+      // A new password or a cleared second factor ends every session the old
+      // ones opened — the reason anybody resets them.
+      if (row && credentials) {
+        await tx
+          .prepare(
+            `UPDATE operator_sessions SET revoked_at = now()
+              WHERE access_user_id = ?1 AND revoked_at IS NULL`,
+          )
+          .bind(id)
+          .run();
+      }
+      return row;
+    });
 
     if (!done) {
       const mine = before.email === ident.email;
@@ -307,8 +505,180 @@ export function registerAdminAccessRoutes(
       'access.user_updated',
       'ACCESS_USER',
       id,
-      { role: before.role, active: before.active === 1 },
-      { role, active },
+      {
+        role: before.role,
+        group: before.group_id,
+        active: before.active === 1,
+        totp_required: before.totp_required,
+      },
+      { role: done.role, group: groupId, active, totp_required: totpRequired },
+      null,
+    );
+    if (hash !== null) {
+      await audit(c.env.DB, ident, 'access.password_set', 'ACCESS_USER', id, null, null, null);
+    }
+    if (resetTotp) {
+      await audit(c.env.DB, ident, 'access.totp_reset', 'ACCESS_USER', id, null, null, null);
+    }
+    return c.json({ ok: true });
+  });
+
+  // ── Access groups (issue #363) ───────────────────────────────────────────
+  //
+  // The three built-in groups are listed and never changed here: they mean the
+  // three roles, which the rest of the worker still reads. A custom group is a
+  // name and a page → none/view/edit map, enforced by `customGroupRole`.
+
+  app.get('/api/v1/admin/access-groups', async (c) => {
+    const rows = await c.env.DB.prepare(
+      `SELECT g.id, g.name, g.permissions, g.created_at, g.updated_at,
+              (SELECT COUNT(*) FROM access_users u WHERE u.group_id = g.id) AS members
+         FROM access_groups g
+        ORDER BY g.created_at, g.name`,
+    ).all<{
+      id: string;
+      name: string;
+      permissions: Record<string, SectionLevel>;
+      created_at: number;
+      updated_at: number;
+      members: number;
+    }>();
+    return c.json({
+      ok: true,
+      sections: SECTION_IDS,
+      items: (rows.results ?? []).map((r) => ({
+        id: r.id,
+        name: r.name,
+        builtIn: isBuiltInGroup(r.id),
+        permissions: isBuiltInGroup(r.id) ? null : r.permissions,
+        members: Number(r.members),
+        createdAt: Number(r.created_at),
+        updatedAt: Number(r.updated_at),
+      })),
+    });
+  });
+
+  app.post('/api/v1/admin/access-groups', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const body = AccessGroupCreate.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const row = await c.env.DB.prepare(
+      `INSERT INTO access_groups (id, name, permissions, created_at, updated_at)
+       VALUES (?1, ?2, ?3::jsonb, ?4, ?4)
+       ON CONFLICT (name) DO NOTHING RETURNING id`,
+    )
+      .bind(id, body.data.name, JSON.stringify(body.data.permissions), now)
+      .first<{ id: string }>();
+    if (!row) {
+      return c.json(
+        { ok: false, error: 'duplicate_name', detail: 'گروهی با این نام هست.' },
+        409,
+      );
+    }
+    await audit(
+      c.env.DB,
+      ident,
+      'access.group_created',
+      'ACCESS_GROUP',
+      id,
+      null,
+      { name: body.data.name, permissions: body.data.permissions },
+      null,
+    );
+    return c.json({ ok: true, id }, 201);
+  });
+
+  app.patch('/api/v1/admin/access-groups/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const id = c.req.param('id');
+    if (isBuiltInGroup(id)) return builtIn(c);
+    const body = AccessGroupPatch.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+    const before = await c.env.DB.prepare(
+      `SELECT name, permissions FROM access_groups WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ name: string; permissions: Record<string, SectionLevel> }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const name = body.data.name ?? before.name;
+    const permissions = body.data.permissions ?? before.permissions;
+    const row = await c.env.DB.prepare(
+      `UPDATE access_groups SET name = ?2, permissions = ?3::jsonb, updated_at = ?4
+        WHERE id = ?1
+          AND NOT EXISTS (SELECT 1 FROM access_groups o WHERE o.name = ?2 AND o.id <> ?1)
+        RETURNING id`,
+    )
+      .bind(id, name, JSON.stringify(permissions), Date.now())
+      .first<{ id: string }>();
+    if (!row) {
+      return c.json(
+        { ok: false, error: 'duplicate_name', detail: 'گروهی با این نام هست.' },
+        409,
+      );
+    }
+    await audit(
+      c.env.DB,
+      ident,
+      'access.group_updated',
+      'ACCESS_GROUP',
+      id,
+      { name: before.name, permissions: before.permissions },
+      { name, permissions },
+      null,
+    );
+    return c.json({ ok: true });
+  });
+
+  app.delete('/api/v1/admin/access-groups/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const id = c.req.param('id');
+    if (isBuiltInGroup(id)) return builtIn(c);
+    // The FK from access_users is RESTRICT, so a member added between this
+    // check and the DELETE still stops it — as an error rather than a 409.
+    const row = await c.env.DB.prepare(
+      `DELETE FROM access_groups
+        WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM access_users WHERE group_id = ?1)
+        RETURNING name, permissions`,
+    )
+      .bind(id)
+      .first<{ name: string; permissions: Record<string, SectionLevel> }>();
+    if (!row) {
+      const exists = await groupExists(c.env.DB, id);
+      return exists
+        ? c.json(
+            {
+              ok: false,
+              error: 'in_use',
+              detail: 'این گروه عضو دارد؛ اول اعضایش را به گروه دیگری ببرید.',
+            },
+            409,
+          )
+        : c.json({ ok: false, error: 'not_found' }, 404);
+    }
+    await audit(
+      c.env.DB,
+      ident,
+      'access.group_deleted',
+      'ACCESS_GROUP',
+      id,
+      { name: row.name, permissions: row.permissions },
+      null,
       null,
     );
     return c.json({ ok: true });

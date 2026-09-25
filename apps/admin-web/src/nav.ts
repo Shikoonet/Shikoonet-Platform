@@ -35,6 +35,8 @@
  * the same thing at compile time by having no default arm.
  */
 
+import type { SectionId } from '@shikoo/contracts';
+
 /**
  * The six screens that came from the payment hub.
  *
@@ -44,37 +46,12 @@
  */
 export type HubPageId = 'payments' | 'today' | 'accounts' | 'banks' | 'devices';
 
-export type PageId =
-  | HubPageId
-  | 'dashboard'
-  | 'stats'
-  | 'customers'
-  | 'referrals'
-  | 'bulk'
-  | 'orders'
-  | 'catalog'
-  | 'categories'
-  | 'subscriptions'
-  | 'transactions'
-  | 'expenses'
-  | 'parties'
-  | 'profit'
-  | 'books'
-  | 'requests'
-  | 'panels'
-  | 'stock'
-  | 'discounts'
-  | 'texts'
-  | 'keyboard'
-  | 'cron'
-  | 'retention'
-  | 'resellers'
-  | 'content'
-  | 'access'
-  | 'events'
-  | 'import'
-  | 'bot'
-  | 'settings';
+/**
+ * One page per access section. The list lives in `@shikoo/contracts` because
+ * the worker enforces the same ids; a page added to `NAV` below without one
+ * there does not compile.
+ */
+export type PageId = SectionId;
 
 export interface NavItem {
   id: PageId;

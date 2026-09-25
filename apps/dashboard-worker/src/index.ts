@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { matchedRoutes } from 'hono/route';
 import { z } from 'zod';
 import { SQL, type D1Database, type D1PreparedStatement } from '@shikoo/database';
 import {
@@ -38,7 +39,7 @@ import {
   type EnvName,
 } from '@shikoo/contracts';
 import { isUniqueViolation } from '@shikoo/db';
-import { mayRead } from './access.js';
+import { customGroupRole, mayRead } from './access.js';
 import {
   identityFor,
   isPublicAuthPath,
@@ -234,6 +235,8 @@ interface AppBindings {
     identity: {
       email: string;
       role: import('@shikoo/contracts').AccessRole;
+      groupId?: string;
+      perms?: import('@shikoo/contracts').SectionPerms | null;
       requestId?: string;
     };
   };
@@ -293,11 +296,26 @@ app.use('*', async (c, next) => {
   //
   // `isAdminSurface` no longer chooses between two Cloudflare audiences — there
   // is one door now — but it still marks which paths that rule covers.
-  if (isAdminSurface(c.req.path) && !mayRead(c.req.path, ident.role)) {
-    return c.json(
-      { ok: false, error: 'forbidden', detail: 'این بخش از دسترس نقش شما بیرون است.' },
-      403,
-    );
+  if (ident.perms === null) {
+    if (isAdminSurface(c.req.path) && !mayRead(c.req.path, ident.role)) {
+      return c.json(
+        { ok: false, error: 'forbidden', detail: 'این بخش از دسترس نقش شما بیرون است.' },
+        403,
+      );
+    }
+  } else {
+    // A custom group (issue #363). Decided on the route Hono is about to run —
+    // the first real handler, not a `use()` — and the role that handler's own
+    // checks will see is the one this grants. See `customGroupRole`.
+    const route = matchedRoutes(c).find((r) => r.method !== 'ALL');
+    const role = route ? customGroupRole(ident.perms, c.req.method, route.path) : null;
+    if (!role) {
+      return c.json(
+        { ok: false, error: 'forbidden', detail: 'این بخش از دسترس گروه شما بیرون است.' },
+        403,
+      );
+    }
+    ident.role = role;
   }
   // One id per request, echoed back and carried into everything this request
   // writes. `audit_logs.request_id` has existed since migration 0001 and has

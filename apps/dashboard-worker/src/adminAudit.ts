@@ -9,7 +9,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import type { AccessRole } from '@shikoo/contracts';
+import type { AccessRole, SectionPerms } from '@shikoo/contracts';
 import { createLogger } from '@shikoo/domain';
 
 const log = createLogger('dashboard');
@@ -23,6 +23,10 @@ export type Ident = {
    * audit rows too, and neither has a request.
    */
   requestId?: string;
+  /** The operator's access group; absent where there is no request. */
+  groupId?: string;
+  /** A custom group's sections, null for a built-in group (issue #363). */
+  perms?: SectionPerms | null;
 };
 
 /**

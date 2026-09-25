@@ -28,7 +28,13 @@
 import type { Context, Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import type { D1Database } from '@shikoo/database';
-import { isRelaxedEnv, type AccessRole, type EnvName } from '@shikoo/contracts';
+import {
+  isBuiltInGroup,
+  isRelaxedEnv,
+  type AccessRole,
+  type EnvName,
+  type SectionPerms,
+} from '@shikoo/contracts';
 import {
   LOCKOUT_MINUTES,
   MAX_FAILED_ATTEMPTS,
@@ -144,6 +150,26 @@ interface OperatorRow {
 export interface OperatorIdentity {
   email: string;
   role: AccessRole;
+  groupId: string;
+  /** A custom group's sections; null for the three built-in groups, which
+   * mean their role and nothing else (migration 0100). */
+  perms: SectionPerms | null;
+}
+
+interface IdentityRow {
+  email: string;
+  role: AccessRole;
+  group_id: string;
+  permissions: SectionPerms;
+}
+
+function toIdentity(row: IdentityRow): OperatorIdentity {
+  return {
+    email: row.email,
+    role: row.role,
+    groupId: row.group_id,
+    perms: isBuiltInGroup(row.group_id) ? null : row.permissions,
+  };
 }
 
 /**
@@ -238,14 +264,15 @@ export async function identityForToken(
           WHERE s.id = live.id
             AND live.last_seen_at < now() - interval '${TOUCH_MINUTES} minutes'
        )
-       SELECT u.email, u.role
+       SELECT u.email, u.role, u.group_id, g.permissions
          FROM live
          JOIN access_users u ON u.id = live.access_user_id
+         JOIN access_groups g ON g.id = u.group_id
         WHERE u.active = 1`,
     )
     .bind(hashSessionToken(token))
-    .first<{ email: string; role: AccessRole }>();
-  return row ?? null;
+    .first<IdentityRow>();
+  return row ? toIdentity(row) : null;
 }
 
 /** The identity behind a cookie value, or the development bypass. */
@@ -259,11 +286,13 @@ export async function identityFor(
     // READ_ONLY. Pinning ADMIN here made the bypass stronger than any real
     // login, which is the wrong direction for a thing that only exists in dev.
     const row = await env.DB.prepare(
-      `SELECT role FROM access_users WHERE email = ?1 AND active = 1`,
+      `SELECT u.email, u.role, u.group_id, g.permissions
+         FROM access_users u JOIN access_groups g ON g.id = u.group_id
+        WHERE u.email = ?1 AND u.active = 1`,
     )
       .bind(email)
-      .first<{ role: AccessRole }>();
-    return row ? { email, role: row.role } : null;
+      .first<IdentityRow>();
+    return row ? toIdentity(row) : null;
   }
   if (!token) return null;
   return identityForToken(env.DB, token);
@@ -378,6 +407,43 @@ async function recordFailure(db: D1Database, email: string): Promise<void> {
     )
     .bind(email)
     .run();
+}
+
+/**
+ * Ask the operator holding a session for their own password again.
+ *
+ * `/auth/password` and the owner's account actions (setting somebody's
+ * password, resetting their second factor, making somebody an admin) share it:
+ * each is something a stolen cookie must not be able to finish. A wrong answer
+ * counts towards the same lockout a wrong login does, so neither route is a
+ * guessing oracle.
+ */
+export async function confirmPassword(
+  db: D1Database,
+  email: string,
+  current: string,
+): Promise<
+  | { ok: true; id: string }
+  | { ok: false; status: 401 | 423; error: string; id?: string; until?: string }
+> {
+  const row = await db
+    .prepare(
+      `SELECT id, password_hash, locked_until
+         FROM access_users WHERE email = ?1 AND active = 1`,
+    )
+    .bind(email)
+    .first<{ id: string; password_hash: string | null; locked_until: string | null }>();
+  // The row can be gone or disabled between the session being issued and now.
+  if (!row) return { ok: false, status: 401, error: 'unauthorized' };
+
+  if (row.locked_until !== null && new Date(row.locked_until).getTime() > Date.now()) {
+    return { ok: false, status: 423, error: 'account_locked', id: row.id, until: row.locked_until };
+  }
+  if (!(await verifyPassword(current, row.password_hash))) {
+    await recordFailure(db, email);
+    return { ok: false, status: 401, error: 'invalid_credentials', id: row.id };
+  }
+  return { ok: true, id: row.id };
 }
 
 export function registerAuthRoutes(app: Hono<never>): void {
@@ -564,37 +630,21 @@ export function registerAuthRoutes(app: Hono<never>): void {
     const current = typeof body.current === 'string' ? body.current : '';
     const next = typeof body.next === 'string' ? body.next : '';
 
-    const row = await c.env.DB.prepare(
-      `SELECT id, role, password_hash, locked_until
-         FROM access_users WHERE email = ?1 AND active = 1`,
-    )
-      .bind(ident.email)
-      .first<{
-        id: string;
-        role: AccessRole;
-        password_hash: string | null;
-        locked_until: string | null;
-      }>();
-    // The row can be gone or disabled between the session being issued and now.
-    if (!row) return c.json({ ok: false, error: 'unauthorized' }, 401);
-
-    if (row.locked_until !== null && new Date(row.locked_until).getTime() > Date.now()) {
-      return c.json({ ok: false, error: 'account_locked', until: row.locked_until }, 423);
-    }
-
-    if (!(await verifyPassword(current, row.password_hash))) {
-      await recordFailure(c.env.DB, ident.email);
-      await audit(
-        c.env.DB,
-        ident,
-        'auth.password.refused',
-        'access_user',
-        row.id,
-        null,
-        null,
-        null,
-      );
-      return c.json({ ok: false, error: 'invalid_credentials' }, 401);
+    const row = await confirmPassword(c.env.DB, ident.email, current);
+    if (!row.ok) {
+      if (row.error === 'invalid_credentials' && row.id) {
+        await audit(
+          c.env.DB,
+          ident,
+          'auth.password.refused',
+          'access_user',
+          row.id,
+          null,
+          null,
+          null,
+        );
+      }
+      return c.json({ ok: false, error: row.error, until: row.until }, row.status);
     }
 
     // The same rule the CLI applies, from the same function — twelve characters

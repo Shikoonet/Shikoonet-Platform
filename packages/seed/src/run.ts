@@ -52,6 +52,10 @@ const KEEP = new Set([
   // which is how this was found: the browser walk clicked «تایید» and the row
   // would not go away.
   'reseller_tiers',
+  // The three built-in groups 0100 inserts, and `access_users.group_id` is a
+  // foreign key onto them: truncated, the CASCADE empties `access_users` and
+  // the local admin below cannot be granted at all.
+  'access_groups',
 ]);
 
 /**

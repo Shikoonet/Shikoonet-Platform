@@ -585,6 +585,15 @@ describe('every write route, asked directly', () => {
     // so ADMIN-only in the handler like the send itself, and audited as
     // `customers.broadcast_cancelled`; `broadcast-queue.test.ts` pins the
     // REVIEWER 403.
-    expect(writeRoutes().length).toBe(187);
+    //
+    // 188–190, 2026-09-25: access groups (issue #363, 0101). `POST /admin/
+    // access-groups`, `PATCH …/:id` and `DELETE …/:id` make, change and remove
+    // a custom group — a name and a page → none/view/edit map. They decide who
+    // may do everything else, so ADMIN-only in the handler, and under a prefix
+    // `mayRead` closes to READ_ONLY. A custom group can never hold edit on
+    // «دسترسی‌ها» (zod and a CHECK), so no custom group reaches them either.
+    // Audited as `access.group_*`; `access-groups.test.ts` pins them, and that
+    // every write route above refuses a custom group without edit on its page.
+    expect(writeRoutes().length).toBe(190);
   });
 });
