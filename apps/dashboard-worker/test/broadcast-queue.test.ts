@@ -192,3 +192,60 @@ describe('«لغو»', () => {
     expect((await cancel(id)).status).toBe(409);
   });
 });
+
+describe('a broadcast is never closed before its recipients exist', () => {
+  /**
+   * Production, 2026-09-25: a 17,362-recipient broadcast was 44٪ sent and
+   * `/bulk/queue` answered `items: []`. `queueBroadcast` wrote the broadcast
+   * row, then — as a second, separate statement — its recipients, and the
+   * bot's `closeFinishedBroadcasts` runs every second: in that gap it saw a
+   * broadcast with nothing PENDING and stamped it finished at queue time. The
+   * sender does not read `finished_at`, so it kept sending; the queue, «لغو»
+   * and the header's «which one is going» all read it and lost the broadcast.
+   *
+   * Reproduced here the way it happened: the bot's close statement (copied —
+   * a dashboard test cannot import the bot) running on its own connection for
+   * as long as the send takes, with an audience big enough that the insert
+   * takes real time.
+   */
+  it('stays open while the bot closes finished broadcasts next to it', async () => {
+    await baseEnv.DB.prepare(
+      `INSERT INTO users (telegram_id, username, status, registered_at)
+       SELECT ?1::bigint + 100 + g, 'queue-race-' || g, 'ACTIVE', now() FROM generate_series(1, 4000) g`,
+    )
+      .bind(TG_BASE)
+      .run();
+
+    let sending = true;
+    const closer = (async () => {
+      while (sending) {
+        await baseEnv.DB.prepare(
+          `UPDATE broadcasts b SET finished_at = now()
+            WHERE b.finished_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM broadcast_recipients r
+                               WHERE r.broadcast_id = b.id
+                                 AND r.status IN ('PENDING', 'SENDING'))`,
+        ).run();
+      }
+    })();
+    // `finally`, so a failed send cannot leave this loop closing the next
+    // test's broadcasts (CodeRabbit on #468).
+    let id: string;
+    try {
+      ({ id } = await send('مسابقه'));
+    } finally {
+      sending = false;
+      await closer;
+    }
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT finished_at IS NULL AS open FROM broadcasts WHERE id = ?1::uuid`,
+    )
+      .bind(id)
+      .first<{ open: boolean }>();
+    expect(row?.open).toBe(true);
+    expect((await queue()).map((i) => i.id)).toEqual([id]);
+    // And «لغو» can still find it.
+    expect((await cancel(id)).status).toBe(200);
+  });
+});
