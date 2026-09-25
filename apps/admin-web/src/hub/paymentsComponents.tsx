@@ -12,6 +12,8 @@ import { formatPercentChange } from './analytics.js';
 import type { Cache } from './query.js';
 import type { HistoryRangeState } from './paymentReview.js';
 import { count } from '../format.js';
+import { api, type ShopStatsResponse, type StatsRange } from '../api.js';
+import type { BotAutoVerifiedDateFilter } from './BotAutoVerifiedFilter.js';
 
 /* ── Status badges ── */
 
@@ -116,6 +118,72 @@ export function BotVerifiedMetrics({
       <span>
         <strong>{uniqueCustomers > 0 ? count(uniqueCustomers) : '—'}</strong> مشتری یکتا
       </span>
+    </div>
+  );
+}
+
+const DAY_SALES_LABEL: Record<BotAutoVerifiedDateFilter, string> = {
+  TODAY: 'فروش امروز',
+  YESTERDAY: 'فروش دیروز',
+  DAY_BEFORE_YESTERDAY: 'فروش پریروز',
+  ALL: 'فروش کل',
+};
+
+/**
+ * What the shop sold on the day the chip above names — every sale, not only
+ * the rows below it. Sam, 2026-09-25: «مبلغی که امروز هرچه فروخته».
+ *
+ * Read from «آمار فروشگاه» (`/admin/stats`), not summed here: that is the
+ * one definition the stats screen and the nightly report already share —
+ * completed orders by Tehran day, card or wallet, auto or manual, top-ups
+ * outside — so this line cannot disagree with them.
+ */
+export function DaySalesMetrics({
+  cache,
+  date,
+  range,
+  day,
+}: {
+  cache: Cache;
+  date: BotAutoVerifiedDateFilter;
+  range: string;
+  day: string | null;
+}) {
+  const { data } = cache.useQuery<ShopStatsResponse>(`day-sales:${range}:${day ?? ''}`, {
+    fetcher: () => api.stats(range as StatsRange, day ?? undefined),
+  });
+  return (
+    <div className="hub-context-metrics" aria-label={DAY_SALES_LABEL[date]}>
+      <span>
+        {DAY_SALES_LABEL[date]}{' '}
+        <strong className="tabular-nums">{data ? formatTomanFromIrr(data.earnedIrr) : '…'}</strong>
+      </span>
+      {data && (
+        <>
+          <span className="hub-context-metrics__sep" aria-hidden>
+            ·
+          </span>
+          <span>
+            خرید <strong>{count(data.salesCount)}</strong> ({formatTomanFromIrr(data.salesIrr)})
+          </span>
+          <span className="hub-context-metrics__sep" aria-hidden>
+            ·
+          </span>
+          <span>
+            تمدید <strong>{count(data.renewalsCount)}</strong> ({formatTomanFromIrr(data.renewalsIrr)})
+          </span>
+          {data.addonsCount > 0 && (
+            <>
+              <span className="hub-context-metrics__sep" aria-hidden>
+                ·
+              </span>
+              <span>
+                افزودنی <strong>{count(data.addonsCount)}</strong> ({formatTomanFromIrr(data.addonsIrr)})
+              </span>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
