@@ -311,22 +311,27 @@ describe('the owner’s account actions', () => {
     });
     expect(wrong.status).toBe(401);
 
+    // «ورود دومرحله‌ای اجباری» is not accepted until the login enforces it.
+    const unenforced = await call('POST', `/api/v1/admin/access-users/${id}`, WRITER, {
+      totpRequired: true,
+    });
+    expect(unenforced.status).toBe(400);
+
     const ok = await call('POST', `/api/v1/admin/access-users/${id}`, WRITER, {
       password: next,
-      totpRequired: true,
       currentPassword: WRITER_PASSWORD,
     });
     expect(ok.status).toBe(200);
     const row = await db
       .prepare(
-        `SELECT password_hash IS NOT NULL AS has, totp_required,
+        `SELECT password_hash IS NOT NULL AS has,
                 (SELECT COUNT(*)::int FROM operator_sessions
                   WHERE access_user_id = ?1 AND revoked_at IS NULL) AS live
            FROM access_users WHERE id = ?1`,
       )
       .bind(id)
-      .first<{ has: boolean; totp_required: boolean; live: number }>();
-    expect(row).toEqual({ has: true, totp_required: true, live: 0 });
+      .first<{ has: boolean; live: number }>();
+    expect(row).toEqual({ has: true, live: 0 });
     // The wrong guess above counts towards the writer's own lockout.
     const owner = await db
       .prepare(`SELECT failed_attempts FROM access_users WHERE email = ?1`)

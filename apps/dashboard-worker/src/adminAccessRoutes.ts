@@ -79,8 +79,10 @@ const AccessUserCreate = z
     // Without one the account cannot sign in until `operator.ts
     // set-password` gives it one — as before.
     password: z.string().max(200).optional(),
-    totpRequired: z.boolean().default(false),
     currentPassword: z.string().max(200).optional(),
+    // No `totpRequired` yet: the column exists (0101), but a flag the login
+    // does not enforce is a promise nobody keeps. It is accepted in the same
+    // change that enforces it and gives the operator a way to enrol.
   })
   .strict()
   .refine((b) => (b.role === undefined) !== (b.groupId === undefined), 'role or groupId');
@@ -92,7 +94,6 @@ const AccessUserPatch = z
     active: z.boolean().optional(),
     displayName: z.string().trim().max(120).nullable().optional(),
     password: z.string().max(200).optional(),
-    totpRequired: z.boolean().optional(),
     resetTotp: z.literal(true).optional(),
     currentPassword: z.string().max(200).optional(),
   })
@@ -367,7 +368,7 @@ export function registerAdminAccessRoutes(
         400,
       );
     }
-    const { email, displayName, password, totpRequired } = body.data;
+    const { email, displayName, password } = body.data;
     const groupId = body.data.groupId ?? GROUP_OF_ROLE[body.data.role!];
     if (!(await groupExists(c.env.DB, groupId))) {
       return c.json({ ok: false, error: 'unknown_group' }, 400);
@@ -391,11 +392,11 @@ export function registerAdminAccessRoutes(
     // `role` follows `group_id` — the trigger from migration 0101 writes it.
     const row = await c.env.DB.prepare(
       `INSERT INTO access_users (id, email, display_name, group_id, password_hash,
-                                 password_updated_at, totp_required, active, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, CASE WHEN ?5::text IS NULL THEN NULL ELSE now() END, ?6, 1, ?7, ?7)
+                                 password_updated_at, active, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, CASE WHEN ?5::text IS NULL THEN NULL ELSE now() END, 1, ?6, ?6)
        ON CONFLICT (email) DO NOTHING RETURNING id, role`,
     )
-      .bind(id, email, displayName, groupId, hash, totpRequired, now)
+      .bind(id, email, displayName, groupId, hash, now)
       .first<{ id: string; role: string }>();
     if (!row) {
       return c.json(
@@ -411,7 +412,7 @@ export function registerAdminAccessRoutes(
       'ACCESS_USER',
       id,
       null,
-      { email, role: row.role, group: groupId, totp_required: totpRequired, password_set: hash !== null },
+      { email, role: row.role, group: groupId, password_set: hash !== null },
       null,
     );
     return c.json({ ok: true, id }, 201);
@@ -431,7 +432,7 @@ export function registerAdminAccessRoutes(
     }
 
     const before = await c.env.DB.prepare(
-      `SELECT id, email, display_name, role, group_id, active, totp_required
+      `SELECT id, email, display_name, role, group_id, active
          FROM access_users WHERE id = ?1`,
     )
       .bind(id)
@@ -442,7 +443,6 @@ export function registerAdminAccessRoutes(
         role: string;
         group_id: string;
         active: number;
-        totp_required: boolean;
       }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
@@ -455,7 +455,6 @@ export function registerAdminAccessRoutes(
     const active = body.data.active ?? before.active === 1;
     const displayName =
       body.data.displayName === undefined ? before.display_name : body.data.displayName;
-    const totpRequired = body.data.totpRequired ?? before.totp_required;
 
     // Handing out a way in. Never for yourself — «رمز عبور» on your own card
     // asks for the old one — and for an admin only by the owner.
@@ -492,14 +491,13 @@ export function registerAdminAccessRoutes(
         .prepare(
           `UPDATE access_users
               SET group_id = ?2, active = ?3, display_name = ?4, updated_at = ?5,
-                  totp_required = ?7,
-                  password_hash       = COALESCE(?8::text, password_hash),
-                  password_updated_at = CASE WHEN ?8::text IS NULL THEN password_updated_at ELSE now() END,
-                  failed_attempts     = CASE WHEN ?8::text IS NULL THEN failed_attempts ELSE 0 END,
-                  locked_until        = CASE WHEN ?8::text IS NULL THEN locked_until ELSE NULL END,
-                  totp_secret    = CASE WHEN ?9::boolean THEN NULL  ELSE totp_secret END,
-                  totp_enabled   = CASE WHEN ?9::boolean THEN false ELSE totp_enabled END,
-                  totp_last_step = CASE WHEN ?9::boolean THEN NULL  ELSE totp_last_step END
+                  password_hash       = COALESCE(?7::text, password_hash),
+                  password_updated_at = CASE WHEN ?7::text IS NULL THEN password_updated_at ELSE now() END,
+                  failed_attempts     = CASE WHEN ?7::text IS NULL THEN failed_attempts ELSE 0 END,
+                  locked_until        = CASE WHEN ?7::text IS NULL THEN locked_until ELSE NULL END,
+                  totp_secret    = CASE WHEN ?8::boolean THEN NULL  ELSE totp_secret END,
+                  totp_enabled   = CASE WHEN ?8::boolean THEN false ELSE totp_enabled END,
+                  totp_last_step = CASE WHEN ?8::boolean THEN NULL  ELSE totp_last_step END
             WHERE id = ?1
               AND email <> ?6
               AND ((?2 = 'admin' AND ?3 = 1) OR ${KEEPS_AN_ADMIN})
@@ -512,7 +510,6 @@ export function registerAdminAccessRoutes(
           displayName,
           Date.now(),
           ident.email,
-          totpRequired,
           hash,
           resetTotp === true,
         )
@@ -555,9 +552,8 @@ export function registerAdminAccessRoutes(
         role: before.role,
         group: before.group_id,
         active: before.active === 1,
-        totp_required: before.totp_required,
       },
-      { role: done.role, group: groupId, active, totp_required: totpRequired },
+      { role: done.role, group: groupId, active },
       null,
     );
     if (hash !== null) {

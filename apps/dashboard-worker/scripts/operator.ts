@@ -334,6 +334,16 @@ async function main(): Promise<number> {
     }
 
     if (command === 'set-owner') {
+      // A disabled account would take the title from the owner and hold it
+      // where `adminGuard` cannot see it — a shop with no owner at all.
+      const live = await db
+        .prepare(`SELECT active FROM access_users WHERE id = ?1`)
+        .bind(row.id)
+        .first<{ active: number }>();
+      if (live?.active !== 1) {
+        console.error(`${email} is disabled — enable it before making it the owner.`);
+        return 1;
+      }
       // The one account above the admins (migration 0101). Only from here, on
       // the server: the panel never makes or unmakes an owner. Naming a new one
       // moves the title — the previous owner stays an admin, in the same
