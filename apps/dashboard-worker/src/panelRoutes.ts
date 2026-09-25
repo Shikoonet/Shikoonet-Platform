@@ -58,6 +58,7 @@ import {
   renewAllowed,
   renewModeFor,
   downgradeGroupsFor,
+  supportTrialFor,
   trialFor,
   usernameShapeFor,
   sanitiseUsernamePart,
@@ -154,6 +155,15 @@ const PanelPatch = z
     trialEnabled: z.boolean().optional(),
     trialVolumeGb: z.number().positive().max(10_000).nullable().optional(),
     trialDurationHours: z.number().int().positive().max(8760).nullable().optional(),
+    supportTrialEnabled: z.boolean().optional(),
+    supportSampleSubscriptionUrl: z
+      .string()
+      .trim()
+      .max(512)
+      .url()
+      .refine((u) => u.startsWith('https://'), 'https only')
+      .nullable()
+      .optional(),
     /**
      * «قیمت حجم و زمان اضافه», per customer tier, in TOMAN.
      *
@@ -783,6 +793,13 @@ function shape(r: PanelRow) {
     usernameMode: usernameShapeFor(r.config ?? {}).mode,
     usernameText: usernameShapeFor(r.config ?? {}).panelText,
     trial: trialFor(r.config ?? {}),
+    // «تست از پشتیبانی»: the support bot's door; its sizes are `trial`'s numbers.
+    supportTrial: supportTrialFor(r.config ?? {}),
+    // A company-owned account's link; only the support door reads it, for names.
+    supportSampleSubscriptionUrl:
+      typeof (r.config ?? {})['support_sample_subscription_url'] === 'string'
+        ? ((r.config ?? {})['support_sample_subscription_url'] as string)
+        : null,
     extraVolumeTomanPerGb: tierPricesOf(r.config ?? {}, 'priceextravolume'),
     extraTimeTomanPerDay: tierPricesOf(r.config ?? {}, 'priceextratime'),
     // Read through the same function the bot enforces with, so the box on the
@@ -2297,6 +2314,12 @@ export function registerPanelRoutes(
     if (patch.trialDurationHours !== undefined) {
       configPatch['trial_duration_hours'] = patch.trialDurationHours;
     }
+    if (patch.supportTrialEnabled !== undefined) {
+      configPatch['support_trial_enabled'] = patch.supportTrialEnabled;
+    }
+    if (patch.supportSampleSubscriptionUrl !== undefined) {
+      configPatch['support_sample_subscription_url'] = patch.supportSampleSubscriptionUrl;
+    }
     if (patch.extraVolumeTomanPerGb !== undefined) {
       configPatch['priceextravolume'] = patch.extraVolumeTomanPerGb;
     }
@@ -2364,6 +2387,22 @@ export function registerPanelRoutes(
             ok: false,
             error: 'invalid_body',
             detail: 'برای روشن‌کردن سرویس تست باید هم حجم و هم زمانش را بگذارید.',
+          },
+          400,
+        );
+      }
+    }
+    if (
+      patch.supportTrialEnabled !== undefined ||
+      patch.trialVolumeGb !== undefined ||
+      patch.trialDurationHours !== undefined
+    ) {
+      if (merged['support_trial_enabled'] === true && !supportTrialFor(merged).enabled) {
+        return c.json(
+          {
+            ok: false,
+            error: 'invalid_body',
+            detail: 'برای روشن‌کردن «تست از پشتیبانی» باید هم حجم و هم زمان سرویس تست را بگذارید.',
           },
           400,
         );
