@@ -228,9 +228,15 @@ describe('a broadcast is never closed before its recipients exist', () => {
         ).run();
       }
     })();
-    const { id } = await send('مسابقه');
-    sending = false;
-    await closer;
+    // `finally`, so a failed send cannot leave this loop closing the next
+    // test's broadcasts (CodeRabbit on #468).
+    let id: string;
+    try {
+      ({ id } = await send('مسابقه'));
+    } finally {
+      sending = false;
+      await closer;
+    }
 
     const row = await baseEnv.DB.prepare(
       `SELECT finished_at IS NULL AS open FROM broadcasts WHERE id = ?1::uuid`,
