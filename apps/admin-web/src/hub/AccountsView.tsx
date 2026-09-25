@@ -677,7 +677,9 @@ export function AccountsView({ cache }: AccountsViewProps) {
       )}
 
             {items.length === 0 ? (
-        <p className="empty">هیچ حسابی ثبت نشده.</p>
+        <p className="empty">
+          {allItems.length === 0 ? 'هیچ حسابی ثبت نشده.' : 'همهٔ حساب‌ها ردشده‌اند — با «ردشده‌ها» بالای صفحه دیده می‌شوند.'}
+        </p>
       ) : isMobile ? (
         <>
           <SortDropdown

@@ -380,6 +380,10 @@ export function ExpensesPage() {
     voidingRow ? `void:${voidingRow.id}` : '',
   ].join('');
   const openForm = (next: { editing?: RevenueAdjustmentRow | 'new'; posting?: ExpenseRecurrence; voiding?: RevenueAdjustmentRow }) => {
+    // A «دفتر بانک» form set aside is a form abandoned, as «انصراف» would:
+    // the next new row must not come back holding its account, amount and
+    // withdrawal (CodeRabbit on #451).
+    if (next.editing !== 'new') dropPrefill();
     setEditing(next.editing ?? null);
     setPosting(next.posting ?? null);
     setVoidingRow(next.voiding ?? null);

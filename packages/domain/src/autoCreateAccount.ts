@@ -21,7 +21,7 @@
  * review queue and to receive the auto-assigned transaction.
  */
 
-import type { D1Database } from '@shikoo/database';
+import type { D1DatabaseSession } from '@shikoo/database';
 
 export interface AutoCreatePendingInput {
   /** The account hint extracted from the SMS (e.g. "310057795083"). */
@@ -50,7 +50,7 @@ export interface AutoCreatePendingResult {
  * one INSERT succeeds and the second retries the SELECT.
  */
 export async function autoCreatePendingAccount(
-  db: D1Database,
+  db: D1DatabaseSession,
   input: AutoCreatePendingInput,
 ): Promise<AutoCreatePendingResult> {
   const existing = await db

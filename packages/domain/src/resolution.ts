@@ -25,7 +25,7 @@
  * surface the warning to the user.
  */
 
-import type { D1Database, FinancialAccountRow } from '@shikoo/database';
+import type { D1Database, D1DatabaseSession, FinancialAccountRow } from '@shikoo/database';
 import { SQL } from '@shikoo/database';
 
 export type ResolveResult =
@@ -109,7 +109,7 @@ interface ResolveRow {
 
 /** Resolve a single normalized identifier. Empty / null hint → NOT_FOUND. */
 export async function resolveAccountByHint(
-  db: D1Database,
+  db: D1DatabaseSession,
   hint: string | null | undefined,
 ): Promise<ResolveResult> {
   if (!hint) return { status: 'NOT_FOUND' };

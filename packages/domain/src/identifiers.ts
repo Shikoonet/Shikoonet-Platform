@@ -23,7 +23,7 @@
  *      re-run matching.
  */
 
-import type { D1Database, IdentifierType } from '@shikoo/database';
+import type { D1Database, D1DatabaseSession, IdentifierType } from '@shikoo/database';
 import { SQL } from '@shikoo/database';
 
 export interface DetectedIdentifierInput {
@@ -39,7 +39,7 @@ export interface DetectedIdentifierInput {
  * INSERT OR IGNORE on the UNIQUE(tx, type, value) index.
  */
 export async function persistDetectedIdentifiers(
-  db: D1Database,
+  db: D1DatabaseSession,
   txId: string,
   ids: DetectedIdentifierInput[],
   createdAt: number,
@@ -140,7 +140,7 @@ const RESOLVE_SQL = `
  * identifier type) is more expensive and adds no value here.
  */
 export async function resolveDetectedIdentifiers(
-  db: D1Database,
+  db: D1DatabaseSession,
   ids: DetectedIdentifierInput[],
 ): Promise<ResolveIdentifiersResult> {
   if (ids.length === 0) return { status: 'NOT_FOUND' };

@@ -22,7 +22,7 @@
  * Dry-run first, apply only what the dry-run listed — the same contract as
  * `cleanup-debits`: the operator has seen the list before it happens.
  */
-import type { D1Database } from '@shikoo/database';
+import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import type { ParseResult } from '@shikoo/contracts';
 import { compilePatterns, normalizeText, parseSms, type FallbackParser } from '@shikoo/sms-parser';
 import { loadBankSmsPatterns } from './bankSmsPatterns.js';
@@ -340,29 +340,32 @@ async function applyOne(
         return;
       }
       if (v === 'reread') {
-        // The guess goes first, and only if still nothing rests on it — the
-        // condition is in the DELETE, not read a moment before it. Then the
-        // row ingest would have made. Not one transaction: `persistTransaction`
-        // is ingest's path of several statements. If it fails after the
-        // delete, the text is left with no row — the state this whole screen
-        // exists to fill — and the next dry-run lists it again. Never two
-        // rows for one text, which the other order could leave.
-        const gone = await db
-          .prepare(
-            `DELETE FROM transaction_candidates t
-              WHERE t.id = ?1 AND t.parser_id LIKE 'generic-%' AND NOT ${RESTS_ON}
-              RETURNING t.id`,
-          )
-          .bind(r.generic_tx_id)
-          .first<{ id: string }>();
-        if (!gone) {
+        // One transaction: the guess goes and ingest's row takes its place, or
+        // neither happens and the guess is still there to retry (CodeRabbit on
+        // #451). The guess goes only if still nothing rests on it — the
+        // condition is in the DELETE, not read a moment before it. Delete
+        // first, so no moment holds two rows for one text.
+        const genericTxId = r.generic_tx_id;
+        const out = await db.withSession(async (tx) => {
+          const gone = await tx
+            .prepare(
+              `DELETE FROM transaction_candidates t
+                WHERE t.id = ?1 AND t.parser_id LIKE 'generic-%' AND NOT ${RESTS_ON}
+                RETURNING t.id`,
+            )
+            .bind(genericTxId)
+            .first<{ id: string }>();
+          if (!gone) return null;
+          const made = await persistTransaction(tx, r.id, bankClock(p, smsTs), p, r.normalized_body);
+          if (!made) throw new Error('reread made no row');
+          await markRead(tx, r.id, p);
+          return { replaced: gone.id, transactionId: made.id };
+        });
+        if (!out) {
           skipped.push({ eventId, why: 'no_longer_readable' });
           return;
         }
-        const tx = await persistTransaction(db, r.id, bankClock(p, smsTs), p, r.normalized_body);
-        if (!tx) throw new Error('reread made no row');
-        await markRead(db, r.id, p);
-        reread.push({ eventId: r.id, transactionId: tx.id, replaced: gone.id, parserId: p.parserId, direction: p.direction });
+        reread.push({ eventId: r.id, transactionId: out.transactionId, replaced: out.replaced, parserId: p.parserId, direction: p.direction });
         return;
       }
       const bankTs = bankClock(p, smsTs);
@@ -418,7 +421,7 @@ function bankClock(p: ParseResult, smsTs: number): number {
 }
 
 /** The raw row now says what read it, so the coverage view stops listing it. */
-async function markRead(db: D1Database, eventId: string, p: ParseResult): Promise<void> {
+async function markRead(db: D1DatabaseSession, eventId: string, p: ParseResult): Promise<void> {
   await db
     .prepare(
       `UPDATE raw_sms_events SET classification = ?2, parser_status = 'OK', parser_id = ?3, parser_version = ?4 WHERE id = ?1`,
