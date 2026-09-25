@@ -62,6 +62,8 @@ const PASSTHROUGH = [
   'AUTO_MATCH_ENABLED',
   'AUTO_FULFILLMENT_ENABLED',
   'MIRZABOT_WEBHOOK_URL',
+  'SUPPORT_INTEGRATION_ENABLED',
+  'SUPPORT_INTEGRATION_TOKEN',
 ] as const satisfies readonly (keyof Env)[];
 
 /**
@@ -137,6 +139,19 @@ function assertProductionConfig(env: Env): void {
     }
   }
 
+  // The support bot orders free accounts through its door; a short or missing
+  // token hands them to anybody who guesses it.
+  if (
+    env.SUPPORT_INTEGRATION_ENABLED === 'true' &&
+    (env.SUPPORT_INTEGRATION_TOKEN?.length ?? 0) < 32
+  ) {
+    throw new Error(
+      'SUPPORT_INTEGRATION_TOKEN must be at least 32 characters when ' +
+        'SUPPORT_INTEGRATION_ENABLED=true in production: the support bot can order free ' +
+        'trials through this door.',
+    );
+  }
+
   // Said out loud once, because an operator who meant it should still see it in
   // the log they check after a deploy, next to the port and the version.
   for (const key of MUST_BE_DECIDED) {
@@ -168,6 +183,12 @@ export function buildEnv(db: Env['DB']): Env {
     IP_LIMIT: fixedWindowRateLimit({
       limit: positiveInt('IP_RATE_LIMIT', 120),
       windowMs: positiveInt('RATE_LIMIT_WINDOW_MS', 60_000),
+    }),
+    // One bucket for the whole support door: one caller (n8n), and a runaway
+    // agent loop should stop at a minute's worth, not at the panel.
+    SUPPORT_LIMIT: fixedWindowRateLimit({
+      limit: positiveInt('SUPPORT_RATE_LIMIT', 60),
+      windowMs: 60_000,
     }),
     // Throws rather than defaulting: `?? 'local'` meant a typo switched off
     // every production guard below, silently. See `parseEnvName`.
