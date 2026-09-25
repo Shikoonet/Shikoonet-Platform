@@ -127,6 +127,19 @@ describe('the token never leaks', () => {
     expect(error.message).toContain('<token>');
   });
 
+  it('keeps the reason undici hides in `cause`, still without the token', async () => {
+    // «fetch failed» was all the alert channel ever said — no way to tell a DNS
+    // failure from a reset from a timeout.
+    const { api } = apiWith(() => {
+      throw new TypeError('fetch failed', {
+        cause: Object.assign(new Error(`connect ECONNREFUSED /bot${TOKEN}/getUpdates`), { code: 'ECONNREFUSED' }),
+      });
+    });
+    const error = await errorFrom(api.getUpdates(0, 1));
+    expect(error.message).toContain('[ECONNREFUSED]');
+    expect(error.message).not.toContain(TOKEN);
+  });
+
   it('is absent from a non-JSON response error', async () => {
     const { api } = apiWith(() => new Response('<html>502</html>', { status: 502 }));
     const error = await errorFrom(api.getUpdates(0, 1));

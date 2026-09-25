@@ -175,9 +175,9 @@ async function makeService(
     volumeGb?: number | null;
     usedBytes?: number | null;
     /** What the service remembers of its sale; null is every migrated row. */
-    planId?: number | null;
+    planId?: number | null | undefined;
     durationDays?: number | null;
-    planNameAtSale?: string;
+    planNameAtSale?: string | undefined;
     status?: 'ACTIVE' | 'ON_HOLD' | 'DISABLED';
   },
 ): Promise<number> {
@@ -524,6 +524,46 @@ describe('choosing what to renew', () => {
     expect(inside).toContain(`rord:${subId}:${await planId('sim-vip-1m-20')}`);
     expect(inside).toContain(`rord:${subId}:${sold}`);
     expect(section.replies[0]?.text).toContain('سطح سرویس را انتخاب کنید');
+  });
+
+  it('draws each tier with the badge and colour «محصولات» gives the service', async () => {
+    /*
+     * Sam, 2026-09-24: on the tier list «نمیتونم رنگشون رو عوض کنم یا ایموژی
+     * پریمیوم بذارم». A tier of several plans was drawn as its bare name, and
+     * a tier of one wore only its plan's badge — never the service's, which is
+     * what the buy flow's tier screen wears.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-b`,
+      username: `u_${telegramId}`,
+      expiresInDays: 5,
+      planId: await planId('sim-vip-1m-50'),
+    });
+    const platinum = await productId('sim-vip-platinum');
+    const before = await db
+      .prepare(`SELECT badge, button_style FROM products WHERE id = ?1`)
+      .bind(platinum)
+      .first<{ badge: string | null; button_style: string | null }>();
+    const emoji = '<tg-emoji emoji-id="5368324170671202286">💎</tg-emoji>';
+    await db
+      .prepare(`UPDATE products SET badge = ?1, button_style = 'success' WHERE id = ?2`)
+      .bind(emoji, platinum)
+      .run();
+    try {
+      const out = await handleUpdate(db, press(updateId, telegramId, `rnwl:${subId}`));
+      const tier = out.replies[0]?.keyboard
+        ?.flat()
+        .find((b) => b.callback_data === `rnwp:${subId}:${platinum}`);
+      expect(tier?.text.startsWith(`${emoji} `)).toBe(true);
+      expect(tier?.style).toBe('success');
+    } finally {
+      await db
+        .prepare(`UPDATE products SET badge = ?1, button_style = ?2 WHERE id = ?3`)
+        .bind(before?.badge ?? null, before?.button_style ?? null, platinum)
+        .run();
+    }
   });
 
   it('words the matched button short, and opens with the warning boxed and bold', async () => {
@@ -1183,6 +1223,8 @@ describe('applying it', () => {
       expiresInDays?: number | null;
       volumeGb?: number | null;
       status?: 'ACTIVE' | 'ON_HOLD' | 'DISABLED';
+      planId?: number | null;
+      planNameAtSale?: string;
     } = {},
   ) {
     const { updateId, telegramId } = ids();
@@ -1193,6 +1235,8 @@ describe('applying it', () => {
       expiresInDays: options.expiresInDays === undefined ? 5 : options.expiresInDays,
       volumeGb: options.volumeGb === undefined ? 50 : options.volumeGb,
       status: options.status ?? 'ACTIVE',
+      planId: options.planId,
+      planNameAtSale: options.planNameAtSale,
     });
     const plan = await planId('sim-vip-1m-50');
     await handleUpdate(db, press(updateId, telegramId, `rord:${subId}:${plan}`));
@@ -1251,6 +1295,37 @@ describe('applying it', () => {
     expect(sub?.last_synced_at).toBeNull();
     expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
     expect(notes.some((n) => n.chatId === target.telegramId)).toBe(true);
+  });
+
+  it('names the plan renewed INTO, and says it changed when the customer moved to another', async () => {
+    // Production, 2026-09-24: a first-purchase service renewed onto a
+    // different one was told «سرویس شما تمدید شد» under the OLD plan's name.
+    const named = async (plan: number) =>
+      (await db.prepare(`SELECT name FROM product_plans WHERE id = ?1`).bind(plan).first<{ name: string }>())!.name;
+    const said = async (telegramId: number) =>
+      (await pendingNotifications()).find((n) => n.chatId === telegramId)?.text ?? '';
+    const fakeFor = (username: string) =>
+      fakePanel({ [username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB } });
+
+    const moved = await paidRenewal({ planId: await planId('sim-vip-1m-20'), planNameAtSale: 'خرید اول 🎁' });
+    await provisionPaidOrders(db, fakeFor(moved.username).fetchImpl, NOW_MS);
+    const movedText = await said(moved.telegramId);
+    expect(movedText).toContain(TEXTS.SERVICE_RENEWED_CHANGED_TITLE.default);
+    expect(movedText).toContain(await named(moved.plan));
+    expect(movedText).not.toContain('خرید اول');
+
+    const kept = await paidRenewal({ planId: await planId('sim-vip-1m-50'), planNameAtSale: 'همان پلن' });
+    await provisionPaidOrders(db, fakeFor(kept.username).fetchImpl, NOW_MS);
+    const keptText = await said(kept.telegramId);
+    expect(keptText).toContain(TEXTS.SERVICE_RENEWED_TITLE.default);
+    expect(keptText).not.toContain(TEXTS.SERVICE_RENEWED_CHANGED_TITLE.default);
+
+    // A migrated row has no plan id: nothing says the plan changed, so the plain title.
+    const migrated = await paidRenewal({ planNameAtSale: 'سرویس واردشده' });
+    await provisionPaidOrders(db, fakeFor(migrated.username).fetchImpl, NOW_MS);
+    const migratedText = await said(migrated.telegramId);
+    expect(migratedText).toContain(TEXTS.SERVICE_RENEWED_TITLE.default);
+    expect(migratedText).not.toContain(TEXTS.SERVICE_RENEWED_CHANGED_TITLE.default);
   });
 
   /** The one `renewal_snapshots` row a renewal order leaves (0096). */

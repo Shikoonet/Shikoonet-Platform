@@ -88,6 +88,8 @@ import {
   type PaymentItem,
   type PaymentTab,
   type PaymentsResponse,
+  type ReceiptFacet,
+  type AgeFacet,
   type ResellerItem,
   type AccountRefLike,
   type CandidateTransaction,
@@ -440,6 +442,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const [page, setPage] = useState(1);
   const [continuityPendingPage, setContinuityPendingPage] = useState(1);
   const [continuityHistoryPage, setContinuityHistoryPage] = useState(1);
+  const [receiptFacet, setReceiptFacet] = useState<ReceiptFacet | null>(null);
+  const [ageFacet, setAgeFacet] = useState<AgeFacet | null>(null);
   const [filters, setFilters] = useState<Filters>(() => parseFiltersFromLocation());
   const setSearch = useCallback((q: string) => setFilters((f) => ({ ...f, q })), []);
   // DEV-only: filters specific to the Bot Auto Verified tab.
@@ -475,6 +479,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
 
   function selectTab(next: PaymentTab) {
     setTab(next);
+    setReceiptFacet(null);
+    setAgeFacet(null);
     syncPaymentTabToLocation(next);
   }
 
@@ -493,16 +499,22 @@ export function PaymentsView({ cache }: { cache: Cache }) {
    * reset that will be forgotten in one -- leaving an operator on «page 4» of
    * a filter that now matches two rows, looking at an empty list.
    */
+  // The chips narrow the list itself — «پیام داده‌شده», or the pending half
+  // of «حالت تداوم» — and never the history under it.
+  const facetQs =
+    tab === 'messaged' || tab === 'continuity'
+      ? `${receiptFacet ? `&receipt=${receiptFacet}` : ''}${ageFacet ? `&age=${ageFacet}` : ''}`
+      : '';
   useEffect(() => {
     setPage(1);
     setContinuityPendingPage(1);
     setContinuityHistoryPage(1);
-  }, [baseQuery]);
+  }, [baseQuery, facetQs]);
   useEffect(() => {
     syncFiltersToLocation(filters);
   }, [filters]);
   const primaryBaseQuery =
-    tab === 'continuity' ? `${baseQuery}&continuityState=pending` : baseQuery;
+    (tab === 'continuity' ? `${baseQuery}&continuityState=pending` : baseQuery) + facetQs;
   const primaryPage = tab === 'continuity' ? continuityPendingPage : page;
   const query = primaryPage > 1 ? `${primaryBaseQuery}&page=${primaryPage}` : primaryBaseQuery;
   const queryKey = QK.payments(query);
@@ -992,6 +1004,16 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 reasons={collectReasons(claimItems)}
                 query={baseQuery}
                 canExport={canExport}
+              />
+            )}
+
+            {data?.facets && (tab === 'messaged' || tab === 'continuity') && (
+              <FacetChips
+                facets={data.facets}
+                receipt={receiptFacet}
+                age={ageFacet}
+                onReceipt={setReceiptFacet}
+                onAge={setAgeFacet}
               />
             )}
 
@@ -3666,6 +3688,66 @@ function UnreviewedStrip({
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+const RECEIPT_FACETS: ReadonlyArray<[ReceiptFacet, string]> = [
+  ['with', '📸 با رسید'],
+  ['without', 'بدون رسید'],
+];
+const AGE_FACETS: ReadonlyArray<[AgeFacet, string]> = [
+  ['2d', '۲ روز اخیر'],
+  ['7d', 'تا یک هفته'],
+  ['30d', 'تا یک ماه'],
+  ['older', 'قدیمی‌تر از یک ماه'],
+];
+
+/**
+ * «با رسید / بدون رسید» and the age of the payment — Sam, 2026-09-24. The
+ * rows with a picture are the ones to check for a fake receipt; the old ones
+ * are the ones to decide about. Counts come from the server, so they hold
+ * past the first page.
+ */
+function FacetChips({
+  facets,
+  receipt,
+  age,
+  onReceipt,
+  onAge,
+}: {
+  facets: NonNullable<PaymentsResponse['facets']>;
+  receipt: ReceiptFacet | null;
+  age: AgeFacet | null;
+  onReceipt: (v: ReceiptFacet | null) => void;
+  onAge: (v: AgeFacet | null) => void;
+}) {
+  const chip = (active: boolean, label: string, n: number | null, onClick: () => void, key: string) => (
+    <button
+      key={key}
+      type="button"
+      aria-pressed={active}
+      className={`segmented__btn${active ? ' segmented__btn--active' : ''}`}
+      onClick={onClick}
+    >
+      {label}
+      {n != null ? ` (${count(n)})` : ''}
+    </button>
+  );
+  const receiptTotal = facets.receipt.with + facets.receipt.without;
+  const ageTotal = Object.values(facets.age).reduce((a, b) => a + b, 0);
+  return (
+    <div className="bot-filter">
+      <div className="segmented" role="group" aria-label="فیلتر بر اساس رسید">
+        {chip(receipt === null, 'همه', receiptTotal, () => onReceipt(null), 'all')}
+        {RECEIPT_FACETS.map(([v, label]) =>
+          chip(receipt === v, label, facets.receipt[v], () => onReceipt(v), v),
+        )}
+      </div>
+      <div className="segmented segmented--dates" role="group" aria-label="فیلتر بر اساس زمان پرداخت">
+        {chip(age === null, 'همهٔ زمان‌ها', ageTotal, () => onAge(null), 'all')}
+        {AGE_FACETS.map(([v, label]) => chip(age === v, label, facets.age[v], () => onAge(v), v))}
+      </div>
     </div>
   );
 }

@@ -1,0 +1,77 @@
+PROPRIETARY LICENSE — ALL RIGHTS RESERVED
+
+Copyright (c) 2026 Shikoonet. All rights reserved.
+
+This repository and everything in it — source code, database migrations,
+configuration, scripts, documentation, tests, images and any other file, in
+any form and in any version, including its history (together, the "Software")
+— is the exclusive property of Shikoonet (the "Owner").
+
+1. NO LICENSE IS GRANTED.
+   No right, title or licence of any kind is granted to anyone, whether
+   expressly, by implication, by estoppel or otherwise. The Software being
+   publicly visible does NOT make it open source, free software, public
+   domain, or available for any use.
+
+2. PROHIBITED.
+   Without the Owner's prior, explicit, written permission, no person or
+   organisation may, in whole or in part:
+     a. use, run, execute, install, deploy or host the Software, for any
+        purpose, commercial or non-commercial;
+     b. copy, download, mirror, clone, reproduce or store the Software,
+        except the temporary copy a web browser makes to display it;
+     c. modify, translate, adapt, or create derivative works of the Software;
+     d. distribute, publish, sublicense, sell, rent, lend, or otherwise make
+        the Software available to any third party;
+     e. offer the Software, or anything built from it, as a service;
+     f. reverse engineer, decompile or disassemble any part of it;
+     g. use the Software, or any part of it, to train, fine-tune, evaluate or
+        prompt any machine-learning or artificial-intelligence system;
+     h. remove or alter this notice or any copyright notice.
+
+3. GITHUB.
+   The only exception is the minimum that the GitHub Terms of Service require
+   for a public repository: viewing it on GitHub and forking it within
+   GitHub. That exception grants no other right. A fork is still subject to
+   every prohibition in section 2 and may not be used, run, modified or
+   distributed.
+
+4. PERMISSION.
+   Any permission must be given in writing by the Owner, names who receives
+   it and what it covers, and may be withdrawn at any time. Anything not
+   expressly permitted is prohibited.
+
+5. ENFORCEMENT.
+   Any use of the Software without permission is copyright infringement. The
+   Owner reserves every right and remedy available under the law of any
+   jurisdiction, including removal requests and legal action. Any copy made
+   or held without permission must be deleted immediately.
+
+6. NO WARRANTY.
+   The Software is provided "AS IS", without warranty of any kind. The Owner
+   is not liable for any damage arising from any use of the Software,
+   permitted or not.
+
+---
+
+مجوز اختصاصی — تمام حقوق محفوظ است
+
+حق نشر (c) ۲۰۲۶ متعلق به Shikoonet است. تمام حقوق محفوظ است.
+
+این مخزن و همهٔ محتوای آن — کد، مهاجرت‌ها، تنظیمات، اسکریپت‌ها، مستندات،
+تست‌ها، تصاویر، تاریخچه و هر فایل دیگر — مالکیت انحصاری Shikoonet است.
+
+هیچ مجوزی به هیچ‌کس داده نشده است. عمومی بودن این مخزن به این معنا نیست که
+متن‌باز، رایگان یا آزاد برای استفاده است.
+
+بدون اجازهٔ کتبی و صریح مالک، هیچ شخص یا سازمانی حق ندارد این نرم‌افزار یا
+هیچ بخشی از آن را اجرا، استفاده، نصب، کپی، دانلود، تغییر، ترجمه، توزیع، انتشار،
+فروش، اجاره، ارائه به‌صورت سرویس، مهندسی معکوس، یا برای آموزش و ارزیابی هوش
+مصنوعی به کار ببرد، یا این اطلاعیه را حذف کند.
+
+تنها استثنا حداقلی است که شرایط استفادهٔ GitHub برای مخزن عمومی لازم می‌داند:
+دیدن مخزن و fork کردن آن داخل GitHub. این استثنا هیچ حق دیگری نمی‌دهد و هر fork
+همچنان مشمول همهٔ این ممنوعیت‌هاست.
+
+هر استفادهٔ بدون اجازه نقض حق نشر است و مالک همهٔ حقوق قانونی خود، از جمله
+پیگیری قضایی، را محفوظ می‌دارد. در صورت اختلاف، متن انگلیسی بالا ملاک است.

@@ -2844,6 +2844,19 @@ export function shortPlan(plan: Pick<CatalogPlan, 'productName' | 'durationDays'
     .join(' ');
 }
 
+/**
+ * One tier row on the renewal screen. `badge` and `buttonStyle` are the
+ * service's own, from «محصولات»; a tier of one plan falls back to that plan's,
+ * the same rule `productsForUser` applies to the buy flow's tier screen.
+ */
+export interface RenewTier {
+  productId: number;
+  name: string;
+  badge?: string | null;
+  buttonStyle?: ButtonStyle | null;
+  only?: CatalogPlan | null;
+}
+
 /** Renewal plans per screen — the same page size «سرویس های من» uses. */
 export const RENEW_PLANS_PER_PAGE = SERVICES_PER_PAGE;
 
@@ -2873,7 +2886,7 @@ export function renewPlanMenu(
    * بتونه تبدیل کنه به الماس». A tier is a product on the same panel and of
    * the same kind; its row opens that product's plans.
    */
-  tiers: readonly { productId: number; name: string; only?: CatalogPlan | null }[] = [],
+  tiers: readonly RenewTier[] = [],
   /** The service's kind, in Persian — «پلن‌های دیگر VPN» names where the door goes. */
   family = '',
 ): InlineKeyboard {
@@ -2931,14 +2944,20 @@ export function renewPlanMenu(
       const quoted = price.discountIrr === 0 && nameMentionsPrice(label, tier.only.priceIrr);
       keyboard.push([
         {
-          text: badged(tier.only.badge, quoted ? label : `${label} — ${formatToman(price.totalIrr)}`),
+          text: badged(tier.badge ?? tier.only.badge, quoted ? label : `${label} — ${formatToman(price.totalIrr)}`),
           callback_data: encode('rord', subscriptionId, tier.only.planId),
-          ...styled(tier.only.buttonStyle),
+          ...styled(tier.buttonStyle ?? tier.only.buttonStyle),
         },
       ]);
       continue;
     }
-    keyboard.push([{ text: tier.name, callback_data: encode('rnwp', subscriptionId, tier.productId) }]);
+    keyboard.push([
+      {
+        text: badged(tier.badge ?? null, tier.name),
+        callback_data: encode('rnwp', subscriptionId, tier.productId),
+        ...styled(tier.buttonStyle ?? null),
+      },
+    ]);
   }
   return withChrome(keyboard, 'renewPlans', {
     applies: (action) =>
@@ -3025,10 +3044,12 @@ export function serviceRenewed(
   expiresAt: Date | null,
   /** The renewal cashback just credited, when the shop pays one. */
   cashbackIrr: number | null = null,
+  /** Renewed onto a different plan than the service was on. */
+  changed = false,
 ): string {
   const t = TEXTS_NOW;
   const lines = [
-    t.raw('SERVICE_RENEWED_TITLE'),
+    t.raw(changed ? 'SERVICE_RENEWED_CHANGED_TITLE' : 'SERVICE_RENEWED_TITLE'),
     '',
     t.render('SERVICE_RENEWED_SERVICE', { service: serviceName }),
   ];

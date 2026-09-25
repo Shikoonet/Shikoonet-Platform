@@ -76,6 +76,21 @@ const PANEL_WIRED = `
  * the discount code, the audience list and the nudge ask the same question
  * and the day the answers differed a trial closed the starter panel.
  */
+/**
+ * The shop's own OWNER or ADMIN, who is let past both first-purchase gates
+ * below. Sam, 2026-09-24: «خرید اولیه‌ها را به ادمین‌ها نشان بده و اجازه بده
+ * بخرند» — an admin owns services, so without this they could never see, let
+ * alone test, the starter plans they sell.
+ *
+ * The same roles `IS_ADMIN` in handle.ts reads, not `isActiveAdmin`'s: support
+ * staff answer customers, they do not buy the starter offer. Keyed on the
+ * caller's telegram_id because that is what `admins` holds.
+ */
+const IS_SHOP_ADMIN = `EXISTS (
+        SELECT 1 FROM admins a
+         WHERE a.telegram_id = u.telegram_id AND a.active AND a.role IN ('OWNER', 'ADMIN')
+      )`;
+
 const PURCHASABLE = `
   /*
    * The category's own switch, and it is FIRST because it was the one condition
@@ -115,7 +130,7 @@ const PURCHASABLE = `
         SELECT 1 FROM provider_hidden_users h
          WHERE h.provider_id = pr.id AND h.user_id = u.id
       )
-  AND (p.once_per_user = false OR NOT ${OWNS_PAID_SERVICE_SQL})
+  AND (p.once_per_user = false OR ${IS_SHOP_ADMIN} OR NOT ${OWNS_PAID_SERVICE_SQL})
   /*
    * «فقط برای کسانی که هنوز خرید نکرده‌اند» — Sam, 2026-09-03. A starter panel
    * that disappears the moment the customer owns anything.
@@ -133,7 +148,7 @@ const PURCHASABLE = `
    * never bought» means, and it is not a bug — but it is a sentence somebody
    * must read before ticking the box.
    */
-  AND ((pr.config->>'newcomers_only') IS DISTINCT FROM 'true' OR NOT ${OWNS_PAID_SERVICE_SQL})
+  AND ((pr.config->>'newcomers_only') IS DISTINCT FROM 'true' OR ${IS_SHOP_ADMIN} OR NOT ${OWNS_PAID_SERVICE_SQL})
   /*
    * A panel the bot cannot log in to cannot deliver, so it is not for sale.
    *
@@ -445,6 +460,13 @@ export interface CatalogPlan {
   badge: string | null;
   /** The whole button's colour. Same field as a category's, same three names. */
   buttonStyle: ButtonStyle | null;
+  /**
+   * The SERVICE's own badge and colour — what «محصولات» sets on the tier
+   * button. The renewal's tier rows are built from plans, so they read it
+   * here. Optional so a plan written by hand in a test needs neither.
+   */
+  productBadge?: string | null;
+  productButtonStyle?: ButtonStyle | null;
   priceIrr: number;
   durationDays: number | null;
   volumeGb: number | null;
@@ -514,6 +536,8 @@ interface PlanRow {
   plan_name: string;
   badge: string | null;
   button_style: ButtonStyle | null;
+  product_badge: string | null;
+  product_button_style: ButtonStyle | null;
   price_irr: number;
   duration_days: number | null;
   volume_gb: number | null;
@@ -538,6 +562,8 @@ const PLAN_COLUMNS = `
   pl.name         AS plan_name,
   pl.badge        AS badge,
   pl.button_style AS button_style,
+  p.badge         AS product_badge,
+  p.button_style  AS product_button_style,
   pl.price_irr    AS price_irr,
   pl.duration_days AS duration_days,
   pl.volume_gb    AS volume_gb,
@@ -587,6 +613,8 @@ function toPlan(row: PlanRow): CatalogPlan {
     planName: row.plan_name,
     badge: row.badge,
     buttonStyle: row.button_style,
+    productBadge: row.product_badge,
+    productButtonStyle: row.product_button_style,
     priceIrr: row.price_irr,
     durationDays: row.duration_days,
     volumeGb: row.volume_gb,
