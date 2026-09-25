@@ -21,7 +21,7 @@ import {
   assertTransitionStatus,
   auditActionForTransition,
   verifyMirzabotClaim,
-  CONSUMING_MATCH_STATUSES,
+  TX_PINNED,
   type AccountStatus,
   type D1Database as DomainD1Database,
 } from '@shikoo/domain';
@@ -2619,17 +2619,17 @@ app.post('/api/v1/accounts/:id/restore', makeStatusRoute('restore', 'PENDING'));
 /**
  * GET /api/v1/accounts/pending — the review queue.
  *
- * Lists every PENDING account (auto-discovered and not yet reviewed)
- * plus every DECLINED account (so admins can Restore them). Both lists
- * share the same membership predicate `isReviewQueueMember` on the
- * domain side; the SQL keeps the predicate co-located.
+ * Lists every PENDING account (auto-discovered and not yet reviewed) —
+ * `isReviewQueueMember` on the domain side. DECLINED ones used to sit here
+ * too, for «بازگرداندن»; a declined account then never left the screen
+ * (Sam, 2026-09-24), so they moved behind «ردشده‌ها» on the accounts list.
  */
 app.get('/api/v1/accounts/pending', async (c) => {
   const rows = await c.env.DB.prepare(
     `${ACCOUNT_BASE_SELECT}
         WHERE fa.active = 1
-          AND fa.status IN ('PENDING','DECLINED')
-        ORDER BY (fa.status = 'PENDING') DESC, fa.created_at DESC
+          AND fa.status = 'PENDING'
+        ORDER BY fa.created_at DESC
         LIMIT 500`,
   ).all<{
     id: string;
@@ -2744,14 +2744,8 @@ interface AccountPurge {
   pinnedTransactions: number;
 }
 
-/** True for a transaction row `t` the books have counted. */
-const TX_IS_PINNED_SQL = `(
-  EXISTS (SELECT 1 FROM reconciliation_matches m
-           WHERE m.transaction_candidate_id = t.id
-             AND m.status IN ${CONSUMING_MATCH_STATUSES})
-  OR EXISTS (SELECT 1 FROM reseller_transactions r WHERE r.transaction_candidate_id = t.id)
-  OR EXISTS (SELECT 1 FROM revenue_adjustments a WHERE a.transaction_candidate_id = t.id)
-  OR EXISTS (SELECT 1 FROM account_opening_balances b WHERE b.transaction_candidate_id = t.id))`;
+/** True for a transaction row `t` the books have counted — shared with «بازخوانی». */
+const TX_IS_PINNED_SQL = TX_PINNED;
 
 async function countAccountPurge(db: DB, accountId: string): Promise<AccountPurge> {
   const row = await db

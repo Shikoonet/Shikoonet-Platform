@@ -26,9 +26,53 @@ import type { D1Database } from '@shikoo/database';
 import type { ParseResult } from '@shikoo/contracts';
 import { compilePatterns, normalizeText, parseSms, type FallbackParser } from '@shikoo/sms-parser';
 import { loadBankSmsPatterns } from './bankSmsPatterns.js';
-import { persistTransaction } from './persistTransaction.js';
+import { TX_INCOME_DECLINED, TX_PINNED } from './incomeEligibility.js';
+import { persistTransaction, readingAccountId } from './persistTransaction.js';
 import { REDELIVERY_WINDOW_MS, findRedelivery } from './redelivery.js';
 import { shouldCreateTransaction } from './transactionCreate.js';
+
+/**
+ * Something rests on the row (alias `t`): money the books counted, or a
+ * person's decision about it — off the books, rejected, ignored. Such a row
+ * keeps its account and amount; only its balance and clock may be upgraded.
+ */
+const RESTS_ON = `(${TX_PINNED} OR ${TX_INCOME_DECLINED} OR t.status IN ('REJECTED','IGNORED'))`;
+
+/** The generic row `g` a text made, and whether something rests on it. */
+const GUESS_COLUMNS = `
+  g.id AS generic_tx_id, g.direction AS generic_direction, g.amount_irr AS generic_amount_irr,
+  g.financial_account_id AS generic_account_id,
+  (SELECT ${RESTS_ON} FROM transaction_candidates t WHERE t.id = g.id) AS generic_rests_on`;
+
+interface Guess {
+  generic_direction: 'CREDIT' | 'DEBIT' | null;
+  generic_amount_irr: string | number | null;
+  generic_account_id: string | null;
+  generic_rests_on: boolean | null;
+}
+
+/**
+ * What today's named reading may do to a row a generic parser guessed.
+ *
+ *   upgrade — the same movement in the same place: balance and the bank's
+ *             clock, same id. Also for a row something rests on, wherever it
+ *             is: a match rests on amount and account, and neither changes.
+ *   reread  — nothing rests on it and the reading differs: another account,
+ *             another amount. The guess goes; ingest's row takes its place.
+ *             2026-09-24: generic-debit had read the year «1405» as the
+ *             account and «10» as a 39,000 IRR fee; «upgrade» could only
+ *             ever leave those rows where the guess put them.
+ *   leave   — something rests on it and the reading is another movement:
+ *             that is a person's question, not a batch's.
+ */
+function verdict(g: Guess, p: { direction: string; amountIrr: number }, target: string | null): 'upgrade' | 'reread' | 'leave' {
+  const sameMovement = p.direction === g.generic_direction && p.amountIrr === Number(g.generic_amount_irr);
+  // Moves only to an account we know. A number nobody knows is no reason to
+  // take a row off the account it is on.
+  const moves = target !== null && target !== g.generic_account_id;
+  if (sameMovement && (g.generic_rests_on || !moves)) return 'upgrade';
+  return g.generic_rests_on ? 'leave' : 'reread';
+}
 
 export interface ReparseCandidate {
   eventId: string;
@@ -61,6 +105,13 @@ export interface ReparseCandidate {
    * «حدسی» for good.)
    */
   upgrades: { transactionId: string; balanceIrr: number | null; bankTimestamp: number } | null;
+  /**
+   * The text has a row a generic parser guessed, nothing rests on it, and
+   * today's reading puts the movement elsewhere — `now` is where. Apply
+   * deletes the guess and makes ingest's row. What the guess said, so the
+   * operator sees what moves.
+   */
+  rereads: { transactionId: string; accountId: string | null; amountIrr: number } | null;
 }
 
 export interface ReparseDryRun {
@@ -99,7 +150,7 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
   const rows = await db
     .prepare(
       `SELECT r.id, r.device_id, r.sender, r.normalized_body, r.sms_timestamp, r.received_at, r.parser_id, r.classification,
-              g.id AS generic_tx_id, g.direction AS generic_direction, g.amount_irr AS generic_amount_irr,
+              ${GUESS_COLUMNS},
               g.balance_irr AS generic_balance_irr, g.bank_timestamp AS generic_bank_timestamp
          FROM raw_sms_events r
          LEFT JOIN transaction_candidates g
@@ -112,21 +163,21 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
         ORDER BY r.received_at`,
     )
     .bind(sinceMs)
-    .all<{
-      id: string;
-      device_id: string;
-      sender: string;
-      normalized_body: string;
-      sms_timestamp: string | number;
-      received_at: string | number;
-      parser_id: string | null;
-      classification: string;
-      generic_tx_id: string | null;
-      generic_direction: 'CREDIT' | 'DEBIT' | null;
-      generic_amount_irr: string | number | null;
-      generic_balance_irr: string | number | null;
-      generic_bank_timestamp: string | number | null;
-    }>();
+    .all<
+      Guess & {
+        id: string;
+        device_id: string;
+        sender: string;
+        normalized_body: string;
+        sms_timestamp: string | number;
+        received_at: string | number;
+        parser_id: string | null;
+        classification: string;
+        generic_tx_id: string | null;
+        generic_balance_irr: string | number | null;
+        generic_bank_timestamp: string | number | null;
+      }
+    >();
   const fallbacks = await fallbacksOf(db);
   const candidates: ReparseCandidate[] = [];
   // Earlier candidates in this very list, by phone+sender+body: two unread
@@ -141,14 +192,22 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
     }
     const smsTs = Number(r.sms_timestamp);
     if (r.generic_tx_id) {
-      // A row exists; only an upgrade of the same movement is on offer.
-      if (p.direction !== r.generic_direction || p.amountIrr !== Number(r.generic_amount_irr)) {
+      // A row exists: upgraded in place, read again, or left for a person.
+      const v = verdict(r, p, await readingAccountId(db, p));
+      if (v === 'leave') {
         stillUnread += 1;
         continue;
       }
       candidates.push({
         redeliveryOf: null,
-        upgrades: { transactionId: r.generic_tx_id, balanceIrr: r.generic_balance_irr === null ? null : Number(r.generic_balance_irr), bankTimestamp: Number(r.generic_bank_timestamp) },
+        upgrades:
+          v === 'upgrade'
+            ? { transactionId: r.generic_tx_id, balanceIrr: r.generic_balance_irr === null ? null : Number(r.generic_balance_irr), bankTimestamp: Number(r.generic_bank_timestamp) }
+            : null,
+        rereads:
+          v === 'reread'
+            ? { transactionId: r.generic_tx_id, accountId: r.generic_account_id, amountIrr: Number(r.generic_amount_irr) }
+            : null,
         eventId: r.id,
         sender: r.sender,
         receivedAt: Number(r.received_at),
@@ -174,6 +233,7 @@ export async function dryRunReparse(db: D1Database, sinceMs: number): Promise<Re
     candidates.push({
       redeliveryOf,
       upgrades: null,
+      rereads: null,
       eventId: r.id,
       sender: r.sender,
       receivedAt: Number(r.received_at),
@@ -194,6 +254,8 @@ export interface ReparseApplied {
   made: { eventId: string; transactionId: string; parserId: string; direction: 'CREDIT' | 'DEBIT' }[];
   /** Rows a generic parser had made, now carrying the named parser's balance and clock. */
   upgraded: { eventId: string; transactionId: string; parserId: string; direction: 'CREDIT' | 'DEBIT' }[];
+  /** Guessed rows nothing rested on, deleted and made again as ingest would — `replaced` is the guess's id. */
+  reread: { eventId: string; transactionId: string; replaced: string; parserId: string; direction: 'CREDIT' | 'DEBIT' }[];
   /** Listed in the dry-run but no longer eligible — a row appeared meanwhile, or the text now parses differently. */
   skipped: { eventId: string; why: 'already_has_row' | 'no_longer_readable' | 'not_found' | 'redelivery' }[];
   /** A row this call could not make. The others were still made, and are all in `made`. */
@@ -210,18 +272,19 @@ export async function applyReparse(db: D1Database, eventIds: string[]): Promise<
   const fallbacks = await fallbacksOf(db);
   const made: ReparseApplied['made'] = [];
   const upgraded: ReparseApplied['upgraded'] = [];
+  const reread: ReparseApplied['reread'] = [];
   const skipped: ReparseApplied['skipped'] = [];
   const failed: ReparseApplied['failed'] = [];
   for (const eventId of eventIds) {
     try {
-      await applyOne(db, eventId, fallbacks, made, upgraded, skipped);
+      await applyOne(db, eventId, fallbacks, made, upgraded, reread, skipped);
     } catch (e) {
       // One text's failure is one text's failure: the rows already made stay
       // made, and the caller audits every one of them.
       failed.push({ eventId, error: e instanceof Error ? e.message : String(e) });
     }
   }
-  return { made, upgraded, skipped, failed };
+  return { made, upgraded, reread, skipped, failed };
 }
 
 async function applyOne(
@@ -230,31 +293,32 @@ async function applyOne(
   fallbacks: readonly FallbackParser[],
   made: ReparseApplied['made'],
   upgraded: ReparseApplied['upgraded'],
+  reread: ReparseApplied['reread'],
   skipped: ReparseApplied['skipped'],
 ): Promise<void> {
     const r = await db
       .prepare(
         `SELECT r.id, r.device_id, r.sender, r.normalized_body, r.sms_timestamp, r.parser_id,
                 EXISTS (SELECT 1 FROM transaction_candidates t WHERE t.raw_sms_event_id = r.id) AS has_row,
-                g.id AS generic_tx_id, g.direction AS generic_direction, g.amount_irr AS generic_amount_irr
+                ${GUESS_COLUMNS}
            FROM raw_sms_events r
            LEFT JOIN transaction_candidates g
              ON g.raw_sms_event_id = r.id AND g.parser_id LIKE 'generic-%'
           WHERE r.id = ?1 AND r.normalized_body IS NOT NULL AND r.duplicate_of IS NULL`,
       )
       .bind(eventId)
-      .first<{
-        id: string;
-        device_id: string;
-        sender: string;
-        normalized_body: string;
-        sms_timestamp: string | number;
-        parser_id: string | null;
-        has_row: boolean;
-        generic_tx_id: string | null;
-        generic_direction: 'CREDIT' | 'DEBIT' | null;
-        generic_amount_irr: string | number | null;
-      }>();
+      .first<
+        Guess & {
+          id: string;
+          device_id: string;
+          sender: string;
+          normalized_body: string;
+          sms_timestamp: string | number;
+          parser_id: string | null;
+          has_row: boolean;
+          generic_tx_id: string | null;
+        }
+      >();
     if (!r) {
       skipped.push({ eventId, why: 'not_found' });
       return;
@@ -270,15 +334,38 @@ async function applyOne(
     }
     const smsTs = Number(r.sms_timestamp);
     if (r.generic_tx_id) {
-      // Upgrade in place. Same movement or nothing: a named parser that reads a
-      // different amount is a different question, and a row is never rewritten
-      // into another movement.
-      if (p.direction !== r.generic_direction || p.amountIrr !== Number(r.generic_amount_irr)) {
+      const v = verdict(r, p, await readingAccountId(db, p));
+      if (v === 'leave') {
         skipped.push({ eventId, why: 'no_longer_readable' });
         return;
       }
-      const fromText = p.evidence['bankTimestamp'];
-      const bankTs = typeof fromText === 'number' && Math.abs(fromText - smsTs) <= 2 * 86_400_000 ? fromText : smsTs;
+      if (v === 'reread') {
+        // The guess goes first, and only if still nothing rests on it — the
+        // condition is in the DELETE, not read a moment before it. Then the
+        // row ingest would have made. Not one transaction: `persistTransaction`
+        // is ingest's path of several statements. If it fails after the
+        // delete, the text is left with no row — the state this whole screen
+        // exists to fill — and the next dry-run lists it again. Never two
+        // rows for one text, which the other order could leave.
+        const gone = await db
+          .prepare(
+            `DELETE FROM transaction_candidates t
+              WHERE t.id = ?1 AND t.parser_id LIKE 'generic-%' AND NOT ${RESTS_ON}
+              RETURNING t.id`,
+          )
+          .bind(r.generic_tx_id)
+          .first<{ id: string }>();
+        if (!gone) {
+          skipped.push({ eventId, why: 'no_longer_readable' });
+          return;
+        }
+        const tx = await persistTransaction(db, r.id, bankClock(p, smsTs), p, r.normalized_body);
+        if (!tx) throw new Error('reread made no row');
+        await markRead(db, r.id, p);
+        reread.push({ eventId: r.id, transactionId: tx.id, replaced: gone.id, parserId: p.parserId, direction: p.direction });
+        return;
+      }
+      const bankTs = bankClock(p, smsTs);
       // One transaction: the row, its text, and the books' anchor change
       // together or not at all. The fresh start copied this row's balance and
       // clock; if it stays on the guess, the ledger counts the same money
@@ -312,21 +399,30 @@ async function applyOne(
         return;
       }
     }
-    // The bank's own clock from the text, as ingest stores it — with the same
-    // two-day fence, so a parser that read a wrong year cannot move the row.
-    const fromText = p.evidence['bankTimestamp'];
-    const bankTs = typeof fromText === 'number' && Math.abs(fromText - smsTs) <= 2 * 86_400_000 ? fromText : smsTs;
-    const tx = await persistTransaction(db, r.id, bankTs, p, r.normalized_body);
+    const tx = await persistTransaction(db, r.id, bankClock(p, smsTs), p, r.normalized_body);
     if (!tx) {
       skipped.push({ eventId, why: 'no_longer_readable' });
       return;
     }
-    // The raw row now says what read it, so the coverage view stops listing it.
-    await db
-      .prepare(
-        `UPDATE raw_sms_events SET classification = ?2, parser_status = 'OK', parser_id = ?3, parser_version = ?4 WHERE id = ?1`,
-      )
-      .bind(r.id, p.classification, p.parserId, p.parserVersion ?? '0.0.0')
-      .run();
+    await markRead(db, r.id, p);
     made.push({ eventId: r.id, transactionId: tx.id, parserId: p.parserId, direction: p.direction });
+}
+
+/**
+ * The bank's own clock from the text, as ingest stores it — with the same
+ * two-day fence, so a parser that read a wrong year cannot move the row.
+ */
+function bankClock(p: ParseResult, smsTs: number): number {
+  const fromText = p.evidence['bankTimestamp'];
+  return typeof fromText === 'number' && Math.abs(fromText - smsTs) <= 2 * 86_400_000 ? fromText : smsTs;
+}
+
+/** The raw row now says what read it, so the coverage view stops listing it. */
+async function markRead(db: D1Database, eventId: string, p: ParseResult): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE raw_sms_events SET classification = ?2, parser_status = 'OK', parser_id = ?3, parser_version = ?4 WHERE id = ?1`,
+    )
+    .bind(eventId, p.classification, p.parserId, p.parserVersion ?? '0.0.0')
+    .run();
 }

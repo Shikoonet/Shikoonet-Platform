@@ -379,8 +379,8 @@ describe('status transitions', () => {
     await env.DB.prepare(
       `UPDATE financial_accounts SET status = 'DECLINED' WHERE id = 'act-dec'`,
     ).run();
-    // DECLINED is still in the review queue — admin can Restore.
-    expect(isReviewQueueMember('DECLINED')).toBe(true);
+    // Out of the review queue too since 2026-09-24 — restored from «ردشده‌ها».
+    expect(isReviewQueueMember('DECLINED')).toBe(false);
     // But excluded from operational views.
     const { SQL } = await import('@shikoo/database');
     const rows = await env.DB.prepare(

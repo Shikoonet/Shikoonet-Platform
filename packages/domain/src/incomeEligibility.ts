@@ -65,6 +65,23 @@ export const TX_WALLET_CREDITED = `
      WHERE we.idempotency_key = 'deposit:' || t.id || ':wallet'
   )`;
 
+/**
+ * Money the books have counted on this row (alias `t`): a claim it paid, a
+ * reseller, an expense or draw linked to it, the opening balance of the fresh
+ * start, a customer's wallet. A purge must not delete it, and «بازخوانی» must
+ * not move it to another account or amount.
+ *
+ * Lived in the purge route until 2026-09-24, from before wallet credits
+ * existed — so until then it let an account go with a deposit that had
+ * already been paid into a customer's wallet.
+ */
+export const TX_PINNED = `(
+  ${TX_BOT_CONSUMED}
+  OR ${TX_RESELLER_CLASSIFIED}
+  OR EXISTS (SELECT 1 FROM revenue_adjustments a WHERE a.transaction_candidate_id = t.id)
+  OR EXISTS (SELECT 1 FROM account_opening_balances b WHERE b.transaction_candidate_id = t.id)
+  OR ${TX_WALLET_CREDITED})`;
+
 /** Canonical Income tab predicate (alias `t` = transaction_candidates). */
 export const INCOME_TX_WHERE = `
   t.direction = 'CREDIT'

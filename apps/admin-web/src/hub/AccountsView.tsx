@@ -211,7 +211,16 @@ export function AccountsView({ cache }: AccountsViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const items = accountsPayload?.items ?? [];
+  /**
+   * «رد» takes the account off this screen (Sam, 2026-09-24: «رد کردم، ولی
+   * هنوز داره نمایشش میده»). The row itself stays: it is what the next text
+   * on the same number lands on, quietly, instead of a fresh «Auto» account
+   * in the queue. «ردشده‌ها» brings them back into the list, for «بازگرداندن».
+   */
+  const [showDeclined, setShowDeclined] = useState(false);
+  const allItems = accountsPayload?.items ?? [];
+  const declinedCount = allItems.filter((a) => a.status === 'DECLINED').length;
+  const items = showDeclined ? allItems : allItems.filter((a) => a.status !== 'DECLINED');
   const pendingItems = pendingPayload?.items ?? [];
   const [groupBy, setGroupBy] = useState('');
 
@@ -439,7 +448,13 @@ export function AccountsView({ cache }: AccountsViewProps) {
       unmute:
         'صدای این حساب برگردد؟ با تمام تاریخچه‌اش دوباره وارد صفحهٔ «امروز»، جمع‌ها و ' +
           'تطبیق می‌شود، و پرداخت به آن دوباره خودکار تایید می‌شود.',
-      decline: 'این حساب رد شود؟ تراکنش‌ها همچنان می‌رسند اما از نماهای عملیاتی بیرون می‌مانند.',
+      // 2026-09-24: «1405» was declined with a 2,000,000-Toman withdrawal of
+      // our own Saman account on it — a parser had read the year as the
+      // account. The question now says where to look before saying yes.
+      decline:
+        'این حساب رد شود؟ از صف و فهرست حساب‌ها برداشته می‌شود و تراکنش‌هایش از دفترها بیرون می‌ماند.\n\n' +
+        'اگر «دیده شد» برداشت یا واریزی از یکی از حساب‌های خودمان است، رد نکن: شمارهٔ حساب اشتباه خوانده شده. ' +
+        'اول در «بانک‌ها» دکمهٔ «بازخوانی با تحلیل‌گرهای امروز» را بزن.',
       restore: 'این حساب به صف بررسی برگردد؟',
     };
     if (!window.confirm(labels[action])) return;
@@ -494,6 +509,16 @@ export function AccountsView({ cache }: AccountsViewProps) {
       <div className="row toolbar">
         <h2>حساب‌ها ({count(items.length)})</h2>
         <div className="spacer" />
+        {declinedCount > 0 && (
+          <button
+            type="button"
+            aria-pressed={showDeclined}
+            onClick={() => setShowDeclined((v) => !v)}
+            data-testid="toggle-declined"
+          >
+            {showDeclined ? 'پنهان‌کردن ردشده‌ها' : `ردشده‌ها (${count(declinedCount)})`}
+          </button>
+        )}
         {items.length > 0 && (
           <SortDropdown
             id="group"
@@ -515,8 +540,8 @@ export function AccountsView({ cache }: AccountsViewProps) {
           <h3>صف بررسی ({count(pendingItems.length)})</h3>
           <p className="muted">
             حساب‌هایی که تازه خودکار کشف شده‌اند این‌جا می‌نشینند. «پذیرش» آن‌ها را وارد «امروز»،
-            تطبیق و جمع‌ها می‌کند و «رد» بیرون نگهشان می‌دارد. یک حساب ردشده را می‌شود «بازگرداند»
-            تا دوباره به صف بیاید.
+            تطبیق و جمع‌ها می‌کند و «رد» آن‌ها را از این صفحه برمی‌دارد؛ پیامک‌های بعدی همان شماره
+            بی‌صدا روی همان حساب می‌نشینند. با «ردشده‌ها» بالای صفحه دوباره دیده و «بازگردانده» می‌شوند.
           </p>
           <ul className="card-list">
             {pendingItems.map((a) => (

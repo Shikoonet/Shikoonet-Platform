@@ -56,6 +56,16 @@ const DATE_JALALI_SPACE_RE = /^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{1,2}):(\d{2})(?::
 // JY/MM/DD_HH:mm  (with year, Jalali, underscore separator — historical 6-fixture sample 5 variant)
 const DATE_JALALI_UNDERSCORE_RE = /^(\d{4})\/(\d{2})\/(\d{2})_(\d{1,2}):(\d{2})$/;
 const BALANCE_RE = /^(?:مانده|موجودي|موجودی)\s*:?\s*([\d,،\s]+?)\s*$/;
+// A fifth line saying what the movement was — Resalat's monthly SMS fee,
+// «کارمزد پیامک تیر ماه 1405» (2026-09-24). Words first, never a number: a
+// line that opens on a digit could be an amount or a date, and this layout
+// already has one of each. Without it the fee fell to generic-debit, which
+// read the account's «10» as the amount and the year as the account.
+const REMARK_RE = /^[؀-ۿ]/;
+
+function isRemark(line: string | undefined): boolean {
+  return line !== undefined && REMARK_RE.test(line) && !BALANCE_RE.test(line);
+}
 
 interface ParsedDateTime {
   jy: number | null;
@@ -141,7 +151,7 @@ export const compactSignedParser = {
 
   supports(input: NormalizedSms): boolean {
     const lines = splitLogicalLines(input.text);
-    if (lines.length !== 4) return false;
+    if (lines.length !== 4 && !(lines.length === 5 && isRemark(lines[4]))) return false;
     // Line 1: account hint — at least 5 chars, must contain a digit.
     const acct = lines[0]!;
     if (acct.length < 5 || !/\d/.test(acct)) return false;

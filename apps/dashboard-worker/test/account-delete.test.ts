@@ -462,6 +462,31 @@ describe('DELETE /api/v1/accounts/:id with purgeTransactions', () => {
     expect(await countOf('financial_accounts')).toBe(1);
   });
 
+  it('refuses when a deposit was paid into a customer\'s wallet — the wallet holds the money, the row is its evidence', async () => {
+    // The pinned rule predates «شارژ کیف پول» (#441) and let this through
+    // until 2026-09-24. A wallet entry cannot be deleted, so its own user.
+    const id = await seedAccount({ displayName: 'Paid out', bank: 'PARSIAN', active: false });
+    const deposit = await seedTransaction(id, 1_000_000);
+    const user = await baseEnv.DB.prepare(
+      `INSERT INTO users (telegram_id, username, registered_at) VALUES (990003, 'walletpurge', now())
+       ON CONFLICT (telegram_id) DO UPDATE SET username = excluded.username RETURNING id`,
+    ).first<{ id: number }>();
+    await baseEnv.DB.prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, actor, idempotency_key) VALUES (?1, 1000000, 'TOPUP', 'test', ?2)`,
+    )
+      .bind(user!.id, `deposit:${deposit}:wallet`)
+      .run();
+
+    const preview = (await (
+      await app.fetch(req('GET', `/api/v1/accounts/${id}/delete-preview`), admin)
+    ).json()) as { purge: { pinnedTransactions: number; canPurge: boolean } };
+    expect(preview.purge).toMatchObject({ pinnedTransactions: 1, canPurge: false });
+    const r = await app.fetch(req('DELETE', `/api/v1/accounts/${id}`, { purgeTransactions: true }), admin);
+    expect(r.status).toBe(409);
+    expect(((await r.json()) as { error: string }).error).toBe('transactions_in_use');
+    expect(await countOf('transaction_candidates')).toBe(1);
+  });
+
   it('still refuses an active account, and an account with payment claims', async () => {
     const active = await seedAccount({ displayName: 'Live', bank: 'PARSIAN', active: true });
     await seedTransaction(active);

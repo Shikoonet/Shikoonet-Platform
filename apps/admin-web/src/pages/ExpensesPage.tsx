@@ -361,6 +361,11 @@ export function ExpensesPage() {
    * looking at it and the focus is for the person who is not. Both are optional
    * calls — happy-dom implements neither, and a test environment is not a reason
    * for the panel to throw.
+   *
+   * One form in the slot at a time, and the page goes to every one that opens —
+   * not only when the slot was empty. Sam, 2026-09-24: «دکمه ابطال کار نمی کند».
+   * With the form a «دفتر بانک» link opens still up, «ابطال» on a row drew its
+   * form under that one, 1,859 px above the screen, and nothing moved.
    */
   const formRef = useRef<HTMLDivElement>(null);
   /*
@@ -369,18 +374,23 @@ export function ExpensesPage() {
    * further down swapped the form at the top of the page and moved nothing —
    * Sam, 2026-09-24: «دکمه ابطال کار نمی‌کند». The void itself always worked.
    */
-  const openForm = [
+  const whichForm = [
     editing === null ? '' : `edit:${editing === 'new' ? 'new' : editing.id}`,
     posting ? `post:${posting.id}` : '',
     voidingRow ? `void:${voidingRow.id}` : '',
   ].join('');
+  const openForm = (next: { editing?: RevenueAdjustmentRow | 'new'; posting?: ExpenseRecurrence; voiding?: RevenueAdjustmentRow }) => {
+    setEditing(next.editing ?? null);
+    setPosting(next.posting ?? null);
+    setVoidingRow(next.voiding ?? null);
+  };
   useEffect(() => {
-    if (!openForm) return;
+    if (!whichForm) return;
     const panel = formRef.current;
     const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     panel?.scrollIntoView?.({ behavior: still ? 'auto' : 'smooth', block: 'start' });
     panel?.focus?.({ preventScroll: true });
-  }, [openForm]);
+  }, [whichForm]);
 
   return (
     <>
@@ -410,22 +420,26 @@ export function ExpensesPage() {
           >
             دسته‌ها
           </button>
-          <button type="button" className="btn btn-primary" onClick={() => setEditing('new')}>
+          <button type="button" className="btn btn-primary" onClick={() => openForm({ editing: 'new' })}>
             ثبت ردیف تازه
           </button>
         </div>
       </div>
 
-      {err && <div className="alert alert-error">{err}</div>}
-      {done && <div className="alert alert-info">{done}</div>}
-
       {/* The forms, at the top. See `formRef` above for why they are not
           rendered where they are used. `tabIndex` so the focus move lands
           somewhere; it is not otherwise reachable by tab, which is correct — it
-          is a container, and the fields inside it are the stops. */}
+          is a container, and the fields inside it are the stops. The notices
+          are inside it too: the scroll stops the slot under the fixed header,
+          and a refusal printed above it was printed under the header. */}
       <div ref={formRef} tabIndex={-1} className="scroll-target" style={{ outline: 'none' }}>
+        {err && <div className="alert alert-error">{err}</div>}
+        {done && <div className="alert alert-info">{done}</div>}
+
         {editing && (
           <EntryForm
+            // A row of its own: «ویرایش» on another row must not keep this one's fields.
+            key={editing === 'new' ? 'new' : editing.id}
             row={editing === 'new' ? null : editing}
             prefill={editing === 'new' ? prefill : null}
             categories={activeCategories}
@@ -479,7 +493,7 @@ export function ExpensesPage() {
 
       {/* Above the totals, because it is the only thing on this page that is
           asking for something rather than reporting it. */}
-      <DueBanner items={recurrences.filter((r) => r.due)} onPost={setPosting} />
+      <DueBanner items={recurrences.filter((r) => r.due)} onPost={(r) => openForm({ posting: r })} />
 
       {managing === 'recurrences' && (
         <Recurrences
@@ -487,7 +501,7 @@ export function ExpensesPage() {
           categories={activeCategories}
           parties={parties}
           scopes={scopes}
-          onPost={setPosting}
+          onPost={(r) => openForm({ posting: r })}
           onChanged={async (msg) => {
             setDone(msg);
             await loadLists();
@@ -679,8 +693,8 @@ export function ExpensesPage() {
                   row={r}
                   expanded={historyOf === r.id}
                   onToggleHistory={() => setHistoryOf(historyOf === r.id ? null : r.id)}
-                  onEdit={() => setEditing(r)}
-                  onVoid={() => setVoidingRow(r)}
+                  onEdit={() => openForm({ editing: r })}
+                  onVoid={() => openForm({ voiding: r })}
                 />
               ))}
             </tbody>
