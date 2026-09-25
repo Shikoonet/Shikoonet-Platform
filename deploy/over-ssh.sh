@@ -105,6 +105,14 @@ SSH_OPTS=(
   -o StrictHostKeyChecking=yes
   -o BatchMode=yes
   -o ConnectTimeout=15
+  # A GitHub-hosted runner sits behind Azure's outbound NAT, which forgets a TCP
+  # flow after 4 minutes without a packet, and `docker pull -q` prints nothing.
+  # 2026-09-25, with GHCR serving the box at ~50 KB/s, two staging deploys died
+  # «client_loop: send disconnect: Broken pipe» 4m15s and 4m34s into the pull;
+  # the orphaned remote deploy kept the flock, so the rerun died on the lock.
+  # One probe every 30s keeps the flow alive; 10 unanswered is a dead box.
+  -o ServerAliveInterval=30
+  -o ServerAliveCountMax=10
 )
 
 echo "==> $ENV_ARG: uploading deploy.sh and its application resolver from $SHA"

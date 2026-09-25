@@ -1636,6 +1636,17 @@ else
     'over-ssh.sh uploads deploy.sh without the helper it invokes'
 fi
 
+# The pull on the box is silent and can outlast the runner's 4-minute NAT idle
+# timeout; without a keepalive the session drops and the remote deploy is left
+# holding the flock. The interval must stay under 240s to mean anything.
+alive=$(sed -n 's/^ *-o ServerAliveInterval=\([0-9]*\)$/\1/p' "$OVER_SSH" | head -1)
+if [ -n "$alive" ] && [ "$alive" -gt 0 ] && [ "$alive" -lt 240 ]; then
+  ok 'the deploy session sends keepalives inside the NAT idle timeout'
+else
+  bad 'the deploy session sends keepalives inside the NAT idle timeout' \
+    "ServerAliveInterval is '${alive:-missing}' — a silent docker pull over 4 minutes drops the session"
+fi
+
 try_over_ssh() { # image-ref
   set +e
   env DEPLOY_SSH_KEY=k DEPLOY_KNOWN_HOSTS=h DEPLOY_HOST=h DEPLOY_USER=u \
