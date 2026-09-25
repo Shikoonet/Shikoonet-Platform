@@ -268,8 +268,10 @@ export function customGroupRole(
   const [, editors, ...viewers] = entry;
   const m = method === 'HEAD' ? 'GET' : method;
   const key = `${m} ${pattern}`;
+  // Compared by value, never by presence: a stray null or number in the
+  // stored map is «none», not «view».
   const may = (s: Section, level?: 'edit') =>
-    s !== '*' && (level ? perms[s] === level : perms[s] !== undefined);
+    s !== '*' && (level ? perms[s] === level : perms[s] === 'view' || perms[s] === 'edit');
 
   const edits =
     [editors].flat().some((s) => may(s, 'edit')) ||

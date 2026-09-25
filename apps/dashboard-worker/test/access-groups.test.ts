@@ -13,7 +13,7 @@ import { BUILT_IN_GROUPS, SECTION_IDS } from '@shikoo/contracts';
 import { hashPassword } from '@shikoo/domain';
 import { applySchema, env as baseEnv, signIn } from './helpers/env.js';
 import { app } from '../src/index.js';
-import { ALSO_EDITED_BY, VIEW_POSTS, sectionEntry } from '../src/access.js';
+import { ALSO_EDITED_BY, VIEW_POSTS, customGroupRole, sectionEntry } from '../src/access.js';
 
 const WRITER = 'groups-writer@example.com';
 const MEMBER = 'groups-member@example.com';
@@ -99,6 +99,15 @@ describe('the section map', () => {
       .filter((r) => !sectionEntry(r.path))
       .map((r) => `${r.method} ${r.path}`);
     expect(unplaced).toEqual([]);
+  });
+
+  it('reads a level by its value, and the database refuses any other', async () => {
+    const odd = { orders: null, customers: 1 } as unknown as Record<string, 'view'>;
+    expect(customGroupRole(odd, 'GET', '/api/v1/admin/orders')).toBeNull();
+    expect(customGroupRole(odd, 'GET', '/api/v1/admin/customers')).toBeNull();
+    for (const bad of ['{"orders":1}', '{"orders":["edit"]}', '{"orders":true}', '{"orders":"EDIT"}']) {
+      await expect(makeGroup('odd', JSON.parse(bad))).rejects.toThrow(/permissions_check/);
+    }
   });
 
   it('draws the prefix on a / boundary', () => {

@@ -38,9 +38,13 @@ CREATE TABLE access_groups (
   id          text PRIMARY KEY,
   name        text NOT NULL UNIQUE,
   -- {PageId: 'view'|'edit'}; an absent key is «none». Unread for built-ins.
+  -- Strict mode and an explicit type test: lax mode unwraps arrays and lets a
+  -- number or a boolean compare as «unknown», which the filter drops.
   permissions jsonb NOT NULL DEFAULT '{}'
     CHECK (jsonb_typeof(permissions) = 'object'
-           AND NOT jsonb_path_exists(permissions, '$.* ? (@ != "view" && @ != "edit")')),
+           AND NOT jsonb_path_exists(
+             permissions,
+             'strict $.* ? (@.type() != "string" || (@ != "view" && @ != "edit"))')),
   created_at  bigint NOT NULL,
   updated_at  bigint NOT NULL,
   -- Who may operate the shop stays the owner's: a group that can edit

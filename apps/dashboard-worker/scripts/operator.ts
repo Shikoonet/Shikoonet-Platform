@@ -350,6 +350,25 @@ async function main(): Promise<number> {
           .prepare(`UPDATE access_users SET group_id = 'owner', updated_at = ?2 WHERE id = ?1`)
           .bind(row.id, Date.now())
           .run();
+        // The same row shape and SYSTEM actor as `bootstrap`: a shell, not a
+        // session, did this, and «رویدادها» should still say who and when.
+        await tx
+          .prepare(
+            `INSERT INTO audit_logs
+               (id, actor_email, actor_role, action, entity_type, entity_id,
+                before_json, after_json, reason, request_id, created_at)
+             VALUES (?1, ?2, 'SYSTEM', 'operator.owner_set', 'access_user', ?3, ?4, ?5,
+                     'operator set-owner', NULL, ?6)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            process.env['SUDO_USER'] ?? process.env['USER'] ?? null,
+            row.id,
+            JSON.stringify({ previous_owner: old?.email ?? null }),
+            JSON.stringify({ owner: email }),
+            Date.now(),
+          )
+          .run();
         return old?.email ?? null;
       });
       console.log(
