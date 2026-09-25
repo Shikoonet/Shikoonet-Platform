@@ -113,6 +113,10 @@ export const CALLBACK_ACTIONS = [
   'xt', // <subscriptionId> — ask how many days to add
   'off', // <subscriptionId> — turn the account off at the panel
   'on', // <subscriptionId> — turn it back on
+  'del', // <subscriptionId> — ask before taking a dead service off the list
+  'del2', // <subscriptionId> — do it. Sets `hidden_at` and nothing else: the
+  //        panel is not called, and the handler re-checks that the service is
+  //        still dead, because the button may be older than a renewal.
   'dsc', // <planId> — ask for a discount code to put on that plan
   'dsx', // <planId> — take the code back off it
   'dsr', // <subscriptionId> — the same, for a renewal, where the plan is not

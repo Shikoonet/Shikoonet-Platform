@@ -1210,6 +1210,19 @@ export const TEXTS = {
     screen: 'serviceActions',
     hint: 'تایید تغییر لینک اشتراک',
   },
+  CONFIRM_DELETE_SERVICE: {
+    default:
+      '🗑 این سرویس از فهرست «سرویس‌های من» برداشته می‌شود.\n\nبعد از حذف، در فهرست تمدید هم دیده نمی‌شود و برگرداندنش فقط از پشتیبانی ممکن است.',
+    placeholders: [],
+    screen: 'serviceActions',
+    hint: 'تایید حذف یک سرویس منقضی یا تمام‌حجم از فهرست',
+  },
+  SERVICE_DELETED: {
+    default: '✅ سرویس از فهرست حذف شد.',
+    placeholders: [],
+    screen: 'serviceActions',
+    hint: 'خط بالای فهرست سرویس‌ها بعد از حذف یکی',
+  },
   LINK_REPLACED_TITLE: {
     default: '✅ لینک اشتراک عوض شد.',
     placeholders: [],

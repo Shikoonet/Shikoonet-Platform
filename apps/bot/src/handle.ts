@@ -93,6 +93,7 @@ import {
   renewableForUser,
   renewableForUserById,
   type RenewableSubscription,
+  hideDeadServiceForUser,
   subscriptionOnPanelForUser,
   subscriptionsForUser,
 } from './owned.js';
@@ -1397,7 +1398,10 @@ function navigationParent(raw: string | undefined): string | null {
     case 'rvk2':
     case 'off':
     case 'on':
+    case 'del':
       return withId('sub');
+    case 'del2':
+      return 'mine';
     case 'rnw':
       return 'renew';
     case 'rnwl':
@@ -2913,9 +2917,55 @@ async function handleCallback(
       const found = await subscriptionOnPanelForUser(tx, user.id, action.id);
       if (!found) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
       const service = await withLinkFromPanel(tx, user.id, found, fetchImpl);
+      const now = Date.now();
       return screen(
-        menu.serviceDetail(service, Date.now()),
-        menu.serviceDetailMenu(actionsFor(service, SHOP, tierFor(user))),
+        menu.serviceDetail(service, now),
+        menu.serviceDetailMenu(
+          actionsFor(service, SHOP, tierFor(user)),
+          menu.canHide(service, now) ? service.id : null,
+        ),
+      );
+    }
+
+    case 'del': {
+      if (action.id === undefined) return IGNORED;
+      const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
+      if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      // Renewed since the button was drawn: show the service as it is now.
+      if (!menu.canHide(service, Date.now())) {
+        return screen(
+          menu.serviceDetail(service, Date.now()),
+          menu.serviceDetailMenu(actionsFor(service, SHOP, tierFor(user))),
+        );
+      }
+      return screen(menu.CONFIRM_DELETE_SERVICE, menu.confirmDeleteMenu(action.id));
+    }
+
+    case 'del2': {
+      if (action.id === undefined) return IGNORED;
+      // The SQL decides whether it is dead, not this handler — see
+      // `hideDeadServiceForUser`. A live, foreign or already-hidden row is
+      // simply not written, and the customer lands on their list either way.
+      const hidden = await hideDeadServiceForUser(
+        tx,
+        user.id,
+        action.id,
+        query.from.id,
+        Date.now(),
+      );
+      const total = await countSubscriptionsForUser(tx, user.id);
+      if (total === 0) {
+        return screen(
+          hidden ? `${menu.SERVICE_DELETED}\n\n${menu.MY_SERVICES_EMPTY}` : menu.MY_SERVICES_EMPTY,
+          menu.mainMenu(user),
+        );
+      }
+      const pages = Math.ceil(total / menu.SERVICES_PER_PAGE);
+      const services = await subscriptionsForUser(tx, user.id, menu.SERVICES_PER_PAGE, 0);
+      const title = menu.myServicesTitle(total, 1, pages);
+      return screen(
+        hidden ? `${menu.SERVICE_DELETED}\n\n${title}` : title,
+        menu.myServicesMenu(services, Date.now(), 1, pages),
       );
     }
 

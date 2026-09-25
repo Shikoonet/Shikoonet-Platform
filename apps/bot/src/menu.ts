@@ -169,6 +169,8 @@ export let ACTION_UNSUPPORTED = DEFAULT_TEXTS.raw('ACTION_UNSUPPORTED');
  */
 export let SERVICE_DETAIL_NO_LINK = DEFAULT_TEXTS.raw('SERVICE_DETAIL_NO_LINK');
 export let CONFIRM_REVOKE = DEFAULT_TEXTS.raw('CONFIRM_REVOKE');
+export let CONFIRM_DELETE_SERVICE = DEFAULT_TEXTS.raw('CONFIRM_DELETE_SERVICE');
+export let SERVICE_DELETED = DEFAULT_TEXTS.raw('SERVICE_DELETED');
 export let WITHDRAW_CONFIRM = DEFAULT_TEXTS.raw('WITHDRAW_CONFIRM');
 export let ADDON_NOT_A_NUMBER = DEFAULT_TEXTS.raw('ADDON_NOT_A_NUMBER');
 export let ASK_ACCOUNT_NAME = DEFAULT_TEXTS.raw('ASK_ACCOUNT_NAME');
@@ -298,6 +300,8 @@ export function applyContent(content: BotContent): void {
   ACTION_UNSUPPORTED = t.raw('ACTION_UNSUPPORTED');
   SERVICE_DETAIL_NO_LINK = t.raw('SERVICE_DETAIL_NO_LINK');
   CONFIRM_REVOKE = t.raw('CONFIRM_REVOKE');
+  CONFIRM_DELETE_SERVICE = t.raw('CONFIRM_DELETE_SERVICE');
+  SERVICE_DELETED = t.raw('SERVICE_DELETED');
   WITHDRAW_CONFIRM = t.raw('WITHDRAW_CONFIRM');
   ADDON_NOT_A_NUMBER = t.raw('ADDON_NOT_A_NUMBER');
   ASK_ACCOUNT_NAME = t.raw('ASK_ACCOUNT_NAME');
@@ -2476,7 +2480,15 @@ const QR_BACK_LABEL = '↩️ بازگشت به سرویس';
  * came from would need a second id in `callback_data`, and it costs four
  * customers in production one extra tap.
  */
-export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboard {
+export function serviceDetailMenu(
+  actions?: ServiceActions | null,
+  /**
+   * The service's id when «🗑 حذف از فهرست» applies (`canHide`), else null.
+   * Separate from `actions` because that is null for a manual or panel-less
+   * service, and those die too — a FAILED row usually has no panel at all.
+   */
+  hideId: number | null = null,
+): InlineKeyboard {
   return buildMenu('serviceDetail', layout('serviceDetail'), {
     // Each panel button appears only if that panel can actually do it: the shop
     // prices the add-ons per panel, and one panel has extending switched off
@@ -2507,12 +2519,31 @@ export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboa
           return actions != null && actions.canSwitch !== false && !actions.disabled;
         case 'on':
           return actions != null && actions.canSwitch !== false && actions.disabled;
+        case 'del':
+          return hideId !== null;
         default:
           return true;
       }
     },
     target: (action) =>
-      action === 'mine' || action === 'menu' ? action : encode(action as 'rvk', actions!.id),
+      action === 'mine' || action === 'menu'
+        ? action
+        : action === 'del'
+          ? encode('del', hideId!)
+          : encode(action as 'rvk', actions!.id),
+  });
+}
+
+/** The states a customer may take off their list: nothing left to use. */
+const HIDEABLE: ReadonlySet<ServiceState> = new Set(['EXPIRED', 'EXHAUSTED', 'REMOVED', 'FAILED']);
+
+export function canHide(service: ServiceListItem, now: number): boolean {
+  return HIDEABLE.has(serviceState(service, now));
+}
+
+export function confirmDeleteMenu(subscriptionId: number): InlineKeyboard {
+  return buildMenu('deleteConfirm', layout('deleteConfirm'), {
+    target: (action) => encode(action as 'del2', subscriptionId),
   });
 }
 

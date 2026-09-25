@@ -349,8 +349,27 @@ export const MENUS = {
         hint: 'به‌جای دکمهٔ بالا، وقتی سرویس خاموش است',
         conditional: true,
       },
+      {
+        action: 'del',
+        label: '🗑 حذف از فهرست',
+        hint: 'فقط برای سرویس منقضی، تمام‌حجم یا حذف‌شده؛ روی پنل دستی نمی‌زند',
+        conditional: true,
+      },
       { action: 'mine', label: 'بازگشت به سرویس‌ها ⬅️', hint: 'برگشت به فهرست سرویس‌ها' },
       BACK_TO_MENU,
+    ],
+  },
+  deleteConfirm: {
+    label: 'تایید حذف سرویس از فهرست',
+    hint: 'قبل از برداشتن یک سرویس تمام‌شده از «سرویس‌های من»',
+    buttons: [
+      {
+        action: 'del2',
+        label: '🗑 بله، حذف کن',
+        hint: 'تنها راه تایید — بدون آن صفحه بن‌بست است',
+        required: true,
+      },
+      { action: 'sub', label: 'بازگشت ⬅️', hint: 'برگشت به همان سرویس' },
     ],
   },
   revokeConfirm: {
@@ -650,8 +669,13 @@ const DEFAULT_CELLS: Record<
     ['rvk', 2, 0],
     ['off', 3, 0],
     ['on', 3, 1],
-    ['mine', 4, 0],
-    ['menu', 4, 1],
+    ['del', 4, 0],
+    ['mine', 5, 0],
+    ['menu', 5, 1],
+  ],
+  deleteConfirm: [
+    ['del2', 0, 0, 'danger'],
+    ['sub', 1, 0],
   ],
   revokeConfirm: [
     ['rvk2', 0, 0],

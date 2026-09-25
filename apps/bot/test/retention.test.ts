@@ -624,3 +624,19 @@ describe('the group hears about it', () => {
     expect(parts[3]).toContain('هنوز 1');
   });
 });
+
+describe('a service the customer took off their list', () => {
+  it('is not nudged; the same service still listed is', async () => {
+    const hidden = nextTelegramId();
+    const listed = nextTelegramId();
+    const hiddenId = await makeService(await makeCustomer(hidden), { expiresInDays: -1 });
+    await makeService(await makeCustomer(listed), { expiresInDays: -1 });
+    await db.prepare(`UPDATE subscriptions SET hidden_at = now() WHERE id = ?1`).bind(hiddenId).run();
+    await setRules([{ daysBefore: 0, daysAfter: 3 }]);
+
+    await remindToRenew(db);
+
+    expect(await messagesTo(hidden)).toHaveLength(0);
+    expect(await messagesTo(listed)).toHaveLength(1);
+  });
+});
