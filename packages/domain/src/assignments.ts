@@ -21,7 +21,7 @@
  *      identifier triple.
  */
 
-import type { D1Database } from '@shikoo/database';
+import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { SQL } from '@shikoo/database';
 
 export type AssignmentSource =
@@ -81,7 +81,7 @@ export interface AssignAccountResult {
  * batch run inside the same connection — D1 batches are atomic per batch.
  */
 export async function assignAccountForTx(
-  db: D1Database,
+  db: D1DatabaseSession,
   input: AssignAccountInput,
   now: number = Date.now(),
 ): Promise<AssignAccountResult> {
@@ -179,7 +179,7 @@ export async function assignAccountForTx(
  * Look up the currently-active assignment row for a transaction, if any.
  */
 export async function getActiveAssignment(
-  db: D1Database,
+  db: D1DatabaseSession,
   txId: string,
 ): Promise<CurrentAssignment | null> {
   const row = await db

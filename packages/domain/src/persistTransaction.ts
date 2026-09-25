@@ -12,7 +12,7 @@
  * ingest would have made. Nothing in here matches a claim or pays anything;
  * that stays with the caller.
  */
-import type { D1Database } from '@shikoo/database';
+import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import type { ParseResult } from '@shikoo/contracts';
 import { autoCreatePendingAccount } from './autoCreateAccount.js';
 import { assignAccountForTx } from './assignments.js';
@@ -85,7 +85,7 @@ export async function readingAccountId(db: D1Database, r: ParseResult): Promise<
 }
 
 export async function persistTransaction(
-  db: D1Database,
+  db: D1DatabaseSession,
   eventId: string,
   bankTimestamp: number,
   r: ParseResult,
@@ -233,7 +233,7 @@ export async function persistTransaction(
  * this very text chains from exactly one live account, say so on the row —
  * a suggestion for the review queue, never a merge. See `suggestOwnerByBalance`.
  */
-async function suggestOwner(db: D1Database, pendingId: string, r: ParseResult, at: number): Promise<void> {
+async function suggestOwner(db: D1DatabaseSession, pendingId: string, r: ParseResult, at: number): Promise<void> {
   if (r.balanceIrr === null || r.amountIrr === null || (r.direction !== 'CREDIT' && r.direction !== 'DEBIT')) return;
   const owner = await suggestOwnerByBalance(db, {
     direction: r.direction,

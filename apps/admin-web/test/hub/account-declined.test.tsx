@@ -34,12 +34,14 @@ function account(over: Record<string, unknown>) {
   };
 }
 
-const rows = [
+const ALL = [
   account({ id: 'acc-live', display_name: 'ملی-سارا' }),
   account({ id: 'acc-year', display_name: 'Auto: ****', account_hint: '1405', status: 'DECLINED' }),
 ];
+let rows = ALL;
 
 beforeEach(() => {
+  rows = ALL;
   vi.spyOn(window, 'confirm').mockReturnValue(true);
   vi.stubGlobal(
     'fetch',
@@ -70,5 +72,12 @@ describe('a declined account', () => {
     fireEvent.click(await screen.findByTestId('toggle-declined'));
     await waitFor(() => expect(screen.getAllByText('Auto: ****').length).toBeGreaterThan(0));
     expect(screen.getAllByRole('button', { name: 'بازگرداندن' }).length).toBeGreaterThan(0);
+  });
+
+  it('when every account is declined, the list says so rather than «none registered»', async () => {
+    rows = ALL.filter((r) => r.status === 'DECLINED');
+    render(<AccountsView cache={createCache()} />);
+    expect(await screen.findByText(/همهٔ حساب‌ها ردشده‌اند/)).toBeTruthy();
+    expect(screen.queryByText('هیچ حسابی ثبت نشده.')).toBeNull();
   });
 });

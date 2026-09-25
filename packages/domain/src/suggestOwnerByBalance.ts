@@ -13,7 +13,7 @@
  * on the PENDING row and the review queue offers the merge. Nothing merges
  * on its own.
  */
-import type { D1Database } from '@shikoo/database';
+import type { D1DatabaseSession } from '@shikoo/database';
 
 const LOOKBACK_MS = 3 * 86_400_000;
 
@@ -27,7 +27,7 @@ export interface OwnerClue {
   excludeAccountId: string;
 }
 
-export async function suggestOwnerByBalance(db: D1Database, clue: OwnerClue): Promise<string | null> {
+export async function suggestOwnerByBalance(db: D1DatabaseSession, clue: OwnerClue): Promise<string | null> {
   const signed = clue.direction === 'CREDIT' ? clue.amountIrr : -clue.amountIrr;
   const rows = await db
     .prepare(
@@ -49,7 +49,7 @@ export async function suggestOwnerByBalance(db: D1Database, clue: OwnerClue): Pr
   return hits.length === 1 ? hits[0]!.financial_account_id : null;
 }
 
-export async function recordOwnerSuggestion(db: D1Database, pendingId: string, ownerId: string): Promise<void> {
+export async function recordOwnerSuggestion(db: D1DatabaseSession, pendingId: string, ownerId: string): Promise<void> {
   await db
     .prepare(`UPDATE financial_accounts SET suggested_owner_id = ?2, suggested_reason = 'balance_chain' WHERE id = ?1`)
     .bind(pendingId, ownerId)

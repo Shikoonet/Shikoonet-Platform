@@ -394,4 +394,38 @@ describe('applyReparse', () => {
       { eventId: fee, why: 'already_has_row' },
     ]);
   });
+
+  it('reads a guess again in one transaction — when the new row cannot be written, the guess stays, to retry', async () => {
+    // CodeRabbit on #451: the guess was deleted, then the replacement made in
+    // separate statements, so a failure between them lost the row.
+    const at = NOW - 3 * 3_600_000;
+    const saman = await raw('+989999920000', SAMAN_TRANSFER, 'generic-debit', 'BANK_DEBIT', at);
+    const guess = await genericRow(saman, YEAR, 'DEBIT', 20_000_000, 61_645_420, at);
+    // Postgres itself refuses the row ingest's path would write — after the DELETE ran.
+    await db
+      .prepare(`CREATE OR REPLACE FUNCTION zz_rp_refuse() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'zz-rp refused'; END $$`)
+      .run();
+    await db
+      .prepare(
+        `CREATE TRIGGER zz_rp_refuse BEFORE INSERT ON transaction_candidates
+           FOR EACH ROW WHEN (NEW.raw_sms_event_id LIKE 'zz-rp-%') EXECUTE FUNCTION zz_rp_refuse()`,
+      )
+      .run();
+    try {
+      const a = await applyReparse(db, [saman]);
+      expect(a.reread).toEqual([]);
+      expect(a.failed.map((f) => f.eventId)).toEqual([saman]);
+    } finally {
+      await db.prepare(`DROP TRIGGER IF EXISTS zz_rp_refuse ON transaction_candidates`).run();
+      await db.prepare(`DROP FUNCTION IF EXISTS zz_rp_refuse()`).run();
+    }
+    const still = await db
+      .prepare(`SELECT t.id, t.financial_account_id, r.parser_id FROM transaction_candidates t JOIN raw_sms_events r ON r.id = t.raw_sms_event_id WHERE r.id = ?1`)
+      .bind(saman)
+      .all<Record<string, unknown>>();
+    expect(still.results).toEqual([{ id: guess, financial_account_id: YEAR, parser_id: 'generic-debit' }]);
+
+    const retry = await applyReparse(db, [saman]);
+    expect(retry.reread.map((x) => x.replaced)).toEqual([guess]);
+  });
 });

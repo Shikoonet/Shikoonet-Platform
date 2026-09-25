@@ -571,6 +571,13 @@ describe('«ابطال» while another form is open', () => {
 
     expect(screen.queryByText('ثبت ردیف تازه', { selector: '.card__title' })).toBeNull();
     await waitFor(() => expect(scrolls.some((el) => el.classList.contains('scroll-target'))).toBe(true));
+
+    // The withdrawal it was opened for is let go with it (CodeRabbit on #451):
+    // the next new row starts empty, and the address no longer names it.
+    fireEvent.click(screen.getByRole('button', { name: 'انصراف' }));
+    fireEvent.click(screen.getByRole('button', { name: 'ثبت ردیف تازه' }));
+    expect(((await screen.findByLabelText('مبلغ (تومان)')) as HTMLInputElement).value).toBe('');
+    expect(window.location.search).toBe('');
   });
 
   it('starts empty for the next row, and shows the server\'s refusal where the form is', async () => {
