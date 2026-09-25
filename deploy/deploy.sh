@@ -501,9 +501,11 @@ named = [r for r in rows if r.get("key") == "ENV_NAME"]
 if dupes:
     print("has %s defined more than once in Coolify — the container would get whichever row is written last. Delete the duplicate in the panel." % ", ".join(dupes))
 elif named and all("value" not in r for r in named):
-    # Coolify drops `value` from every row for a token without read:sensitive
-    # (ApplicationsController::removeSensitiveData). That is not a missing
-    # ENV_NAME, and saying it was sent 2026-09-25 looking for the wrong thing.
+    # Coolify drops the value field from every row for a token without
+    # read:sensitive (ApplicationsController::removeSensitiveData). That is not
+    # a missing ENV_NAME, and saying it was sent 2026-09-25 looking for the
+    # wrong thing. (No backticks in here: this is inside single quotes, and
+    # shellcheck reads them as a command substitution that will not expand.)
     print("has ENV_NAME in Coolify, but Coolify hid its value: the COOLIFY_TOKEN in deploy.env lacks read:sensitive, so this check cannot read it. Create the token with read, write, deploy and read:sensitive.")
 elif not any(r.get("key") == "ENV_NAME" and (r.get("value") or "").strip() for r in rows):
     print("has no ENV_NAME in Coolify — the image refuses to boot without it, so this deploy would crash-loop and roll back")') ||
