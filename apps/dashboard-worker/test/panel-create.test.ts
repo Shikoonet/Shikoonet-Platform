@@ -118,6 +118,33 @@ function panelAnswers(): void {
   });
 }
 
+/**
+ * The same answer `panel.invalid` gives for real, without asking the network.
+ *
+ * Every create probes the address, and the probe waits up to 8 s — longer than
+ * vitest's 5 s. On a CI runner whose resolver was slow, 2026-09-25, a test that
+ * was about passwords timed out on DNS; its request kept running, inserted the
+ * panel after the next `beforeEach` had cleared it, and the next test got a 409
+ * and read `panel.id` off an error body. So every test is offline unless it
+ * says otherwise: `panelAnswers` replaces this, and the two tests that are ABOUT
+ * an unresolvable host call `realNetwork` and carry a timeout above the probe's.
+ */
+function panelUnreachable(): void {
+  vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
+}
+
+/** For the tests whose subject is a real DNS failure — see above. */
+function realNetwork(): void {
+  vi.restoreAllMocks();
+}
+
+/** Above `reachable()`'s 8 s abort, so a slow resolver cannot time the test out. */
+const REAL_NETWORK_TIMEOUT_MS = 30_000;
+
+beforeEach(() => {
+  panelUnreachable();
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -156,6 +183,7 @@ describe('creating a panel', () => {
    * a stubbed one.
    */
   it('creates it DISABLED when the address does not answer, and says why', async () => {
+    realNetwork();
     const res = await post('/api/v1/admin/panels', BODY);
     expect(res.status).toBe(201);
     const json = (await res.json()) as {
@@ -167,7 +195,7 @@ describe('creating a panel', () => {
       false,
     );
     expect(json.probe?.authenticated).toBe(false);
-  });
+  }, REAL_NETWORK_TIMEOUT_MS);
 
   it('creates it DISABLED when the panel answers but refuses the login', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
@@ -403,6 +431,7 @@ describe('تست ارتباط', () => {
    * the distinction without depending on anybody's network being down.
    */
   it('says not-reachable for an address that does not resolve, not wrong-password', async () => {
+    realNetwork();
     const created = await post('/api/v1/admin/panels', BODY);
     const { panel } = (await created.json()) as { panel: { id: number } };
 
@@ -411,7 +440,7 @@ describe('تست ارتباط', () => {
     const out = (await res.json()) as { reachable: boolean; authenticated: boolean };
     expect(out.authenticated).toBe(false);
     expect(out.reachable, 'an unresolvable host must not be reported as reachable').toBe(false);
-  }, 30_000);
+  }, REAL_NETWORK_TIMEOUT_MS);
 
   it('does not draw a green tick for a kind with nothing to log into', async () => {
     // `manual` is fulfilled by a person. Answering "OK" here would teach an
