@@ -34,7 +34,11 @@ table, because most miscategorisation comes from ignoring them:
    image, ref or run id — the release is whatever the latest successful
    `Deploy Staging` run for the current `main` produced. `COOLIFY_TOKEN` is
    consumed only on the host, through the same read-as-text path `deploy.sh`
-   uses, and never reaches GitHub.
+   uses, and never reaches GitHub. `deploy.sh`'s token — one per environment,
+   in `/etc/shikoo/<env>/deploy.env` — needs `read`, `write`, `deploy` **and
+   `read:sensitive`**, because it reads variable values; the autodeploy row
+   below is a different token and keeps its narrower set (see
+   `deploy/README.md` › «The Coolify token `deploy.sh` uses»).
 
 1. **Deployment is driven by GitHub Actions.** *(Corrected 2026-08-28; this
    rule used to say the opposite.)* `deploy-staging.yml` builds one image and
