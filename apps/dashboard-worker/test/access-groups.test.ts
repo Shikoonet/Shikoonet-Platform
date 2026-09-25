@@ -9,15 +9,15 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { SECTION_IDS } from '@shikoo/contracts';
+import { BUILT_IN_GROUPS, SECTION_IDS } from '@shikoo/contracts';
 import { hashPassword } from '@shikoo/domain';
 import { applySchema, env as baseEnv, signIn } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { ALSO_EDITED_BY, VIEW_POSTS, sectionEntry } from '../src/access.js';
 
-const OWNER = 'groups-owner@example.com';
+const WRITER = 'groups-writer@example.com';
 const MEMBER = 'groups-member@example.com';
-const OWNER_PASSWORD = 'owner-password-long-enough';
+const WRITER_PASSWORD = 'writer-password-long-enough';
 const db = baseEnv.DB;
 
 /** Answered before the gate, so no section can apply to them. */
@@ -77,17 +77,18 @@ async function joinGroup(email: string, groupId: string) {
 async function cleanup() {
   await db.prepare(`DELETE FROM access_users WHERE email LIKE 'groups-%'`).run();
   await db
-    .prepare(`DELETE FROM access_groups WHERE id NOT IN ('admin', 'reviewer', 'read_only')`)
+    .prepare(`DELETE FROM access_groups WHERE id <> ALL($1)`)
+    .bind([...BUILT_IN_GROUPS])
     .run();
 }
 
 beforeAll(applySchema);
 beforeEach(async () => {
   await cleanup();
-  await signIn(OWNER, 'ADMIN');
+  await signIn(WRITER, 'ADMIN');
   await db
     .prepare(`UPDATE access_users SET password_hash = ?2 WHERE email = ?1`)
-    .bind(OWNER, await hashPassword(OWNER_PASSWORD))
+    .bind(WRITER, await hashPassword(WRITER_PASSWORD))
     .run();
 });
 afterAll(cleanup);
@@ -194,18 +195,18 @@ describe('a custom group at the gate', () => {
 
 describe('the group routes', () => {
   it('makes, renames and deletes a group, and refuses edit on «دسترسی‌ها»', async () => {
-    const bad = await call('POST', '/api/v1/admin/access-groups', OWNER, {
+    const bad = await call('POST', '/api/v1/admin/access-groups', WRITER, {
       name: 'x',
       permissions: { access: 'edit' },
     });
     expect(bad.status).toBe(400);
-    const unknown = await call('POST', '/api/v1/admin/access-groups', OWNER, {
+    const unknown = await call('POST', '/api/v1/admin/access-groups', WRITER, {
       name: 'x',
       permissions: { nope: 'view' },
     });
     expect(unknown.status).toBe(400);
 
-    const made = await call('POST', '/api/v1/admin/access-groups', OWNER, {
+    const made = await call('POST', '/api/v1/admin/access-groups', WRITER, {
       name: 'پشتیبانی',
       permissions: { bulk: 'edit', panels: 'view', orders: 'none' },
     });
@@ -217,24 +218,24 @@ describe('the group routes', () => {
       .first<{ permissions: Record<string, string> }>();
     expect(stored?.permissions).toEqual({ bulk: 'edit', panels: 'view' });
 
-    const dup = await call('POST', '/api/v1/admin/access-groups', OWNER, {
+    const dup = await call('POST', '/api/v1/admin/access-groups', WRITER, {
       name: 'پشتیبانی',
       permissions: {},
     });
     expect(dup.status).toBe(409);
 
     expect(
-      (await call('PATCH', `/api/v1/admin/access-groups/${id}`, OWNER, { name: 'پشتیبان' }))
+      (await call('PATCH', `/api/v1/admin/access-groups/${id}`, WRITER, { name: 'پشتیبان' }))
         .status,
     ).toBe(200);
 
     await joinGroup(MEMBER, id);
-    const inUse = await call('DELETE', `/api/v1/admin/access-groups/${id}`, OWNER);
+    const inUse = await call('DELETE', `/api/v1/admin/access-groups/${id}`, WRITER);
     expect(inUse.status).toBe(409);
     expect(((await inUse.json()) as { error: string }).error).toBe('in_use');
 
     await db.prepare(`DELETE FROM access_users WHERE email = ?1`).bind(MEMBER).run();
-    expect((await call('DELETE', `/api/v1/admin/access-groups/${id}`, OWNER)).status).toBe(200);
+    expect((await call('DELETE', `/api/v1/admin/access-groups/${id}`, WRITER)).status).toBe(200);
 
     const audits = await db
       .prepare(`SELECT action FROM audit_logs WHERE entity_id = ?1 ORDER BY created_at`)
@@ -250,9 +251,9 @@ describe('the group routes', () => {
   it('leaves the built-in groups alone', async () => {
     for (const id of ['admin', 'reviewer', 'read_only']) {
       expect(
-        (await call('PATCH', `/api/v1/admin/access-groups/${id}`, OWNER, { name: 'x' })).status,
+        (await call('PATCH', `/api/v1/admin/access-groups/${id}`, WRITER, { name: 'x' })).status,
       ).toBe(409);
-      expect((await call('DELETE', `/api/v1/admin/access-groups/${id}`, OWNER)).status).toBe(409);
+      expect((await call('DELETE', `/api/v1/admin/access-groups/${id}`, WRITER)).status).toBe(409);
     }
   });
 });
@@ -269,7 +270,7 @@ describe('the owner’s account actions', () => {
   it('moves an operator into a custom group, and the stored role follows', async () => {
     await makeGroup('bulk_only', { bulk: 'edit' });
     const id = await member();
-    const res = await call('POST', `/api/v1/admin/access-users/${id}`, OWNER, {
+    const res = await call('POST', `/api/v1/admin/access-users/${id}`, WRITER, {
       groupId: 'bulk_only',
     });
     expect(res.status).toBe(200);
@@ -280,7 +281,7 @@ describe('the owner’s account actions', () => {
     expect(row).toEqual({ role: 'READ_ONLY', group_id: 'bulk_only' });
   });
 
-  it('sets a password only against the owner’s own, and signs the operator out', async () => {
+  it('sets a password only against the writer’s own, and signs the operator out', async () => {
     const id = await member();
     await db
       .prepare(
@@ -291,20 +292,20 @@ describe('the owner’s account actions', () => {
       .run();
     const next = 'a-fresh-password-for-them';
 
-    const missing = await call('POST', `/api/v1/admin/access-users/${id}`, OWNER, {
+    const missing = await call('POST', `/api/v1/admin/access-users/${id}`, WRITER, {
       password: next,
     });
     expect(missing.status).toBe(401);
-    const wrong = await call('POST', `/api/v1/admin/access-users/${id}`, OWNER, {
+    const wrong = await call('POST', `/api/v1/admin/access-users/${id}`, WRITER, {
       password: next,
       currentPassword: 'not-it-at-all-no',
     });
     expect(wrong.status).toBe(401);
 
-    const ok = await call('POST', `/api/v1/admin/access-users/${id}`, OWNER, {
+    const ok = await call('POST', `/api/v1/admin/access-users/${id}`, WRITER, {
       password: next,
       totpRequired: true,
-      currentPassword: OWNER_PASSWORD,
+      currentPassword: WRITER_PASSWORD,
     });
     expect(ok.status).toBe(200);
     const row = await db
@@ -317,41 +318,24 @@ describe('the owner’s account actions', () => {
       .bind(id)
       .first<{ has: boolean; totp_required: boolean; live: number }>();
     expect(row).toEqual({ has: true, totp_required: true, live: 0 });
-    // The wrong guess above counts towards the owner's own lockout.
+    // The wrong guess above counts towards the writer's own lockout.
     const owner = await db
       .prepare(`SELECT failed_attempts FROM access_users WHERE email = ?1`)
-      .bind(OWNER)
+      .bind(WRITER)
       .first<{ failed_attempts: number }>();
     expect(owner?.failed_attempts).toBe(1);
   });
 
-  it('never hands out an admin’s credentials, nor the owner’s own', async () => {
-    const id = await member('admin');
-    const res = await call('POST', `/api/v1/admin/access-users/${id}`, OWNER, {
-      resetTotp: true,
-      currentPassword: OWNER_PASSWORD,
-    });
-    expect(res.status).toBe(409);
-
-    const reviewer = await member('reviewer');
-    const promoteAndSet = await call('POST', `/api/v1/admin/access-users/${reviewer}`, OWNER, {
-      groupId: 'admin',
-      password: 'a-fresh-password-for-them',
-      currentPassword: OWNER_PASSWORD,
-    });
-    expect(promoteAndSet.status).toBe(409);
-  });
-
   it('creates an operator in a group, with a password', async () => {
     await makeGroup('bulk_only', { bulk: 'edit' });
-    const res = await call('POST', '/api/v1/admin/access-users', OWNER, {
+    const res = await call('POST', '/api/v1/admin/access-users', WRITER, {
       email: 'groups-new@example.com',
       groupId: 'bulk_only',
       password: 'a-fresh-password-for-them',
-      currentPassword: OWNER_PASSWORD,
+      currentPassword: WRITER_PASSWORD,
     });
     expect(res.status).toBe(201);
-    const legacy = await call('POST', '/api/v1/admin/access-users', OWNER, {
+    const legacy = await call('POST', '/api/v1/admin/access-users', WRITER, {
       email: 'groups-legacy@example.com',
       role: 'REVIEWER',
     });
@@ -367,6 +351,123 @@ describe('the owner’s account actions', () => {
       { email: 'groups-legacy@example.com', role: 'REVIEWER', group_id: 'reviewer', has: false },
       { email: 'groups-new@example.com', role: 'READ_ONLY', group_id: 'bulk_only', has: true },
     ]);
+  });
+});
+
+describe('the owner above the admins', () => {
+  const OWNER = 'groups-owner@example.com';
+  const OWNER_PASSWORD = 'owner-password-long-enough';
+  const OTHER_ADMIN = 'groups-admin@example.com';
+
+  async function idOf(email: string) {
+    return (await db
+      .prepare(`SELECT id FROM access_users WHERE email = ?1`)
+      .bind(email)
+      .first<{ id: string }>())!.id;
+  }
+
+  async function makeOwner() {
+    await joinGroup(OWNER, 'owner');
+    await db
+      .prepare(`UPDATE access_users SET password_hash = ?2 WHERE email = ?1`)
+      .bind(OWNER, await hashPassword(OWNER_PASSWORD))
+      .run();
+  }
+
+  it('is an ADMIN everywhere else, and there is only one', async () => {
+    await makeOwner();
+    const row = await db
+      .prepare(`SELECT role FROM access_users WHERE email = ?1`)
+      .bind(OWNER)
+      .first<{ role: string }>();
+    expect(row?.role).toBe('ADMIN');
+    await expect(joinGroup(WRITER, 'owner')).rejects.toThrow(/access_users_one_owner/);
+  });
+
+  it('leaves admins managing admins until there is an owner, and takes it over after', async () => {
+    await joinGroup(OTHER_ADMIN, 'admin');
+    const other = await idOf(OTHER_ADMIN);
+    // No owner yet: as before 0100.
+    expect(
+      (await call('POST', `/api/v1/admin/access-users/${other}`, WRITER, { active: false })).status,
+    ).toBe(200);
+
+    await makeOwner();
+    for (const [method, path, body] of [
+      ['POST', `/api/v1/admin/access-users/${other}`, { active: true }],
+      ['POST', `/api/v1/admin/access-users/${other}`, { groupId: 'reviewer' }],
+      ['DELETE', `/api/v1/admin/access-users/${other}`, {}],
+      ['POST', '/api/v1/admin/access-users', { email: 'groups-new@example.com', role: 'ADMIN' }],
+    ] as const) {
+      const res = await call(method, path, WRITER, body);
+      expect(`${method} ${path} → ${res.status}`).toBe(`${method} ${path} → 403`);
+      expect(((await res.json()) as { error: string }).error).toBe('owner_only');
+    }
+    // A reviewer is still the admin's to manage.
+    await joinGroup(MEMBER, 'reviewer');
+    expect(
+      (await call('POST', `/api/v1/admin/access-users/${await idOf(MEMBER)}`, WRITER, {
+        active: false,
+      })).status,
+    ).toBe(200);
+
+    expect(
+      (await call('POST', `/api/v1/admin/access-users/${other}`, OWNER, { groupId: 'reviewer' }))
+        .status,
+    ).toBe(200);
+  });
+
+  it('alone hands out an admin’s password or clears their second factor', async () => {
+    await joinGroup(OTHER_ADMIN, 'admin');
+    const other = await idOf(OTHER_ADMIN);
+    // Not even before there is an owner: the panel never could.
+    const byAdmin = await call('POST', `/api/v1/admin/access-users/${other}`, WRITER, {
+      resetTotp: true,
+      currentPassword: WRITER_PASSWORD,
+    });
+    expect(byAdmin.status).toBe(403);
+
+    await makeOwner();
+    const byOwner = await call('POST', `/api/v1/admin/access-users/${other}`, OWNER, {
+      password: 'a-fresh-password-for-them',
+      resetTotp: true,
+      currentPassword: OWNER_PASSWORD,
+    });
+    expect(byOwner.status).toBe(200);
+    const audits = await db
+      .prepare(`SELECT action FROM audit_logs WHERE entity_id = ?1 ORDER BY action`)
+      .bind(other)
+      .all<{ action: string }>();
+    expect(audits.results?.map((r) => r.action)).toEqual([
+      'access.password_set',
+      'access.totp_reset',
+      'access.user_updated',
+    ]);
+  });
+
+  it('is made and unmade only from the CLI', async () => {
+    await makeOwner();
+    const owner = await idOf(OWNER);
+    await joinGroup(MEMBER, 'reviewer');
+    for (const [method, path, body, who] of [
+      ['POST', `/api/v1/admin/access-users/${owner}`, { groupId: 'admin' }, WRITER],
+      ['DELETE', `/api/v1/admin/access-users/${owner}`, {}, WRITER],
+      ['POST', `/api/v1/admin/access-users/${await idOf(MEMBER)}`, { groupId: 'owner' }, OWNER],
+      ['POST', '/api/v1/admin/access-users', { email: 'groups-new@example.com', groupId: 'owner' }, OWNER],
+    ] as const) {
+      const res = await call(method, path, who, body);
+      expect(`${method} ${path} → ${res.status}`).toBe(`${method} ${path} → 409`);
+      expect(((await res.json()) as { error: string }).error).toBe('owner_via_cli');
+    }
+  });
+
+  it('never sets their own password from the panel either', async () => {
+    await makeOwner();
+    const res = await call('POST', `/api/v1/admin/access-users/${await idOf(WRITER)}`, WRITER, {
+      password: 'a-fresh-password-for-me',
+      currentPassword: WRITER_PASSWORD,
+    });
+    expect(res.status).toBe(403); // the writer is an admin, and an owner exists
   });
 });
 

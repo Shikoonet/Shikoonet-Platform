@@ -221,6 +221,43 @@ function builtIn(c: { json: (body: unknown, status: 409) => Response }) {
   );
 }
 
+/**
+ * Who may touch an admin (Sam, 2026-09-25): the owner, and nobody else once
+ * there is one. Until `operator.ts set-owner` has named one, any admin may, as
+ * before 0100 — except handing out an admin's password or clearing their
+ * second factor, which was never possible from the panel and is the owner's
+ * from the start. The owner themselves is changed only from the CLI, so there
+ * is never an owner-against-owner fight and never a shop left without one.
+ *
+ * `null` when allowed.
+ */
+async function adminGuard(
+  db: D1Database,
+  ident: Ident,
+  change: { from?: string; to?: string; credentials: boolean },
+): Promise<Response | null> {
+  if (change.from === 'owner' || change.to === 'owner') {
+    return Response.json(
+      { ok: false, error: 'owner_via_cli', detail: 'مالک فقط با CLI سرور تعیین یا عوض می‌شود.' },
+      { status: 409 },
+    );
+  }
+  const touchesAdmin = change.from === 'admin' || change.to === 'admin';
+  if (!touchesAdmin || ident.groupId === 'owner') return null;
+  if (!change.credentials && !(await hasOwner(db))) return null;
+  return Response.json(
+    { ok: false, error: 'owner_only', detail: 'مدیرها را فقط مالک مدیریت می‌کند.' },
+    { status: 403 },
+  );
+}
+
+async function hasOwner(db: D1Database): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT 1 FROM access_users WHERE group_id = 'owner' AND active = 1`)
+    .first();
+  return row !== null;
+}
+
 async function groupExists(db: D1Database, id: string): Promise<boolean> {
   return (await db.prepare(`SELECT 1 FROM access_groups WHERE id = ?1`).bind(id).first()) !== null;
 }
@@ -335,6 +372,11 @@ export function registerAdminAccessRoutes(
     if (!(await groupExists(c.env.DB, groupId))) {
       return c.json({ ok: false, error: 'unknown_group' }, 400);
     }
+    const refused = await adminGuard(c.env.DB, ident, {
+      to: groupId,
+      credentials: password !== undefined,
+    });
+    if (refused) return refused;
     let hash: string | null = null;
     if (password !== undefined) {
       const problem = passwordProblem(password);
@@ -416,18 +458,22 @@ export function registerAdminAccessRoutes(
     const totpRequired = body.data.totpRequired ?? before.totp_required;
 
     // Handing out a way in. Never for yourself — «رمز عبور» on your own card
-    // asks for the old one — and never for an admin, whose account the CLI
-    // on the server is the only thing allowed to reset.
+    // asks for the old one — and for an admin only by the owner.
     const credentials = password !== undefined || resetTotp === true;
+    const refused = await adminGuard(c.env.DB, ident, {
+      from: before.group_id,
+      to: groupId,
+      credentials,
+    });
+    if (refused) return refused;
     let hash: string | null = null;
     if (credentials) {
-      if (before.email === ident.email || before.group_id === 'admin' || groupId === 'admin') {
+      if (before.email === ident.email) {
         return c.json(
           {
             ok: false,
-            error: 'admin_credentials',
-            detail:
-              'رمز یا ورود دومرحله‌ای خودتان و مدیرها از این‌جا عوض نمی‌شود — از کارت «رمز عبور» یا CLI سرور.',
+            error: 'self_credentials',
+            detail: 'رمز و ورود دومرحله‌ای خودتان را از کارت «رمز عبور» عوض کنید.',
           },
           409,
         );
@@ -689,10 +735,17 @@ export function registerAdminAccessRoutes(
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
 
     const id = c.req.param('id');
-    const before = await c.env.DB.prepare(`SELECT id, email, role FROM access_users WHERE id = ?1`)
+    const before = await c.env.DB.prepare(
+      `SELECT id, email, role, group_id FROM access_users WHERE id = ?1`,
+    )
       .bind(id)
-      .first<{ id: string; email: string; role: string }>();
+      .first<{ id: string; email: string; role: string; group_id: string }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+    const refused = await adminGuard(c.env.DB, ident, {
+      from: before.group_id,
+      credentials: false,
+    });
+    if (refused) return refused;
 
     const done = await lockingSurvivors(c.env.DB, 'access_users', (tx) =>
       tx

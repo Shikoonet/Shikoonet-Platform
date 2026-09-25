@@ -8,6 +8,7 @@
  *   corepack pnpm --filter @shikoo/dashboard operator enroll-totp sam@example.com
  *   corepack pnpm --filter @shikoo/dashboard operator disable-totp sam@example.com
  *   corepack pnpm --filter @shikoo/dashboard operator unlock sam@example.com
+ *   corepack pnpm --filter @shikoo/dashboard operator set-owner sam@example.com
  *
  * This exists because of a bootstrap problem with exactly one solution. Cloudflare
  * Access is gone, so the only way into the panel is an operator row with a
@@ -134,13 +135,14 @@ async function main(): Promise<number> {
     if (command === 'list') {
       const rows = await db
         .prepare(
-          `SELECT email, role, active, totp_enabled,
+          `SELECT email, role, group_id, active, totp_enabled,
                   password_hash IS NOT NULL AS has_password, locked_until
              FROM access_users ORDER BY email`,
         )
         .all<{
           email: string;
           role: string;
+          group_id: string;
           active: number;
           totp_enabled: boolean;
           has_password: boolean;
@@ -153,7 +155,9 @@ async function main(): Promise<number> {
           r.totp_enabled ? 'totp' : 'no totp',
           r.locked_until && new Date(r.locked_until) > new Date() ? 'LOCKED' : '',
         ].filter(Boolean);
-        console.log(`${r.email.padEnd(34)} ${r.role.padEnd(10)} ${flags.join(' · ')}`);
+        console.log(
+          `${r.email.padEnd(34)} ${r.role.padEnd(10)} ${r.group_id.padEnd(10)} ${flags.join(' · ')}`,
+        );
       }
       if ((rows.results ?? []).length === 0) console.log('(no operators — nobody can sign in)');
       return 0;
@@ -161,7 +165,7 @@ async function main(): Promise<number> {
 
     if (!command || !email) {
       console.error(
-        'usage: operator <list|bootstrap|create|set-password|enroll-totp|disable-totp|unlock> [email] [role] [--update] [--env NAME]',
+        'usage: operator <list|bootstrap|create|set-password|enroll-totp|disable-totp|unlock|set-owner> [email] [role] [--update] [--env NAME]',
       );
       return 2;
     }
@@ -326,6 +330,31 @@ async function main(): Promise<number> {
         .bind(row.id)
         .run();
       console.log('unlocked.');
+      return 0;
+    }
+
+    if (command === 'set-owner') {
+      // The one account above the admins (migration 0100). Only from here, on
+      // the server: the panel never makes or unmakes an owner. Naming a new one
+      // moves the title — the previous owner stays an admin, in the same
+      // transaction, so the unique index never sees two.
+      const previous = await db.withSession(async (tx) => {
+        const old = await tx
+          .prepare(
+            `UPDATE access_users SET group_id = 'admin', updated_at = ?2
+              WHERE group_id = 'owner' AND id <> ?1 RETURNING email`,
+          )
+          .bind(row.id, Date.now())
+          .first<{ email: string }>();
+        await tx
+          .prepare(`UPDATE access_users SET group_id = 'owner', updated_at = ?2 WHERE id = ?1`)
+          .bind(row.id, Date.now())
+          .run();
+        return old?.email ?? null;
+      });
+      console.log(
+        `${email} is the owner.` + (previous ? ` ${previous} is an admin now.` : ''),
+      );
       return 0;
     }
 

@@ -13,13 +13,21 @@
 --
 -- `group_id` is the source of truth from here on and `role` follows it,
 -- kept by the trigger below:
---   * the admin group is ADMIN, the reviewer group REVIEWER, any other group
+--   * the owner and admin groups are ADMIN, reviewer REVIEWER, any other group
 --     READ_ONLY — so an older image, rolled back onto this schema, reads a
 --     custom group as the narrowest role there is rather than a wider one;
 --   * a writer that still sets only `role` (the bootstrap CLI, the seed, ~80
 --     tests' ON CONFLICT … SET role) moves the operator into the matching
 --     built-in group, rather than leaving `group_id` saying «admin» for an
 --     operator it just demoted.
+--
+-- Above the admins stands one OWNER (Sam, 2026-09-25): the only account that
+-- manages admins — makes, demotes, removes them, sets their password, clears
+-- their second factor. Stored as ADMIN, so everything an admin may do outside
+-- «دسترسی‌ها» the owner may too. Nobody becomes owner here: `operator.ts
+-- set-owner` names one, on the server, and moves the title if there was one.
+-- Until then admins manage admins exactly as before.
+--
 -- Three CHECKs (audit_logs.actor_role, comments.author_role,
 -- transaction_reviews.reviewer_role) and the bot still speak in roles, which
 -- is why the column stays.
@@ -41,7 +49,8 @@ CREATE TABLE access_groups (
 );
 
 INSERT INTO access_groups (id, name, created_at, updated_at)
-VALUES ('admin',     'مدیر',          (extract(epoch FROM now()) * 1000)::bigint, (extract(epoch FROM now()) * 1000)::bigint),
+VALUES ('owner',     'مالک',          (extract(epoch FROM now()) * 1000)::bigint, (extract(epoch FROM now()) * 1000)::bigint),
+       ('admin',     'مدیر',          (extract(epoch FROM now()) * 1000)::bigint, (extract(epoch FROM now()) * 1000)::bigint),
        ('reviewer',  'بازبین پرداخت', (extract(epoch FROM now()) * 1000)::bigint, (extract(epoch FROM now()) * 1000)::bigint),
        ('read_only', 'فقط مشاهده',    (extract(epoch FROM now()) * 1000)::bigint, (extract(epoch FROM now()) * 1000)::bigint);
 
@@ -66,9 +75,9 @@ BEGIN
                                   WHEN 'REVIEWER' THEN 'reviewer'
                                   ELSE 'read_only' END;
   END IF;
-  NEW.role := CASE NEW.group_id WHEN 'admin' THEN 'ADMIN'
-                                WHEN 'reviewer' THEN 'REVIEWER'
-                                ELSE 'READ_ONLY' END;
+  NEW.role := CASE WHEN NEW.group_id IN ('owner', 'admin') THEN 'ADMIN'
+                   WHEN NEW.group_id = 'reviewer' THEN 'REVIEWER'
+                   ELSE 'READ_ONLY' END;
   RETURN NEW;
 END;
 $$;
@@ -79,5 +88,8 @@ CREATE TRIGGER trg_access_user_role_follows_group
   BEFORE INSERT OR UPDATE OF role, group_id ON access_users
   FOR EACH ROW
   EXECUTE FUNCTION access_user_role_follows_group();
+
+-- One owner, held by the database rather than by whoever checks first.
+CREATE UNIQUE INDEX access_users_one_owner ON access_users (group_id) WHERE group_id = 'owner';
 
 COMMIT;
