@@ -578,6 +578,13 @@ describe('every write route, asked directly', () => {
     // works this queue: a role that can deliver without payment must not also
     // be able to empty the queue that reports it. Audited as
     // `claim.written_off`; `payments-list.test.ts` pins the REVIEWER 403.
-    expect(writeRoutes().length).toBe(186);
+    //
+    // 187, 2026-09-25: «لغو» in the broadcast queue (0100). `POST /admin/bulk/
+    // broadcast/:id/cancel` takes a broadcast out of the queue — one waiting,
+    // or the rest of the one going. It decides what every customer is sent,
+    // so ADMIN-only in the handler like the send itself, and audited as
+    // `customers.broadcast_cancelled`; `broadcast-queue.test.ts` pins the
+    // REVIEWER 403.
+    expect(writeRoutes().length).toBe(187);
   });
 });

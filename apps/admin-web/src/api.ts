@@ -1318,6 +1318,8 @@ export interface BulkSend {
     total: number;
     sent: number;
     failed: number;
+    /** Taken out of the queue by an admin before they went — not a failure. */
+    cancelled?: number;
     /** Not yet taken, and due now. */
     pending: number;
     /** Telegram said come back later (a 429); `waitingUntil` is the latest deadline, epoch ms. */
@@ -1332,6 +1334,28 @@ export interface BulkSend {
     /** When the last row moved, epoch ms; null while nothing has. */
     lastAt: number | null;
   } | null;
+}
+
+/**
+ * One broadcast not finished yet (Sam, 2026-09-25). The list comes back in the
+ * order the bot works through it: the first is going, the rest wait.
+ */
+export interface BroadcastQueueItem {
+  id: string;
+  /** The text, cut to 160 characters; null for a channel post. */
+  preview: string | null;
+  post: { chat: string; messageId: number } | null;
+  by: string | null;
+  createdAt: number;
+  /** Set once an admin pressed «لغو»; it leaves the list when its last in-flight row lands. */
+  cancelledAt: number | null;
+  /** When the bot first took a row of it; null while it is still waiting. */
+  startedAt: number | null;
+  total: number;
+  sent: number;
+  failed: number;
+  cancelled: number;
+  sentLastMinute: number;
 }
 
 /** One customer a broadcast did not reach, and the bot's reason (#364). */
@@ -2860,6 +2884,19 @@ export const api = {
     );
   },
 
+  /** «صف پیام همگانی»: unfinished broadcasts, in the order the bot sends them. */
+  bulkQueue() {
+    return req<{ ok: boolean; items: BroadcastQueueItem[] }>('/bulk/queue');
+  },
+
+  /** Take a broadcast out of the queue; what already went stays sent. ADMIN only. */
+  cancelBroadcast(broadcastId: string) {
+    return req<{ ok: boolean; notSent: number }>(
+      `/bulk/broadcast/${encodeURIComponent(broadcastId)}/cancel`,
+      { method: 'POST' },
+    );
+  },
+
   broadcastFailures(broadcastId: string) {
     return req<{ ok: boolean; items: BroadcastFailure[]; byKind: Record<string, number> }>(
       `/bulk/broadcast/${encodeURIComponent(broadcastId)}/failures`,
@@ -2895,7 +2932,9 @@ export const api = {
       audience: BroadcastAudience;
     },
   ) {
-    return req<{ ok: boolean; queued: number; reach: number }>('/bulk/broadcast', {
+    // `ahead`: broadcasts still going or waiting before this one — 0 means it
+    // starts now, anything else means «در صف».
+    return req<{ ok: boolean; queued: number; reach: number; ahead: number }>('/bulk/broadcast', {
       method: 'POST',
       body: JSON.stringify(body),
     });

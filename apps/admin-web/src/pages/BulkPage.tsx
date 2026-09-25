@@ -30,6 +30,7 @@ import {
   ApiError,
   type BroadcastAudience,
   type BroadcastFailure,
+  type BroadcastQueueItem,
   type BulkPriceChange,
   type BulkPricePreview,
   type BulkSend,
@@ -70,6 +71,147 @@ function LastSend({ send, verb }: { send: BulkSend | null; verb: string }) {
           }`
         : ''}
     </p>
+  );
+}
+
+/** «حدود ۴ دقیقه» / «حدود ۲ ساعت» — for a figure already in minutes. */
+function roughly(min: number): string {
+  if (min < 1) return 'کمتر از یک دقیقه';
+  return min < 60
+    ? `حدود ${count(Math.round(min))} دقیقه`
+    : `حدود ${count(Math.round(min / 60))} ساعت`;
+}
+
+/**
+ * «صف پیام همگانی» — what is going out now, and what waits behind it.
+ *
+ * Sam, 2026-09-25: see which message is going, how many it has reached and
+ * how fast, and line up the next one to start when this one is done. The
+ * queue is the bot's own order (oldest first), so a message sent from the
+ * form while another is going simply appears here as «نوبت ۲».
+ *
+ * Pace is the last minute's, not the average since queued: a message that
+ * waited an hour behind another would otherwise read as crawling. The wait
+ * before a queued one starts is what is left ahead of it at that same pace.
+ */
+function BroadcastQueue({ refreshKey }: { refreshKey: number }) {
+  const [items, setItems] = useState<BroadcastQueueItem[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [target, setTarget] = useState<BroadcastQueueItem | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    try {
+      setItems((await api.bulkQueue()).items);
+    } catch {
+      /* a view, not a gate: a failed read keeps the last list */
+    }
+  }
+  const going = (items?.length ?? 0) > 0;
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => void load(), going ? 5_000 : 30_000);
+    return () => clearInterval(t);
+  }, [going, refreshKey]);
+
+  async function cancel() {
+    if (target === null) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.cancelBroadcast(target.id);
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+      setTarget(null);
+      void load();
+    }
+  }
+
+  if (items === null || items.length === 0) return null;
+  const left = (i: BroadcastQueueItem) => Math.max(0, i.total - i.sent - i.failed - i.cancelled);
+  // The pace of the one going is the pace of the queue: one sender, one clock.
+  const pace = items.find((i) => i.cancelledAt === null && i.sentLastMinute > 0)?.sentLastMinute ?? 0;
+  let turn = 0;
+  let aheadRows = 0;
+
+  return (
+    <div className="broadcast-queue">
+      <h4>صف پیام همگانی</h4>
+      {err && <div className="alert alert-error">{err}</div>}
+      <ol className="broadcast-queue__list">
+        {items.map((i) => {
+          const remaining = left(i);
+          const cancelled = i.cancelledAt !== null;
+          const position = cancelled ? null : ++turn;
+          const startsIn = position !== null && position > 1 && pace > 0 ? aheadRows / pace : null;
+          if (!cancelled) aheadRows += remaining;
+          const status = cancelled
+            ? 'لغو شد'
+            : position === 1
+              ? 'در حال ارسال'
+              : `در صف — نوبت ${count(position!)}`;
+          return (
+            <li key={i.id} className="broadcast-queue__item">
+              <div>
+                <strong>{status}</strong>
+                {' · '}
+                <span className="muted">
+                  {i.by ?? '—'} — {dateTime(i.createdAt)}
+                </span>
+              </div>
+              <p className="broadcast-queue__preview">
+                {i.post !== null
+                  ? `پست کانال ${i.post.chat} · پیام ${count(i.post.messageId)}`
+                  : (i.preview ?? '')}
+              </p>
+              {/* Out of what will actually be sent: a cancelled row is neither
+                  sent nor to come, and counting it as done drew a cancelled
+                  message as a full green bar — «all sent». */}
+              <progress value={i.sent + i.failed} max={Math.max(i.total - i.cancelled, 1)} />
+              <p className="muted">
+                {count(i.sent)} از {count(i.total)} نفر رسید
+                {i.failed > 0 ? `، ${count(i.failed)} نرسید` : ''}
+                {i.cancelled > 0 ? `، ${count(i.cancelled)} لغو شد` : ''}
+                {!cancelled && position === 1
+                  ? ` — ${count(i.sentLastMinute)} در دقیقه${
+                      i.sentLastMinute > 0 && remaining > 0
+                        ? `، ${roughly(remaining / i.sentLastMinute)} مانده`
+                        : ''
+                    }`
+                  : ''}
+                {startsIn !== null ? ` — شروع ${roughly(startsIn)} دیگر` : ''}
+              </p>
+              {!cancelled && remaining > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={busy}
+                  onClick={() => setTarget(i)}
+                >
+                  لغو
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      {target !== null && (
+        <Confirm
+          title="این پیام همگانی لغو شود؟"
+          onCancel={() => setTarget(null)}
+          onConfirm={() => void cancel()}
+          busy={busy}
+        >
+          <p>
+            به <strong>{count(left(target))}</strong> نفری که هنوز نگرفته‌اند فرستاده نمی‌شود.
+            {target.sent > 0 ? ` ${count(target.sent)} نفری که گرفته‌اند همان را دارند.` : ''}
+          </p>
+          <p className="muted">لغو برگشت‌پذیر نیست؛ برای فرستادن دوباره، پیام را از نو بفرستید.</p>
+        </Confirm>
+      )}
+    </div>
   );
 }
 
@@ -192,6 +334,7 @@ function message(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.code === 'forbidden') return 'برای این کار دسترسی ادمین لازم است.';
     if (e.code === 'no_active_customers') return 'هیچ مشتری فعالی نیست.';
+    if (e.code === 'not_in_queue') return 'این پیام دیگر در صف نیست — یا تمام شده یا قبلاً لغو شده.';
     if (e.code === 'invalid_body') return 'ورودی پذیرفته نشد.';
     if (e.code === 'unsellable')
       return 'این کاهش، قیمت دست‌کم یک کانفیگ را به صفر یا زیر صفر می‌برد. هیچ قیمتی عوض نشد.';
@@ -226,6 +369,8 @@ function audienceFor(
 
 export function BulkPage() {
   const [reach, setReach] = useState<number | null>(null);
+  // Bumped after a send, so the queue shows the new message without waiting a poll.
+  const [queueKey, setQueueKey] = useState(0);
   const [recent, setRecent] = useState<{
     credit: BulkSend | null;
     broadcast: BulkSend | null;
@@ -470,11 +615,17 @@ export function BulkPage() {
           ? { body: trimmed, broadcastId, audience: audience! }
           : { postLink, broadcastId, audience: audience! },
       );
+      // Queued behind another: say it waits, not that it is going.
+      const when =
+        r.ahead > 0
+          ? ` بعد از ${count(r.ahead)} پیامی که جلوتر در صف است شروع می‌شود.`
+          : ' ربات آن را می‌فرستد.';
       setDone(
         messageKind === 'text'
-          ? `پیام برای ${count(r.queued)} مشتری در صف قرار گرفت. ربات آن را می‌فرستد.`
-          : `پست برای ${count(r.queued)} مشتری در صف قرار گرفت — یک نسخه هم همین حالا در تاپیک «سایر گزارشات» فرستاده شد تا ببینیدش.`,
+          ? `پیام برای ${count(r.queued)} مشتری در صف قرار گرفت.${when}`
+          : `پست برای ${count(r.queued)} مشتری در صف قرار گرفت.${when} یک نسخه هم همین حالا در تاپیک «سایر گزارشات» فرستاده شد تا ببینیدش.`,
       );
+      setQueueKey((k) => k + 1);
       setBody('');
       setPostLink('');
       setBroadcastId(newId());
@@ -661,6 +812,7 @@ export function BulkPage() {
         >
           ادامه
         </button>
+        <BroadcastQueue refreshKey={queueKey} />
         <LastSend send={recent?.broadcast ?? null} verb="پیام به" />
         <BroadcastFailures send={recent?.broadcast ?? null} />
       </div>

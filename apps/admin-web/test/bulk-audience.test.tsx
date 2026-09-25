@@ -47,6 +47,10 @@ beforeEach(() => {
         sent.push({ url: u, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
         return { ok: true, status: 200, json: async () => ({ ok: true, queued: 1, reach: 1 }) } as Response;
       }
+      // The queue under the form (0100): nothing going in these tests.
+      if (u.endsWith('/bulk/queue')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, items: [] }) } as Response;
+      }
       if (u.includes('/bulk/reach')) {
         const q = new URL(u, 'https://x').searchParams;
         const kind = q.get('audience') ?? 'all';

@@ -2015,6 +2015,42 @@ details[open] > .retention-row {
 .table .broadcast-progress progress {
   width: clamp(2.5rem, 8vw, 120px);
 }
+/* «صف پیام همگانی» on the bulk page: one block per message, the one going
+   first. The text is clamped to three lines — a 4,000-character message is
+   still the one row, and the full text is in the form that sent it. */
+.broadcast-queue {
+  margin-block-start: 16px;
+}
+.broadcast-queue__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.broadcast-queue__item {
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+.broadcast-queue__item progress {
+  width: 100%;
+  accent-color: var(--success);
+}
+.broadcast-queue__preview {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.broadcast-queue__item .btn {
+  justify-self: start;
+}
 .app-header__center {
   display: flex;
   align-items: center;
