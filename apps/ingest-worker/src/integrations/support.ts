@@ -18,10 +18,13 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { Texts } from '@shikoo/contracts';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { claimTrial, clientIp, createLogger, readTrialQuota, trialPanels } from '@shikoo/domain';
 import type { Env } from '../index.js';
 
 export const SUPPORT_BASE_PATH = '/api/v1/integrations/support';
 const MAX_BODY_BYTES = 2048;
+
+const log = createLogger('ingest.support');
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -57,12 +60,21 @@ support.use('*', async (c, next) => {
   }
   const token = c.env.SUPPORT_INTEGRATION_TOKEN;
   if (!token) return c.json({ ok: false, error: 'integration_not_configured' }, 503);
+  // The token first, and only then the door's one bucket: charged before the
+  // check, anybody could spend it and lock n8n out (security review,
+  // 2026-09-26). A wrong token is charged to its own address instead, so a
+  // guesser slows down without touching the caller that holds the token.
+  if (!bearerMatches(c.req.header('Authorization'), token)) {
+    const ip = clientIp((name) => c.req.header(name), c.env.TRUSTED_PROXY_IP_HEADER);
+    if (c.env.IP_LIMIT && ip !== null) {
+      const allowed = await c.env.IP_LIMIT.limit({ key: `support:${ip}` });
+      if (!allowed.success) return c.json({ ok: false, error: 'rate_limited' }, 429);
+    }
+    return c.json({ ok: false, error: 'unauthorized' }, 401);
+  }
   if (c.env.SUPPORT_LIMIT) {
     const allowed = await c.env.SUPPORT_LIMIT.limit({ key: 'support' });
     if (!allowed.success) return c.json({ ok: false, error: 'rate_limited' }, 429);
-  }
-  if (!bearerMatches(c.req.header('Authorization'), token)) {
-    return c.json({ ok: false, error: 'unauthorized' }, 401);
   }
   return next();
 });
@@ -98,4 +110,106 @@ support.post('/rules', async (c) => {
     enabled: (gate?.v ?? '').trim() === 'rolleon',
     text: text === placeholder ? null : text,
   });
+});
+
+const TrialBody = z
+  .object({
+    telegram_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    panel_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+
+/** The body as JSON, or null — a malformed body is `invalid_body`, never a 500. */
+async function jsonOf(c: { req: { json: () => Promise<unknown> } }): Promise<unknown> {
+  return c.req.json().catch(() => null);
+}
+
+/**
+ * Which trials this person may have, and through which door.
+ *
+ * Each panel appears once: through the shop bot when its own trial is on
+ * (the customer is sent there), otherwise through the support door when
+ * «تست از پشتیبانی» is on. `quota_left` is the shared allowance: a trial
+ * taken in the shop bot has already spent it.
+ */
+support.post('/trial/options', async (c) => {
+  const who = WhoBody.safeParse(await jsonOf(c));
+  if (!who.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+  const db = c.env.DB;
+  const user = await customerOf(db, who.data.telegram_id);
+  if (user === null) {
+    return c.json({ ok: true, customer: 'not_started', quota_left: 0, services: [] });
+  }
+  if (user.status === 'BLOCKED') {
+    return c.json({ ok: true, customer: 'blocked', quota_left: 0, services: [] });
+  }
+  const quota = await readTrialQuota(db);
+  const services = (await trialPanels(db, user.id)).flatMap((p) => {
+    const door = p.shop.enabled ? ('shop_bot' as const) : p.support.enabled ? ('support' as const) : null;
+    if (door === null) return [];
+    const t = door === 'shop_bot' ? p.shop : p.support;
+    return [
+      {
+        panel_id: p.providerId,
+        name: p.name,
+        via: door,
+        volume_gb: t.volumeGb,
+        duration_hours: t.durationHours,
+      },
+    ];
+  });
+  return c.json({
+    ok: true,
+    customer: 'ok',
+    quota_left: Math.max(0, quota - user.testQuotaUsed),
+    services,
+  });
+});
+
+type TrialResult =
+  | { result: 'on_the_way' | 'use_shop_bot' | 'already_on_the_way'; service: string }
+  | { result: 'already_used' | 'not_started' | 'blocked' | 'not_available' };
+
+/**
+ * Orders a trial through the shop bot's own path: a PAID TRIAL order that the
+ * bot's provisioning sweep builds on the panel and delivers in the shop bot.
+ * Nothing here talks to the panel.
+ */
+support.post('/trial', async (c) => {
+  const body = TrialBody.safeParse(await jsonOf(c));
+  if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+  const { telegram_id: telegramId, panel_id: panelId } = body.data;
+
+  const out = await c.env.DB.withSession(async (tx): Promise<TrialResult> => {
+    // The row lock serialises two requests for one person: the second waits
+    // here, then sees the first one's order in the two-minute check below.
+    const user = await tx
+      .prepare(`SELECT id, status FROM users WHERE telegram_id = ?1 FOR UPDATE`)
+      .bind(telegramId)
+      .first<{ id: number; status: string }>();
+    if (!user) return { result: 'not_started' };
+    if (user.status === 'BLOCKED') return { result: 'blocked' };
+
+    // Re-derived for THIS customer; the number from the request is only looked up.
+    const panel = (await trialPanels(tx, user.id)).find((p) => p.providerId === panelId);
+    if (!panel) return { result: 'not_available' };
+    if (panel.shop.enabled) return { result: 'use_shop_bot', service: panel.name };
+    if (!panel.support.enabled) return { result: 'not_available' };
+
+    const recent = await tx
+      .prepare(
+        `SELECT 1 AS x FROM orders
+          WHERE user_id = ?1 AND kind = 'TRIAL' AND created_at > now() - interval '2 minutes'
+          LIMIT 1`,
+      )
+      .bind(user.id)
+      .first<{ x: number }>();
+    if (recent) return { result: 'already_on_the_way', service: panel.name };
+
+    const claimed = await claimTrial(tx, user.id, panel.providerId, await readTrialQuota(tx));
+    if (claimed === null) return { result: 'already_used' };
+    log.info('support.trial_ordered', { ref: claimed.publicId, panel: panel.providerId });
+    return { result: 'on_the_way', service: panel.name };
+  });
+  return c.json({ ok: true, ...out });
 });

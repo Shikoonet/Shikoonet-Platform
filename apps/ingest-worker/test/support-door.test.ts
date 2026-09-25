@@ -16,9 +16,9 @@ type EnvPatch = { [K in keyof Env]?: Env[K] | undefined };
 async function call(
   path: string,
   body: unknown,
-  opts: { token?: string | null; env?: EnvPatch } = {},
+  opts: { token?: string | null; env?: EnvPatch; headers?: Record<string, string> } = {},
 ): Promise<Response> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const headers: Record<string, string> = { 'content-type': 'application/json', ...opts.headers };
   if (opts.token !== null) headers['Authorization'] = `Bearer ${opts.token ?? TOKEN}`;
   return await app.fetch(
     new Request(`${BASE}${path}`, {
@@ -53,6 +53,35 @@ describe('the support door refuses before it reads anything', () => {
     const res = await call('/rules', JSON.stringify({ pad: 'x'.repeat(3000) }));
     expect(res.status).toBe(413);
   });
+  it('does not let a caller without the token spend the support bot’s bucket', async () => {
+    // Security review, 2026-09-26: the bucket was charged before the token was
+    // checked, so sixty requests a minute from anybody locked n8n out.
+    let charged = 0;
+    const counting: RateLimit = {
+      limit: async () => {
+        charged += 1;
+        return { success: true };
+      },
+    };
+    for (let i = 0; i < 3; i += 1) {
+      expect((await call('/rules', {}, { token: 'guess', env: { SUPPORT_LIMIT: counting } })).status).toBe(401);
+    }
+    expect(charged).toBe(0);
+    expect((await call('/rules', {}, { env: { SUPPORT_LIMIT: counting } })).status).toBe(200);
+    expect(charged).toBe(1);
+  });
+
+  it('slows a token guesser by address, and only a guesser', async () => {
+    const no: RateLimit = { limit: async () => ({ success: false }) };
+    const guesser = {
+      token: 'guess',
+      headers: { 'X-Real-IP': '203.0.113.9' },
+      env: { IP_LIMIT: no, TRUSTED_PROXY_IP_HEADER: 'X-Real-IP' },
+    };
+    expect((await call('/rules', {}, guesser)).status).toBe(429);
+    expect((await call('/rules', {}, { ...guesser, token: TOKEN })).status).toBe(200);
+  });
+
   it('answers 429 when its limiter says no', async () => {
     const no: RateLimit = { limit: async () => ({ success: false }) };
     expect((await call('/rules', {}, { env: { SUPPORT_LIMIT: no } })).status).toBe(429);
