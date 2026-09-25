@@ -480,6 +480,53 @@ describe('purchasablePlan answers the same question as the list', () => {
     }
   });
 
+  it('a PHP-bot trial keeps the starter plan open; a trial renewed into a paid tier closes it', async () => {
+    // Sam, 2026-09-25: a trial is not a purchase whichever bot gave it, and
+    // a customer who has paid never sees «خرید اولی» again — not in the shop,
+    // not on the renewal list. Both were wrong on production (849 and 1).
+    const starter = await planId('sim-vip-trial');
+    const vip = await providerId('sim-vip');
+
+    const phpTried = await makeCustomer(811_006);
+    const php = await db
+      .prepare(
+        `INSERT INTO orders
+           (public_id, user_id, kind, unit_price_irr, total_irr, status, legacy_ref, plan_name_at_sale)
+         VALUES ('inv-catalog-php', ?1, 'NEW_PURCHASE', 0, 0, 'COMPLETED', 'invoice:catalog-php', 'سرویس تست')
+         ON CONFLICT (public_id) DO UPDATE SET user_id = EXCLUDED.user_id
+         RETURNING id`,
+      )
+      .bind(phpTried)
+      .first<{ id: number }>();
+    await db
+      .prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, order_id, plan_name_at_sale, price_irr, status, purchased_at)
+         VALUES ('catalog-php', ?1, ?2, 'سرویس تست', 0, 'ACTIVE', now())
+         ON CONFLICT (public_id) DO UPDATE SET user_id = EXCLUDED.user_id, order_id = EXCLUDED.order_id`,
+      )
+      .bind(phpTried, php!.id)
+      .run();
+    expect(await purchasablePlan(db, phpTried, starter)).not.toBeNull();
+
+    const renewed = await makeCustomer(811_007);
+    await giveTrial(renewed, 'catalog-trial-renewed');
+    expect(await purchasablePlan(db, renewed, starter)).not.toBeNull();
+    await db
+      .prepare(
+        `INSERT INTO orders
+           (public_id, user_id, kind, unit_price_irr, total_irr, status, target_subscription_id)
+         SELECT 'catalog-trial-renewal', ?1, 'RENEWAL', 11900000, 11900000, 'COMPLETED', id
+           FROM subscriptions WHERE public_id = 'catalog-trial-renewed'
+         ON CONFLICT (public_id) DO UPDATE
+           SET user_id = EXCLUDED.user_id, target_subscription_id = EXCLUDED.target_subscription_id`,
+      )
+      .bind(renewed)
+      .run();
+    expect(await purchasablePlan(db, renewed, starter, true)).toBeNull();
+    expect((await plansOnPanel(db, renewed, [vip])).map((p) => p.planId)).not.toContain(starter);
+  });
+
   it('allows a reseller the plan meant for them', async () => {
     expect(await purchasablePlan(db, reseller, await planId('sim-vip-reseller'))).not.toBeNull();
   });

@@ -14,6 +14,8 @@
 
 import type { D1Database } from '@shikoo/database';
 
+import { paidServiceSql } from './bought.js';
+
 /** The window: from `daysAfter` days past expiry up to `daysBefore` days before it. */
 export const RETENTION_AUDIENCE_WHERE = `s.status = 'ACTIVE'
                 AND s.hidden_at IS NULL
@@ -26,8 +28,9 @@ export const RETENTION_AUDIENCE_WHERE = `s.status = 'ACTIVE'
 
 /**
  * «فقط یک سرویس، به‌جز تست» — no OTHER paid service. The same family as
- * `OWNS_PAID_SERVICE_SQL`, minus the row being messaged; imported services
- * carry no order and count, as there.
+ * `OWNS_PAID_SERVICE_SQL`, minus the row being messaged, with the same
+ * `paidServiceSql`: a PHP-bot trial does not count, a trial renewed into a
+ * paid tier does.
  */
 export const RETENTION_ONLY_SERVICE_WHERE = `NOT EXISTS (
                   SELECT 1 FROM subscriptions s2
@@ -35,7 +38,7 @@ export const RETENTION_ONLY_SERVICE_WHERE = `NOT EXISTS (
                    WHERE s2.user_id = s.user_id
                      AND s2.id <> s.id
                      AND s2.status <> 'PENDING_PAYMENT'
-                     AND o2.kind IS DISTINCT FROM 'TRIAL')`;
+                     AND ${paidServiceSql('s2', 'o2')})`;
 
 /**
  * Whole days to expiry as the SWEEP counts them, in SQL so the key it writes

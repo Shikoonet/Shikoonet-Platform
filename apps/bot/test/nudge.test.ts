@@ -169,6 +169,24 @@ describe('who gets it', () => {
     expect(await nudged(telegramId)).toBe(1);
   });
 
+  it('still nudges somebody whose only order is a trial from the PHP bot', async () => {
+    // The importer wrote those as zero-Toman sales; 849 customers on
+    // production (2026-09-25), all of them left out until `bought.ts` knew.
+    const { userId, telegramId } = await starter(60);
+    await db
+      .prepare(
+        `INSERT INTO orders
+           (public_id, user_id, kind, unit_price_irr, discount_irr, total_irr, quantity, status,
+            legacy_ref, plan_name_at_sale)
+         VALUES (?1, ?2, 'NEW_PURCHASE', 0, 0, 0, 1, 'COMPLETED', ?1, 'سرویس تست')`,
+      )
+      .bind(`invoice:zz-nudge-${userId}`, userId)
+      .run();
+
+    expect(await nudgeNeverBought(db, NOW_MS)).toBe(1);
+    expect(await nudged(telegramId)).toBe(1);
+  });
+
   it('respects the customer’s own notify switch', async () => {
     const { telegramId } = await starter(30, { muted: true });
 
