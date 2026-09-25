@@ -34,7 +34,11 @@ table, because most miscategorisation comes from ignoring them:
    image, ref or run id — the release is whatever the latest successful
    `Deploy Staging` run for the current `main` produced. `COOLIFY_TOKEN` is
    consumed only on the host, through the same read-as-text path `deploy.sh`
-   uses, and never reaches GitHub.
+   uses, and never reaches GitHub. `deploy.sh`'s token — one per environment,
+   in `/etc/shikoo/<env>/deploy.env` — needs `read`, `write`, `deploy` **and
+   `read:sensitive`**, because it reads variable values; the autodeploy row
+   below is a different token and keeps its narrower set (see
+   `deploy/README.md` › «The Coolify token `deploy.sh` uses»).
 
 1. **Deployment is driven by GitHub Actions.** *(Corrected 2026-08-28; this
    rule used to say the opposite.)* `deploy-staging.yml` builds one image and
@@ -69,7 +73,7 @@ Environment`. Source file is `0600 root:root` in a `0700` directory.
 | `GH_REPO` | autodeploy | `owner/name` to ask about | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 | `GH_TOKEN` | autodeploy | branch head, merged PR, reviews, workflow runs and jobs, the `migrations/` tarball at a sha | **yes** | staging, production | runtime | Server systemd credential | see §7 — Metadata R, Contents R, Pull requests R, Actions R, and nothing else | 90 days | **MISSING — NEEDS_OWNER_ACTION** |
 | `COOLIFY_URL` | autodeploy | Coolify API base. Loopback so the token never crosses an interface | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
-| `COOLIFY_TOKEN` | autodeploy | pin `git_commit_sha`, queue a deploy, poll it | **yes** | staging, production | runtime | Server systemd credential | team-scoped `read` + `write` + `deploy` + `read:sensitive` (deploy.sh reads variable values). Not `root` | 90 days | PRESENT |
+| `COOLIFY_TOKEN` | autodeploy | pin `git_commit_sha`, queue a deploy, poll it | **yes** | staging, production | runtime | Server systemd credential | team-scoped `read` + `write` + `deploy`. Not `root`, not `read:sensitive` | 90 days | PRESENT |
 | `APP_INGEST` | autodeploy | Coolify application uuid | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 | `APP_DASHBOARD` | autodeploy | Coolify application uuid | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 | `APP_BOT` | autodeploy | Coolify application uuid | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
