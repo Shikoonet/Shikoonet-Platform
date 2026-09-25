@@ -127,4 +127,25 @@ describe('readSubscriptionNames', () => {
     const f = (async () => new Response('nope', { status: 502 })) as unknown as typeof fetch;
     expect(await readSubscriptionNames(LINK, { fetchImpl: f, now: 0 })).toBeNull();
   });
+  it('stops reading a body past 256 KiB instead of holding all of it', async () => {
+    // CodeRabbit, 2026-09-26: the timeout bounds how long, not how much. An
+    // endless body would hang this test without the cap.
+    const chunk = new TextEncoder().encode(`${PLAIN}\n`.repeat(64));
+    const endless = (async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            controller.enqueue(chunk);
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    expect(await readSubscriptionNames(LINK, { fetchImpl: endless, now: 0 })).toBeNull();
+    const justUnder = (async () =>
+      new Response(`${PLAIN}\n${'#'.repeat(250 * 1024)}`, { status: 200 })) as unknown as typeof fetch;
+    clearSubscriptionCache();
+    expect((await readSubscriptionNames(LINK, { fetchImpl: justUnder, now: 0 }))?.version).toBe(
+      'V3.7.8.1',
+    );
+  });
 });

@@ -114,6 +114,31 @@ export function clearSubscriptionCache(): void {
   pending.clear();
 }
 
+/** A server list is a few kilobytes; a body past this is not one. */
+const MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * The body as text, or null past MAX_BODY_BYTES — read as a stream and
+ * stopped there, since the timeout bounds how long, not how much (CodeRabbit,
+ * 2026-09-26).
+ */
+async function textUpTo(res: Response, max: number): Promise<string | null> {
+  if (res.body === null) return '';
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return Buffer.concat(chunks).toString('utf8');
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+}
+
 /** At most MAX_IN_FLIGHT reads of the panel at once: it has been knocked over by our own retries before. */
 async function inSlot<T>(fn: () => Promise<T>): Promise<T> {
   while (inFlight >= MAX_IN_FLIGHT) await new Promise<void>((r) => waiting.push(r));
@@ -154,7 +179,8 @@ export async function readSubscriptionNames(
         signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       });
       if (!res.ok) return null;
-      return namesFromLinks(await res.text(), res.headers.get('profile-title'));
+      const body = await textUpTo(res, MAX_BODY_BYTES);
+      return body === null ? null : namesFromLinks(body, res.headers.get('profile-title'));
     } catch {
       return null;
     }
