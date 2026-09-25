@@ -928,6 +928,10 @@ function PanelModal({
   const [trialEnabled, setTrialEnabled] = useState(panel?.trial.enabled ?? false);
   const [trialVolume, setTrialVolume] = useState(numText(panel?.trial.volumeGb));
   const [trialHours, setTrialHours] = useState(numText(panel?.trial.durationHours));
+  const [supportTrialEnabled, setSupportTrialEnabled] = useState(
+    panel?.supportTrial.enabled ?? false,
+  );
+  const [sampleUrl, setSampleUrl] = useState(panel?.supportSampleSubscriptionUrl ?? '');
   const [extraVolume, setExtraVolume] = useState<TierText>(tierText(panel?.extraVolumeTomanPerGb));
   const [extraTime, setExtraTime] = useState<TierText>(tierText(panel?.extraTimeTomanPerDay));
   const [minVolume, setMinVolume] = useState(numText(panel?.extraVolumeMinGb));
@@ -1056,6 +1060,11 @@ function PanelModal({
         trialEnabled !== panel.trial.enabled ||
         trialVolumeGb !== panel.trial.volumeGb ||
         trialDurationHours !== panel.trial.durationHours;
+      // The support switch leans on the same two numbers, so they travel with it.
+      const sampleUrlValue = sampleUrl.trim() === '' ? null : sampleUrl.trim();
+      const supportTouched =
+        supportTrialEnabled !== panel.supportTrial.enabled ||
+        sampleUrlValue !== panel.supportSampleSubscriptionUrl;
 
       const dashboardPathValue = dashboardPath.trim() === '' ? null : dashboardPath.trim();
       const updated = await api.updatePanel(panel.id, {
@@ -1069,6 +1078,14 @@ function PanelModal({
         ...(usernameMode === panel.usernameMode ? {} : { usernameMode }),
         ...(panelText === panel.usernameText ? {} : { usernameText: panelText }),
         ...(trialTouched ? { trialEnabled, trialVolumeGb, trialDurationHours } : {}),
+        ...(supportTouched
+          ? {
+              supportTrialEnabled,
+              supportSampleSubscriptionUrl: sampleUrlValue,
+              trialVolumeGb,
+              trialDurationHours,
+            }
+          : {}),
         ...(sameTiers(volumePrices, panel.extraVolumeTomanPerGb)
           ? {}
           : { extraVolumeTomanPerGb: volumePrices }),
@@ -1564,6 +1581,40 @@ function PanelModal({
                 نمی‌شود — یک عدد برای کل فروشگاه است و در «تنظیمات» با کلید{' '}
                 <span className="ltr">limit_usertest_all</span> نگه داشته می‌شود.
               </p>
+              <label className="pick" style={{ marginBlockStart: 10 }}>
+                <input
+                  type="checkbox"
+                  aria-label="تست از پشتیبانی"
+                  checked={supportTrialEnabled}
+                  onChange={(e) => setSupportTrialEnabled(e.target.checked)}
+                  {...w}
+                />
+                <span>
+                  <b>تست از پشتیبانی</b>
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    ربات پشتیبانی وقتی تست ربات فروش خاموش است، با همین حجم و مدت تست می‌دهد. هر نفر
+                    روی‌هم یک تست دارد، چه از ربات فروش چه از پشتیبانی.
+                  </div>
+                </span>
+              </label>
+              <div style={{ marginBlockStart: 10 }}>
+                <label className="form-label" htmlFor="panel-sample-url">
+                  لینک اکانت نمونه برای فهرست سرورها
+                </label>
+                <input
+                  id="panel-sample-url"
+                  className="form-control ltr"
+                  type="url"
+                  placeholder="https://…"
+                  value={sampleUrl}
+                  onChange={(e) => setSampleUrl(e.target.value)}
+                  {...w}
+                />
+                <p className="muted" style={{ marginBlockStart: 4 }}>
+                  لینک اشتراک یک اکانت مال خود شرکت روی همین پنل. ربات پشتیبانی فقط اسم سرورها و نسخهٔ
+                  لینک را از آن می‌خواند؛ خود لینک به هیچ مشتری‌ای داده نمی‌شود.
+                </p>
+              </div>
             </Fold>
 
             <Fold title="➕ قیمت حجم و زمان اضافه">
