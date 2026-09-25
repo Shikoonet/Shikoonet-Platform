@@ -129,6 +129,7 @@ interface ReparseCandidate {
   now: { parserId: string; direction: 'CREDIT' | 'DEBIT'; amountIrr: number; balanceIrr: number | null; accountHint: string | null };
   redeliveryOf?: string | null;
   upgrades?: { transactionId: string; balanceIrr: number | null; bankTimestamp: number } | null;
+  rereads?: { transactionId: string; accountId: string | null; amountIrr: number } | null;
 }
 
 function UnparsedSmsPanel() {
@@ -198,12 +199,13 @@ function UnparsedSmsPanel() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ eventIds: reparse.candidates.map((c) => c.eventId), confirm: true }),
       });
-      const j = await readJson<{ made: unknown[]; upgraded?: unknown[]; skipped: unknown[]; failed?: unknown[] }>(r);
+      const j = await readJson<{ made: unknown[]; upgraded?: unknown[]; reread?: unknown[]; skipped: unknown[]; failed?: unknown[] }>(r);
       if (!r.ok) throw new Error(j.error ?? `${r.status}`);
       const failed = j.failed?.length ?? 0;
       const upgraded = j.upgraded?.length ?? 0;
+      const reread = j.reread?.length ?? 0;
       setApplied(
-        `${count(j.made.length)} ردیف ساخته شد${upgraded ? `؛ ${count(upgraded)} ردیف حدسی ارتقا یافت` : ''}${j.skipped.length ? `؛ ${count(j.skipped.length)} رد شد` : ''}${failed ? `؛ ${count(failed)} خطا داد` : ''}.`,
+        `${count(j.made.length)} ردیف ساخته شد${upgraded ? `؛ ${count(upgraded)} ردیف حدسی ارتقا یافت` : ''}${reread ? `؛ ${count(reread)} ردیف حدسی از نو خوانده شد` : ''}${j.skipped.length ? `؛ ${count(j.skipped.length)} رد شد` : ''}${failed ? `؛ ${count(failed)} خطا داد` : ''}.`,
       );
       setReparse(null);
       setReload((n) => n + 1);
@@ -297,6 +299,15 @@ function UnparsedSmsPanel() {
                         {c.now.direction === 'CREDIT' ? 'واریز' : 'برداشت'}
                         {c.redeliveryOf && <span className="badge badge-warning" title="بانک همین متن را دو بار فرستاده؛ ردیف نمی‌سازد">تکراری</span>}
                         {c.upgrades && <span className="badge badge-info" title="ردیفی که تحلیل‌گر عمومی ساخته بود در جا ارتقا می‌یابد: مانده و ساعت بانک از تحلیل‌گر نام‌دار">ارتقا</span>}
+                        {c.rereads && (
+                          <span
+                            className="badge badge-warning"
+                            title={`ردیف حدسی (${count(c.rereads.amountIrr)} ریال) پاک می‌شود و ردیف درست، با حساب و مبلغی که این‌جا می‌بینی، جایش ساخته می‌شود. به آن ردیف چیزی وصل نبود.`}
+                            data-testid="reparse-reread"
+                          >
+                            از نو
+                          </span>
+                        )}
                       </td>
                       <td className="tabular-nums">{count(c.now.amountIrr)}</td>
                       <td className="tabular-nums">{count(c.now.balanceIrr)}</td>

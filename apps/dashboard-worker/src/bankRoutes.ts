@@ -264,6 +264,11 @@ export function registerBankRoutes(
     for (const u of result.upgraded) {
       await audit(c.env.DB, ident, 'sms.reparsed', 'TRANSACTION', u.transactionId, null, { ...u, upgraded: true });
     }
+    // The guess's id is in `before`: the row it was is gone, and this is
+    // where anyone looking for it finds what took its place.
+    for (const x of result.reread) {
+      await audit(c.env.DB, ident, 'sms.reparsed', 'TRANSACTION', x.transactionId, { transactionId: x.replaced }, { ...x, reread: true });
+    }
     return c.json({ ok: true, ...result });
   });
 

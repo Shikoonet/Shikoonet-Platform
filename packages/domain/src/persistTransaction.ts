@@ -68,6 +68,22 @@ export function extractDetectedIdentifiers(r: ParseResult): DetectedIdentifierIn
   return out;
 }
 
+/**
+ * The account a reading lands on: the lookup below, without creating a
+ * PENDING account for a number nobody knows (null then, as for an ambiguous
+ * one). «بازخوانی» asks it before it offers to move a guessed row.
+ */
+export async function readingAccountId(db: D1Database, r: ParseResult): Promise<string | null> {
+  const detected = extractDetectedIdentifiers(r);
+  if (detected.length > 0) {
+    const resolved = await resolveDetectedIdentifiers(db, detected);
+    return resolved.status === 'OK' ? resolved.accountId : null;
+  }
+  if (!r.accountHint) return null;
+  const resolved = await resolveAccountByHint(db, r.accountHint);
+  return resolved.status === 'OK' ? resolved.accountId : null;
+}
+
 export async function persistTransaction(
   db: D1Database,
   eventId: string,

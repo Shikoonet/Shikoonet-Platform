@@ -13,6 +13,10 @@ const P = 'zz-rp-';
 const DEVICE = `${P}device`;
 const MELLI = `${P}melli`;
 const MOM = `${P}mom`;
+const SAMAN = `${P}saman`;
+const RESALAT = `${P}resalat`;
+/** The account generic-debit minted from a year, declined as the operator found it. */
+const YEAR = `${P}year`;
 // The clock is pinned: the bank-clock fence is two days wide around the
 // text's own date, and the window is `days` wide around now.
 const NOW = Date.UTC(2026, 8, 19, 11, 0);
@@ -67,7 +71,13 @@ async function purge(): Promise<void> {
   // to ours, and the active-hint index must have room for them. The resolver
   // reads `status`, not `active`: a stranger left ACTIVE makes the hint
   // ambiguous and the row lands on no account.
-  await db.prepare(`UPDATE financial_accounts SET active = 0, status = 'DECLINED' WHERE account_hint IN ('06006', '4006') AND id NOT LIKE ?1`).bind(`${P}%`).run();
+  await db
+    .prepare(
+      `UPDATE financial_accounts SET active = 0, status = 'DECLINED'
+        WHERE account_hint IN ('06006', '4006', '901-777-1234567-1', '10.1234567.1', '1405') AND id NOT LIKE ?1`,
+    )
+    .bind(`${P}%`)
+    .run();
 }
 
 beforeEach(async () => {
@@ -77,16 +87,19 @@ beforeEach(async () => {
     .prepare(`INSERT INTO devices (id, device_code, display_name, active, created_at, updated_at) VALUES (?1, ?1, 'Reparse Phone', 1, 0, 0) ON CONFLICT (id) DO NOTHING`)
     .bind(DEVICE)
     .run();
-  for (const [id, bank, name, hint] of [
-    [MELLI, 'Meli', 'ملی', '06006'],
-    [MOM, 'Keshavarzi', 'کشاورزی-مامان', '4006'],
+  for (const [id, bank, name, hint, status] of [
+    [MELLI, 'Meli', 'ملی', '06006', 'ACTIVE'],
+    [MOM, 'Keshavarzi', 'کشاورزی-مامان', '4006', 'ACTIVE'],
+    [SAMAN, 'Saman', 'سامان', '901-777-1234567-1', 'ACTIVE'],
+    [RESALAT, 'Resalat', 'رسالت', '10.1234567.1', 'ACTIVE'],
+    [YEAR, '', 'Auto: ****', '1405', 'DECLINED'],
   ]) {
     await db
       .prepare(
         `INSERT INTO financial_accounts (id, bank_name, display_name, account_type, account_hint, active, status, parser_configuration, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'ACCOUNT', ?4, 1, 'ACTIVE', '{}', 0, 0)`,
+         VALUES (?1, ?2, ?3, 'ACCOUNT', ?4, 1, ?5, '{}', 0, 0)`,
       )
-      .bind(id, bank, name, hint)
+      .bind(id, bank, name, hint, status)
       .run();
   }
 });
@@ -100,7 +113,10 @@ afterAll(async () => {
 
 const MELLI_BILL = 'بانک ملی ایران\nقبض:107,000,000-\nحساب:06006\nمانده:26,481,206\n0627-00:16';
 const KESHAVARZI = 'واریز1,000,000\nمانده2,854,098\n050627-06:05\nکارت4006*\nbki. ir';
-const OTP_REDACTED = 'انتقال وجه آنی\nاز: 300433163497\nمبلغ 70,000,000 ریال\nرمز [otp-redacted]';
+// 1405/06/28, the day NOW is on — the bank's clock stays inside the two-day fence.
+const SAMAN_TRANSFER = 'بانک سامان\nبرداشت مبلغ 20,000,000 انتقال وجه\nاز 901-777-1234567-1\nمانده 61,645,420\n1405/6/28\n09:33:26';
+const RESALAT_FEE = '10.1234567.1\n-39,000\n06/28_12:12\nمانده: 9,308,000\nکارمزد پیامک تیر ماه 1405';
+const OTP_REDACTED ='انتقال وجه آنی\nاز: 300433163497\nمبلغ 70,000,000 ریال\nرمز [otp-redacted]';
 
 describe('dryRunReparse', () => {
   it('lists what a named parser reads now, counts what nobody reads, and skips filtered, duplicate and redacted texts', async () => {
@@ -148,18 +164,23 @@ describe('dryRunReparse', () => {
     expect(r.candidates.find((c) => c.eventId === earlier)?.redeliveryOf).toBe(later);
   });
 
-  it('offers to upgrade a row a generic parser guessed — same movement only', async () => {
+  it('offers to upgrade a guessed row of the same movement, and to read one nothing rests on again', async () => {
     const at = NOW - 3_600_000;
     const guessed = await raw('KESHAVARZI', KESHAVARZI, 'generic-credit', 'BANK_CREDIT', at);
     const tx = await genericRow(guessed, MOM, 'CREDIT', 1_000_000, 4006, at);
-    // Same text, but the guess recorded a different amount: not the same movement, not offered.
+    // Same text, but the guess recorded a different amount: another movement.
+    // Nothing rests on it, so the guess is offered for replacing, not upgrading.
     const other = await raw('KESHAVARZI', KESHAVARZI, 'generic-credit', 'BANK_CREDIT', at + 1);
-    await genericRow(other, MOM, 'CREDIT', 999_999, 4006, at + 1);
+    const otherTx = await genericRow(other, MOM, 'CREDIT', 999_999, 4006, at + 1);
 
     const r = await dryRunReparse(db, SINCE);
     const c = r.candidates.find((x) => x.eventId === guessed);
-    expect(c).toMatchObject({ upgrades: { transactionId: tx, balanceIrr: 4006, bankTimestamp: at }, now: { parserId: 'keshavarzi-v1', balanceIrr: 2_854_098 } });
-    expect(r.candidates.find((x) => x.eventId === other)).toBeUndefined();
+    expect(c).toMatchObject({ upgrades: { transactionId: tx, balanceIrr: 4006, bankTimestamp: at }, rereads: null, now: { parserId: 'keshavarzi-v1', balanceIrr: 2_854_098 } });
+    expect(r.candidates.find((x) => x.eventId === other)).toMatchObject({
+      upgrades: null,
+      rereads: { transactionId: otherTx, accountId: MOM, amountIrr: 999_999 },
+      now: { amountIrr: 1_000_000 },
+    });
   });
 });
 
@@ -294,14 +315,83 @@ describe('applyReparse', () => {
     expect(Number(opening!.as_of)).toBe(Date.UTC(2026, 8, 18, 2, 35));
   });
 
-  it('will not rewrite a guessed row into a different movement', async () => {
-    const at = NOW - 3_600_000;
-    const guessed = await raw('KESHAVARZI', KESHAVARZI, 'generic-credit', 'BANK_CREDIT', at);
-    await genericRow(guessed, MOM, 'CREDIT', 999_999, 4006, at);
-    const a = await applyReparse(db, [guessed]);
+  // What rests on a row is money the books counted or a person's decision;
+  // either keeps the guess's account and amount. One pin of each kind.
+  for (const [pin, rest] of [
+    ['a person rejected it', (tx: string) => db.prepare(`UPDATE transaction_candidates SET status = 'REJECTED' WHERE id = ?1`).bind(tx).run()],
+    [
+      'the fresh start opened on it',
+      (tx: string) =>
+        db
+          .prepare(`INSERT INTO account_opening_balances (financial_account_id, balance_irr, as_of, transaction_candidate_id, created_by, created_at) VALUES (?1, 4006, ?2, ?3, 'test', ?2)`)
+          .bind(MOM, NOW, tx)
+          .run(),
+    ],
+  ] as const) {
+    it(`will not rewrite a guessed row into a different movement when ${pin}`, async () => {
+      const at = NOW - 3_600_000;
+      const guessed = await raw('KESHAVARZI', KESHAVARZI, 'generic-credit', 'BANK_CREDIT', at);
+      const tx = await genericRow(guessed, MOM, 'CREDIT', 999_999, 4006, at);
+      await rest(tx);
+      const dr = await dryRunReparse(db, SINCE);
+      expect(dr.candidates.find((c) => c.eventId === guessed)).toBeUndefined();
+      const a = await applyReparse(db, [guessed]);
+      expect(a.upgraded).toEqual([]);
+      expect(a.reread).toEqual([]);
+      expect(a.skipped).toEqual([{ eventId: guessed, why: 'no_longer_readable' }]);
+      const row = await db.prepare(`SELECT id, amount_irr, balance_irr, parser_id FROM transaction_candidates WHERE raw_sms_event_id = ?1`).bind(guessed).first<Record<string, unknown>>();
+      expect(row).toMatchObject({ id: tx, amount_irr: 999_999, balance_irr: 4006, parser_id: 'generic-credit' });
+    });
+  }
+
+  it('reads again a guessed row nothing rests on — the year that was taken for an account, 2026-09-24', async () => {
+    // Production: generic-debit read «1405» — the year — as the account of a
+    // Saman transfer and of a Resalat SMS fee (the fee as 10 IRR, the «10» of
+    // the account number). An account «1405» was minted and declined, and the
+    // two withdrawals left the books of the accounts they belonged to.
+    const at = NOW - 3 * 3_600_000;
+    const saman = await raw('+989999920000', SAMAN_TRANSFER, 'generic-debit', 'BANK_DEBIT', at);
+    const samanGuess = await genericRow(saman, YEAR, 'DEBIT', 20_000_000, 61_645_420, at);
+    const fee = await raw('ResalatBank', RESALAT_FEE, 'generic-debit', 'BANK_DEBIT', at + 60_000);
+    const feeGuess = await genericRow(fee, YEAR, 'DEBIT', 10, 9_308_000, at + 60_000);
+
+    const dr = await dryRunReparse(db, SINCE);
+    expect(dr.candidates.find((c) => c.eventId === saman)).toMatchObject({
+      upgrades: null,
+      rereads: { transactionId: samanGuess, accountId: YEAR, amountIrr: 20_000_000 },
+      now: { parserId: 'saman-credit-v1', direction: 'DEBIT', amountIrr: 20_000_000 },
+    });
+    expect(dr.candidates.find((c) => c.eventId === fee)).toMatchObject({
+      rereads: { transactionId: feeGuess, accountId: YEAR, amountIrr: 10 },
+      now: { parserId: 'compact-signed-v1', direction: 'DEBIT', amountIrr: 39_000 },
+    });
+
+    const a = await applyReparse(db, [saman, fee]);
+    expect(a.failed).toEqual([]);
     expect(a.upgraded).toEqual([]);
-    expect(a.skipped).toEqual([{ eventId: guessed, why: 'no_longer_readable' }]);
-    const row = await db.prepare(`SELECT amount_irr, balance_irr, parser_id FROM transaction_candidates WHERE raw_sms_event_id = ?1`).bind(guessed).first<Record<string, unknown>>();
-    expect(row).toMatchObject({ amount_irr: 999_999, balance_irr: 4006, parser_id: 'generic-credit' });
+    expect(a.reread.map((x) => [x.eventId, x.replaced])).toEqual([
+      [saman, samanGuess],
+      [fee, feeGuess],
+    ]);
+    const rows = await db
+      .prepare(
+        `SELECT t.raw_sms_event_id AS ev, t.financial_account_id, t.amount_irr, t.balance_irr, t.parser_id, t.processing_disposition
+           FROM transaction_candidates t WHERE t.raw_sms_event_id IN (?1, ?2) ORDER BY t.bank_timestamp`,
+      )
+      .bind(saman, fee)
+      .all<Record<string, unknown>>();
+    expect(rows.results).toEqual([
+      { ev: saman, financial_account_id: SAMAN, amount_irr: 20_000_000, balance_irr: 61_645_420, parser_id: 'saman-credit-v1', processing_disposition: 'OUTGOING_IGNORED' },
+      { ev: fee, financial_account_id: RESALAT, amount_irr: 39_000, balance_irr: 9_308_000, parser_id: 'compact-signed-v1', processing_disposition: 'OUTGOING_IGNORED' },
+    ]);
+    const onYear = await db.prepare(`SELECT COUNT(*)::int AS n FROM transaction_candidates WHERE financial_account_id = ?1`).bind(YEAR).first<{ n: number }>();
+    expect(onYear?.n).toBe(0);
+
+    const again = await applyReparse(db, [saman, fee]);
+    expect(again.reread).toEqual([]);
+    expect(again.skipped).toEqual([
+      { eventId: saman, why: 'already_has_row' },
+      { eventId: fee, why: 'already_has_row' },
+    ]);
   });
 });
