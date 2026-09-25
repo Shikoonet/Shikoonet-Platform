@@ -123,6 +123,11 @@ die() {
   exit 1
 }
 
+# `timeout 0` is no deadline at all, and a pull without one can hold the flock
+# for ever — the very thing PULL_TIMEOUT exists to stop. Whole seconds, > 0.
+[[ $PULL_TIMEOUT =~ ^[1-9][0-9]*$ ]] ||
+  die "PULL_TIMEOUT must be a positive number of seconds, got '$PULL_TIMEOUT'"
+
 # ---------------------------------------------------------------------- lock
 # Fail fast rather than queue: GitHub's environment concurrency already queues,
 # so a second copy here means a hand-run racing CI, which is worth seeing.
