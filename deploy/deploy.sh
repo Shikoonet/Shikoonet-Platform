@@ -305,6 +305,29 @@ header = "Authorization: Bearer $COOLIFY_TOKEN"
 CFG
 }
 
+# ------------------------------------------------------------ token preflight
+# Asked before the pull, which can take minutes, and before anything else talks
+# to Coolify — so a token Coolify no longer knows costs seconds and says so.
+#
+# 2026-09-25: production's token was gone from Coolify (deleted or expired
+# under «Keys & Tokens»; only staging's was left). Promote Production pulled
+# the image and then died on the first `app_field`, whose error went into a
+# pipe: the whole log said `curl: (22) … error: 401`, nothing naming which
+# token, which file, or what to do. Staging kept deploying, because it has its
+# own token, so nothing had shown it until somebody pressed Promote.
+PREFLIGHT_ERR=''
+if ! PREFLIGHT_ERR=$(api GET "/applications/$APP_DASHBOARD" 2>&1 >/dev/null); then
+  case "$PREFLIGHT_ERR" in
+    *'error: 401'*)
+      die "Coolify refused COOLIFY_TOKEN from $CONF (HTTP 401): the token no longer exists in Coolify — deleted, revoked or expired under «Keys & Tokens». Create a new API token there with read, write and deploy and no expiry, name it «shikoo-${ENV_ARG}-deploy — used by deploy.sh, do not delete», and write it as COOLIFY_TOKEN= in $CONF. Nothing was pulled or changed." ;;
+    *'error: 403'*)
+      die "Coolify accepted the token in $CONF but refused application $APP_DASHBOARD (HTTP 403): the token lacks read/write/deploy, or belongs to another team. Nothing was pulled or changed." ;;
+    *)
+      die "Coolify at $COOLIFY_URL did not answer the token check for $APP_DASHBOARD: ${PREFLIGHT_ERR:-no response}. Nothing was pulled or changed." ;;
+  esac
+fi
+say "coolify: token accepted"
+
 # ------------------------------------------------------------ pull + verify
 # Pulled here as well as by Coolify, because the revision label is checked
 # BEFORE anything is asked to deploy. A digest that was not built from this

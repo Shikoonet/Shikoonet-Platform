@@ -106,6 +106,13 @@ done
 if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
   case "$url" in
     "$FAKE_COOLIFY_URL"*)
+      # A token Coolify no longer knows: every call is a 401, the way curl
+      # --fail-with-body reports it — body on stdout, the status on stderr.
+      if [ "${FAKE_TOKEN_REFUSED:-}" = '1' ]; then
+        printf '{"message":"Unauthenticated."}'
+        printf 'curl: (22) The requested URL returned error: 401\n' >&2
+        exit 22
+      fi
       path=${url#"$FAKE_COOLIFY_URL"/api/v1}
       method='GET'
       body=''
@@ -1020,6 +1027,7 @@ run_deploy() { # bot-flag
     FAKE_LABEL_SHA="$SHA_MERGED" FAKE_BUILD_PACK="${FAKE_BUILD_PACK:-dockerimage}" \
     FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
+    FAKE_TOKEN_REFUSED="${FAKE_TOKEN_REFUSED:-}" \
     FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" FAKE_MALFORMED_ENVS="${FAKE_MALFORMED_ENVS:-}" \
     FAKE_PREVIEW_TWINS="${FAKE_PREVIEW_TWINS:-}" FAKE_PREVIEW_ONLY_ENV_NAME="${FAKE_PREVIEW_ONLY_ENV_NAME:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads"     FAKE_ENV_ROWS="${FAKE_ENV_ROWS:-}" FAKE_ENV_PATCH_FAILS="${FAKE_ENV_PATCH_FAILS:-}" \
@@ -1168,6 +1176,33 @@ else
     "$(tail -2 "$DEPLOY_LOG")"
 fi
 unset FAKE_APP_IMAGE
+
+section 'deploy.sh — a Coolify token that no longer exists'
+
+# 2026-09-25, Promote Production: the token had been deleted in Coolify, the
+# deploy pulled the image first and then died on `curl: (22) … 401` with
+# nothing naming the token or the fix. Refused now before the pull, in words.
+FAKE_TOKEN_REFUSED=1
+if run_deploy false; then
+  bad 'refuses a token Coolify no longer knows' 'it deployed anyway'
+else
+  if grep -qF 'Coolify refused COOLIFY_TOKEN' "$DEPLOY_LOG" && grep -qF 'Keys & Tokens' "$DEPLOY_LOG"; then
+    ok 'says the token was refused, and where to make a new one'
+  else
+    bad 'says the token was refused, and where to make a new one' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+  if grep -qF 'pulling' "$DEPLOY_LOG" || [ -s "$WORK/pins" ] || [ -s "$WORK/deploys" ]; then
+    bad 'refuses before pulling, pinning or deploying anything' "$(grep -E 'pulling|migrating' "$DEPLOY_LOG" || true)"
+  else
+    ok 'refuses before pulling, pinning or deploying anything'
+  fi
+  if grep -qF "$FAKE_TOKEN" "$DEPLOY_LOG"; then
+    bad 'the refusal does not print the token' 'the token is in the log'
+  else
+    ok 'the refusal does not print the token'
+  fi
+fi
+unset FAKE_TOKEN_REFUSED
 
 section 'deploy.sh — an application that would rebuild instead of pulling'
 
