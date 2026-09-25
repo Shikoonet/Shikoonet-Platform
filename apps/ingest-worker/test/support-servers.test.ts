@@ -23,7 +23,7 @@ const fakeFetch = (async (input: string | URL | Request) => {
   return body === undefined ? new Response('', { status: 404 }) : new Response(body, { status: 200 });
 }) as unknown as typeof fetch;
 
-async function call(body: unknown): Promise<Response> {
+async function call(body: unknown, extra: Partial<Env> = {}): Promise<Response> {
   return await app.fetch(
     new Request('https://example.com/api/v1/integrations/support/servers', {
       method: 'POST',
@@ -35,11 +35,13 @@ async function call(body: unknown): Promise<Response> {
       SUPPORT_INTEGRATION_ENABLED: 'true',
       SUPPORT_INTEGRATION_TOKEN: TOKEN,
       SUBSCRIPTION_FETCH: fakeFetch,
+      ...extra,
     } as Env,
   );
 }
 
 beforeAll(async () => {
+  await cleanUp();
   const p = await env.DB.prepare(
     `INSERT INTO provisioning_providers (code, name, kind, status, base_url, secret_ref, config)
      VALUES ('support-test-servers', 'الماس', 'pasarguard', 'ACTIVE', 'https://panel.test', 'X',
@@ -61,13 +63,21 @@ beforeAll(async () => {
     .run();
 });
 beforeEach(() => clearSubscriptionCache());
-afterAll(async () => {
-  await env.DB.prepare(`DELETE FROM subscriptions WHERE public_id = 'supsrv0001'`).run();
+
+/** Everything this file writes, whatever a failed test left behind. */
+async function cleanUp(): Promise<void> {
+  await env.DB.prepare(
+    `DELETE FROM subscriptions
+      WHERE user_id IN (SELECT id FROM users WHERE telegram_id BETWEEN ?1 AND ?2)`,
+  )
+    .bind(TG, TG_END)
+    .run();
   await env.DB.prepare(`DELETE FROM users WHERE telegram_id BETWEEN ?1 AND ?2`)
     .bind(TG, TG_END)
     .run();
   await env.DB.prepare(`DELETE FROM provisioning_providers WHERE code = 'support-test-servers'`).run();
-});
+}
+afterAll(cleanUp);
 
 describe('which servers', () => {
   it('reads the customer’s own service and the sample list, names only', async () => {
@@ -93,5 +103,51 @@ describe('which servers', () => {
     };
     expect(json.own).toEqual([]);
     expect(json.catalog.length).toBeGreaterThan(0);
+  });
+});
+
+describe('a slow or dead panel does not hold the support bot', () => {
+  it('answers within its budget, with whatever finished', async () => {
+    // Final review, 2026-09-26: each read had a timeout but the request did
+    // not, so several dead panels held n8n for 10–50 seconds.
+    const hang = ((_: unknown, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const quit = () => reject(new Error('aborted'));
+        init?.signal?.addEventListener('abort', quit);
+        setTimeout(quit, 800);
+      })) as unknown as typeof fetch;
+    const started = Date.now();
+    const json = (await (
+      await call({ telegram_id: TG + 1 }, { SUBSCRIPTION_FETCH: hang, SUPPORT_SERVERS_BUDGET_MS: 150 })
+    ).json()) as { ok: boolean; own: unknown[]; catalog: unknown[] };
+    expect(Date.now() - started).toBeLessThan(700);
+    expect(json).toEqual({ ok: true, own: [], catalog: [] });
+  });
+
+  it('reads at most the customer’s five newest services', async () => {
+    const u = await env.DB.prepare(
+      `INSERT INTO users (telegram_id, registered_at) VALUES (?1, now()) RETURNING id`,
+    )
+      .bind(TG + 2)
+      .first<{ id: number }>();
+    for (let i = 1; i <= 7; i += 1) {
+      await env.DB.prepare(
+        `INSERT INTO subscriptions (public_id, user_id, plan_name_at_sale, price_irr,
+                                    subscription_url, status, purchased_at)
+         VALUES (?1, ?2, ?3, 0, ?4, 'ACTIVE', now())`,
+      )
+        .bind(`supmany${i}`, u!.id, `many ${i}`, `https://sub.example/many-${i}`)
+        .run();
+    }
+    const many = (async (input: string | URL | Request) => {
+      const m = /many-(\d+)\/links$/.exec(String(input));
+      return m
+        ? new Response(bodyFor(['🔄 V3.7.8.1', `S${m[1]}`]), { status: 200 })
+        : new Response('', { status: 404 });
+    }) as unknown as typeof fetch;
+    const json = (await (await call({ telegram_id: TG + 2 }, { SUBSCRIPTION_FETCH: many })).json()) as {
+      own: { servers: string[] }[];
+    };
+    expect(json.own.map((o) => o.servers[0])).toEqual(['S7', 'S6', 'S5', 'S4', 'S3']);
   });
 });

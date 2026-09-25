@@ -52,6 +52,8 @@ export interface Env {
   SUPPORT_LIMIT?: RateLimit;
   /** Tests inject a fake; production reads subscriptions with the global fetch. */
   SUBSCRIPTION_FETCH?: typeof fetch;
+  /** Tests shorten it; production uses the 6-second budget in `support.ts`. */
+  SUPPORT_SERVERS_BUDGET_MS?: number;
   /**
    * The header the reverse proxy sets to the real client address — `X-Real-IP`
    * for the nginx terminator in front of this. Named rather than guessed,

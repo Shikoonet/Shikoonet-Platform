@@ -41,6 +41,29 @@ describe('namesFromLinks', () => {
     const body = `trojan://s@h.example:443#${enc('Germany V2')}`;
     expect(namesFromLinks(body, null)).toEqual({ version: null, servers: ['Germany V2'] });
   });
+  it('answers null for an HTML page even when it carries URLs — final review, 2026-09-26', () => {
+    // A 200 login page from the panel used to become «servers» such as
+    // `333"><a href="https://panel.example.com/">`, cached for five minutes and
+    // carrying a host address. Only a line that STARTS with a scheme is a link.
+    const page = [
+      '<html><head><link href="https://cdn.example/app.css#v2"></head>',
+      '<body><a href="https://t.me/shikoonet#support">Support</a>',
+      '<div style="color:#333"><a href="https://panel.example.com/">Home</a></div></body></html>',
+    ].join('\n');
+    expect(namesFromLinks(page, null)).toBeNull();
+  });
+  it('takes the version only from the start of a name, as the spec says', () => {
+    // «Germany v2.1 Fast» listed first used to become the version, and the real
+    // version line was then shown to customers as a server.
+    const body = [
+      `trojan://s@h.example:443#${enc('🇩🇪 Germany v2.1 Fast')}`,
+      `trojan://s@h.example:443#${enc('🔄 V3.7.8.1')}`,
+    ].join('\n');
+    expect(namesFromLinks(body, null)).toEqual({
+      version: 'V3.7.8.1',
+      servers: ['🇩🇪 Germany v2.1 Fast'],
+    });
+  });
   it('answers null for a body with no links at all — an HTML page is not a server list', () => {
     expect(namesFromLinks('<html><body>Login</body></html>', null)).toBeNull();
     expect(namesFromLinks('', null)).toBeNull();
@@ -86,6 +109,19 @@ describe('readSubscriptionNames', () => {
       await readSubscriptionNames(LINK, { fetchImpl: hang, now: 0, timeoutMs: 50 }),
     ).toBeNull();
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+  it('asks the panel once when several callers want the same link at the same time', async () => {
+    let calls = 0;
+    const slow = (async () => {
+      calls += 1;
+      await new Promise((r) => setTimeout(r, 30));
+      return new Response(PLAIN, { status: 200 });
+    }) as unknown as typeof fetch;
+    const got = await Promise.all(
+      [1, 2, 3].map(() => readSubscriptionNames(LINK, { fetchImpl: slow, now: 0 })),
+    );
+    expect(calls).toBe(1);
+    expect(got.every((g) => g?.version === 'V3.7.8.1')).toBe(true);
   });
   it('answers null for a panel error', async () => {
     const f = (async () => new Response('nope', { status: 502 })) as unknown as typeof fetch;

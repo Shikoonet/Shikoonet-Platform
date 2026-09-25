@@ -162,6 +162,13 @@ describe('which trials a person may have', () => {
     const c = await customer({ used: -15 });
     expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({ quota_left: 16 });
   });
+
+  it('reports nothing left when the shop-wide quota is zero, whatever the counter says', async () => {
+    // Final review, 2026-09-26: options said 15 while ordering said «used».
+    await setQuota(0);
+    const c = await customer({ used: -15 });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({ quota_left: 0 });
+  });
 });
 
 describe('ordering a trial', () => {
@@ -244,6 +251,23 @@ describe('ordering a trial', () => {
       result: 'already_used',
     });
     expect(await trialOrders(c.id)).toHaveLength(1);
+  });
+
+  it('does not call a trial that already failed «on the way»', async () => {
+    // Final review, 2026-09-26: a trial the panel refused counted as «in the
+    // last two minutes», so the customer was told it was coming.
+    await setQuota(2);
+    const c = await customer();
+    await ask('/trial', { telegram_id: c.tg, panel_id: diamond });
+    await env.DB.prepare(
+      `UPDATE orders SET status = 'FAILED', failure_reason = 'panel refused'
+        WHERE user_id = ?1 AND kind = 'TRIAL'`,
+    )
+      .bind(c.id)
+      .run();
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toMatchObject({
+      result: 'on_the_way',
+    });
   });
 
   it('writes one order when several requests for one person arrive together', async () => {

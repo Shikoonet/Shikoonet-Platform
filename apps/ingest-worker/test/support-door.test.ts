@@ -144,14 +144,32 @@ describe('«قوانین»', () => {
 });
 
 describe('who is asking', () => {
-  it.each([
+  const BAD_PERSON: [unknown][] = [
     [{ telegram_id: '123' }],
     [{ telegram_id: 1.5 }],
     [{ telegram_id: 0 }],
     [{ telegram_id: 5, extra: true }],
     ['not json'],
-  ])('refuses %j before any lookup', async (body) => {
+  ];
+  it.each(BAD_PERSON)('/servers refuses %j before any lookup', async (body) => {
     const res = await call('/servers', body);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ ok: false, error: 'invalid_body' });
+  });
+  it.each(BAD_PERSON)('/trial/options refuses %j before any lookup', async (body) => {
+    const res = await call('/trial/options', body);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ ok: false, error: 'invalid_body' });
+  });
+  it.each([
+    [{ telegram_id: 5 }],
+    [{ telegram_id: 5, panel_id: '7' }],
+    [{ telegram_id: 5, panel_id: 7.5 }],
+    [{ telegram_id: '5', panel_id: 7 }],
+    [{ telegram_id: 5, panel_id: 7, extra: true }],
+    ['not json'],
+  ])('/trial refuses %j before any lookup', async (body) => {
+    const res = await call('/trial', body);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ ok: false, error: 'invalid_body' });
   });

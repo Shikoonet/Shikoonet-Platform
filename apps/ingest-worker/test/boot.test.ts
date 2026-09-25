@@ -152,6 +152,12 @@ describe('starting in production', () => {
     expect(() => buildEnv(NO_DB)).toThrow(/SUPPORT_INTEGRATION_TOKEN/);
   });
 
+  it('refuses a short support token on staging too — it can reach a real panel', () => {
+    // Final review, 2026-09-26: the rule lived inside the production-only check.
+    set({ ENV_NAME: 'staging', SUPPORT_INTEGRATION_ENABLED: 'true', SUPPORT_INTEGRATION_TOKEN: 'short' });
+    expect(() => buildEnv(NO_DB)).toThrow(/SUPPORT_INTEGRATION_TOKEN/);
+  });
+
   it('opens the support door with a long token, and ignores the token when the door is off', () => {
     set({ ...PRODUCTION_ON, SUPPORT_INTEGRATION_ENABLED: 'true', SUPPORT_INTEGRATION_TOKEN: 'x'.repeat(32) });
     expect(buildEnv(NO_DB).SUPPORT_INTEGRATION_TOKEN).toHaveLength(32);

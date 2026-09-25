@@ -103,6 +103,22 @@ const CONSEQUENCE: Record<(typeof MUST_BE_DECIDED)[number], string> = {
 };
 
 /**
+ * The support bot orders free accounts through its door, and a short or
+ * missing token hands them to anybody who guesses it. Every environment, not
+ * only production: staging's panel rows can reach a real panel (final review,
+ * 2026-09-26). A door that is off needs no token.
+ */
+function assertSupportDoorConfig(env: Env): void {
+  if (env.SUPPORT_INTEGRATION_ENABLED !== 'true') return;
+  if ((env.SUPPORT_INTEGRATION_TOKEN?.length ?? 0) < 32) {
+    throw new Error(
+      'SUPPORT_INTEGRATION_TOKEN must be at least 32 characters when ' +
+        'SUPPORT_INTEGRATION_ENABLED=true: the support bot can order free trials through this door.',
+    );
+  }
+}
+
+/**
  * Refuses to start rather than to work.
  *
  * Only in production, and deliberately so: the simulation is started by hand a
@@ -137,19 +153,6 @@ function assertProductionConfig(env: Env): void {
           'record itself as the test integration.',
       );
     }
-  }
-
-  // The support bot orders free accounts through its door; a short or missing
-  // token hands them to anybody who guesses it.
-  if (
-    env.SUPPORT_INTEGRATION_ENABLED === 'true' &&
-    (env.SUPPORT_INTEGRATION_TOKEN?.length ?? 0) < 32
-  ) {
-    throw new Error(
-      'SUPPORT_INTEGRATION_TOKEN must be at least 32 characters when ' +
-        'SUPPORT_INTEGRATION_ENABLED=true in production: the support bot can order free ' +
-        'trials through this door.',
-    );
   }
 
   // Said out loud once, because an operator who meant it should still see it in
@@ -210,6 +213,7 @@ export function buildEnv(db: Env['DB']): Env {
   if (env.INGEST_MAX_BODY_BYTES !== undefined) {
     positiveInt('INGEST_MAX_BODY_BYTES', 0);
   }
+  assertSupportDoorConfig(env);
   assertProductionConfig(env);
   return env;
 }

@@ -20,10 +20,14 @@ import { Texts } from '@shikoo/contracts';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { claimTrial, clientIp, createLogger, readTrialQuota, trialPanels } from '@shikoo/domain';
 import type { Env } from '../index.js';
-import { readSubscriptionNames } from './subscriptionNames.js';
+import { readSubscriptionNames, type SubscriptionNames } from './subscriptionNames.js';
 
 export const SUPPORT_BASE_PATH = '/api/v1/integrations/support';
 const MAX_BODY_BYTES = 2048;
+/** The whole `/servers` answer, however many panels are slow. */
+const SERVERS_BUDGET_MS = 6_000;
+/** A reseller can hold dozens of services; the newest few answer «which servers». */
+const OWN_SERVICES_MAX = 5;
 
 const log = createLogger('ingest.support');
 
@@ -162,7 +166,9 @@ support.post('/trial/options', async (c) => {
   return c.json({
     ok: true,
     customer: 'ok',
-    quota_left: Math.max(0, quota - user.testQuotaUsed),
+    // Zero means «no trials anywhere», whatever a migrated counter says — the
+    // same answer `/trial` gives (final review, 2026-09-26).
+    quota_left: quota === 0 ? 0 : Math.max(0, quota - user.testQuotaUsed),
     services,
   });
 });
@@ -197,10 +203,13 @@ support.post('/trial', async (c) => {
     if (panel.shop.enabled) return { result: 'use_shop_bot', service: panel.name };
     if (!panel.support.enabled) return { result: 'not_available' };
 
+    // A trial the panel refused is not «on the way»: `fail()` has already
+    // given the quota back and told the customer (final review, 2026-09-26).
     const recent = await tx
       .prepare(
         `SELECT 1 AS x FROM orders
-          WHERE user_id = ?1 AND kind = 'TRIAL' AND created_at > now() - interval '2 minutes'
+          WHERE user_id = ?1 AND kind = 'TRIAL' AND status <> 'FAILED'
+            AND created_at > now() - interval '2 minutes'
           LIMIT 1`,
       )
       .bind(user.id)
@@ -237,9 +246,10 @@ support.post('/servers', async (c) => {
                  FROM subscriptions
                 WHERE user_id = ?1 AND status IN ('ACTIVE', 'ON_HOLD')
                   AND subscription_url IS NOT NULL
-                ORDER BY id`,
+                ORDER BY id DESC
+                LIMIT ?2`,
             )
-            .bind(user.id)
+            .bind(user.id, OWN_SERVICES_MAX)
             .all<{ service: string | null; url: string }>()
         ).results ?? []);
   const samples =
@@ -255,15 +265,33 @@ support.post('/servers', async (c) => {
         .all<{ service: string; url: string }>()
     ).results ?? [];
 
-  const read = async (rows: { service: string | null; url: string }[]) =>
-    (
-      await Promise.all(
-        rows.map(async (r) => {
-          const names = await readSubscriptionNames(r.url, fetchImpl ? { fetchImpl } : {});
-          return names === null ? null : { service: r.service ?? '', ...names };
-        }),
-      )
-    ).filter((x): x is NonNullable<typeof x> => x !== null);
+  // Every read at once, and one budget for the whole answer: the support bot
+  // is waiting with a customer on the line. A read still running at the
+  // budget is left to finish on its own timeout and fill the cache for the
+  // next question (final review, 2026-09-26: a few dead panels held this
+  // request for 10–50 seconds).
+  const rows = [
+    ...own.map((r) => ({ group: 'own' as const, ...r })),
+    ...samples.map((r) => ({ group: 'catalog' as const, ...r })),
+  ];
+  const got: ({ service: string } & SubscriptionNames)[] = [];
+  const done = new Set<number>();
+  const reads = rows.map((r, i) =>
+    readSubscriptionNames(r.url, fetchImpl ? { fetchImpl } : {}).then((names) => {
+      if (names !== null) got[i] = { service: r.service ?? '', ...names };
+      done.add(i);
+    }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.all(reads),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, c.env.SUPPORT_SERVERS_BUDGET_MS ?? SERVERS_BUDGET_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  const pick = (group: 'own' | 'catalog') =>
+    rows.flatMap((r, i) => (r.group === group && done.has(i) && got[i] ? [got[i]!] : []));
 
-  return c.json({ ok: true, own: await read(own), catalog: await read(samples) });
+  return c.json({ ok: true, own: pick('own'), catalog: pick('catalog') });
 });
