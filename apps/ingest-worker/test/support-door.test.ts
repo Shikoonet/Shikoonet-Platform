@@ -143,7 +143,7 @@ describe('«قوانین»', () => {
   });
 });
 
-describe.skip('who is asking', () => {
+describe('who is asking', () => {
   it.each([
     [{ telegram_id: '123' }],
     [{ telegram_id: 1.5 }],

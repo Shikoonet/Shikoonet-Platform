@@ -1,0 +1,97 @@
+/**
+ * «کدام سرورها؟» through the support door: the customer's own services, and a
+ * company sample account per panel for someone who has none. Names only —
+ * the response must never carry anything that would let another person use
+ * a link.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { app, type Env } from '../src/index.js';
+import { clearSubscriptionCache } from '../src/integrations/subscriptionNames.js';
+import { env } from './helpers/env.js';
+
+const TOKEN = 'support-test-token-that-is-long-enough-000';
+const TG = 8_810_000_000;
+const TG_END = TG + 999_999;
+const enc = encodeURIComponent;
+const bodyFor = (names: string[]) => names.map((n) => `trojan://s@h.example:443#${enc(n)}`).join('\n');
+const PANEL_BODIES: Record<string, string> = {
+  'https://sub.example/own/links': bodyFor(['🔄 V3.7.8.1', '🇩🇪 Germany']),
+  'https://sub.example/sample/links': bodyFor(['🔄 V3.7.8.1', '🇫🇮 Finland', '🇹🇷 Turkey']),
+};
+const fakeFetch = (async (input: string | URL | Request) => {
+  const body = PANEL_BODIES[String(input)];
+  return body === undefined ? new Response('', { status: 404 }) : new Response(body, { status: 200 });
+}) as unknown as typeof fetch;
+
+async function call(body: unknown): Promise<Response> {
+  return await app.fetch(
+    new Request('https://example.com/api/v1/integrations/support/servers', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify(body),
+    }),
+    {
+      ...env,
+      SUPPORT_INTEGRATION_ENABLED: 'true',
+      SUPPORT_INTEGRATION_TOKEN: TOKEN,
+      SUBSCRIPTION_FETCH: fakeFetch,
+    } as Env,
+  );
+}
+
+beforeAll(async () => {
+  const p = await env.DB.prepare(
+    `INSERT INTO provisioning_providers (code, name, kind, status, base_url, secret_ref, config)
+     VALUES ('support-test-servers', 'الماس', 'pasarguard', 'ACTIVE', 'https://panel.test', 'X',
+             '{"support_sample_subscription_url":"https://sub.example/sample"}'::jsonb)
+     RETURNING id`,
+  ).first<{ id: number }>();
+  const u = await env.DB.prepare(
+    `INSERT INTO users (telegram_id, registered_at) VALUES (?1, now()) RETURNING id`,
+  )
+    .bind(TG + 1)
+    .first<{ id: number }>();
+  await env.DB.prepare(
+    `INSERT INTO subscriptions (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
+                                remote_username, subscription_url, status, purchased_at)
+     VALUES ('supsrv0001', ?1, ?2, 'تیتانیوم ۱ماهه ۵۰ گیگ', 0, 'u_test',
+             'https://sub.example/own', 'ACTIVE', now())`,
+  )
+    .bind(u!.id, p!.id)
+    .run();
+});
+beforeEach(() => clearSubscriptionCache());
+afterAll(async () => {
+  await env.DB.prepare(`DELETE FROM subscriptions WHERE public_id = 'supsrv0001'`).run();
+  await env.DB.prepare(`DELETE FROM users WHERE telegram_id BETWEEN ?1 AND ?2`)
+    .bind(TG, TG_END)
+    .run();
+  await env.DB.prepare(`DELETE FROM provisioning_providers WHERE code = 'support-test-servers'`).run();
+});
+
+describe('which servers', () => {
+  it('reads the customer’s own service and the sample list, names only', async () => {
+    const text = await (await call({ telegram_id: TG + 1 })).text();
+    const json = JSON.parse(text) as { own: unknown[]; catalog: unknown[] };
+    expect(json.own).toEqual([
+      { service: 'تیتانیوم ۱ماهه ۵۰ گیگ', version: 'V3.7.8.1', servers: ['🇩🇪 Germany'] },
+    ]);
+    expect(json.catalog).toContainEqual({
+      service: 'الماس',
+      version: 'V3.7.8.1',
+      servers: ['🇫🇮 Finland', '🇹🇷 Turkey'],
+    });
+    // Nothing that would let anyone else use a link.
+    expect(text).not.toContain('sub.example');
+    expect(text).not.toContain('trojan://');
+  });
+
+  it('gives a stranger the sample lists only', async () => {
+    const json = (await (await call({ telegram_id: TG_END })).json()) as {
+      own: unknown[];
+      catalog: unknown[];
+    };
+    expect(json.own).toEqual([]);
+    expect(json.catalog.length).toBeGreaterThan(0);
+  });
+});

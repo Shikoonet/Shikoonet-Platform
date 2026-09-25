@@ -20,6 +20,7 @@ import { Texts } from '@shikoo/contracts';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { claimTrial, clientIp, createLogger, readTrialQuota, trialPanels } from '@shikoo/domain';
 import type { Env } from '../index.js';
+import { readSubscriptionNames } from './subscriptionNames.js';
 
 export const SUPPORT_BASE_PATH = '/api/v1/integrations/support';
 const MAX_BODY_BYTES = 2048;
@@ -212,4 +213,57 @@ support.post('/trial', async (c) => {
     return { result: 'on_the_way', service: panel.name };
   });
   return c.json({ ok: true, ...out });
+});
+
+/**
+ * Server names and the link version: the customer's own services, and one
+ * company sample account per panel for someone who has none (Sam, 2026-09-25).
+ * Names only — the subscription link never leaves this process.
+ */
+support.post('/servers', async (c) => {
+  const who = WhoBody.safeParse(await jsonOf(c));
+  if (!who.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+  const db = c.env.DB;
+  const fetchImpl = c.env.SUBSCRIPTION_FETCH;
+  const user = await customerOf(db, who.data.telegram_id);
+
+  const own =
+    user === null
+      ? []
+      : ((
+          await db
+            .prepare(
+              `SELECT plan_name_at_sale AS service, subscription_url AS url
+                 FROM subscriptions
+                WHERE user_id = ?1 AND status IN ('ACTIVE', 'ON_HOLD')
+                  AND subscription_url IS NOT NULL
+                ORDER BY id`,
+            )
+            .bind(user.id)
+            .all<{ service: string | null; url: string }>()
+        ).results ?? []);
+  const samples =
+    (
+      await db
+        .prepare(
+          `SELECT pr.name AS service, pr.config->>'support_sample_subscription_url' AS url
+             FROM provisioning_providers pr
+            WHERE pr.status = 'ACTIVE'
+              AND NULLIF(pr.config->>'support_sample_subscription_url', '') IS NOT NULL
+            ORDER BY pr.sort_order, pr.id`,
+        )
+        .all<{ service: string; url: string }>()
+    ).results ?? [];
+
+  const read = async (rows: { service: string | null; url: string }[]) =>
+    (
+      await Promise.all(
+        rows.map(async (r) => {
+          const names = await readSubscriptionNames(r.url, fetchImpl ? { fetchImpl } : {});
+          return names === null ? null : { service: r.service ?? '', ...names };
+        }),
+      )
+    ).filter((x): x is NonNullable<typeof x> => x !== null);
+
+  return c.json({ ok: true, own: await read(own), catalog: await read(samples) });
 });
