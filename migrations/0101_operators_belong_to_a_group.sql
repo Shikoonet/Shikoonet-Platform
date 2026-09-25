@@ -1,4 +1,4 @@
--- 0100_operators_belong_to_a_group.sql — issue #363, 2026-09-25.
+-- 0101_operators_belong_to_a_group.sql — issue #363, 2026-09-25.
 --
 -- Three roles decided everything a dashboard operator could see or change.
 -- «Sends broadcasts but does not see orders» had no name among them. So an

@@ -110,7 +110,7 @@ const SECTION_LEVELS = ['none', 'view', 'edit'] as const;
  *
  * «دسترسی‌ها» may be read but never edited by a custom group — edit there is
  * setting another operator's password or rewriting your own group. The CHECK
- * in migration 0100 says the same; this says it with a sentence.
+ * in migration 0101 says the same; this says it with a sentence.
  */
 const GroupPermissions = z
   .record(z.string(), z.enum(SECTION_LEVELS))
@@ -224,7 +224,7 @@ function builtIn(c: { json: (body: unknown, status: 409) => Response }) {
 /**
  * Who may touch an admin (Sam, 2026-09-25): the owner, and nobody else once
  * there is one. Until `operator.ts set-owner` has named one, any admin may, as
- * before 0100 — except handing out an admin's password or clearing their
+ * before 0101 — except handing out an admin's password or clearing their
  * second factor, which was never possible from the panel and is the owner's
  * from the start. The owner themselves is changed only from the CLI, so there
  * is never an owner-against-owner fight and never a shop left without one.
@@ -388,7 +388,7 @@ export function registerAdminAccessRoutes(
     const now = Date.now();
     const id = crypto.randomUUID();
 
-    // `role` follows `group_id` — the trigger from migration 0100 writes it.
+    // `role` follows `group_id` — the trigger from migration 0101 writes it.
     const row = await c.env.DB.prepare(
       `INSERT INTO access_users (id, email, display_name, group_id, password_hash,
                                  password_updated_at, totp_required, active, created_at, updated_at)

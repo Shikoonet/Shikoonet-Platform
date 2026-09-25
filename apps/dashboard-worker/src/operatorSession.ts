@@ -152,7 +152,7 @@ export interface OperatorIdentity {
   role: AccessRole;
   groupId: string;
   /** A custom group's sections; null for the three built-in groups, which
-   * mean their role and nothing else (migration 0100). */
+   * mean their role and nothing else (migration 0101). */
   perms: SectionPerms | null;
 }
 

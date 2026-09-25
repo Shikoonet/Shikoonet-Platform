@@ -51,7 +51,7 @@ export type SectionLevel = 'view' | 'edit';
 export type SectionPerms = Partial<Record<SectionId, SectionLevel>>;
 
 /**
- * The groups migration 0100 seeds; their meaning is the legacy role's. The
+ * The groups migration 0101 seeds; their meaning is the legacy role's. The
  * owner is an ADMIN who alone manages the other admins.
  */
 export const BUILT_IN_GROUPS = ['owner', 'admin', 'reviewer', 'read_only'] as const;

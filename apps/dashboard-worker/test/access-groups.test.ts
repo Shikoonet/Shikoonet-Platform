@@ -387,7 +387,7 @@ describe('the owner above the admins', () => {
   it('leaves admins managing admins until there is an owner, and takes it over after', async () => {
     await joinGroup(OTHER_ADMIN, 'admin');
     const other = await idOf(OTHER_ADMIN);
-    // No owner yet: as before 0100.
+    // No owner yet: as before 0101.
     expect(
       (await call('POST', `/api/v1/admin/access-users/${other}`, WRITER, { active: false })).status,
     ).toBe(200);
@@ -471,7 +471,7 @@ describe('the owner above the admins', () => {
   });
 });
 
-describe('the trigger from 0100', () => {
+describe('the trigger from 0101', () => {
   it('moves the group when a writer sets only the role', async () => {
     await signIn(MEMBER, 'ADMIN');
     await signIn(MEMBER, 'READ_ONLY'); // ON CONFLICT … SET role, as ~80 tests do

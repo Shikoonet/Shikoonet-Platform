@@ -334,7 +334,7 @@ async function main(): Promise<number> {
     }
 
     if (command === 'set-owner') {
-      // The one account above the admins (migration 0100). Only from here, on
+      // The one account above the admins (migration 0101). Only from here, on
       // the server: the panel never makes or unmakes an owner. Naming a new one
       // moves the title — the previous owner stays an admin, in the same
       // transaction, so the unique index never sees two.
