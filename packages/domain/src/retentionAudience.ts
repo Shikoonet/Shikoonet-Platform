@@ -16,6 +16,7 @@ import type { D1Database } from '@shikoo/database';
 
 /** The window: from `daysAfter` days past expiry up to `daysBefore` days before it. */
 export const RETENTION_AUDIENCE_WHERE = `s.status = 'ACTIVE'
+                AND s.hidden_at IS NULL
                 AND u.notify_enabled
                 AND (?2::bigint IS NULL OR s.provider_id = ?2)
                 AND (?5::text IS NULL OR s.panel_admin = ?5)

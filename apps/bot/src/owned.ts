@@ -17,6 +17,7 @@
  * read another customer's ORDER, which is what this file guards.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { AUTOMATED_KINDS_SQL } from '@shikoo/domain';
 
@@ -166,7 +167,7 @@ export async function subscriptionsForUser(
     .prepare(
       `SELECT ${SUBSCRIPTION_COLUMNS}
          FROM subscriptions
-        WHERE user_id = ?1 AND status <> 'PENDING_PAYMENT'
+        WHERE user_id = ?1 AND status <> 'PENDING_PAYMENT' AND hidden_at IS NULL
         ORDER BY ${USABLE} DESC, purchased_at DESC, id DESC
         LIMIT ?2 OFFSET ?3`,
     )
@@ -180,7 +181,7 @@ export async function countSubscriptionsForUser(db: Db, userId: number): Promise
   const row = await db
     .prepare(
       `SELECT COUNT(*)::int AS n FROM subscriptions
-        WHERE user_id = ?1 AND status <> 'PENDING_PAYMENT'`,
+        WHERE user_id = ?1 AND status <> 'PENDING_PAYMENT' AND hidden_at IS NULL`,
     )
     .bind(userId)
     .first<{ n: number }>();
@@ -260,7 +261,8 @@ export interface RenewableSubscription {
  * spelling, and a row our own bot switched off has none — or `active`.
  */
 const RENEWABLE = `
-  (s.status IN ('ACTIVE', 'ON_HOLD')
+  s.hidden_at IS NULL
+  AND (s.status IN ('ACTIVE', 'ON_HOLD')
    OR (s.status = 'DISABLED'
        AND COALESCE(s.legacy_status, '') NOT IN ('disabled', 'disabledn', 'disablebyadmin')))
   AND s.remote_username IS NOT NULL
@@ -360,7 +362,7 @@ export async function subscriptionForUser(
     .prepare(
       `SELECT ${SUBSCRIPTION_COLUMNS}
          FROM subscriptions
-        WHERE id = ?1 AND user_id = ?2 AND status <> 'PENDING_PAYMENT'`,
+        WHERE id = ?1 AND user_id = ?2 AND status <> 'PENDING_PAYMENT' AND hidden_at IS NULL`,
     )
     .bind(subscriptionId, userId)
     .first<OwnedSubscription>();
@@ -416,8 +418,64 @@ export async function subscriptionOnPanelForUser(
          FROM subscriptions s
          LEFT JOIN provisioning_providers pv ON pv.id = s.provider_id
          LEFT JOIN provider_secrets ps ON ps.provider_id = pv.id
-        WHERE s.id = ?1 AND s.user_id = ?2 AND s.status <> 'PENDING_PAYMENT'`,
+        WHERE s.id = ?1 AND s.user_id = ?2 AND s.status <> 'PENDING_PAYMENT'
+          AND s.hidden_at IS NULL`,
     )
     .bind(subscriptionId, userId)
     .first<OwnedSubscriptionOnPanel>();
+}
+
+/**
+ * «🗑 حذف از فهرست» — take a dead service off this customer's list.
+ *
+ * The one write in this file, here because it is scoped the same way as every
+ * read: `AND user_id = ?2`. It sets `hidden_at` and nothing else — the panel is
+ * not called, the row is not deleted, and `remove.ts` still sweeps the panel.
+ *
+ * «Dead» is decided HERE, not by the button. The button is only drawn when
+ * `menu.canHide` says so, but it stays pressable after a renewal brings the
+ * service back, and callback data can be forged. The predicate is `USABLE`
+ * negated, plus the two statuses that never come back — the same four states
+ * `canHide` names (EXPIRED, EXHAUSTED, REMOVED, FAILED), on Postgres's clock.
+ *
+ * Returns false for someone else's row, a live one, or one already hidden.
+ */
+export async function hideDeadServiceForUser(
+  db: Db,
+  userId: number,
+  subscriptionId: number,
+  telegramUserId: number,
+  now: number,
+): Promise<boolean> {
+  const hidden = await db
+    .prepare(
+      `UPDATE subscriptions
+          SET hidden_at = to_timestamp(?3 / 1000.0)
+        WHERE id = ?1 AND user_id = ?2 AND hidden_at IS NULL
+          AND (status IN ('REMOVED', 'FAILED') OR (status = 'ACTIVE' AND NOT ${USABLE}))
+        RETURNING id`,
+    )
+    // `now` twice: `USABLE` reads its clock from ?4, as it does in the list.
+    .bind(subscriptionId, userId, now, now)
+    .first<{ id: number }>();
+  if (!hidden) return false;
+  // SYSTEM, as every row this bot writes: the CHECK on actor_role has no word
+  // for a customer, and who pressed the button is in after_json.
+  await db
+    .prepare(
+      `INSERT INTO audit_logs
+         (id, actor_email, actor_role, action, entity_type, entity_id,
+          before_json, after_json, reason, created_at)
+       VALUES (?1, NULL, 'SYSTEM', 'subscription.hidden', 'SUBSCRIPTION', ?2,
+               NULL, ?3::text, ?4, ?5)`,
+    )
+    .bind(
+      randomUUID(),
+      String(subscriptionId),
+      JSON.stringify({ hiddenByCustomer: true, telegramUserId: String(telegramUserId) }),
+      'the customer pressed «حذف از فهرست» on a dead service',
+      now,
+    )
+    .run();
+  return true;
 }
