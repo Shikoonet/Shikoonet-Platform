@@ -18,7 +18,15 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { Texts } from '@shikoo/contracts';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { claimTrial, clientIp, createLogger, readTrialQuota, trialPanels } from '@shikoo/domain';
+import {
+  claimTrial,
+  clientIp,
+  createLogger,
+  MEMBERSHIP_TTL_MS,
+  readTrialQuota,
+  requiredChannels,
+  trialPanels,
+} from '@shikoo/domain';
 import type { Env } from '../index.js';
 import { readSubscriptionNames, type SubscriptionNames } from './subscriptionNames.js';
 
@@ -100,9 +108,6 @@ support.use(
  */
 support.post('/rules', async (c) => {
   const db = c.env.DB;
-  const gate = await db
-    .prepare(`SELECT value #>> '{}' AS v FROM settings WHERE scope = 'bot' AND key = 'roll_Status'`)
-    .first<{ v: string | null }>();
   const { results } = await db
     .prepare(`SELECT key, value FROM bot_texts`)
     .all<{ key: string; value: string }>();
@@ -112,10 +117,52 @@ support.post('/rules', async (c) => {
   const placeholder = new Texts().raw('GATE_RULES');
   return c.json({
     ok: true,
-    enabled: (gate?.v ?? '').trim() === 'rolleon',
+    enabled: await rulesGateOn(db),
     text: text === placeholder ? null : text,
   });
 });
+
+/** Whether the shop bot asks for its rules: `bot/roll_Status = rolleon`. */
+async function rulesGateOn(db: Db): Promise<boolean> {
+  const gate = await db
+    .prepare(`SELECT value #>> '{}' AS v FROM settings WHERE scope = 'bot' AND key = 'roll_Status'`)
+    .first<{ v: string | null }>();
+  return (gate?.v ?? '').trim() === 'rolleon';
+}
+
+type ShopGate =
+  | { gate: 'join_channels'; channels: { title: string; join_link: string }[] }
+  | { gate: 'accept_rules' };
+
+/**
+ * The shop bot's own two doors, which a support trial passes too (Sam,
+ * 2026-09-26). Only the shop bot holds the token that can ask Telegram about a
+ * channel, so this reads what it last recorded and trusts it for as long as
+ * the shop bot does; anything older sends the customer to join and press start
+ * there, which asks again. Channels before rules, the order the shop bot asks.
+ */
+async function shopGateFor(db: Db, userId: number): Promise<ShopGate | null> {
+  const user = await db
+    .prepare(
+      `SELECT rules_accepted,
+              COALESCE(channels_checked_at > now() - ?2::float8 * interval '1 millisecond', false)
+                AS confirmed
+         FROM users WHERE id = ?1`,
+    )
+    .bind(userId, MEMBERSHIP_TTL_MS)
+    .first<{ rules_accepted: boolean; confirmed: boolean }>();
+  if (!user?.confirmed) {
+    const channels = await requiredChannels(db);
+    if (channels.length > 0) {
+      return {
+        gate: 'join_channels',
+        channels: channels.map(({ title, join_link }) => ({ title, join_link })),
+      };
+    }
+  }
+  if (!user?.rules_accepted && (await rulesGateOn(db))) return { gate: 'accept_rules' };
+  return null;
+}
 
 const TrialBody = z
   .object({
@@ -148,6 +195,11 @@ support.post('/trial/options', async (c) => {
   if (user.status === 'BLOCKED') {
     return c.json({ ok: true, customer: 'blocked', quota_left: 0, services: [] });
   }
+  const gated = await shopGateFor(db, user.id);
+  if (gated !== null) {
+    const { gate, ...rest } = gated;
+    return c.json({ ok: true, customer: gate, ...rest, quota_left: 0, services: [] });
+  }
   const quota = await readTrialQuota(db);
   const services = (await trialPanels(db, user.id)).flatMap((p) => {
     const door = p.shop.enabled ? ('shop_bot' as const) : p.support.enabled ? ('support' as const) : null;
@@ -175,7 +227,8 @@ support.post('/trial/options', async (c) => {
 
 type TrialResult =
   | { result: 'on_the_way' | 'use_shop_bot' | 'already_on_the_way'; service: string }
-  | { result: 'already_used' | 'not_started' | 'blocked' | 'not_available' };
+  | { result: 'join_channels'; channels: { title: string; join_link: string }[] }
+  | { result: 'accept_rules' | 'already_used' | 'not_started' | 'blocked' | 'not_available' };
 
 /**
  * Orders a trial through the shop bot's own path: a PAID TRIAL order that the
@@ -196,6 +249,12 @@ support.post('/trial', async (c) => {
       .first<{ id: number; status: string }>();
     if (!user) return { result: 'not_started' };
     if (user.status === 'BLOCKED') return { result: 'blocked' };
+    const gated = await shopGateFor(tx, user.id);
+    if (gated !== null) {
+      return gated.gate === 'join_channels'
+        ? { result: 'join_channels', channels: gated.channels }
+        : { result: 'accept_rules' };
+    }
 
     // Re-derived for THIS customer; the number from the request is only looked up.
     const panel = (await trialPanels(tx, user.id)).find((p) => p.providerId === panelId);

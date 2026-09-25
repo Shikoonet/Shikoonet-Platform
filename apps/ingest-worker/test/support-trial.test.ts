@@ -6,7 +6,7 @@
  * `bot/limit_usertest_all`), so every refusal here is asserted against the
  * same counter the shop bot's button spends.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { app, type Env } from '../src/index.js';
 import { env } from './helpers/env.js';
 
@@ -42,16 +42,28 @@ async function panel(code: string, config: Record<string, unknown>): Promise<num
   return row!.id;
 }
 
+/**
+ * A customer who, unless told otherwise, has passed the shop bot's doors: the
+ * rules accepted and channel membership confirmed just now. `checkedAgo` is how
+ * long ago the shop bot last confirmed it, or null for never.
+ */
 async function customer(
-  opts: { used?: number; blocked?: boolean } = {},
+  opts: { used?: number; blocked?: boolean; rulesAccepted?: boolean; checkedAgo?: string | null } = {},
 ): Promise<{ tg: number; id: number }> {
   n += 1;
   const tg = TG + n;
   const row = await env.DB.prepare(
-    `INSERT INTO users (telegram_id, registered_at, test_quota_used, status)
-     VALUES (?1, now(), ?2, ?3) RETURNING id`,
+    `INSERT INTO users (telegram_id, registered_at, test_quota_used, status, rules_accepted,
+                        channels_checked_at)
+     VALUES (?1, now(), ?2, ?3, ?4, now() - ?5::interval) RETURNING id`,
   )
-    .bind(tg, opts.used ?? 0, opts.blocked ? 'BLOCKED' : 'ACTIVE')
+    .bind(
+      tg,
+      opts.used ?? 0,
+      opts.blocked ? 'BLOCKED' : 'ACTIVE',
+      opts.rulesAccepted ?? true,
+      opts.checkedAgo === undefined ? '0 seconds' : opts.checkedAgo,
+    )
     .first<{ id: number }>();
   return { tg, id: row!.id };
 }
@@ -288,5 +300,108 @@ describe('ordering a trial', () => {
     expect(results.filter((r) => r['result'] === 'on_the_way')).toHaveLength(1);
     expect(results.filter((r) => r['result'] === 'already_on_the_way')).toHaveLength(4);
     expect(await trialOrders(c.id)).toHaveLength(1);
+  });
+});
+
+describe('the shop bot’s channel and rules come first', () => {
+  // Sam, 2026-09-26: a trial from support passes the same two doors as the
+  // shop bot. Only the shop bot can ask Telegram, so the door reads what it
+  // last recorded and trusts it for as long as the shop bot does.
+  const CHANNEL = {
+    title: 'کانال آزمون پشتیبانی',
+    chat_ref: '@support_test_channel',
+    join_link: 'https://t.me/support_test_channel',
+  };
+  const SHOWN = { title: CHANNEL.title, join_link: CHANNEL.join_link };
+  let savedRulesGate: string | null = null;
+
+  async function setRulesGate(value: string | null): Promise<void> {
+    await env.DB.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'roll_Status'`).run();
+    if (value !== null) {
+      await env.DB.prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('bot', 'roll_Status', to_jsonb(?1::text))`,
+      )
+        .bind(value)
+        .run();
+    }
+  }
+  async function addChannel(): Promise<void> {
+    await env.DB.prepare(
+      `INSERT INTO required_channels (title, chat_ref, join_link) VALUES (?1, ?2, ?3)`,
+    )
+      .bind(CHANNEL.title, CHANNEL.chat_ref, CHANNEL.join_link)
+      .run();
+  }
+
+  beforeAll(async () => {
+    savedRulesGate =
+      (
+        await env.DB.prepare(
+          `SELECT value #>> '{}' AS v FROM settings WHERE scope = 'bot' AND key = 'roll_Status'`,
+        ).first<{ v: string | null }>()
+      )?.v ?? null;
+  });
+  afterEach(async () => {
+    await env.DB.prepare(`DELETE FROM required_channels WHERE chat_ref = ?1`)
+      .bind(CHANNEL.chat_ref)
+      .run();
+    await setRulesGate(null);
+  });
+  afterAll(() => setRulesGate(savedRulesGate));
+
+  it('sends someone the shop bot never confirmed to the channel, and orders nothing', async () => {
+    await addChannel();
+    const c = await customer({ checkedAgo: null });
+    const options = await ask('/trial/options', { telegram_id: c.tg });
+    expect(options).toMatchObject({ customer: 'join_channels', services: [] });
+    expect(options['channels']).toContainEqual(SHOWN);
+    const trial = await ask('/trial', { telegram_id: c.tg, panel_id: diamond });
+    expect(trial).toMatchObject({ ok: true, result: 'join_channels' });
+    expect(trial['channels']).toContainEqual(SHOWN);
+    expect(await trialOrders(c.id)).toEqual([]);
+  });
+
+  it('trusts the shop bot’s confirmation for an hour, as the shop bot does', async () => {
+    await addChannel();
+    const stale = await customer({ checkedAgo: '61 minutes' });
+    expect(await ask('/trial', { telegram_id: stale.tg, panel_id: diamond })).toMatchObject({
+      result: 'join_channels',
+    });
+    const fresh = await customer({ checkedAgo: '59 minutes' });
+    expect(await ask('/trial', { telegram_id: fresh.tg, panel_id: diamond })).toMatchObject({
+      result: 'on_the_way',
+    });
+  });
+
+  it('asks for the rules while the shop bot asks for them, and not after they are accepted', async () => {
+    await setRulesGate('rolleon');
+    const c = await customer({ rulesAccepted: false });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({
+      customer: 'accept_rules',
+      services: [],
+    });
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toEqual({
+      ok: true,
+      result: 'accept_rules',
+    });
+    expect(await trialOrders(c.id)).toEqual([]);
+    await env.DB.prepare(`UPDATE users SET rules_accepted = true WHERE id = ?1`).bind(c.id).run();
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toMatchObject({
+      result: 'on_the_way',
+    });
+  });
+
+  it('does not ask for rules the shop has switched off', async () => {
+    const c = await customer({ rulesAccepted: false });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({ customer: 'ok' });
+  });
+
+  it('asks for the channel before the rules, as the shop bot does', async () => {
+    await addChannel();
+    await setRulesGate('rolleon');
+    const c = await customer({ rulesAccepted: false, checkedAgo: null });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({
+      customer: 'join_channels',
+    });
   });
 });
