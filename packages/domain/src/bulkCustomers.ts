@@ -324,33 +324,40 @@ export async function queueBroadcast(
   createdBy: number,
   audience: BroadcastAudience = { kind: 'all' },
 ): Promise<number> {
-  await db
-    .prepare(
-      `INSERT INTO broadcasts (id, body, source_chat, source_message_id, created_by)
-            VALUES (?1, ?2, ?3, ?4, ?5)
-              ON CONFLICT (id) DO NOTHING`,
-    )
-    .bind(
-      broadcastId,
-      content.kind === 'text' ? content.body : null,
-      content.kind === 'forward' ? content.chat : null,
-      content.kind === 'forward' ? content.messageId : null,
-      createdBy,
-    )
-    .run();
   // `?2` onwards belongs to the audience; `?1` is the broadcast.
   const { sql, params } = audienceSql(audience, 2);
-  const done = await db
-    .prepare(
-      `INSERT INTO broadcast_recipients (broadcast_id, user_id, telegram_id)
-       SELECT ?1, u.id, u.telegram_id FROM users u
-        -- notify_enabled is «reachable»: cleared by a 403, set back by any
-        -- inbound update. A customer who blocked the bot got a row, and a
-        -- two-second slot, on every announcement until #381.
-        WHERE u.status = 'ACTIVE' AND u.notify_enabled ${sql}
-       ON CONFLICT (broadcast_id, user_id) DO NOTHING`,
-    )
-    .bind(broadcastId, ...params)
-    .run();
-  return done.meta.changes;
+  // One transaction, and that is the fix for a broadcast closed the moment it
+  // was queued (2026-09-25). These were two statements: the broadcast row was
+  // visible first, and the bot's `closeFinishedBroadcasts` — every second —
+  // saw a broadcast with nothing PENDING and stamped it finished while its
+  // 17k recipients were still being written. Sending carried on (the claim
+  // does not read `finished_at`); the queue, «لغو» and the header's «which one
+  // is going» all do, and lost it. In one batch the bot sees both or neither.
+  const [, done] = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO broadcasts (id, body, source_chat, source_message_id, created_by)
+              VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT (id) DO NOTHING`,
+      )
+      .bind(
+        broadcastId,
+        content.kind === 'text' ? content.body : null,
+        content.kind === 'forward' ? content.chat : null,
+        content.kind === 'forward' ? content.messageId : null,
+        createdBy,
+      ),
+    db
+      .prepare(
+        `INSERT INTO broadcast_recipients (broadcast_id, user_id, telegram_id)
+         SELECT ?1, u.id, u.telegram_id FROM users u
+          -- notify_enabled is «reachable»: cleared by a 403, set back by any
+          -- inbound update. A customer who blocked the bot got a row, and a
+          -- two-second slot, on every announcement until #381.
+          WHERE u.status = 'ACTIVE' AND u.notify_enabled ${sql}
+         ON CONFLICT (broadcast_id, user_id) DO NOTHING`,
+      )
+      .bind(broadcastId, ...params),
+  ]);
+  return done?.meta.changes ?? 0;
 }
