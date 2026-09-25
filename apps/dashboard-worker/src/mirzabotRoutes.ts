@@ -66,6 +66,7 @@ import {
   isPaymentEventUnread,
   markPaymentEventRead,
   markPaymentEventsReadAll,
+  paidServiceSql,
   resellerEventKey,
 } from '@shikoo/domain';
 
@@ -1641,8 +1642,9 @@ export function registerMirzabotRoutes(
       if (to != null) where.push(`${EFFECTIVE_TS} <= ${p(to)}`);
       if (purchaseTypeForQuery === 'FIRST_PURCHASE' || purchaseTypeForQuery === 'REPEAT_PURCHASE') {
         // «Owned nothing paid» is OWNS_PAID_SERVICE_SQL in @shikoo/domain,
-        // asked as of the order rather than now — by now the customer owns
-        // exactly the service this claim paid for. A subscription is written
+        // through the same paidServiceSql, asked as of the order rather than
+        // now — by now the customer owns exactly the service this claim paid
+        // for. A subscription is written
         // at provisioning, so the order's own service is never earlier than
         // the order. Only the platform's claims have an order to read; an
         // imported Mirzabot row is never a first purchase here, and so counts
@@ -1654,7 +1656,7 @@ export function registerMirzabotRoutes(
                SELECT 1 FROM subscriptions s LEFT JOIN orders so ON so.id = s.order_id
                 WHERE s.user_id = fo.user_id
                   AND s.status <> 'PENDING_PAYMENT'
-                  AND so.kind IS DISTINCT FROM 'TRIAL'
+                  AND ${paidServiceSql('s', 'so', 'fo.created_at')}
                   AND s.purchased_at < fo.created_at))`;
         where.push(
           `c.purchase_type = 'NEW_PURCHASE' AND ${purchaseTypeForQuery === 'FIRST_PURCHASE' ? '' : 'NOT '}${FIRST}`,

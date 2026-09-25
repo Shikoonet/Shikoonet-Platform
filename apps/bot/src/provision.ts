@@ -30,6 +30,7 @@ import {
   adapterFor,
   isAutomated,
   groupIdsFor,
+  legacyTrialSql,
   open,
   panelNoteFor,
   panelSecretKey,
@@ -1961,12 +1962,14 @@ async function reportFor(
     }
     case 'NEW_PURCHASE': {
       // «📌 خرید اول کاربر» when no earlier paid order exists for them —
-      // legacy's `$countinvoice <= 1`.
+      // legacy's `$countinvoice <= 1`. A PHP-bot trial is no more a purchase
+      // than ours is (`bought.ts`).
       const earlier = await db
         .prepare(
           `SELECT count(*)::int AS n FROM orders
             WHERE user_id = ?1 AND id <> ?2 AND kind NOT IN ('WALLET_TOPUP', 'TRIAL')
-              AND status IN ('PAID', 'PROVISIONING', 'COMPLETED')`,
+              AND status IN ('PAID', 'PROVISIONING', 'COMPLETED')
+              AND NOT ${legacyTrialSql('orders')}`,
         )
         .bind(row.user_id, row.order_id)
         .first<{ n: number }>();
