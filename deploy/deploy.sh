@@ -43,7 +43,11 @@
 #                                     read as text — values need no quoting
 #     COOLIFY_URL     http://localhost:8000 — LOCAL on purpose: the panel is
 #                     plain HTTP, so the token must never cross a wire
-#     COOLIFY_TOKEN   abilities read, write, deploy. Never leaves this host
+#     COOLIFY_TOKEN   abilities read, write, deploy AND read:sensitive. Never
+#                     leaves this host. read:sensitive because the ENV_NAME and
+#                     duplicate-key checks below read variable VALUES, and
+#                     Coolify strips `value` from every row without it — a
+#                     token lacking it reads as «no ENV_NAME» (2026-09-25)
 #     APP_INGEST / APP_DASHBOARD / APP_BOT   bootstrap application UUIDs.
 #                     After the first cutover, the canonical non-secret UUIDs
 #                     are atomically resolved from production deploy state
@@ -319,7 +323,7 @@ PREFLIGHT_ERR=''
 if ! PREFLIGHT_ERR=$(api GET "/applications/$APP_DASHBOARD" 2>&1 >/dev/null); then
   case "$PREFLIGHT_ERR" in
     *'error: 401'*)
-      die "Coolify refused COOLIFY_TOKEN from $CONF (HTTP 401): the token no longer exists in Coolify — deleted, revoked or expired under «Keys & Tokens». Create a new API token there with read, write and deploy and no expiry, name it «shikoo-${ENV_ARG}-deploy — used by deploy.sh, do not delete», and write it as COOLIFY_TOKEN= in $CONF. Nothing was pulled or changed." ;;
+      die "Coolify refused COOLIFY_TOKEN from $CONF (HTTP 401): the token no longer exists in Coolify — deleted, revoked or expired under «Keys & Tokens». Create a new API token there with read, write, deploy and read:sensitive (an expiry date means this again on that date), name it «shikoo-${ENV_ARG}-deploy — used by deploy.sh, do not delete», and write it as COOLIFY_TOKEN= in $CONF. Nothing was pulled or changed." ;;
     *'error: 403'*)
       die "Coolify accepted the token in $CONF but refused application $APP_DASHBOARD (HTTP 403): the token lacks read/write/deploy, or belongs to another team. Nothing was pulled or changed." ;;
     *)
@@ -493,8 +497,14 @@ if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
     raise SystemExit(1)
 rows = [r for r in rows if not r.get("is_preview")]
 dupes = sorted(k for k, n in Counter(r.get("key") for r in rows).items() if n > 1 and k)
+named = [r for r in rows if r.get("key") == "ENV_NAME"]
 if dupes:
     print("has %s defined more than once in Coolify — the container would get whichever row is written last. Delete the duplicate in the panel." % ", ".join(dupes))
+elif named and all("value" not in r for r in named):
+    # Coolify drops `value` from every row for a token without read:sensitive
+    # (ApplicationsController::removeSensitiveData). That is not a missing
+    # ENV_NAME, and saying it was sent 2026-09-25 looking for the wrong thing.
+    print("has ENV_NAME in Coolify, but Coolify hid its value: the COOLIFY_TOKEN in deploy.env lacks read:sensitive, so this check cannot read it. Create the token with read, write, deploy and read:sensitive.")
 elif not any(r.get("key") == "ENV_NAME" and (r.get("value") or "").strip() for r in rows):
     print("has no ENV_NAME in Coolify — the image refuses to boot without it, so this deploy would crash-loop and roll back")') ||
     die "$2: could not read the application environment from Coolify"

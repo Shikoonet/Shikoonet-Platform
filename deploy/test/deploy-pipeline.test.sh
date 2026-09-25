@@ -144,6 +144,10 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
             printf '{not-json'
           elif [ "${FAKE_MALFORMED_ENVS:-}" = 'object' ]; then
             printf '{"key":"ENV_NAME","value":"production"}'
+          elif [ "${FAKE_ENVS_REDACTED:-}" = '1' ]; then
+            # A token without read:sensitive: Coolify drops `value` from every
+            # row (ApplicationsController::removeSensitiveData). 2026-09-25.
+            printf '[{"key":"DATABASE_URL","is_preview":false},{"key":"ENV_NAME","is_preview":false}]'
           elif [ "${FAKE_NO_ENV_NAME:-}" = '1' ]; then
             printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"}]'
           elif [ "${FAKE_PREVIEW_TWINS:-}" = '1' ]; then
@@ -1028,6 +1032,7 @@ run_deploy() { # bot-flag
     FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
     FAKE_TOKEN_REFUSED="${FAKE_TOKEN_REFUSED:-}" \
+    FAKE_ENVS_REDACTED="${FAKE_ENVS_REDACTED:-}" \
     FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" FAKE_MALFORMED_ENVS="${FAKE_MALFORMED_ENVS:-}" \
     FAKE_PREVIEW_TWINS="${FAKE_PREVIEW_TWINS:-}" FAKE_PREVIEW_ONLY_ENV_NAME="${FAKE_PREVIEW_ONLY_ENV_NAME:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads"     FAKE_ENV_ROWS="${FAKE_ENV_ROWS:-}" FAKE_ENV_PATCH_FAILS="${FAKE_ENV_PATCH_FAILS:-}" \
@@ -1203,6 +1208,20 @@ else
   fi
 fi
 unset FAKE_TOKEN_REFUSED
+
+# The token that replaced it, minted to the README's «not read:sensitive»:
+# Coolify then hides every value, and the ENV_NAME check read that as «no
+# ENV_NAME» — sending the operator to look for a variable that was there.
+FAKE_ENVS_REDACTED=1
+if run_deploy false; then
+  bad 'names a token without read:sensitive rather than a missing ENV_NAME' 'it deployed anyway'
+elif grep -qF 'lacks read:sensitive' "$DEPLOY_LOG" && ! grep -qF 'has no ENV_NAME' "$DEPLOY_LOG" &&
+  ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+  ok 'names a token without read:sensitive rather than a missing ENV_NAME'
+else
+  bad 'names a token without read:sensitive rather than a missing ENV_NAME' "$(tail -2 "$DEPLOY_LOG")"
+fi
+unset FAKE_ENVS_REDACTED
 
 section 'deploy.sh — an application that would rebuild instead of pulling'
 

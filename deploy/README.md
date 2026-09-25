@@ -646,8 +646,23 @@ setting or read a secret.
 
 ### The Coolify token
 
-A dedicated token on the correct team, abilities `read`, `write`, `deploy` —
-never `root`, and not `read:sensitive`. `write` is needed for exactly one thing:
+A dedicated token on the correct team, abilities `read`, `write`, `deploy` and
+`read:sensitive` — never `root`. If it is given an expiry date, Promote fails
+the day it lapses; `deploy.sh` now says so in words before it pulls anything,
+so a rotation date is a reminder rather than an outage.
+
+`read:sensitive` was «not» here until 2026-09-25, and that was true only of the
+first, git-based pipeline (`autodeploy.sh`). Since 2026-08-28 `deploy.sh` reads
+variable VALUES — ENV_NAME must be set, no key twice — and Coolify strips
+`value` from every row for a token without it. Production's replacement token
+was minted to this paragraph and Promote refused it as «no ENV_NAME».
+
+Name it after what uses it — «shikoo-<env>-deploy — used by deploy.sh, do not
+delete». On 2026-09-25 production's token vanished from «Keys & Tokens»
+between two promotes, and staging's, still called «Team-scoped», was the only
+one left: a name that says nothing is a name somebody tidies away.
+
+For the git-based pipeline, `write` is needed for exactly one thing:
 `PATCH /api/v1/applications/<uuid>` is what sets `git_commit_sha`, and that same
 verb is what turned native Auto Deploy off. Without `write` there is no way to
 pin an immutable sha, and the deploy degrades to "latest main".
