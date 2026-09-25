@@ -77,6 +77,9 @@ export const RESET_KEEP: readonly string[] = [
   // Without it the dashboard answers 403 to the person who pressed the button,
   // which is the exact trap `grantLocalAdmin` was written for.
   'access_users',
+  // …and the groups they belong to — a foreign key, so TRUNCATE … CASCADE
+  // here would take `access_users` with it.
+  'access_groups',
   // …and the sessions hanging off it, or the operator is logged out midway
   // through their own reset.
   'operator_sessions',

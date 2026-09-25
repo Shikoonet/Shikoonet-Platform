@@ -32,6 +32,7 @@ export * from './channelPost.js';
 export * from './cronJobs.js';
 export * from './retention.js';
 export * from './panelUsername.js';
+export * from './sections.js';
 
 export const INGEST_PATH = '/api/v1/sms';
 export const MAX_BODY_BYTES = 8 * 1024; // 8 KB hard cap
