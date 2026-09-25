@@ -423,6 +423,63 @@ describe('delivering a paid order', () => {
     expect(typeof body?.['expire']).toBe('string');
   });
 
+  /** Both doors write the same TRIAL order; the sweep must build what either allowed. */
+  async function asTrial(orderId: number, config: Record<string, unknown>): Promise<void> {
+    await db
+      .prepare(
+        `UPDATE provisioning_providers
+            SET config = (COALESCE(config, '{}'::jsonb) - 'trial_enabled' - 'support_trial_enabled'
+                          - 'trial_volume_gb' - 'trial_duration_hours') || ?2::jsonb
+          WHERE id = (SELECT pr.provider_id FROM orders o
+                        JOIN product_plans pl ON pl.id = o.plan_id
+                        JOIN products pr ON pr.id = pl.product_id
+                       WHERE o.id = ?1)`,
+      )
+      .bind(orderId, JSON.stringify(config))
+      .run();
+    await db
+      .prepare(
+        `UPDATE orders o SET kind = 'TRIAL', total_irr = 0, unit_price_irr = 0,
+                provider_id = pr.provider_id
+           FROM product_plans pl JOIN products pr ON pr.id = pl.product_id
+          WHERE o.id = ?1 AND pl.id = o.plan_id`,
+      )
+      .bind(orderId)
+      .run();
+  }
+
+  it('builds a trial on a panel whose only switch is «تست از پشتیبانی»', async () => {
+    const order = await paidOrder();
+    await asTrial(order.orderId, {
+      trial_enabled: false,
+      support_trial_enabled: true,
+      trial_volume_gb: 0.2,
+      trial_duration_hours: 2,
+    });
+    const panel = fakePanel();
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    expect((await subsFor(order.orderId))[0]).toMatchObject({ status: 'ACTIVE' });
+    const body = panel.bodies.find(
+      (b) => b['username'] === remoteUsernameFor(order.telegramId, order.publicId),
+    );
+    // What the panel was told, in bytes: 0.2 × 1024³, the adapter's own rounding.
+    expect(body?.['data_limit']).toBe(Math.round(0.2 * 1024 * 1024 * 1024));
+    expect(typeof body?.['expire']).toBe('string');
+  });
+
+  it('still refuses a trial on a panel where neither door is open', async () => {
+    const order = await paidOrder();
+    await asTrial(order.orderId, { trial_volume_gb: 1, trial_duration_hours: 12 });
+    const panel = fakePanel();
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    expect((await orderRow(order.orderId))?.status).toBe('FAILED');
+    expect(panel.created).toHaveLength(0);
+  });
+
   /**
    * A volume code's gigabytes reach the panel — and the service records what
    * was actually sent.

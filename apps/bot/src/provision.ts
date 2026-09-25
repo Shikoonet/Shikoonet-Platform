@@ -37,7 +37,7 @@ import {
   renewModeFor,
   USERNAME_SUFFIX_DEFAULT,
   USERNAME_SUFFIX_MAX,
-  trialFor,
+  deliverableTrialFor,
   usernameShapeFor,
   splitCredential,
   type ProviderContext,
@@ -897,8 +897,12 @@ async function deliver(
    * nothing was charged, so there is nothing to refund, and handing out a
    * free account on a panel whose trial was just withdrawn is the wrong way
    * to be wrong.
+   *
+   * Either door — the shop button or the support bot — may have written it;
+   * `deliverableTrialFor` answers for both.
    */
-  const trial = row.order_kind === 'TRIAL' ? trialFor(row.provider_config ?? {}) : null;
+  const trial =
+    row.order_kind === 'TRIAL' ? deliverableTrialFor(row.provider_config ?? {}) : null;
   if (trial !== null && !trial.enabled) {
     // `fail` gives the quota back, which is what makes «سهمیهٔ شما مصرف نشد»
     // in the message below a true sentence rather than a polite one.
