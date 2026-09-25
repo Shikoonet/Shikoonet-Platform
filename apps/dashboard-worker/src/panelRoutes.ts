@@ -58,6 +58,7 @@ import {
   renewAllowed,
   renewModeFor,
   downgradeGroupsFor,
+  supportTrialFor,
   trialFor,
   usernameShapeFor,
   sanitiseUsernamePart,
@@ -154,6 +155,15 @@ const PanelPatch = z
     trialEnabled: z.boolean().optional(),
     trialVolumeGb: z.number().positive().max(10_000).nullable().optional(),
     trialDurationHours: z.number().int().positive().max(8760).nullable().optional(),
+    supportTrialEnabled: z.boolean().optional(),
+    supportSampleSubscriptionUrl: z
+      .string()
+      .trim()
+      .max(512)
+      .url()
+      .refine((u) => u.startsWith('https://'), 'https only')
+      .nullable()
+      .optional(),
     /**
      * «قیمت حجم و زمان اضافه», per customer tier, in TOMAN.
      *
@@ -752,7 +762,7 @@ function dashboardPathOf(config: Record<string, unknown>): string | null {
   return typeof v === 'string' && v.trim() !== '' ? v : null;
 }
 
-function shape(r: PanelRow) {
+function shape(r: PanelRow, seesLink: boolean) {
   return {
     id: r.id,
     code: r.code,
@@ -783,6 +793,15 @@ function shape(r: PanelRow) {
     usernameMode: usernameShapeFor(r.config ?? {}).mode,
     usernameText: usernameShapeFor(r.config ?? {}).panelText,
     trial: trialFor(r.config ?? {}),
+    // «تست از پشتیبانی»: the support bot's door; its sizes are `trial`'s numbers.
+    supportTrial: supportTrialFor(r.config ?? {}),
+    // A company-owned account's link; only the support door reads it, for names.
+    // The link IS the account, so an ADMIN sees it and nobody else — the rule a
+    // shelf row's link follows (`stockRoutes`). Every other caller is ADMIN-only.
+    supportSampleSubscriptionUrl:
+      seesLink && typeof (r.config ?? {})['support_sample_subscription_url'] === 'string'
+        ? ((r.config ?? {})['support_sample_subscription_url'] as string)
+        : null,
     extraVolumeTomanPerGb: tierPricesOf(r.config ?? {}, 'priceextravolume'),
     extraTimeTomanPerDay: tierPricesOf(r.config ?? {}, 'priceextratime'),
     // Read through the same function the bot enforces with, so the box on the
@@ -904,7 +923,8 @@ export function registerPanelRoutes(
     const rows = await c.env.DB.prepare(
       `${SELECT_PANEL} WHERE ${NOT_A_SHELF} ORDER BY pr.sort_order, pr.id`,
     ).all<PanelRow>();
-    return c.json({ ok: true, items: (rows.results ?? []).map(shape) });
+    const seesLink = c.get('identity').role === 'ADMIN';
+    return c.json({ ok: true, items: (rows.results ?? []).map((r) => shape(r, seesLink)) });
   });
 
   /**
@@ -1053,7 +1073,7 @@ export function registerPanelRoutes(
     return c.json(
       {
         ok: true,
-        panel: shape(created),
+        panel: shape(created, true),
         // So the screen can say WHY a panel it just made is switched off,
         // instead of leaving the operator to guess and press «تست اتصال».
         ...(probe === null ? {} : { probe: probeReply(probe) }),
@@ -1158,7 +1178,7 @@ export function registerPanelRoutes(
     const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
       .bind(id)
       .first<PanelRow>();
-    return c.json({ ok: true, panel: after ? shape(after) : null });
+    return c.json({ ok: true, panel: after ? shape(after, true) : null });
   });
 
   /**
@@ -1670,7 +1690,7 @@ export function registerPanelRoutes(
     const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
       .bind(id)
       .first<PanelRow>();
-    return c.json({ ok: true, panel: after ? shape(after) : null });
+    return c.json({ ok: true, panel: after ? shape(after, true) : null });
   });
 
   /**
@@ -2297,6 +2317,12 @@ export function registerPanelRoutes(
     if (patch.trialDurationHours !== undefined) {
       configPatch['trial_duration_hours'] = patch.trialDurationHours;
     }
+    if (patch.supportTrialEnabled !== undefined) {
+      configPatch['support_trial_enabled'] = patch.supportTrialEnabled;
+    }
+    if (patch.supportSampleSubscriptionUrl !== undefined) {
+      configPatch['support_sample_subscription_url'] = patch.supportSampleSubscriptionUrl;
+    }
     if (patch.extraVolumeTomanPerGb !== undefined) {
       configPatch['priceextravolume'] = patch.extraVolumeTomanPerGb;
     }
@@ -2369,6 +2395,22 @@ export function registerPanelRoutes(
         );
       }
     }
+    if (
+      patch.supportTrialEnabled !== undefined ||
+      patch.trialVolumeGb !== undefined ||
+      patch.trialDurationHours !== undefined
+    ) {
+      if (merged['support_trial_enabled'] === true && !supportTrialFor(merged).enabled) {
+        return c.json(
+          {
+            ok: false,
+            error: 'invalid_body',
+            detail: 'برای روشن‌کردن «تست از پشتیبانی» باید هم حجم و هم زمان سرویس تست را بگذارید.',
+          },
+          400,
+        );
+      }
+    }
 
     if (Object.keys(configPatch).length > 0) {
       params.push(JSON.stringify(configPatch));
@@ -2421,7 +2463,7 @@ export function registerPanelRoutes(
 
     return c.json({
       ok: true,
-      panel: shape(after),
+      panel: shape(after, true),
       // Why the status moved, when it moved by itself. Without this the screen
       // can only say «غیرفعال شد» and the operator has to go and press «تست
       // اتصال» to find out what this call already knows.

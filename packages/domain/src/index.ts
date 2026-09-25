@@ -34,6 +34,8 @@ export * from './shopProfit.js';
 export * from './customerAdmin.js';
 export * from './bulkCustomers.js';
 export * from './bought.js';
+export * from './trial.js';
+export * from './shopGate.js';
 export * from './retentionFunnel.js';
 export * from './retentionAudience.js';
 export * from './rateLimit.js';

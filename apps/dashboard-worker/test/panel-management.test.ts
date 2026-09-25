@@ -76,8 +76,8 @@ async function configOf(id: number): Promise<Record<string, unknown>> {
   return JSON.parse(row!.config) as Record<string, unknown>;
 }
 
-async function panelFromApi(id: number) {
-  const res = await app.request('/api/v1/admin/panels', {}, envAs(ADMIN));
+async function panelFromApi(id: number, email = ADMIN) {
+  const res = await app.request('/api/v1/admin/panels', {}, envAs(email));
   const body = (await res.json()) as { items: { id: number }[] };
   return body.items.find((p) => p.id === id) as Record<string, unknown> | undefined;
 }
@@ -218,6 +218,60 @@ describe('سرویس تست', () => {
     const id = await makePanel('trial-off', { trial_enabled: true });
     expect((await patch(id, { trialEnabled: false })).status).toBe(200);
     expect((await configOf(id))['trial_enabled']).toBe(false);
+  });
+});
+
+
+describe('تست از پشتیبانی', () => {
+  it('saves the switch with the trial numbers, and the screen reads it back', async () => {
+    const id = await makePanel('support-trial');
+    const res = await patch(id, { supportTrialEnabled: true, trialVolumeGb: 0.2, trialDurationHours: 2 });
+    expect(res.status).toBe(200);
+    expect((await configOf(id))['support_trial_enabled']).toBe(true);
+    expect((await panelFromApi(id))?.['supportTrial']).toEqual({
+      enabled: true,
+      volumeGb: 0.2,
+      durationHours: 2,
+    });
+  });
+
+  it('refuses the switch without both numbers', async () => {
+    const id = await makePanel('support-trial-half');
+    const res = await patch(id, { supportTrialEnabled: true, trialVolumeGb: 0.2 });
+    expect(res.status).toBe(400);
+    expect((await configOf(id))['support_trial_enabled']).toBeUndefined();
+  });
+
+  it('keeps the support switch independent of the shop switch', async () => {
+    const id = await makePanel('support-trial-alone');
+    expect(
+      (await patch(id, { supportTrialEnabled: true, trialVolumeGb: 1, trialDurationHours: 2 })).status,
+    ).toBe(200);
+    const panel = await panelFromApi(id);
+    expect((panel?.['trial'] as { enabled: boolean }).enabled).toBe(false);
+    expect((panel?.['supportTrial'] as { enabled: boolean }).enabled).toBe(true);
+  });
+
+  it('stores an https sample link, refuses http, and clears with null', async () => {
+    const id = await makePanel('support-sample');
+    expect((await patch(id, { supportSampleSubscriptionUrl: 'http://sub.example/x' })).status).toBe(400);
+    expect((await patch(id, { supportSampleSubscriptionUrl: 'https://sub.example/x' })).status).toBe(200);
+    expect((await panelFromApi(id))?.['supportSampleSubscriptionUrl']).toBe('https://sub.example/x');
+    expect((await patch(id, { supportSampleSubscriptionUrl: null })).status).toBe(200);
+    expect((await panelFromApi(id))?.['supportSampleSubscriptionUrl']).toBeNull();
+  });
+
+  it('shows the sample link to an ADMIN only — the link is the account', async () => {
+    // Final review, 2026-09-26; the same rule as a shelf row's link (stockRoutes).
+    const id = await makePanel('support-sample-roles', {
+      support_sample_subscription_url: 'https://sub.example/secret',
+    });
+    expect((await panelFromApi(id))?.['supportSampleSubscriptionUrl']).toBe('https://sub.example/secret');
+    for (const who of [REVIEWER, READER]) {
+      const panel = await panelFromApi(id, who);
+      expect(panel?.['supportSampleSubscriptionUrl']).toBeNull();
+      expect(JSON.stringify(panel)).not.toContain('sub.example');
+    }
   });
 });
 

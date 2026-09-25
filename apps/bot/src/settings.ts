@@ -13,7 +13,7 @@
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { invalidateBotContent } from './botContent.js';
-import { createLogger } from '@shikoo/domain';
+import { createLogger, trialQuota } from '@shikoo/domain';
 import {
   checkPlanLabel,
   PLAN_LABEL_SETTING,
@@ -398,20 +398,6 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
  * never fires, and a negative one means the row is broken — neither is an
  * instruction to stop warning customers their service is about to end.
  */
-/**
- * The trial allowance, where zero means «none» rather than «unset».
- *
- * Capped at 10 for the same reason every other limit here is capped: a
- * mistyped row must not become an unbounded giveaway of accounts on a panel
- * that costs real money to run.
- */
-function trialQuota(value: number | null): number {
-  if (value === null || !Number.isSafeInteger(value) || value < 0) {
-    return DEFAULT_SHOP_SETTINGS.trialQuotaPerUser;
-  }
-  return Math.min(value, 10);
-}
-
 function wholeCount(value: number | null, fallback: number): number {
   return value !== null && Number.isSafeInteger(value) && value > 0 && value <= 365
     ? value

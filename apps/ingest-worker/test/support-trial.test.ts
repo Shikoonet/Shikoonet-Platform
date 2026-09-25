@@ -1,0 +1,407 @@
+/**
+ * The support door's trial questions: which trials a person may have, and
+ * ordering one through the shop bot's own path.
+ *
+ * The two doors share one quota (`users.test_quota_used` against
+ * `bot/limit_usertest_all`), so every refusal here is asserted against the
+ * same counter the shop bot's button spends.
+ */
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { app, type Env } from '../src/index.js';
+import { env } from './helpers/env.js';
+
+const TOKEN = 'support-test-token-that-is-long-enough-000';
+// Far above any real telegram id this suite could meet on a shared database.
+const TG = 8_800_000_000;
+const TG_END = TG + 999_999;
+let n = 0;
+
+async function call(path: string, body: unknown): Promise<Response> {
+  return await app.fetch(
+    new Request(`https://example.com/api/v1/integrations/support${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify(body),
+    }),
+    { ...env, SUPPORT_INTEGRATION_ENABLED: 'true', SUPPORT_INTEGRATION_TOKEN: TOKEN } as Env,
+  );
+}
+
+async function ask(path: string, body: unknown): Promise<Record<string, unknown>> {
+  return (await (await call(path, body)).json()) as Record<string, unknown>;
+}
+
+async function panel(code: string, config: Record<string, unknown>): Promise<number> {
+  const row = await env.DB.prepare(
+    `INSERT INTO provisioning_providers (code, name, kind, status, base_url, secret_ref, config)
+     VALUES (?1, ?2, 'pasarguard', 'ACTIVE', 'https://panel.test', 'SUPPORT_TEST', ?3::jsonb)
+     RETURNING id`,
+  )
+    .bind(`support-test-${code}`, code, JSON.stringify(config))
+    .first<{ id: number }>();
+  return row!.id;
+}
+
+/**
+ * A customer who, unless told otherwise, has passed the shop bot's doors: the
+ * rules accepted and channel membership confirmed just now. `checkedAgo` is how
+ * long ago the shop bot last confirmed it, or null for never.
+ */
+async function customer(
+  opts: { used?: number; blocked?: boolean; rulesAccepted?: boolean; checkedAgo?: string | null } = {},
+): Promise<{ tg: number; id: number }> {
+  n += 1;
+  const tg = TG + n;
+  const row = await env.DB.prepare(
+    `INSERT INTO users (telegram_id, registered_at, test_quota_used, status, rules_accepted,
+                        channels_checked_at)
+     VALUES (?1, now(), ?2, ?3, ?4, now() - ?5::interval) RETURNING id`,
+  )
+    .bind(
+      tg,
+      opts.used ?? 0,
+      opts.blocked ? 'BLOCKED' : 'ACTIVE',
+      opts.rulesAccepted ?? true,
+      opts.checkedAgo === undefined ? '0 seconds' : opts.checkedAgo,
+    )
+    .first<{ id: number }>();
+  return { tg, id: row!.id };
+}
+
+async function setQuota(value: number | null): Promise<void> {
+  await env.DB.prepare(
+    `DELETE FROM settings WHERE scope = 'bot' AND key = 'limit_usertest_all'`,
+  ).run();
+  if (value !== null) {
+    await env.DB.prepare(
+      `INSERT INTO settings (scope, key, value) VALUES ('bot', 'limit_usertest_all', to_jsonb(?1::int))`,
+    )
+      .bind(value)
+      .run();
+  }
+}
+
+async function trialOrders(userId: number): Promise<{ provider_id: number; status: string }[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT provider_id::int AS provider_id, status FROM orders
+      WHERE user_id = ?1 AND kind = 'TRIAL' ORDER BY id`,
+  )
+    .bind(userId)
+    .all<{ provider_id: number; status: string }>();
+  return results ?? [];
+}
+
+const NUMBERS = { trial_volume_gb: 0.2, trial_duration_hours: 2 };
+let savedQuota: string | null = null;
+let diamond: number; // support door only
+let titanium: number; // shop trial on
+let gold: number; // neither door
+
+beforeAll(async () => {
+  savedQuota =
+    (
+      await env.DB.prepare(
+        `SELECT value #>> '{}' AS v FROM settings WHERE scope = 'bot' AND key = 'limit_usertest_all'`,
+      ).first<{ v: string | null }>()
+    )?.v ?? null;
+  diamond = await panel('diamond', { ...NUMBERS, support_trial_enabled: true });
+  titanium = await panel('titanium', { ...NUMBERS, trial_enabled: true });
+  gold = await panel('gold', NUMBERS);
+});
+beforeEach(() => setQuota(1));
+afterAll(async () => {
+  await env.DB.prepare(
+    `DELETE FROM orders WHERE user_id IN (SELECT id FROM users WHERE telegram_id BETWEEN ?1 AND ?2)`,
+  )
+    .bind(TG, TG_END)
+    .run();
+  await env.DB.prepare(`DELETE FROM users WHERE telegram_id BETWEEN ?1 AND ?2`)
+    .bind(TG, TG_END)
+    .run();
+  await env.DB.prepare(`DELETE FROM provisioning_providers WHERE code LIKE 'support-test-%'`).run();
+  await setQuota(savedQuota === null ? null : Number(savedQuota));
+});
+
+describe('which trials a person may have', () => {
+  it('asks a stranger to start the shop bot first', async () => {
+    expect(await ask('/trial/options', { telegram_id: TG_END })).toMatchObject({
+      ok: true,
+      customer: 'not_started',
+      services: [],
+    });
+  });
+
+  it('says blocked for a blocked customer', async () => {
+    const c = await customer({ blocked: true });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({
+      customer: 'blocked',
+      services: [],
+    });
+  });
+
+  it('lists each panel once, by the door that serves it, and skips the closed one', async () => {
+    const c = await customer();
+    const json = (await ask('/trial/options', { telegram_id: c.tg })) as {
+      services: { panel_id: number; via: string }[];
+      quota_left: number;
+    };
+    const mine = json.services.filter((s) => [diamond, titanium, gold].includes(s.panel_id));
+    expect(mine).toEqual([
+      expect.objectContaining({
+        panel_id: diamond,
+        name: 'diamond',
+        via: 'support',
+        volume_gb: 0.2,
+        duration_hours: 2,
+      }),
+      expect.objectContaining({ panel_id: titanium, via: 'shop_bot' }),
+    ]);
+    expect(json.quota_left).toBe(1);
+  });
+
+  it('hides a panel hidden from this customer', async () => {
+    const c = await customer();
+    await env.DB.prepare(`INSERT INTO provider_hidden_users (provider_id, user_id) VALUES (?1, ?2)`)
+      .bind(diamond, c.id)
+      .run();
+    const json = (await ask('/trial/options', { telegram_id: c.tg })) as {
+      services: { panel_id: number }[];
+    };
+    expect(json.services.map((s) => s.panel_id)).not.toContain(diamond);
+  });
+
+  it('reports a migrated negative counter as it stands — the reset is a decision, not a fix', async () => {
+    const c = await customer({ used: -15 });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({ quota_left: 16 });
+  });
+
+  it('reports nothing left when the shop-wide quota is zero, whatever the counter says', async () => {
+    // Final review, 2026-09-26: options said 15 while ordering said «used».
+    await setQuota(0);
+    const c = await customer({ used: -15 });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({ quota_left: 0 });
+  });
+});
+
+describe('ordering a trial', () => {
+  it('writes one PAID TRIAL order on the support-only panel and spends the quota', async () => {
+    const c = await customer();
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toEqual({
+      ok: true,
+      result: 'on_the_way',
+      service: 'diamond',
+    });
+    expect(await trialOrders(c.id)).toEqual([{ provider_id: diamond, status: 'PAID' }]);
+    const used = await env.DB.prepare(`SELECT test_quota_used FROM users WHERE id = ?1`)
+      .bind(c.id)
+      .first<{ test_quota_used: number }>();
+    expect(used?.test_quota_used).toBe(1);
+  });
+
+  it('sends the customer to the shop bot where its trial is on', async () => {
+    const c = await customer();
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: titanium })).toEqual({
+      ok: true,
+      result: 'use_shop_bot',
+      service: 'titanium',
+    });
+    expect(await trialOrders(c.id)).toEqual([]);
+  });
+
+  it('refuses a closed panel and a panel id that is not on the list', async () => {
+    const c = await customer();
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: gold })).toMatchObject({
+      result: 'not_available',
+    });
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: 999_999_999 })).toMatchObject({
+      result: 'not_available',
+    });
+    expect(await trialOrders(c.id)).toEqual([]);
+  });
+
+  it('refuses a stranger and a blocked customer without writing anything', async () => {
+    expect(await ask('/trial', { telegram_id: TG_END, panel_id: diamond })).toMatchObject({
+      result: 'not_started',
+    });
+    const b = await customer({ blocked: true });
+    expect(await ask('/trial', { telegram_id: b.tg, panel_id: diamond })).toMatchObject({
+      result: 'blocked',
+    });
+    expect(await trialOrders(b.id)).toEqual([]);
+  });
+
+  it('counts a trial already taken in the shop bot — one per person across both doors', async () => {
+    const c = await customer({ used: 1 });
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toMatchObject({
+      result: 'already_used',
+    });
+    expect(await trialOrders(c.id)).toEqual([]);
+  });
+
+  it('gives nothing when the shop-wide quota is zero', async () => {
+    await setQuota(0);
+    const c = await customer();
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toMatchObject({
+      result: 'already_used',
+    });
+  });
+
+  it('says «on the way» to a repeat within two minutes, and «used» after', async () => {
+    await setQuota(2);
+    const c = await customer();
+    await ask('/trial', { telegram_id: c.tg, panel_id: diamond });
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toMatchObject({
+      result: 'already_on_the_way',
+    });
+    await env.DB.prepare(
+      `UPDATE orders SET created_at = created_at - interval '3 minutes' WHERE user_id = ?1`,
+    )
+      .bind(c.id)
+      .run();
+    await setQuota(1);
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toMatchObject({
+      result: 'already_used',
+    });
+    expect(await trialOrders(c.id)).toHaveLength(1);
+  });
+
+  it('does not call a trial that already failed «on the way»', async () => {
+    // Final review, 2026-09-26: a trial the panel refused counted as «in the
+    // last two minutes», so the customer was told it was coming.
+    await setQuota(2);
+    const c = await customer();
+    await ask('/trial', { telegram_id: c.tg, panel_id: diamond });
+    await env.DB.prepare(
+      `UPDATE orders SET status = 'FAILED', failure_reason = 'panel refused'
+        WHERE user_id = ?1 AND kind = 'TRIAL'`,
+    )
+      .bind(c.id)
+      .run();
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toMatchObject({
+      result: 'on_the_way',
+    });
+  });
+
+  it('writes one order when several requests for one person arrive together', async () => {
+    // Quota 10, so the counter alone would let every one through: only the
+    // row lock plus the two-minute guard stop the rest. The pool is warmed
+    // first — a request that has to open a fresh connection starts after the
+    // other has already committed, and then nothing overlaps and the test
+    // proves nothing (it passed with the lock removed until this was added).
+    // Remove `FOR UPDATE` from the route and this goes red.
+    await setQuota(10);
+    const c = await customer();
+    await Promise.all(
+      Array.from({ length: 6 }, () => env.DB.prepare(`SELECT pg_sleep(0.05)`).run()),
+    );
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => ask('/trial', { telegram_id: c.tg, panel_id: diamond })),
+    );
+    expect(results.filter((r) => r['result'] === 'on_the_way')).toHaveLength(1);
+    expect(results.filter((r) => r['result'] === 'already_on_the_way')).toHaveLength(4);
+    expect(await trialOrders(c.id)).toHaveLength(1);
+  });
+});
+
+describe('the shop bot’s channel and rules come first', () => {
+  // Sam, 2026-09-26: a trial from support passes the same two doors as the
+  // shop bot. Only the shop bot can ask Telegram, so the door reads what it
+  // last recorded and trusts it for as long as the shop bot does.
+  const CHANNEL = {
+    title: 'کانال آزمون پشتیبانی',
+    chat_ref: '@support_test_channel',
+    join_link: 'https://t.me/support_test_channel',
+  };
+  const SHOWN = { title: CHANNEL.title, join_link: CHANNEL.join_link };
+  let savedRulesGate: string | null = null;
+
+  async function setRulesGate(value: string | null): Promise<void> {
+    await env.DB.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'roll_Status'`).run();
+    if (value !== null) {
+      await env.DB.prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('bot', 'roll_Status', to_jsonb(?1::text))`,
+      )
+        .bind(value)
+        .run();
+    }
+  }
+  async function addChannel(): Promise<void> {
+    await env.DB.prepare(
+      `INSERT INTO required_channels (title, chat_ref, join_link) VALUES (?1, ?2, ?3)`,
+    )
+      .bind(CHANNEL.title, CHANNEL.chat_ref, CHANNEL.join_link)
+      .run();
+  }
+
+  beforeAll(async () => {
+    savedRulesGate =
+      (
+        await env.DB.prepare(
+          `SELECT value #>> '{}' AS v FROM settings WHERE scope = 'bot' AND key = 'roll_Status'`,
+        ).first<{ v: string | null }>()
+      )?.v ?? null;
+  });
+  afterEach(async () => {
+    await env.DB.prepare(`DELETE FROM required_channels WHERE chat_ref = ?1`)
+      .bind(CHANNEL.chat_ref)
+      .run();
+    await setRulesGate(null);
+  });
+  afterAll(() => setRulesGate(savedRulesGate));
+
+  it('sends someone the shop bot never confirmed to the channel, and orders nothing', async () => {
+    await addChannel();
+    const c = await customer({ checkedAgo: null });
+    const options = await ask('/trial/options', { telegram_id: c.tg });
+    expect(options).toMatchObject({ customer: 'join_channels', services: [] });
+    expect(options['channels']).toContainEqual(SHOWN);
+    const trial = await ask('/trial', { telegram_id: c.tg, panel_id: diamond });
+    expect(trial).toMatchObject({ ok: true, result: 'join_channels' });
+    expect(trial['channels']).toContainEqual(SHOWN);
+    expect(await trialOrders(c.id)).toEqual([]);
+  });
+
+  it('trusts the shop bot’s confirmation for an hour, as the shop bot does', async () => {
+    await addChannel();
+    const stale = await customer({ checkedAgo: '61 minutes' });
+    expect(await ask('/trial', { telegram_id: stale.tg, panel_id: diamond })).toMatchObject({
+      result: 'join_channels',
+    });
+    const fresh = await customer({ checkedAgo: '59 minutes' });
+    expect(await ask('/trial', { telegram_id: fresh.tg, panel_id: diamond })).toMatchObject({
+      result: 'on_the_way',
+    });
+  });
+
+  it('asks for the rules while the shop bot asks for them, and not after they are accepted', async () => {
+    await setRulesGate('rolleon');
+    const c = await customer({ rulesAccepted: false });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({
+      customer: 'accept_rules',
+      services: [],
+    });
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toEqual({
+      ok: true,
+      result: 'accept_rules',
+    });
+    expect(await trialOrders(c.id)).toEqual([]);
+    await env.DB.prepare(`UPDATE users SET rules_accepted = true WHERE id = ?1`).bind(c.id).run();
+    expect(await ask('/trial', { telegram_id: c.tg, panel_id: diamond })).toMatchObject({
+      result: 'on_the_way',
+    });
+  });
+
+  it('does not ask for rules the shop has switched off', async () => {
+    const c = await customer({ rulesAccepted: false });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({ customer: 'ok' });
+  });
+
+  it('asks for the channel before the rules, as the shop bot does', async () => {
+    await addChannel();
+    await setRulesGate('rolleon');
+    const c = await customer({ rulesAccepted: false, checkedAgo: null });
+    expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({
+      customer: 'join_channels',
+    });
+  });
+});

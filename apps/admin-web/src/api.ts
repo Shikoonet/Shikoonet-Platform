@@ -1525,6 +1525,10 @@ export interface PanelItem {
    * give answers a customer's tap with a failed provision.
    */
   trial: { enabled: boolean; volumeGb: number | null; durationHours: number | null };
+  /** «تست از پشتیبانی»: the support bot may order a trial here. Sizes are `trial`'s numbers. */
+  supportTrial: { enabled: boolean; volumeGb: number | null; durationHours: number | null };
+  /** A company-owned account's link; the support bot lists this panel's servers from it. */
+  supportSampleSubscriptionUrl: string | null;
   extraVolumeTomanPerGb: PanelTierPrices;
   extraTimeTomanPerDay: PanelTierPrices;
   /** Where an ended account is moved. Empty means «leave it alone» — today's behaviour. */
@@ -3237,6 +3241,10 @@ export const api = {
       trialEnabled?: boolean;
       trialVolumeGb?: number | null;
       trialDurationHours?: number | null;
+      /** Refused without the trial numbers, like `trialEnabled`. */
+      supportTrialEnabled?: boolean;
+      /** https only; null clears. */
+      supportSampleSubscriptionUrl?: string | null;
       /** All three tier keys required together; each a positive Toman integer or null. */
       extraVolumeTomanPerGb?: PanelTierPrices;
       extraTimeTomanPerDay?: PanelTierPrices;

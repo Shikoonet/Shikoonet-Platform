@@ -15,11 +15,13 @@
  * is also what they expect.
  */
 
-import { randomBytes } from 'node:crypto';
 import type { D1DatabaseSession } from '@shikoo/database';
-import { CARD_HOLD_MINUTES_SQL, isAutomated } from '@shikoo/domain';
+import { CARD_HOLD_MINUTES_SQL, claimTrial, isAutomated, newPublicId } from '@shikoo/domain';
 import { totalBonusGb, type CatalogPlan } from './catalog.js';
 import { priceForUser, type Price } from './money.js';
+
+/** Moved to `@shikoo/domain` (the support door writes orders too); re-exported for the bot's callers. */
+export { newPublicId };
 
 export interface PlacedOrder {
   id: number;
@@ -61,15 +63,6 @@ async function notShelf(r: Promise<PlaceOrResult>): Promise<PlaceResult> {
   const out = await r;
   if (out === OUT_OF_STOCK) throw new Error('a non-purchase order asked for the shelf');
   return out;
-}
-
-/**
- * Ten hex characters, the shape production already uses for `payments.public_id`
- * ('b5baf9f689'), so support staff read one format everywhere. Collisions are
- * caught by the UNIQUE index rather than assumed away.
- */
-export function newPublicId(): string {
-  return randomBytes(5).toString('hex');
 }
 
 export async function placeOrder(
@@ -260,35 +253,9 @@ export async function placeTrialOrder(
   providerId: number,
   quotaPerUser: number,
 ): Promise<PlaceResult> {
-  if (!Number.isSafeInteger(quotaPerUser) || quotaPerUser <= 0) return null;
-
-  const claimed = await tx
-    .prepare(
-      `UPDATE users
-          SET test_quota_used = test_quota_used + 1, updated_at = now()
-        WHERE id = ?1 AND test_quota_used < ?2
-        RETURNING test_quota_used`,
-    )
-    .bind(userId, quotaPerUser)
-    .first<{ test_quota_used: number }>();
-  if (!claimed) return null;
-
-  const row = await tx
-    .prepare(
-      // PAID with no payment behind it, which is the whole shape of a free
-      // fulfilment: the provisioning sweep reads PAID and does not ask how it
-      // got there. completed_at stays null until the sweep sets it.
-      `INSERT INTO orders
-         (public_id, user_id, kind, provider_id, quantity,
-          unit_price_irr, discount_irr, total_irr, status)
-       VALUES (?1, ?2, 'TRIAL', ?3, 1, 0, 0, 0, 'PAID')
-       RETURNING id, public_id, total_irr`,
-    )
-    .bind(newPublicId(), userId, providerId)
-    .first<{ id: number; public_id: string; total_irr: number }>();
-  if (!row) throw new Error('trial order insert returned no row');
-
-  return { id: row.id, publicId: row.public_id, totalIrr: 0, expiresAt: null, reused: false };
+  const claimed = await claimTrial(tx, userId, providerId, quotaPerUser);
+  if (claimed === null) return null;
+  return { id: claimed.id, publicId: claimed.publicId, totalIrr: 0, expiresAt: null, reused: false };
 }
 async function place(
   tx: D1DatabaseSession,

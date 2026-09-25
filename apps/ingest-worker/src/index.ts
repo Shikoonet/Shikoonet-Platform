@@ -14,6 +14,7 @@ import {
   finalizeExpiredMirzabotWaits,
 } from './integrations/mirzabot.js';
 import { flushWebhookDeliveries } from './integrations/webhook.js';
+import { support, SUPPORT_BASE_PATH } from './integrations/support.js';
 import type { MirzabotClaimPayload } from '@shikoo/contracts';
 import { alertLateDeposits, clientIp, createLogger, type RateLimit } from '@shikoo/domain';
 
@@ -43,6 +44,16 @@ export interface Env {
   AUTO_MATCH_ENABLED?: string;
   AUTO_FULFILLMENT_ENABLED?: string;
   MIRZABOT_WEBHOOK_URL?: string;
+  /** The support bot's door; see `integrations/support.ts`. Anything but 'true' is off (404). */
+  SUPPORT_INTEGRATION_ENABLED?: string;
+  /** The bearer token n8n sends. Production refuses to boot with the door on and this under 32 characters. */
+  SUPPORT_INTEGRATION_TOKEN?: string;
+  /** One bucket for the whole door. Optional so tests can leave it out. */
+  SUPPORT_LIMIT?: RateLimit;
+  /** Tests inject a fake; production reads subscriptions with the global fetch. */
+  SUBSCRIPTION_FETCH?: typeof fetch;
+  /** Tests shorten it; production uses the 6-second budget in `support.ts`. */
+  SUPPORT_SERVERS_BUDGET_MS?: number;
   /**
    * The header the reverse proxy sets to the real client address — `X-Real-IP`
    * for the nginx terminator in front of this. Named rather than guessed,
@@ -308,6 +319,8 @@ app.post(
     }
   },
 );
+
+app.route(SUPPORT_BASE_PATH, support);
 
 export { app };
 

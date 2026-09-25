@@ -36,7 +36,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { AUTOMATED_KINDS_SQL, OWNS_PAID_SERVICE_SQL, trialFor } from '@shikoo/domain';
+import { AUTOMATED_KINDS_SQL, OWNS_PAID_SERVICE_SQL, PANEL_WIRED_SQL, trialPanels } from '@shikoo/domain';
 
 import type { ButtonStyle } from './telegram.js';
 
@@ -59,12 +59,7 @@ type Db = D1Database | D1DatabaseSession;
  *
  * One fragment for the shop and the trial list, so they cannot drift.
  */
-const PANEL_WIRED = `
-        NULLIF(pr.base_url, '') IS NOT NULL
-        AND (
-              NULLIF(pr.secret_ref, '') IS NOT NULL
-           OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id)
-            )`;
+const PANEL_WIRED = PANEL_WIRED_SQL;
 
 /**
  * Joined against `users u` on the caller. Every query below must therefore
@@ -857,38 +852,14 @@ export interface TrialPanel {
 }
 
 export async function trialPanelsForUser(db: Db, userId: number): Promise<TrialPanel[]> {
-  const rows = await db
-    .prepare(
-      // A panel with no address or no credential cannot create an account, and
-      // a trial that fails is worse than a button that was never drawn — the
-      // customer has spent their one free account on nothing. The same fragment
-      // PURCHASABLE uses, asked of every kind: a trial is always a panel account.
-      `SELECT pr.id AS provider_id, pr.name AS name, pr.config AS config
-         FROM provisioning_providers pr
-         JOIN users u ON u.id = ?1
-        WHERE pr.status = 'ACTIVE'
-          AND ${PANEL_WIRED}
-          AND NOT EXISTS (
-                SELECT 1 FROM provider_hidden_users h
-                 WHERE h.provider_id = pr.id AND h.user_id = u.id
-              )
-        ORDER BY pr.sort_order, pr.id`,
-    )
-    .bind(userId)
-    .all<{ provider_id: number; name: string; config: Record<string, unknown> | null }>();
-
-  const out: TrialPanel[] = [];
-  for (const row of rows.results ?? []) {
-    const trial = trialFor(row.config ?? {});
-    if (!trial.enabled) continue;
-    out.push({
-      providerId: row.provider_id,
-      name: row.name,
+  return (await trialPanels(db, userId))
+    .filter((p) => p.shop.enabled)
+    .map((p) => ({
+      providerId: p.providerId,
+      name: p.name,
       // `enabled` is only true when both are usable, which is what makes these
       // two assertions true rather than hopeful.
-      volumeGb: trial.volumeGb!,
-      durationHours: trial.durationHours!,
-    });
-  }
-  return out;
+      volumeGb: p.shop.volumeGb!,
+      durationHours: p.shop.durationHours!,
+    }));
 }

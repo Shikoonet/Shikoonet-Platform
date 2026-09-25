@@ -30,6 +30,8 @@ const KEYS = [
   'AUTO_FULFILLMENT_ENABLED',
   'MIRZABOT_INTEGRATION_HMAC_SECRET',
   'MIRZABOT_INTEGRATION_ID',
+  'SUPPORT_INTEGRATION_ENABLED',
+  'SUPPORT_INTEGRATION_TOKEN',
   'INGEST_MAX_BODY_BYTES',
   'APP_VERSION',
   'SOURCE_COMMIT',
@@ -138,6 +140,28 @@ describe('starting in production', () => {
       AUTO_MATCH_ENABLED: 'true',
       AUTO_FULFILLMENT_ENABLED: 'false',
     });
+    expect(() => buildEnv(NO_DB)).not.toThrow();
+  });
+
+  it('refuses the support door with a token too short to be a secret', () => {
+    // The support bot orders free accounts through this door; a guessable
+    // token hands them to anybody.
+    set({ ...PRODUCTION_ON, SUPPORT_INTEGRATION_ENABLED: 'true', SUPPORT_INTEGRATION_TOKEN: 'short' });
+    expect(() => buildEnv(NO_DB)).toThrow(/SUPPORT_INTEGRATION_TOKEN/);
+    set({ ...PRODUCTION_ON, SUPPORT_INTEGRATION_ENABLED: 'true' });
+    expect(() => buildEnv(NO_DB)).toThrow(/SUPPORT_INTEGRATION_TOKEN/);
+  });
+
+  it('refuses a short support token on staging too — it can reach a real panel', () => {
+    // Final review, 2026-09-26: the rule lived inside the production-only check.
+    set({ ENV_NAME: 'staging', SUPPORT_INTEGRATION_ENABLED: 'true', SUPPORT_INTEGRATION_TOKEN: 'short' });
+    expect(() => buildEnv(NO_DB)).toThrow(/SUPPORT_INTEGRATION_TOKEN/);
+  });
+
+  it('opens the support door with a long token, and ignores the token when the door is off', () => {
+    set({ ...PRODUCTION_ON, SUPPORT_INTEGRATION_ENABLED: 'true', SUPPORT_INTEGRATION_TOKEN: 'x'.repeat(32) });
+    expect(buildEnv(NO_DB).SUPPORT_INTEGRATION_TOKEN).toHaveLength(32);
+    set({ ...PRODUCTION_ON, SUPPORT_INTEGRATION_ENABLED: 'false', SUPPORT_INTEGRATION_TOKEN: 'short' });
     expect(() => buildEnv(NO_DB)).not.toThrow();
   });
 

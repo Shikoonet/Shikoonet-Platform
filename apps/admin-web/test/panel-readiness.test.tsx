@@ -37,6 +37,8 @@ function panel(over: Partial<PanelItem>): PanelItem {
     usernameMode: 'TELEGRAM_ID',
     usernameText: null,
     trial: { enabled: false, volumeGb: null, durationHours: null },
+    supportTrial: { enabled: false, volumeGb: null, durationHours: null },
+    supportSampleSubscriptionUrl: null,
     extraVolumeTomanPerGb: { f: null, n: null, n2: null },
     extraTimeTomanPerDay: { f: null, n: null, n2: null },
     downgradeGroupIds: [],

@@ -175,8 +175,10 @@ not:
 | `MIRZABOT_INTEGRATION_ENABLED` | feature flag | no | optional | build+runtime | PRESENT |
 | `MIRZABOT_WEBHOOK_URL` | outbound callback | no | optional | runtime | not set |
 | `AUTO_MATCH_ENABLED` `AUTO_FULFILLMENT_ENABLED` | feature flags on money paths | no | optional | build+runtime | PRESENT |
+| `SUPPORT_INTEGRATION_ENABLED` | the support bot's door (`/api/v1/integrations/support/*`); anything but `true` is off (404) | no | optional | runtime | not set (off) |
+| `SUPPORT_INTEGRATION_TOKEN` | bearer token n8n sends; at least 32 characters when the door is on, in every environment (boot refuses otherwise). One per environment, never shared | **yes** | when the door is on | runtime-only | not set |
 | `TRUSTED_PROXY_IP_HEADER` | which header carries the client IP | no | behind a proxy | build+runtime | PRESENT |
-| `INGEST_MAX_BODY_BYTES` `RATE_LIMIT_WINDOW_MS` `DEVICE_RATE_LIMIT` `IP_RATE_LIMIT` `SWEEP_INTERVAL_MS` | limits | no | optional | runtime | not set (defaulted) |
+| `INGEST_MAX_BODY_BYTES` `RATE_LIMIT_WINDOW_MS` `DEVICE_RATE_LIMIT` `IP_RATE_LIMIT` `SUPPORT_RATE_LIMIT` `SWEEP_INTERVAL_MS` | limits (`SUPPORT_RATE_LIMIT`: the support door's one bucket, 60/min) | no | optional | runtime | not set (defaulted) |
 | `ALERT_CHAT_ID` | alerts | no | optional | build+runtime | PRESENT |
 | `APP_VERSION` | falls back to `SOURCE_COMMIT` | no | optional | runtime | injected by Coolify |
 | `SOURCE_COMMIT` | the deployed sha — **injected by Coolify, never set by hand** | no | automatic | runtime | PRESENT (automatic) |
