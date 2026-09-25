@@ -277,6 +277,15 @@ export function failureReason(error: string | null): { kind: string; text: strin
   return { kind, text };
 }
 
+/**
+ * A row an admin took out of the queue is FAILED with error 'cancelled'
+ * (0100). It did not fail — nobody tried — so it is counted apart and kept off
+ * «who did not get it, and why».
+ */
+const NOT_CANCELLED = `error IS DISTINCT FROM 'cancelled'`;
+const FAILED_AND_CANCELLED = `count(*) FILTER (WHERE status = 'FAILED' AND ${NOT_CANCELLED})::int AS failed,
+                    count(*) FILTER (WHERE status = 'FAILED' AND error = 'cancelled')::int AS cancelled`;
+
 export function registerBulkRoutes(
   app: Hono<{
     // Wider than `{ DB }` since 0055: forwarding a channel post means calling
@@ -371,8 +380,9 @@ export function registerBulkRoutes(
       created_at: number;
     }>();
 
-    const of = (action: string) => {
-      const row = (results ?? []).find((r) => r.action === action);
+    type AuditRow = { actor_email: string; entity_id: string; after_json: unknown; created_at: number };
+    const of = (action: string) => toSend((results ?? []).find((r) => r.action === action));
+    const toSend = (row: AuditRow | null | undefined) => {
       if (!row) return null;
       const after =
         typeof row.after_json === 'string'
@@ -390,7 +400,19 @@ export function registerBulkRoutes(
     };
 
     const credit = of('customers.bulk_credited');
-    const last = of('customers.broadcast_queued');
+    // The one actually going, not the newest (Sam, 2026-09-25): the sender
+    // works oldest first, so with a second message queued behind it the bar
+    // used to jump to the new one at 0٪ while the first was what was moving.
+    // The newest is only the answer once nothing is left in the queue.
+    const going = await c.env.DB.prepare(
+      `SELECT a.actor_email, a.entity_id, a.after_json, a.created_at
+         FROM broadcasts b
+         JOIN audit_logs a ON a.action = 'customers.broadcast_queued' AND a.entity_id = b.id::text
+        WHERE b.finished_at IS NULL AND b.cancelled_at IS NULL
+        ORDER BY b.created_at
+        LIMIT 1`,
+    ).first<AuditRow>();
+    const last = toSend(going) ?? of('customers.broadcast_queued');
     // A broadcast is queued, not sent: the bot works through the snapshot at
     // its own pace, so «queued for 16,678» says nothing about how many have
     // heard yet. The recipient rows are the truth — SENT and FAILED are over,
@@ -409,7 +431,7 @@ export function registerBulkRoutes(
         : ((await c.env.DB.prepare(
             `SELECT count(*)::int                                   AS total,
                     count(*) FILTER (WHERE status = 'SENT')::int   AS sent,
-                    count(*) FILTER (WHERE status = 'FAILED')::int AS failed,
+                    ${FAILED_AND_CANCELLED},
                     count(*) FILTER (WHERE status = 'PENDING'
                                        AND (next_attempt_at IS NULL OR next_attempt_at <= now()))::int
                       AS pending,
@@ -442,6 +464,7 @@ export function registerBulkRoutes(
               total: number;
               sent: number;
               failed: number;
+              cancelled: number;
               pending: number;
               waiting: number;
               waiting_until: number | null;
@@ -466,6 +489,7 @@ export function registerBulkRoutes(
                       total: progress.total,
                       sent: progress.sent,
                       failed: progress.failed,
+                      cancelled: progress.cancelled,
                       pending: progress.pending,
                       waiting: progress.waiting,
                       waitingUntil:
@@ -503,7 +527,8 @@ export function registerBulkRoutes(
     // count — no name, no id.
     const [{ results: errors }, { results }] = await Promise.all([
       c.env.DB.prepare(
-        `SELECT error FROM broadcast_recipients WHERE broadcast_id = ?1 AND status = 'FAILED'`,
+        `SELECT error FROM broadcast_recipients
+          WHERE broadcast_id = ?1 AND status = 'FAILED' AND ${NOT_CANCELLED}`,
       )
         .bind(id)
         .all<{ error: string | null }>(),
@@ -511,7 +536,7 @@ export function registerBulkRoutes(
         `SELECT r.user_id, u.username, r.error, r.attempts
            FROM broadcast_recipients r
            JOIN users u ON u.id = r.user_id
-          WHERE r.broadcast_id = ?1 AND r.status = 'FAILED'
+          WHERE r.broadcast_id = ?1 AND r.status = 'FAILED' AND ${NOT_CANCELLED}
           ORDER BY r.user_id
           LIMIT 500`,
       )
@@ -540,6 +565,117 @@ export function registerBulkRoutes(
       byKind[kind] = (byKind[kind] ?? 0) + 1;
     }
     return c.json({ ok: true, items, byKind });
+  });
+
+  /**
+   * «صف پیام همگانی» — every broadcast not finished yet, in the order the
+   * sender takes them (Sam, 2026-09-25). The first is the one going; the rest
+   * start, one after another, when it is done. That order is the sender's own
+   * (`claimBroadcastBatch`, oldest first), not a separate queue kept here.
+   *
+   * A cancelled one stays listed until its last in-flight row lands, so the
+   * screen does not claim it gone while a worker still holds a message of it.
+   */
+  app.get('/api/v1/admin/bulk/queue', async (c) => {
+    const { results } = await c.env.DB.prepare(
+      `SELECT b.id::text AS id,
+              left(b.body, 160) AS preview,
+              b.source_chat, b.source_message_id,
+              (extract(epoch FROM b.created_at) * 1000)::bigint AS created_at,
+              (extract(epoch FROM b.cancelled_at) * 1000)::bigint AS cancelled_at,
+              a.actor_email AS by,
+              count(r.user_id)::int AS total,
+              count(*) FILTER (WHERE r.status = 'SENT')::int AS sent,
+              count(*) FILTER (WHERE r.status = 'FAILED' AND r.${NOT_CANCELLED})::int AS failed,
+              count(*) FILTER (WHERE r.status = 'FAILED' AND r.error = 'cancelled')::int AS cancelled,
+              count(*) FILTER (WHERE r.sent_at > now() - interval '60 seconds')::int AS sent_last_minute,
+              (extract(epoch FROM min(r.claimed_at)) * 1000)::bigint AS started_at
+         FROM broadcasts b
+         LEFT JOIN broadcast_recipients r ON r.broadcast_id = b.id
+         LEFT JOIN audit_logs a ON a.action = 'customers.broadcast_queued' AND a.entity_id = b.id::text
+        WHERE b.finished_at IS NULL
+        GROUP BY b.id, a.actor_email
+        ORDER BY b.created_at
+        LIMIT 50`,
+    ).all<{
+      id: string;
+      preview: string | null;
+      source_chat: string | null;
+      source_message_id: number | null;
+      created_at: number;
+      cancelled_at: number | null;
+      by: string | null;
+      total: number;
+      sent: number;
+      failed: number;
+      cancelled: number;
+      sent_last_minute: number;
+      started_at: number | null;
+    }>();
+    return c.json({
+      ok: true,
+      items: (results ?? []).map((r) => ({
+        id: r.id,
+        preview: r.preview,
+        post:
+          r.source_chat === null ? null : { chat: r.source_chat, messageId: Number(r.source_message_id) },
+        by: r.by,
+        createdAt: Number(r.created_at),
+        cancelledAt: r.cancelled_at === null ? null : Number(r.cancelled_at),
+        startedAt: r.started_at === null ? null : Number(r.started_at),
+        total: r.total,
+        sent: r.sent,
+        failed: r.failed,
+        cancelled: r.cancelled,
+        sentLastMinute: r.sent_last_minute,
+      })),
+    });
+  });
+
+  /**
+   * Take a broadcast out of the queue — one still waiting, or the rest of the
+   * one going now. What was sent stays sent; nothing is unsent.
+   *
+   * Stamps `cancelled_at`, which is what stops the sender (it is checked in the
+   * claim), then closes the PENDING rows so the counts say so at once. A row
+   * in a worker's hands this moment finishes as it would have; if a 429 hands
+   * it back, the bot closes it on its next sweep (`closeFinishedBroadcasts`).
+   */
+  app.post('/api/v1/admin/bulk/broadcast/:id/cancel', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const id = c.req.param('id');
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const stamped = await c.env.DB.prepare(
+      `UPDATE broadcasts SET cancelled_at = now()
+        WHERE id = ?1::uuid AND finished_at IS NULL AND cancelled_at IS NULL
+        RETURNING id`,
+    )
+      .bind(id)
+      .first<{ id: string }>();
+    // Finished, already cancelled, or no such broadcast: nothing to take out.
+    if (!stamped) return c.json({ ok: false, error: 'not_in_queue' }, 409);
+
+    const closed = await c.env.DB.prepare(
+      `UPDATE broadcast_recipients SET status = 'FAILED', error = 'cancelled'
+        WHERE broadcast_id = ?1::uuid AND status = 'PENDING'
+        RETURNING user_id`,
+    )
+      .bind(id)
+      .all<{ user_id: number }>();
+    const notSent = closed.results?.length ?? 0;
+    await audit(
+      c.env.DB,
+      ident,
+      'customers.broadcast_cancelled',
+      'CUSTOMER',
+      id,
+      null,
+      { not_sent: notSent },
+      null,
+    );
+    return c.json({ ok: true, notSent });
   });
 
   app.post('/api/v1/admin/bulk/credit', async (c) => {
@@ -646,7 +782,16 @@ export function registerBulkRoutes(
       { recipients: queued, audience: audience.kind, ...detail },
       null,
     );
-    return c.json({ ok: true, queued, reach });
+    // How many go before this one — the composer says «در صف» rather than
+    // «ارسال شد» when the answer is not zero.
+    const ahead = await c.env.DB.prepare(
+      `SELECT count(*)::int AS n FROM broadcasts
+        WHERE finished_at IS NULL AND cancelled_at IS NULL
+          AND created_at < (SELECT created_at FROM broadcasts WHERE id = ?1::uuid)`,
+    )
+      .bind(broadcastId)
+      .first<{ n: number }>();
+    return c.json({ ok: true, queued, reach, ahead: ahead?.n ?? 0 });
   });
 
   /**

@@ -22,15 +22,23 @@ const SHOW_FINISHED_FOR_MS = 10 * 60 * 1000;
 /**
  * «حدود ۴ دقیقه» — how long the rest should take at the pace so far.
  *
- * Pace is rows done over time since the broadcast was queued, which is the
- * honest average: it includes every 429 pause the bot has already sat
- * through. Nothing is said until something has gone, because a rate from
- * zero rows is not a rate.
+ * The last minute's pace when there is one. The average since the broadcast
+ * was QUEUED was the first answer, and it is wrong for a broadcast that
+ * waited behind another (Sam, 2026-09-25, the queue): an hour spent waiting
+ * counted as an hour spent sending, and the bar promised a day. The average
+ * is kept for a minute with nothing sent — a 429 pause — which it does
+ * honestly include. Nothing is said until something has gone.
  */
-function eta(done: number, left: number, queuedAt: number, now: number): string | null {
+function eta(
+  done: number,
+  left: number,
+  perMinute: number,
+  queuedAt: number,
+  now: number,
+): string | null {
   const elapsed = now - queuedAt;
   if (done === 0 || elapsed <= 0) return null;
-  const ms = (left * elapsed) / done;
+  const ms = perMinute > 0 ? (left / perMinute) * 60_000 : (left * elapsed) / done;
   if (ms < 60_000) return 'کمتر از یک دقیقه';
   const min = Math.round(ms / 60_000);
   return min < 60 ? `حدود ${count(min)} دقیقه` : `حدود ${count(Math.round(min / 60))} ساعت`;
@@ -39,8 +47,10 @@ function eta(done: number, left: number, queuedAt: number, now: number): string 
 export function BroadcastProgress() {
   const [send, setSend] = useState<BulkSend | null>(null);
   const p = send?.progress ?? null;
+  // Out of what will be sent: a row an admin cancelled is neither gone nor to come.
+  const total = p === null ? 0 : p.total - (p.cancelled ?? 0);
   const done = p === null ? 0 : p.sent + p.failed;
-  const left = p === null ? 0 : p.total - done;
+  const left = total - done;
 
   useEffect(() => {
     const refresh = async () => {
@@ -62,16 +72,16 @@ export function BroadcastProgress() {
   // seen. Sam, 2026-09-17: «خیلی مهمه برام».
   const now = Date.now();
   const recent = send !== null && now - (p?.lastAt ?? send.at) < SHOW_FINISHED_FOR_MS;
-  if (send === null || p === null || p.total === 0 || (left <= 0 && !recent)) return null;
-  const remaining = left > 0 ? eta(done, left, send.at, now) : null;
+  if (send === null || p === null || total <= 0 || (left <= 0 && !recent)) return null;
+  const remaining = left > 0 ? eta(done, left, p.sentLastMinute, send.at, now) : null;
 
   return (
     <span className="broadcast-progress" role="status">
       {/* The native element for «this much of a known total»; `accent-color`
           is how a browser is told what colour to draw it. */}
-      <progress value={done} max={p.total} />
+      <progress value={done} max={total} />
       <span>
-        {count(Math.floor((done / p.total) * 100))}٪ رفته —{' '}
+        {count(Math.floor((done / total) * 100))}٪ رفته ({count(p.sent)} از {count(total)}) —{' '}
         {left > 0 ? `${count(left)} مانده` : 'تمام شد'}
         {remaining !== null ? ` (${remaining})` : ''}
         {p.failed > 0 ? `، ${count(p.failed)} نرسید` : ''}

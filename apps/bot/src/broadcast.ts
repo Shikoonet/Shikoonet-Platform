@@ -195,6 +195,10 @@ export async function claimBroadcastBatch(
             FROM broadcast_recipients rr
             JOIN broadcasts bb ON bb.id = rr.broadcast_id
            WHERE rr.status = 'PENDING'
+             -- Taken out of the queue by an admin (0100). Checked here and not
+             -- only by the cancel route flipping its rows: a row in a worker's
+             -- hands at that moment can come back PENDING from a 429.
+             AND bb.cancelled_at IS NULL
              -- A row Telegram told us to come back to later. NULL is «due now»,
              -- which every ordinary queued message is and stays. Without this
              -- the deadline lived only inside one sweep: the next poll cycle,
@@ -449,6 +453,20 @@ export async function markBroadcastFailed(
 
 /** Stamps a broadcast finished once nothing is pending. Cheap and idempotent. */
 export async function closeFinishedBroadcasts(db: D1Database): Promise<void> {
+  // A cancelled broadcast's stragglers: rows a 429 handed back to PENDING
+  // after the cancel route had already closed the rest. Nothing will claim
+  // them (`cancelled_at` above), so without this the broadcast never finishes.
+  await db
+    .prepare(
+      `UPDATE broadcast_recipients r
+          SET status = 'FAILED', error = 'cancelled'
+         FROM broadcasts b
+        WHERE b.id = r.broadcast_id
+          AND b.cancelled_at IS NOT NULL
+          AND b.finished_at IS NULL
+          AND r.status = 'PENDING'`,
+    )
+    .run();
   await db
     .prepare(
       `UPDATE broadcasts b SET finished_at = now()
