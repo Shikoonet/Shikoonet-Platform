@@ -178,6 +178,7 @@ const editRevenueAdjustment = vi.fn(async (_id: number, _body: unknown) => ({
   changed: true,
 }));
 const addRevenueAdjustment = vi.fn(async (_body: unknown) => ({ ok: true, id: 900, amountIrr: -10_000 }));
+const voidRevenueAdjustment = vi.fn(async (_id: number, _reason: string): Promise<{ ok: boolean }> => ({ ok: true }));
 const parties = vi.fn(async () => ({
   ok: true,
   items: [
@@ -231,6 +232,7 @@ vi.mock('../src/api.js', async () => {
       revenueAdjustmentsCsvUrl: () => '/api/v1/admin/revenue-adjustments/export.csv',
       editRevenueAdjustment: (id: number, body: unknown) => editRevenueAdjustment(id, body),
       addRevenueAdjustment: (body: unknown) => addRevenueAdjustment(body),
+      voidRevenueAdjustment: (id: number, reason: string) => voidRevenueAdjustment(id, reason),
       parties: () => parties(),
       expenseScopes: () => expenseScopes(),
       withdrawalsNear: (a: string, d: string) => withdrawalsNear(a, d),
@@ -527,5 +529,61 @@ describe('opened from a withdrawal in «دفتر بانک»', () => {
     window.history.replaceState(null, '', '/admin/expenses?account=acc-resalat&amount=7000000&date=2026-09-23&tx=tx-7m');
     draw();
     expect((await screen.findByLabelText('هزینه')) as HTMLInputElement).toMatchObject({ checked: true });
+  });
+});
+
+/**
+ * Sam, 2026-09-24: «تو هزینه ها دکمه ابطال کار نمی کند». It did — out of sight.
+ * Walked on the built panel: with the form a «دفتر بانک» link opens still up,
+ * «ابطال» on a row far down drew its form UNDER that one, 1,859 px above the
+ * screen, and nothing scrolled, because the scroll ran only when the slot went
+ * from empty to open. Nothing on screen changed. Now the slot holds one form,
+ * every form that opens is scrolled to, and what the server says lands in it.
+ */
+describe('«ابطال» while another form is open', () => {
+  const scrolls: Element[] = [];
+  beforeEach(() => {
+    scrolls.length = 0;
+    voidRevenueAdjustment.mockClear();
+    // happy-dom has no scrollIntoView; the page calls it only if present.
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolls.push(this);
+    };
+  });
+  afterEach(() => {
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    window.history.replaceState(null, '', '/');
+  });
+
+  const voidOf = async (note: string) => {
+    const row = (await screen.findByText(note)).closest('tr')!;
+    fireEvent.click(within(row).getByRole('button', { name: 'ابطال' }));
+    return screen.findByText('ابطال ردیف', { selector: '.card__title' });
+  };
+
+  it('takes the place of the open form, and the page goes to it', async () => {
+    window.history.replaceState(null, '', '/admin/expenses?account=acc-resalat&amount=7000000&date=2026-09-23&tx=tx-7m');
+    draw();
+    await screen.findByText('ثبت ردیف تازه', { selector: '.card__title' });
+    scrolls.length = 0;
+
+    await voidOf('شارژ آروان');
+
+    expect(screen.queryByText('ثبت ردیف تازه', { selector: '.card__title' })).toBeNull();
+    await waitFor(() => expect(scrolls.some((el) => el.classList.contains('scroll-target'))).toBe(true));
+  });
+
+  it('starts empty for the next row, and shows the server\'s refusal where the form is', async () => {
+    draw();
+    await voidOf('شارژ آروان');
+    fireEvent.change(screen.getByLabelText('دلیل ابطال'), { target: { value: 'دو بار ثبت شده' } });
+    await voidOf('هزینه اشترک VPN پیکومو');
+    expect((screen.getByLabelText('دلیل ابطال') as HTMLInputElement).value).toBe('');
+
+    voidRevenueAdjustment.mockRejectedValueOnce(new Error('already_voided'));
+    fireEvent.change(screen.getByLabelText('دلیل ابطال'), { target: { value: 'دو بار ثبت شده' } });
+    fireEvent.click(screen.getByRole('button', { name: 'بله، باطل کن' }));
+    const alert = await screen.findByText(/already_voided/);
+    expect(alert.closest('.scroll-target')).not.toBeNull();
   });
 });
