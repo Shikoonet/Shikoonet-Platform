@@ -762,7 +762,7 @@ function dashboardPathOf(config: Record<string, unknown>): string | null {
   return typeof v === 'string' && v.trim() !== '' ? v : null;
 }
 
-function shape(r: PanelRow) {
+function shape(r: PanelRow, seesLink: boolean) {
   return {
     id: r.id,
     code: r.code,
@@ -796,8 +796,10 @@ function shape(r: PanelRow) {
     // «تست از پشتیبانی»: the support bot's door; its sizes are `trial`'s numbers.
     supportTrial: supportTrialFor(r.config ?? {}),
     // A company-owned account's link; only the support door reads it, for names.
+    // The link IS the account, so an ADMIN sees it and nobody else — the rule a
+    // shelf row's link follows (`stockRoutes`). Every other caller is ADMIN-only.
     supportSampleSubscriptionUrl:
-      typeof (r.config ?? {})['support_sample_subscription_url'] === 'string'
+      seesLink && typeof (r.config ?? {})['support_sample_subscription_url'] === 'string'
         ? ((r.config ?? {})['support_sample_subscription_url'] as string)
         : null,
     extraVolumeTomanPerGb: tierPricesOf(r.config ?? {}, 'priceextravolume'),
@@ -921,7 +923,8 @@ export function registerPanelRoutes(
     const rows = await c.env.DB.prepare(
       `${SELECT_PANEL} WHERE ${NOT_A_SHELF} ORDER BY pr.sort_order, pr.id`,
     ).all<PanelRow>();
-    return c.json({ ok: true, items: (rows.results ?? []).map(shape) });
+    const seesLink = c.get('identity').role === 'ADMIN';
+    return c.json({ ok: true, items: (rows.results ?? []).map((r) => shape(r, seesLink)) });
   });
 
   /**
@@ -1070,7 +1073,7 @@ export function registerPanelRoutes(
     return c.json(
       {
         ok: true,
-        panel: shape(created),
+        panel: shape(created, true),
         // So the screen can say WHY a panel it just made is switched off,
         // instead of leaving the operator to guess and press «تست اتصال».
         ...(probe === null ? {} : { probe: probeReply(probe) }),
@@ -1175,7 +1178,7 @@ export function registerPanelRoutes(
     const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
       .bind(id)
       .first<PanelRow>();
-    return c.json({ ok: true, panel: after ? shape(after) : null });
+    return c.json({ ok: true, panel: after ? shape(after, true) : null });
   });
 
   /**
@@ -1687,7 +1690,7 @@ export function registerPanelRoutes(
     const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
       .bind(id)
       .first<PanelRow>();
-    return c.json({ ok: true, panel: after ? shape(after) : null });
+    return c.json({ ok: true, panel: after ? shape(after, true) : null });
   });
 
   /**
@@ -2460,7 +2463,7 @@ export function registerPanelRoutes(
 
     return c.json({
       ok: true,
-      panel: shape(after),
+      panel: shape(after, true),
       // Why the status moved, when it moved by itself. Without this the screen
       // can only say «غیرفعال شد» and the operator has to go and press «تست
       // اتصال» to find out what this call already knows.

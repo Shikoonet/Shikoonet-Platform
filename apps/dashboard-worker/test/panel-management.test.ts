@@ -76,8 +76,8 @@ async function configOf(id: number): Promise<Record<string, unknown>> {
   return JSON.parse(row!.config) as Record<string, unknown>;
 }
 
-async function panelFromApi(id: number) {
-  const res = await app.request('/api/v1/admin/panels', {}, envAs(ADMIN));
+async function panelFromApi(id: number, email = ADMIN) {
+  const res = await app.request('/api/v1/admin/panels', {}, envAs(email));
   const body = (await res.json()) as { items: { id: number }[] };
   return body.items.find((p) => p.id === id) as Record<string, unknown> | undefined;
 }
@@ -259,6 +259,19 @@ describe('تست از پشتیبانی', () => {
     expect((await panelFromApi(id))?.['supportSampleSubscriptionUrl']).toBe('https://sub.example/x');
     expect((await patch(id, { supportSampleSubscriptionUrl: null })).status).toBe(200);
     expect((await panelFromApi(id))?.['supportSampleSubscriptionUrl']).toBeNull();
+  });
+
+  it('shows the sample link to an ADMIN only — the link is the account', async () => {
+    // Final review, 2026-09-26; the same rule as a shelf row's link (stockRoutes).
+    const id = await makePanel('support-sample-roles', {
+      support_sample_subscription_url: 'https://sub.example/secret',
+    });
+    expect((await panelFromApi(id))?.['supportSampleSubscriptionUrl']).toBe('https://sub.example/secret');
+    for (const who of [REVIEWER, READER]) {
+      const panel = await panelFromApi(id, who);
+      expect(panel?.['supportSampleSubscriptionUrl']).toBeNull();
+      expect(JSON.stringify(panel)).not.toContain('sub.example');
+    }
   });
 });
 
