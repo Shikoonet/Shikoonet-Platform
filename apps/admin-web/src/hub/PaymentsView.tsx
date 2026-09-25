@@ -55,6 +55,7 @@ import { CustomerLink } from '../CustomerLink.js';
 import { CustomerMessageSection } from './CustomerMessageSection.js';
 import {
   BotVerifiedMetrics,
+  DaySalesMetrics,
   BotVerifiedTable,
   BotVerifiedTransactionRow,
   CompactEmptyState,
@@ -448,6 +449,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const setSearch = useCallback((q: string) => setFilters((f) => ({ ...f, q })), []);
   // DEV-only: filters specific to the Bot Auto Verified tab.
   const botAutoFilter = useBotAutoVerifiedFilter();
+  const { range: botAutoRange, day: botAutoDayParam } = botAutoFilter.toQueryParams();
+  const botAutoDay = { range: botAutoRange, day: botAutoDayParam };
   const [reviewingId, setReviewingId] = useState<string | null>(() => parseReviewIdFromLocation());
   const [incomeAction, setIncomeAction] = useState<IncomeItem | null>(null);
   const [assignIncome, setAssignIncome] = useState<IncomeItem | null>(null);
@@ -1362,6 +1365,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                     onDateChange={botAutoFilter.setDate}
                     trailing={botTrailing}
                   />
+                  <DaySalesMetrics cache={cache} date={botAutoFilter.value.date} {...botAutoDay} />
                   <BotVerifiedMetrics analytics={analytics} items={claimItems} />
                   <BotVerifiedTable>
                     {claimItems.map((item) => (
@@ -1395,6 +1399,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   onDateChange={botAutoFilter.setDate}
                   trailing={botTrailing}
                 />
+                {/* A day with no bot-verified deposit can still have sales. */}
+                <DaySalesMetrics cache={cache} date={botAutoFilter.value.date} {...botAutoDay} />
                 <CompactEmptyState>{emptyText(tab)}</CompactEmptyState>
               </div>
             )}
