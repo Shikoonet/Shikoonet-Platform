@@ -105,6 +105,14 @@ SSH_OPTS=(
   -o StrictHostKeyChecking=yes
   -o BatchMode=yes
   -o ConnectTimeout=15
+  # The remote script is silent while it pulls the image — three minutes on a
+  # good day, nine and a half on 2026-09-25, when the idle connection was cut
+  # underneath it («client_loop: send disconnect: Broken pipe», exit 255) and
+  # the deploy died with nothing on staging changed. A probe every 30 s keeps
+  # the path from looking idle; ten unanswered ones (five minutes of a box that
+  # really stopped answering) still end the session.
+  -o ServerAliveInterval=30
+  -o ServerAliveCountMax=10
 )
 
 echo "==> $ENV_ARG: uploading deploy.sh and its application resolver from $SHA"

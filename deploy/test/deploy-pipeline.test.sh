@@ -1224,6 +1224,19 @@ else
     bad 'refuses an application with no ENV_NAME before touching anything' "$(tail -2 "$DEPLOY_LOG")"
   fi
 fi
+
+# `timeout 0` means no deadline, which would let a stalled pull hold the flock
+# for ever. Each bad value is refused before the lock or the registry is touched.
+for bad_timeout in 0 00 -5 10s abc; do
+  if PULL_TIMEOUT="$bad_timeout" run_deploy false; then
+    bad "refuses PULL_TIMEOUT='$bad_timeout'" 'it deployed anyway'
+  elif grep -qF 'PULL_TIMEOUT must be a positive number of seconds' "$DEPLOY_LOG" &&
+    ! grep -qF 'pulling' "$DEPLOY_LOG"; then
+    ok "refuses PULL_TIMEOUT='$bad_timeout'"
+  else
+    bad "refuses PULL_TIMEOUT='$bad_timeout'" "$(tail -2 "$DEPLOY_LOG")"
+  fi
+done
 unset FAKE_NO_ENV_NAME
 
 for malformed in json object; do

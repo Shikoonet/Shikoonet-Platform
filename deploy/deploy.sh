@@ -113,6 +113,7 @@ STATE_FILE=${STATE_FILE:-/var/lib/shikoo/$ENV_ARG/deployed}
 # there. The two locks guard different things and now have different names.
 LOCK_FILE=${LOCK_FILE:-/var/lock/shikoo-deploy-run-$ENV_ARG.lock}
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-420}
+PULL_TIMEOUT=${PULL_TIMEOUT:-900}
 NETWORK=${NETWORK:-coolify}
 
 say() { echo "[deploy:$ENV_ARG] $*"; }
@@ -121,6 +122,11 @@ die() {
   echo "[deploy:$ENV_ARG] FATAL: $*" >&2
   exit 1
 }
+
+# `timeout 0` is no deadline at all, and a pull without one can hold the flock
+# for ever — the very thing PULL_TIMEOUT exists to stop. Whole seconds, > 0.
+[[ $PULL_TIMEOUT =~ ^[1-9][0-9]*$ ]] ||
+  die "PULL_TIMEOUT must be a positive number of seconds, got '$PULL_TIMEOUT'"
 
 # ---------------------------------------------------------------------- lock
 # Fail fast rather than queue: GitHub's environment concurrency already queues,
@@ -303,7 +309,13 @@ CFG
 # Pulled here as well as by Coolify, because the revision label is checked
 # BEFORE anything is asked to deploy. A digest that was not built from this
 # commit must never reach an application record.
-docker pull -q "$IMAGE_REF" >/dev/null || die "pull failed for $IMAGE_REF"
+#
+# Bounded, for the same reason `api` is: this script holds the flock, and a
+# pull that stalls — or whose ssh client has already gone — would otherwise
+# keep it, and the next deploy would meet «another deploy holds the lock».
+say "pulling $IMAGE_REF (at most ${PULL_TIMEOUT}s)"
+timeout "$PULL_TIMEOUT" docker pull -q "$IMAGE_REF" >/dev/null ||
+  die "pull failed or took longer than ${PULL_TIMEOUT}s for $IMAGE_REF"
 LABEL_SHA=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE_REF")
 [ "$LABEL_SHA" = "$EXPECTED_SHA" ] ||
   die "image revision label is '$LABEL_SHA', expected $EXPECTED_SHA — this digest was not built from that commit"
@@ -754,7 +766,7 @@ roll_one() { # uuid name tag sha
   # a forward deploy; on a rollback the previous digest may not be, so this
   # pulls rather than assuming.
   ref="$IMAGE_NAME@sha256:${3#sha256-}"
-  docker pull -q "$ref" >/dev/null || {
+  timeout "$PULL_TIMEOUT" docker pull -q "$ref" >/dev/null || {
     echo "cannot pull $ref" >&2
     return 1
   }
