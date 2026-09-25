@@ -92,12 +92,12 @@ export function isAccountOperable(status: AccountStatus | null | undefined): boo
 }
 
 /**
- * Review-queue eligible. The dashboard's Accounts review queue only
- * lists accounts in PENDING (newly auto-discovered) plus DECLINED (an
- * admin can Restore), so admins can take action on them.
+ * Review-queue eligible: PENDING (newly auto-discovered) only. DECLINED
+ * left the queue on 2026-09-24 — a declined account never left the screen —
+ * and is restored from «ردشده‌ها» on the accounts list.
  */
 export function isReviewQueueMember(status: AccountStatus | null | undefined): boolean {
-  return status === 'PENDING' || status === 'DECLINED';
+  return status === 'PENDING';
 }
 
 /**

@@ -232,3 +232,25 @@ describe('showing an account to customers, and hiding it again', () => {
     expect(await visibleOf(id)).toBe(0);
   });
 });
+
+describe('the review queue', () => {
+  /**
+   * Sam, 2026-09-24: «این حساب رو رد کردم، ولی هنوز داره نمایشش میده». The
+   * queue listed DECLINED beside PENDING, so «رد» changed a pill and nothing
+   * left the screen. «بازگرداندن» lives behind «ردشده‌ها» on the list now.
+   */
+  it('lists what waits for review, and a declined account leaves it', async () => {
+    const waiting = `${PREFIX}waiting`;
+    const declined = `${PREFIX}declined`;
+    await makeAccount(waiting, { active: 1 });
+    await makeAccount(declined, { active: 1 });
+    await baseEnv.DB.prepare(`UPDATE financial_accounts SET status = 'PENDING' WHERE id = ?1`).bind(waiting).run();
+    await baseEnv.DB.prepare(`UPDATE financial_accounts SET status = 'DECLINED' WHERE id = ?1`).bind(declined).run();
+
+    const res = await app.request('/api/v1/accounts/pending', {}, envAs());
+    expect(res.status).toBe(200);
+    const ids = ((await res.json()) as { items: { id: string }[] }).items.map((a) => a.id);
+    expect(ids).toContain(waiting);
+    expect(ids).not.toContain(declined);
+  });
+});
