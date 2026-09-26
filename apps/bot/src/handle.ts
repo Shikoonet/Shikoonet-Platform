@@ -234,6 +234,12 @@ function isPrivateChat(update: TelegramUpdate): boolean {
  * `for` loop, so one update finishes before the next begins. If that ever
  * becomes concurrent this becomes shared mutable state between customers and
  * must be threaded through instead.
+ *
+ * One writer does run beside a handler since 2026-09-26: the sweep loop calls
+ * `refreshShopContent` on its own clock. That only ever swaps in the shop's
+ * switches as the database has them — the same object for every customer,
+ * from the same thirty-second cache — so an update can meet a newer copy
+ * halfway, never another customer's.
  */
 let SHOP: ShopSettings = DEFAULT_SHOP_SETTINGS;
 

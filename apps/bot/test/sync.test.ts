@@ -229,6 +229,39 @@ describe('refreshing what the customer sees', () => {
     expect((await readService(id))?.used_bytes).toBe(2 * GIB);
   });
 
+  it('does not write the listing over a link the customer changed while it was read', async () => {
+    // The sweeps stopped sharing a loop with the customer's presses on
+    // 2026-09-26, and the sync takes over a minute on production — so
+    // «تغییر لینک» can now land between the listing and the write. The listing
+    // is older than the new link; writing it back shows a revoked one.
+    const userId = await makeCustomer(nextTelegramId());
+    const id = await makeService(userId, panelId, {
+      publicId: 'sync-race',
+      username: 'u_race',
+      url: 'https://sync.test/sub/old',
+    });
+    const panel = fakePanel([{ username: 'u_race', used: GIB, url: '/sub/old' }]);
+    const pressDuringListing = (async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await panel.fetchImpl(input, init);
+      if (String(input).includes('/api/users?')) {
+        await db
+          .prepare(
+            `UPDATE subscriptions SET subscription_url = 'https://sync.test/sub/new', updated_at = now()
+              WHERE id = ?1`,
+          )
+          .bind(id)
+          .run();
+      }
+      return res;
+    }) as unknown as typeof globalThis.fetch;
+
+    await syncSubscriptions(db, pressDuringListing, NOW_MS);
+
+    const after = await readService(id);
+    expect(after?.subscription_url).toBe('https://sync.test/sub/new');
+    expect(after?.used_bytes, 'the rest of the row is still refreshed').toBe(GIB);
+  });
+
   it('does not erase a link the panel stopped returning', async () => {
     const userId = await makeCustomer(nextTelegramId());
     const id = await makeService(userId, panelId, {

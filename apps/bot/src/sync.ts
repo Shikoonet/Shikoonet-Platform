@@ -163,6 +163,10 @@ export async function syncSubscriptions(
       fetch: fetchImpl,
     };
 
+    // The database's clock rather than ours, because what it is compared with
+    // is `updated_at`, which the database stamps. Taken before the listing so
+    // anything written while the panel answers counts as newer than it.
+    const listedAt = await db.prepare(`SELECT now()::text AS t`).first<{ t: string }>();
     const listed = await adapter.listAccounts(provider);
     if (!listed.ok) {
       summary.failed++;
@@ -172,7 +176,7 @@ export async function syncSubscriptions(
     }
 
     summary.panels++;
-    summary.updated += await writeAccounts(db, row.id, listed.accounts);
+    summary.updated += await writeAccounts(db, row.id, listed.accounts, listedAt!.t);
 
     if (adapter.accountLinks && linkBudget > 0) {
       const linked = await fillMissingLinks(db, row.id, listed.accounts, linkBudget, (names) =>
@@ -240,7 +244,9 @@ async function fillMissingLinks(
  * account unique.
  *
  * `subscription_url` is COALESCEd so a panel that stops returning one does not
- * erase a link the customer already has. `used_bytes` is not: a NULL there
+ * erase a link the customer already has, and left alone on a row written since
+ * `listedAt`: «تغییر لینک» can land while the panel is still being read, and
+ * the listing is then older than the link it would overwrite. `used_bytes` is not: a NULL there
  * means the panel genuinely no longer counts, and keeping a stale number would
  * be worse than showing none. `panel_status` is not either, and for a stronger
  * reason — see the comment on the statement.
@@ -256,6 +262,7 @@ async function writeAccounts(
   db: D1Database,
   providerId: number,
   accounts: RemoteAccount[],
+  listedAt: string,
 ): Promise<number> {
   let updated = 0;
   for (let at = 0; at < accounts.length; at += CHUNK) {
@@ -264,7 +271,13 @@ async function writeAccounts(
       .prepare(
         `UPDATE subscriptions s
             SET used_bytes       = v.used_bytes,
-                subscription_url = COALESCE(v.url, s.subscription_url),
+                -- Not over a row written since the listing began: until
+                -- 2026-09-26 the sweeps and the customer's presses took turns,
+                -- and now a revoke can land mid-sync. The next sync, which
+                -- lists after it, brings the link up to date.
+                subscription_url = CASE WHEN s.updated_at > ?9::timestamptz
+                                        THEN s.subscription_url
+                                        ELSE COALESCE(v.url, s.subscription_url) END,
                 -- The first connection, seen from the panel's side: the clock
                 -- has started. active, and the two states an account can only
                 -- reach AFTER starting — limited and expired — in case a sync
@@ -312,6 +325,7 @@ async function writeAccounts(
         chunk.map((a) => a.status),
         chunk.map((a) => a.onlineAt),
         chunk.map((a) => a.admin),
+        listedAt,
       )
       .run();
     updated += result.meta.changes;
