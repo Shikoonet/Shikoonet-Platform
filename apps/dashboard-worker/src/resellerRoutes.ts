@@ -399,47 +399,65 @@ export function registerResellerRoutes(
     const parsed = StatusChange.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'bad request' }, 400);
 
-    const before = await c.env.DB.prepare(
-      `SELECT status FROM reseller_accounts WHERE id = ?1`,
-    )
-      .bind(id)
-      .first<{ status: string }>();
-    if (!before) return c.json({ ok: false, error: 'not found' }, 404);
-    // Pressing the status it already has is an answer, not a refusal.
-    if (before.status === parsed.data.status) return c.json({ ok: true });
-
-    // The allowed «from» is in the WHERE, not only in the check above it: a
-    // row the bot activates between the read and this write is not then
-    // flipped by a button drawn for the old status.
-    // Not CLOSED while an order of theirs is still on its way: delivery
-    // fails a closed account, and card money cannot be given back by the
-    // bot — it would sit in the bank against a sale that never happened.
-    // Asked in the same statement, so an order placed in between is seen.
-    const moved = await c.env.DB.prepare(
-      `UPDATE reseller_accounts SET status = ?2, updated_at = now()
-        WHERE id = ?1 AND status = ANY(?3::text[])
-          AND (?2 <> 'CLOSED' OR NOT EXISTS (
-                SELECT 1 FROM orders o
-                 WHERE o.target_reseller_id = ?1
-                   AND o.status IN ('AWAITING_PAYMENT', 'PAID', 'PROVISIONING')))`,
-    )
-      .bind(id, parsed.data.status, REACHABLE_FROM[parsed.data.status])
-      .run();
-    if (moved.meta.changes === 0) {
-      const inFlight =
-        parsed.data.status === 'CLOSED' &&
-        (await c.env.DB.prepare(
-          `SELECT 1 AS n FROM orders
-            WHERE target_reseller_id = ?1 AND status IN ('AWAITING_PAYMENT', 'PAID', 'PROVISIONING')
-            LIMIT 1`,
-        )
+    const target = parsed.data.status;
+    /*
+     * One transaction, holding the reseller row for all of it.
+     *
+     * The bot places a reseller's order under the same row lock
+     * (`placeResellerOrder`), so the two are one behind the other: a close
+     * that goes first makes the order see CLOSED and refuse; an order that
+     * goes first is committed before this reads `orders` — a statement of its
+     * own, with its own snapshot, AFTER the lock. A `NOT EXISTS` inside the
+     * UPDATE was not enough: re-checked after waiting on the lock, Postgres
+     * re-reads the row it updates but not the orders it joins, so an order
+     * committed meanwhile went unseen.
+     *
+     * Not CLOSED while an order is on its way because delivery fails a closed
+     * account, and card money cannot be given back by the bot — it would sit
+     * in the bank against a sale that never happened.
+     */
+    const outcome = await c.env.DB.withSession(async (tx) => {
+      const locked = await tx
+        .prepare(`SELECT status FROM reseller_accounts WHERE id = ?1 FOR UPDATE`)
+        .bind(id)
+        .first<{ status: string }>();
+      if (!locked) return { kind: 'gone' as const };
+      // Pressing the status it already has is an answer, not a refusal.
+      if (locked.status === target) return { kind: 'same' as const, before: locked };
+      if (!REACHABLE_FROM[target].includes(locked.status)) {
+        return { kind: 'refused' as const, before: locked };
+      }
+      if (target === 'CLOSED') {
+        const inFlight = await tx
+          .prepare(
+            `SELECT 1 AS n FROM orders
+              WHERE target_reseller_id = ?1
+                AND status IN ('AWAITING_PAYMENT', 'PAID', 'PROVISIONING')
+              LIMIT 1`,
+          )
           .bind(id)
-          .first<{ n: number }>()) !== null;
+          .first<{ n: number }>();
+        if (inFlight) return { kind: 'in_flight' as const, before: locked };
+      }
+      await tx
+        .prepare(`UPDATE reseller_accounts SET status = ?2, updated_at = now() WHERE id = ?1`)
+        .bind(id, target)
+        .run();
+      return { kind: 'moved' as const, before: locked };
+    });
+    if (outcome.kind === 'gone') return c.json({ ok: false, error: 'not found' }, 404);
+    if (outcome.kind === 'same') return c.json({ ok: true });
+    if (outcome.kind !== 'moved') {
       return c.json(
-        { ok: false, error: inFlight ? 'orders_in_flight' : 'transition_refused', from: before.status },
+        {
+          ok: false,
+          error: outcome.kind === 'in_flight' ? 'orders_in_flight' : 'transition_refused',
+          from: outcome.before.status,
+        },
         409,
       );
     }
+    const before = outcome.before;
 
     await audit(
       c.env.DB,

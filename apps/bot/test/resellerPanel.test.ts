@@ -27,6 +27,7 @@ import { DEFAULT_CONTENT } from '../src/botContent.js';
 import { handleUpdate } from '../src/handle.js';
 import { DEFAULT_LAYOUTS } from '../src/keyboard.js';
 import * as menu from '../src/menu.js';
+import { placeResellerOrder } from '../src/order.js';
 import { recordPaidClick, recordReceipt } from '../src/payment.js';
 import { provisionPaidOrders } from '../src/provision.js';
 import type { TelegramUpdate } from '../src/telegram.js';
@@ -324,6 +325,26 @@ describe('buying — asked of the panel before anything is paid', () => {
     } finally {
       await db.prepare(`UPDATE financial_accounts SET active = 1 WHERE id = ?1`).bind(RESELLER_ACCOUNT).run();
     }
+  });
+
+  it('writes no order for an account closed after the panel was asked', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const account = await makeAccount(userId, { status: 'PENDING', username: `late${telegramId}` });
+    const panel = adminPanel();
+    // Asked and answered while the account was open...
+    await handleUpdate(db, press(updateId, telegramId, `rsb:${account}`), panel.fetchImpl);
+    // ...then closed on the dashboard before the number was typed.
+    await db.prepare(`UPDATE reseller_accounts SET status = 'CLOSED' WHERE id = ?1`).bind(account).run();
+    await handleUpdate(db, types(updateId + 1, telegramId, '1'), panel.fetchImpl);
+    expect(await lastOrder(userId)).toBeNull();
+    // And the insert itself re-reads the row under its lock: a close that
+    // commits after every earlier read still stops the order.
+    const placed = await db.withSession((tx) =>
+      placeResellerOrder(tx, userId, account, providerId, 1, 30_000_000),
+    );
+    expect(placed).toBeNull();
+    expect(await lastOrder(userId)).toBeNull();
   });
 
   it('refuses the wallet doors by hand as well — the buttons are unsigned', async () => {

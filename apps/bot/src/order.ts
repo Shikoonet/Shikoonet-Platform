@@ -245,6 +245,16 @@ export async function placeResellerOrder(
   if (!Number.isSafeInteger(unitPriceIrr) || unitPriceIrr <= 0) {
     throw new Error(`reseller unit price ${unitPriceIrr} is not a usable price`);
   }
+  // The reseller row, held until this transaction ends, and asked again under
+  // the lock. The dashboard closes an account under the same lock and refuses
+  // while an order is on its way, so the two are one behind the other: an
+  // order is never written for an account that closed after the panel was
+  // asked, and a close never lands between this check and the insert.
+  const account = await tx
+    .prepare(`SELECT status FROM reseller_accounts WHERE id = ?1 AND user_id = ?2 FOR UPDATE`)
+    .bind(resellerAccountId, userId)
+    .first<{ status: string }>();
+  if (!account || account.status === 'CLOSED') return null;
   return notShelf(
     place(
       tx,
