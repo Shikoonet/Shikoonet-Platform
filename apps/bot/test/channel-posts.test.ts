@@ -131,7 +131,7 @@ describe('a scheduled channel post', () => {
 
     const row = await rowOf(id);
     expect(row?.status).toBe('FAILED');
-    expect(row?.error).toContain('chat not found');
+    expect(row?.error).toBe('chat not found');
   });
 
   it('stays SENDING when the answer never came, and is never sent again by itself', async () => {

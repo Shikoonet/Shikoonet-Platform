@@ -13,7 +13,7 @@
  * - writes that race the bot's claim answer 409 instead of landing late.
  */
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -138,8 +138,22 @@ async function sent(media = 'NONE'): Promise<number> {
   return Number(r!.id);
 }
 
+/**
+ * The shop-wide settings this file changes, as they were — put back after it.
+ * Found by the full run: `retention.test.ts` later builds its link from
+ * `username` and expected the seeded bot, not the one left behind here.
+ */
+const SHARED_SETTINGS = ['Channel_Report', 'topic_otherreport', 'username'];
+let before: Array<{ key: string; value: unknown }> = [];
+
 beforeAll(async () => {
   await applySchema();
+  const { results } = await baseEnv.DB.prepare(
+    `SELECT key, value FROM settings WHERE scope = 'bot' AND key = ANY(?1)`,
+  )
+    .bind(SHARED_SETTINGS)
+    .all<{ key: string; value: unknown }>();
+  before = results ?? [];
   for (const [email, role] of [
     [ADMIN, 'ADMIN'],
     [REVIEWER, 'REVIEWER'],
@@ -174,6 +188,20 @@ beforeEach(async () => {
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env['PANEL_SECRET_KEY'];
+});
+
+afterAll(async () => {
+  await baseEnv.DB.prepare(`DELETE FROM channel_posts`).run();
+  await baseEnv.DB.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = ANY(?1)`)
+    .bind(SHARED_SETTINGS)
+    .run();
+  for (const row of before) {
+    await baseEnv.DB.prepare(
+      `INSERT INTO settings (scope, key, value) VALUES ('bot', ?1, ?2::jsonb)`,
+    )
+      .bind(row.key, JSON.stringify(row.value))
+      .run();
+  }
 });
 
 describe('the channel', () => {
@@ -370,7 +398,7 @@ describe('a picture', () => {
   const upload = (id: number, bytes: Uint8Array, kind = 'photo') =>
     app.request(
       `/api/v1/admin/channel-posts/${id}/media?kind=${kind}&name=a.jpg`,
-      { method: 'PUT', body: bytes },
+      { method: 'POST', body: bytes },
       envAs(),
     );
 

@@ -52,6 +52,7 @@ export type PageId =
   | 'customers'
   | 'referrals'
   | 'bulk'
+  | 'posts'
   | 'orders'
   | 'catalog'
   | 'categories'
@@ -130,6 +131,12 @@ export const NAV: NavGroup[] = [
       // it belongs to the same part of the panel.
       { id: 'resellers', label: 'نمایندگان', icon: 'users' },
       { id: 'bulk', label: 'ارسال گروهی', icon: 'send' },
+      // Sam, 2026-09-26 (#473): the shop's own channels, beside the message to
+      // its customers — the same audience decision, a different door. Not
+      // «پست کانال»: that is already the name of a tab on «ارسال گروهی» (a
+      // broadcast forwarding a channel post), and one name for two doors is
+      // the ambiguity `nav.test` exists to catch.
+      { id: 'posts', label: 'انتشار در کانال', icon: 'send' },
     ],
   },
   {

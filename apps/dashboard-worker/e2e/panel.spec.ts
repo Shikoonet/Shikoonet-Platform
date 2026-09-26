@@ -76,7 +76,9 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   // pay, and what each service and each partner made. Two new sections.
   // 34 -> 35 on 2026-09-26: «کمپین‌ها» (#471) — which link brought a customer
   // and what they bought. A new section, so the number moved.
-  expect(labels.length).toBe(35);
+  // 35 -> 36 on 2026-09-26: «انتشار در کانال» (#473) — posts for the shop's
+  // channels, beside «ارسال گروهی». A new section, so the number moved.
+  expect(labels.length).toBe(36);
 
   for (const label of labels) {
     const name = label.trim();

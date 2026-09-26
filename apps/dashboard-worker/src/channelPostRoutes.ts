@@ -627,7 +627,7 @@ export function registerChannelPostRoutes(app: Hono<PostEnv>) {
    * for its `file_id` — the bot sends it on from there — and that message is
    * then removed, so the group holds previews and not uploads.
    */
-  app.put('/api/v1/admin/channel-posts/:id/media', async (c) => {
+  app.post('/api/v1/admin/channel-posts/:id/media', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
     const id = idOf(c.req.param('id'));

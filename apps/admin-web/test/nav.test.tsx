@@ -170,6 +170,9 @@ describe('navigation', () => {
       // «کمپین‌ها», 2026-09-26 (#471) — which link brought a customer and what
       // they bought, counted from the bot's own starts.
       'campaigns',
+      // «انتشار در کانال», 2026-09-26 (#473) — writing, previewing and scheduling
+      // posts for the shop's channels.
+      'posts',
     ];
     expect([...ALL].sort()).toEqual([...implemented].sort());
   });

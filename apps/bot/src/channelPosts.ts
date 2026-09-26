@@ -124,7 +124,9 @@ export async function sendDueChannelPost(db: D1Database, api: TelegramApi): Prom
       await settle(
         `UPDATE channel_posts SET status = 'FAILED', error = ?2, updated_at = now()
           WHERE id = ?1 AND status = 'SENDING'`,
-        err.message.slice(0, 500),
+        // Telegram's own reason, without our client's «telegram copyMessage
+        // rejected:» in front of it — that line is read by an operator.
+        err.message.replace(/^telegram \w+ rejected: /, '').slice(0, 500),
       );
     } else {
       // Unknown whether it went: left SENDING, and said so where people look.
