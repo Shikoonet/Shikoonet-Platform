@@ -3877,6 +3877,8 @@ export function resellerPanelScreen(
   a: OwnedResellerAccount,
   loginUrl: string | null,
   nowMs: number,
+  /** False when this panel has no price table yet: the screen says so. */
+  canSell = true,
 ): string {
   const t = TEXTS_NOW;
   const lines = [
@@ -3886,6 +3888,7 @@ export function resellerPanelScreen(
   ];
   if (a.status === 'PENDING') {
     lines.push('', t.raw('RESELLER_PANEL_PENDING'));
+    if (!canSell) lines.push('', t.raw('RESELLER_SALE_OFF'));
     return lines.join('\n');
   }
   if (loginUrl !== null) lines.push(t.render('RESELLER_PANEL_LOGIN', { url: loginUrl }));
@@ -3908,6 +3911,9 @@ export function resellerPanelScreen(
         : t.render('RESELLER_PANEL_DEADLINE_PASSED', { date }),
     );
   }
+  // Without a price table there is no «buy» button, and a screen that simply
+  // lacks one reads as a broken bot (Sam, 2026-09-26). Said instead.
+  if (!canSell) lines.push('', t.raw('RESELLER_SALE_OFF'));
   return lines.join('\n');
 }
 
@@ -3940,6 +3946,24 @@ export function resellerPanelMenu(
       ? { text: 'بازگشت ⬅️', callback_data: encode('rsp') }
       : { text: '🏠 بازگشت به منو', callback_data: encode('menu') },
   ]);
+  return rows;
+}
+
+/**
+ * The size picker under «چند ترابایت؟»: two to a row, each saying what it
+ * costs, and the way back to the panel. Each button carries the size alone.
+ */
+export function resellerTbMenu(
+  accountId: number,
+  sizes: readonly { tb: number; totalIrr: number }[],
+): InlineKeyboard {
+  const buttons = sizes.map((s) => ({
+    text: `${s.tb.toLocaleString('en-US')} ترابایت — ${tomanDigits(s.totalIrr)} تومان`,
+    callback_data: encode('rsbt', accountId, s.tb),
+  }));
+  const rows: InlineKeyboard = [];
+  for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
+  rows.push([{ text: 'بازگشت ⬅️', callback_data: encode('rsp', accountId) }]);
   return rows;
 }
 
