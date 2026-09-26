@@ -58,6 +58,42 @@ const AppBody = z
   })
   .strict();
 
+// The caps are the table's CHECKs (0105). The answer is shorter than an article:
+// every visible answer goes into the support bot's prompt on every message.
+const AnswerBody = z
+  .object({
+    question: z.string().trim().min(1).max(300),
+    answer: z.string().trim().min(1).max(1500),
+    sortOrder: z.number().int().min(0).max(9999).optional(),
+    active: z.boolean().optional(),
+    // On an edit, the version the form opened; a save made since is refused.
+    version: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+interface AnswerRow {
+  id: number;
+  question: string;
+  answer: string;
+  sort_order: number;
+  active: boolean;
+  version: number;
+  updated_at: string;
+}
+
+const shapeAnswer = (r: AnswerRow) => ({
+  id: Number(r.id),
+  question: r.question,
+  answer: r.answer,
+  sortOrder: r.sort_order,
+  active: r.active,
+  version: r.version,
+  updatedAt: r.updated_at,
+});
+
+const SELECT_ANSWER = `SELECT id, question, answer, sort_order, active, version, updated_at
+                         FROM support_answers`;
+
 interface ArticleRow {
   id: number;
   title: string;
@@ -249,6 +285,166 @@ export function registerContentRoutes(
       null,
       null,
     );
+    return c.json({ ok: true });
+  });
+
+  // --- پرسش و پاسخ پشتیبانی --------------------------------------------------
+  //
+  // What the support bot may say. The support door hands every visible row to
+  // the bot on every message, so a save here is live on the next customer
+  // question. Each edit bumps `version` and puts the text before and after in
+  // audit_logs: that is the history an older wording is read back from.
+
+  app.get('/api/v1/admin/support-answers', async (c) => {
+    const rows = await c.env.DB.prepare(`${SELECT_ANSWER} ORDER BY sort_order, id`).all<AnswerRow>();
+    return c.json({ ok: true, items: (rows.results ?? []).map(shapeAnswer) });
+  });
+
+  app.post('/api/v1/admin/support-answers', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const body = AnswerBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    // Every write below shares a transaction with its audit row: the log is the
+    // only history of an answer's wording, so a write it missed is rolled back.
+    const created = await c.env.DB.withSession(async (tx) => {
+      const row = await tx
+        .prepare(
+          `INSERT INTO support_answers (question, answer, sort_order, active)
+           VALUES (?1, ?2, ?3, ?4)
+           RETURNING id, question, answer, sort_order, active, version, updated_at`,
+        )
+        .bind(body.data.question, body.data.answer, body.data.sortOrder ?? 0, body.data.active ?? true)
+        .first<AnswerRow>();
+      if (!row) return null;
+      await audit(
+        tx,
+        ident,
+        'content.support_answer_created',
+        'SUPPORT_ANSWER',
+        String(row.id),
+        null,
+        { question: row.question, answer: row.answer, active: row.active },
+        null,
+      );
+      return row;
+    });
+    if (!created) return c.json({ ok: false, error: 'insert_failed' }, 500);
+    return c.json({ ok: true, answer: shapeAnswer(created) });
+  });
+
+  app.post('/api/v1/admin/support-answers/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = AnswerBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    const out = await c.env.DB.withSession(async (tx) => {
+      // Locked, so two saves of one answer take turns and each one's «before»
+      // is what the other left.
+      const before = await tx
+        .prepare(`${SELECT_ANSWER} WHERE id = ?1 FOR UPDATE`)
+        .bind(id)
+        .first<AnswerRow>();
+      if (!before) return 'not_found' as const;
+      // The form sends the version it opened. Another admin's save since then
+      // is refused rather than silently written over.
+      if (body.data.version !== undefined && body.data.version !== before.version) {
+        return 'edited_elsewhere' as const;
+      }
+      const after = await tx
+        .prepare(
+          `UPDATE support_answers
+              SET question = ?2, answer = ?3, sort_order = ?4, active = ?5,
+                  version = version + 1, updated_at = now()
+            WHERE id = ?1
+           RETURNING id, question, answer, sort_order, active, version, updated_at`,
+        )
+        .bind(
+          id,
+          body.data.question,
+          body.data.answer,
+          body.data.sortOrder ?? before.sort_order,
+          body.data.active ?? before.active,
+        )
+        .first<AnswerRow>();
+      if (!after) return 'not_found' as const;
+      // The whole text on both sides, not a summary: this row is the only
+      // place the previous wording survives.
+      await audit(
+        tx,
+        ident,
+        'content.support_answer_updated',
+        'SUPPORT_ANSWER',
+        String(id),
+        { question: before.question, answer: before.answer, active: before.active, version: before.version },
+        { question: after.question, answer: after.answer, active: after.active, version: after.version },
+        null,
+      );
+      return after;
+    });
+    if (out === 'not_found') return c.json({ ok: false, error: 'not_found' }, 404);
+    if (out === 'edited_elsewhere') {
+      return c.json(
+        {
+          ok: false,
+          error: 'edited_elsewhere',
+          detail: 'این پرسش و پاسخ همین حالا جای دیگری ویرایش شد؛ صفحه را تازه کنید و دوباره ویرایش کنید.',
+        },
+        409,
+      );
+    }
+    return c.json({ ok: true, answer: shapeAnswer(out) });
+  });
+
+  app.delete('/api/v1/admin/support-answers/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    // Only a hidden answer goes, in one statement, as for «آموزش».
+    const gone = await c.env.DB.withSession(async (tx) => {
+      const row = await tx
+        .prepare(`DELETE FROM support_answers WHERE id = ?1 AND NOT active RETURNING question, answer`)
+        .bind(id)
+        .first<{ question: string; answer: string }>();
+      if (row) {
+        await audit(tx, ident, 'content.support_answer_deleted', 'SUPPORT_ANSWER', String(id), row, null, null);
+      }
+      return row;
+    });
+    if (!gone) {
+      const exists = await c.env.DB.prepare(`SELECT 1 AS one FROM support_answers WHERE id = ?1`)
+        .bind(id)
+        .first<{ one: number }>();
+      if (!exists) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json(
+        {
+          ok: false,
+          error: 'still_visible',
+          detail: 'اول این پرسش و پاسخ را پنهان کنید، بعد حذفش کنید.',
+        },
+        409,
+      );
+    }
     return c.json({ ok: true });
   });
 

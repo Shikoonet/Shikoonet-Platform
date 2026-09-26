@@ -121,6 +121,27 @@ support.post('/rules', async (c) => {
   });
 });
 
+/**
+ * The answers the support bot may give, as written in «محتوا» → «پرسش و پاسخ
+ * پشتیبانی» (0105). Only visible rows, in the panel's order, numbered and
+ * joined into the one block the bot's prompt takes; the bot fetches it on every
+ * message, so an edit is live on the next question.
+ *
+ * ponytail: the whole list goes into every prompt. Fine for tens of answers;
+ * past ~100 the prompt cost says retrieve the few that match instead.
+ */
+support.post('/kb', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT question, answer FROM support_answers WHERE active ORDER BY sort_order, id`,
+  ).all<{ question: string; answer: string }>();
+  const rows = results ?? [];
+  return c.json({
+    ok: true,
+    count: rows.length,
+    text: rows.map((r, i) => `${i + 1}) ${r.question.trim()}\n${r.answer.trim()}`).join('\n\n'),
+  });
+});
+
 /** Whether the shop bot asks for its rules: `bot/roll_Status = rolleon`. */
 async function rulesGateOn(db: Db): Promise<boolean> {
   const gate = await db

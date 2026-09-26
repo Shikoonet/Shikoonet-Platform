@@ -1243,6 +1243,27 @@ export interface HelpArticleBody {
   active?: boolean;
 }
 
+/** «پرسش و پاسخ پشتیبانی»: what the support bot may say (0105). */
+export interface SupportAnswerRow {
+  id: number;
+  question: string;
+  answer: string;
+  sortOrder: number;
+  active: boolean;
+  /** Counts edits; each edit's before and after text is in the audit log. */
+  version: number;
+  updatedAt: string;
+}
+
+export interface SupportAnswerBody {
+  question: string;
+  answer: string;
+  sortOrder?: number;
+  active?: boolean;
+  /** On an edit, the version the form opened; a save made since is refused. */
+  version?: number;
+}
+
 export interface ClientAppRow {
   id: number;
   name: string;
@@ -3092,6 +3113,21 @@ export const api = {
 
   deleteHelpArticle(id: number) {
     return req<{ ok: boolean }>(`/help-articles/${id}`, { method: 'DELETE' });
+  },
+
+  supportAnswers() {
+    return req<{ ok: boolean; items: SupportAnswerRow[] }>('/support-answers');
+  },
+
+  saveSupportAnswer(id: number | null, body: SupportAnswerBody) {
+    return req<{ ok: boolean; answer: SupportAnswerRow }>(
+      id === null ? '/support-answers' : `/support-answers/${id}`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+  },
+
+  deleteSupportAnswer(id: number) {
+    return req<{ ok: boolean }>(`/support-answers/${id}`, { method: 'DELETE' });
   },
 
   clientApps() {
