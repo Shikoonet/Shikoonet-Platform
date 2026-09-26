@@ -29,7 +29,7 @@ import { fixedWindowRateLimit } from '@shikoo/domain';
 import { app, runScheduledSweep, type Env } from './index.js';
 
 /** Fails loudly at boot rather than behaving oddly at 3am. */
-function required(name: string): string {
+export function required(name: string): string {
   const value = process.env[name];
   if (value === undefined || value === '') {
     throw new Error(`${name} is required`);
@@ -37,12 +37,12 @@ function required(name: string): string {
   return value;
 }
 
-function optional(name: string): string | undefined {
+export function optional(name: string): string | undefined {
   const value = process.env[name];
   return value === undefined || value === '' ? undefined : value;
 }
 
-function positiveInt(name: string, fallback: number): number {
+export function positiveInt(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
   const n = Number(raw);
@@ -108,7 +108,7 @@ const CONSEQUENCE: Record<(typeof MUST_BE_DECIDED)[number], string> = {
  * only production: staging's panel rows can reach a real panel (final review,
  * 2026-09-26). A door that is off needs no token.
  */
-function assertSupportDoorConfig(env: Env): void {
+export function assertSupportDoorConfig(env: Env): void {
   if (env.SUPPORT_INTEGRATION_ENABLED !== 'true') return;
   if ((env.SUPPORT_INTEGRATION_TOKEN?.length ?? 0) < 32) {
     throw new Error(

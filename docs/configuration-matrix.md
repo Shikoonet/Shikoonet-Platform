@@ -186,6 +186,25 @@ not:
 Device authentication for SMS ingest is **not** an environment variable: it is
 rows in `device_credentials`. Nothing to store here.
 
+### `shikoo-<env>-support`
+
+The support bot's door on its own (`SERVICE=support`, 2026-09-26), so the SMS
+ingest above keeps its door off. `deploy.sh` finds it by name — the ingest's
+name with `-support` for `-ingest` — and deploys it with every release; an
+environment without one is deployed without one.
+
+| Name | Purpose | Sensitive | Required | Build/runtime | Status |
+| --- | --- | --- | --- | --- | --- |
+| `SERVICE` | `support` | no | yes | build+runtime | — |
+| `DATABASE_URL` | Postgres | **yes** | yes | runtime-only | — |
+| `ENV_NAME` | environment guards | no | yes | runtime-only | — |
+| `HOST` `PORT` | listener (8789; `HOST=0.0.0.0` in a container) | no | yes | build+runtime | — |
+| `SUPPORT_INTEGRATION_ENABLED` | must be `true` — the service refuses to boot otherwise, since it would serve only 404s | no | yes | runtime | — |
+| `SUPPORT_INTEGRATION_TOKEN` | bearer token n8n sends; at least 32 characters | **yes** | yes | runtime-only | — |
+| `TRUSTED_PROXY_IP_HEADER` | which header carries the client IP, for the per-address limit on wrong tokens | no | behind a proxy | build+runtime | — |
+| `SUPPORT_RATE_LIMIT` `IP_RATE_LIMIT` `RATE_LIMIT_WINDOW_MS` | limits | no | optional | runtime | not set (defaulted) |
+| `ALERT_CHAT_ID` | alerts | no | optional | build+runtime | — |
+
 ### `shikoo-dashboard`
 
 | Name | Purpose | Sensitive | Required | Build/runtime | Status |
