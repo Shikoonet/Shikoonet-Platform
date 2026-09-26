@@ -495,6 +495,7 @@ function AnswerEditor({
         answer: text.trim(),
         sortOrder: Number(sortOrder) || 0,
         active,
+        ...(answer ? { version: answer.version } : {}),
       });
       onSaved();
     } catch (e) {

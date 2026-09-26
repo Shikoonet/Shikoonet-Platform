@@ -323,6 +323,52 @@ describe('the support bot’s answers', () => {
     expect(JSON.parse(log!.after_json!)).toMatchObject({ answer: 'جواب دوم', version: 2 });
   });
 
+  it('refuses a save made over another admin’s edit', async () => {
+    const id = await create('race', 'جواب اول');
+    const path = `/api/v1/admin/support-answers/${id}`;
+    const edit = (answer: string, version: number) =>
+      send(path, 'POST', { question: `${PREFIX}race`, answer, version });
+
+    expect((await edit('جواب دوم', 1)).status).toBe(200);
+    // A second form still holding version 1.
+    const stale = await edit('جواب سوم', 1);
+    expect(stale.status).toBe(409);
+    expect(((await stale.json()) as { error: string }).error).toBe('edited_elsewhere');
+
+    const row = await baseEnv.DB.prepare(`SELECT answer, version FROM support_answers WHERE id = ?1`)
+      .bind(id)
+      .first<{ answer: string; version: number }>();
+    expect(row).toEqual({ answer: 'جواب دوم', version: 2 });
+  });
+
+  it('rolls an edit back when its log row cannot be written', async () => {
+    // The log is the only history of an answer's wording, so an edit it missed
+    // must not stand. A trigger refuses exactly this test's log row.
+    const id = await create('atomic', 'جواب اول');
+    await baseEnv.DB.prepare(
+      `CREATE OR REPLACE FUNCTION zz_refuse_kb_audit() RETURNS trigger LANGUAGE plpgsql AS
+       'BEGIN IF NEW.after_json LIKE ''%zz-refuse%'' THEN RAISE EXCEPTION ''refused''; END IF; RETURN NEW; END'`,
+    ).run();
+    await baseEnv.DB.prepare(
+      `CREATE TRIGGER zz_refuse_kb_audit BEFORE INSERT ON audit_logs
+       FOR EACH ROW EXECUTE FUNCTION zz_refuse_kb_audit()`,
+    ).run();
+    try {
+      const res = await send(`/api/v1/admin/support-answers/${id}`, 'POST', {
+        question: `${PREFIX}atomic`,
+        answer: 'zz-refuse',
+      });
+      expect(res.status).toBe(500);
+    } finally {
+      await baseEnv.DB.prepare(`DROP TRIGGER IF EXISTS zz_refuse_kb_audit ON audit_logs`).run();
+      await baseEnv.DB.prepare(`DROP FUNCTION IF EXISTS zz_refuse_kb_audit()`).run();
+    }
+    const row = await baseEnv.DB.prepare(`SELECT answer, version FROM support_answers WHERE id = ?1`)
+      .bind(id)
+      .first<{ answer: string; version: number }>();
+    expect(row).toEqual({ answer: 'جواب اول', version: 1 });
+  });
+
   it('deletes only a hidden answer, and the log keeps its words', async () => {
     const id = await create('gone', 'متنی که می‌رود');
     const path = `/api/v1/admin/support-answers/${id}`;

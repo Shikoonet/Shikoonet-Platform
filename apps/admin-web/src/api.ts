@@ -1260,6 +1260,8 @@ export interface SupportAnswerBody {
   answer: string;
   sortOrder?: number;
   active?: boolean;
+  /** On an edit, the version the form opened; a save made since is refused. */
+  version?: number;
 }
 
 export interface ClientAppRow {
