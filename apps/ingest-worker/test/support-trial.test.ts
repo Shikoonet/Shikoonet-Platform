@@ -505,6 +505,33 @@ describe('the shop bot’s channel and rules come first', () => {
     expect(await ask('/trial/options', { telegram_id: c.tg })).toMatchObject({ customer: 'ok' });
   });
 
+  it('lets an active admin past both doors, as the shop bot does, and not a removed one', async () => {
+    // The shop bot never asks Telegram about an admin, so an admin's stamp is
+    // always empty: without the exemption, pressing start could never help.
+    await addChannel();
+    await setRulesGate('rolleon');
+    const admin = await customer({ rulesAccepted: false, checkedAgo: null });
+    const removed = await customer({ rulesAccepted: false, checkedAgo: null });
+    await env.DB.prepare(
+      `INSERT INTO admins (telegram_id, role, active) VALUES (?1, 'ADMIN', true), (?2, 'ADMIN', false)`,
+    )
+      .bind(admin.tg, removed.tg)
+      .run();
+    try {
+      expect(await ask('/trial/options', { telegram_id: admin.tg })).toMatchObject({ customer: 'ok' });
+      expect(await ask('/trial', { telegram_id: admin.tg, panel_id: diamond })).toMatchObject({
+        result: 'on_the_way',
+      });
+      expect(await ask('/trial/options', { telegram_id: removed.tg })).toMatchObject({
+        customer: 'join_channels',
+      });
+    } finally {
+      await env.DB.prepare(`DELETE FROM admins WHERE telegram_id IN (?1, ?2)`)
+        .bind(admin.tg, removed.tg)
+        .run();
+    }
+  });
+
   it('asks for the channel before the rules, as the shop bot does', async () => {
     await addChannel();
     await setRulesGate('rolleon');

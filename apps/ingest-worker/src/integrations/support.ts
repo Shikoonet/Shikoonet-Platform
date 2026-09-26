@@ -139,17 +139,25 @@ type ShopGate =
  * channel, so this reads what it last recorded and trusts it for as long as
  * the shop bot does; anything older sends the customer to join and press start
  * there, which asks again. Channels before rules, the order the shop bot asks.
+ *
+ * An active admin passes both, because the shop bot waves them past both
+ * (`isActiveAdmin` in apps/bot/src/handle.ts) and so never asks Telegram about
+ * them: their stamp stays empty for good, and pressing start cannot fill it.
+ * Before this, every admin who tried a support trial was sent to join a channel
+ * they were already in (Arshia, 2026-09-26).
  */
 async function shopGateFor(db: Db, userId: number): Promise<ShopGate | null> {
   const user = await db
     .prepare(
-      `SELECT rules_accepted,
-              COALESCE(channels_checked_at > now() - ?2::float8 * interval '1 millisecond', false)
-                AS confirmed
-         FROM users WHERE id = ?1`,
+      `SELECT u.rules_accepted,
+              COALESCE(u.channels_checked_at > now() - ?2::float8 * interval '1 millisecond', false)
+                AS confirmed,
+              EXISTS (SELECT 1 FROM admins a WHERE a.telegram_id = u.telegram_id AND a.active) AS admin
+         FROM users u WHERE u.id = ?1`,
     )
     .bind(userId, MEMBERSHIP_TTL_MS)
-    .first<{ rules_accepted: boolean; confirmed: boolean }>();
+    .first<{ rules_accepted: boolean; confirmed: boolean; admin: boolean }>();
+  if (user?.admin) return null;
   if (!user?.confirmed) {
     const channels = await requiredChannels(db);
     if (channels.length > 0) {
