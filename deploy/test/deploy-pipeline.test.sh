@@ -229,6 +229,10 @@ sys.exit(0 if isinstance(d, dict) and "build_pack" in d else 1)'; then
           fi
           printf '%s\n' "${path#/applications/}" >>"$FAKE_PINS"
           printf '{"ok":true}' ;;
+        POST:/applications/*/stop)
+          app=${path#/applications/}
+          printf '%s\n' "${app%%/*}" >>"$FAKE_STOPS"
+          printf '{"message":"Application stopping request queued."}' ;;
         POST:/deploy*)
           uuid=${path#*uuid=}
           printf '%s\n' "$uuid" >>"$FAKE_DEPLOYS"
@@ -1031,6 +1035,7 @@ run_deploy_ref() { # image-ref
 run_deploy() { # bot-flag
   : >"$WORK/pins"
   : >"$WORK/deploys"
+  : >"$WORK/stops"
   : >"$WORK/replaced"
   : >"$WORK/appreads"
   set +e
@@ -1055,7 +1060,7 @@ run_deploy() { # bot-flag
     FAKE_DOCKER_PS_FAIL_UUID="${FAKE_DOCKER_PS_FAIL_UUID:-}" \
     FAKE_DOCKER_PS_FAIL_AFTER="${FAKE_DOCKER_PS_FAIL_AFTER:-}" \
     FAKE_DOCKER_PS_CALLS="$WORK/docker-ps-calls" \
-    FAKE_APPS_LIST="${FAKE_APPS_LIST:-}" \
+    FAKE_APPS_LIST="${FAKE_APPS_LIST:-}" FAKE_STOPS="$WORK/stops" \
     bash "$DEPLOY" production "${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a" "$SHA_MERGED" \
     >"$DEPLOY_LOG" 2>&1
   local rc=$?
@@ -1672,6 +1677,22 @@ elif [ "$(grep -c "^$SUP$" "$WORK/deploys")" -ge 2 ] && grep -qF 'restoring' "$D
 else
   bad "$name" "deploys=$(tr '\n' ' ' <"$WORK/deploys"): $(tail -3 "$DEPLOY_LOG")"
 fi
+
+# The release that starts it for the first time: no container before, so the
+# previous digest predates SERVICE=support and would only crash-loop. Back
+# means stopped (CodeRabbit, PR #476).
+FAKE_STOPPED_UUID=$SUP
+: >"$WORK/docker-ps-calls"
+name='a failed first release stops the support application instead of starting the old image'
+if run_deploy true; then
+  bad "$name" 'it reported success'
+elif [ "$(grep -c "^$SUP$" "$WORK/deploys")" = 1 ] && grep -q "^$SUP$" "$WORK/stops" &&
+  grep -qF 'support=stopped' "$DEPLOY_LOG"; then
+  ok "$name"
+else
+  bad "$name" "deploys=$(tr '\n' ' ' <"$WORK/deploys") stops=$(tr '\n' ' ' <"$WORK/stops"): $(tail -3 "$DEPLOY_LOG")"
+fi
+unset FAKE_STOPPED_UUID
 
 # The dashboard fails instead: the support application was never moved, so
 # the rollback must not start a deploy of it.

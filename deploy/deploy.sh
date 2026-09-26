@@ -870,8 +870,16 @@ on_err() {
     roll_one "$APP_DASHBOARD" dashboard "$PREV_TAG" "$PREV_SHA"; then
     rollback_ok=1
     # The same rule as the bot: back only if this deploy moved it forward.
-    if [ "$SUPPORT_TOUCHED" = 1 ] && ! roll_one "$APP_SUPPORT" support "$PREV_TAG" "$PREV_SHA"; then
-      rollback_ok=0
+    # And «back» for a release that started it for the first time is stopped:
+    # the previous digest predates SERVICE=support and would only crash-loop.
+    if [ "$SUPPORT_TOUCHED" = 1 ]; then
+      if [ "$SUPPORT_WAS_RUNNING" = 1 ]; then
+        roll_one "$APP_SUPPORT" support "$PREV_TAG" "$PREV_SHA" || rollback_ok=0
+      elif api POST "/applications/$APP_SUPPORT/stop" >/dev/null; then
+        summary "support=stopped (this release was its first; nothing ran before it)"
+      else
+        rollback_ok=0
+      fi
     fi
     if [ "$BOT_ENABLED" = 1 ] && ! roll_one "$APP_BOT" bot "$PREV_TAG" "$PREV_SHA"; then
       rollback_ok=0
@@ -887,6 +895,7 @@ on_err() {
   exit 1
 }
 SUPPORT_TOUCHED=0
+SUPPORT_WAS_RUNNING=0
 trap on_err ERR
 
 # What the container is actually running, against the registry.
@@ -928,6 +937,8 @@ assert_running_digest "$APP_DASHBOARD" dashboard
 # Before the bot, after the schema's two readers: it reads and writes the same
 # tables the bot does, and a failure here must still leave the bot untouched.
 if [ -n "$APP_SUPPORT" ]; then
+  # No container yet: this release is its first, and a rollback stops it.
+  [ -z "$(container_for "$APP_SUPPORT")" ] || SUPPORT_WAS_RUNNING=1
   # Marked before the roll: a roll that fails halfway has still moved it.
   SUPPORT_TOUCHED=1
   roll_one "$APP_SUPPORT" support "$COOLIFY_TAG" "$EXPECTED_SHA"
