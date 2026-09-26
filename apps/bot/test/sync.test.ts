@@ -16,6 +16,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SYNC_INTERVAL_MS, syncSubscriptions } from '../src/sync.js';
+import { actOnService } from '../src/actions.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, providerId } from './helpers/shop.js';
 
@@ -260,6 +261,71 @@ describe('refreshing what the customer sees', () => {
     const after = await readService(id);
     expect(after?.subscription_url).toBe('https://sync.test/sub/new');
     expect(after?.used_bytes, 'the rest of the row is still refreshed').toBe(GIB);
+  });
+
+  it('keeps a revoke whose transaction began before the listing did', async () => {
+    // The real shape of the race, which the test above does not have: a press
+    // opens its transaction before the panel is asked anything, and `now()`
+    // inside it is that opening moment. The revoke lands during the listing,
+    // but stamped with `now()` it looked older than the listing, and the stale
+    // link went back over it (CodeRabbit on #482).
+    const userId = await makeCustomer(nextTelegramId());
+    const id = await makeService(userId, panelId, {
+      publicId: 'sync-race-tx',
+      username: 'u_race_tx',
+      url: 'https://sync.test/sub/old',
+    });
+    const listing = fakePanel([{ username: 'u_race_tx', used: GIB, url: '/sub/old' }]);
+    const panelFetch = (async (input: string | URL | Request, init?: RequestInit) =>
+      String(input).endsWith('/revoke_sub')
+        ? new Response(
+            JSON.stringify({ username: 'u_race_tx', status: 'active', subscription_url: '/sub/new' }),
+            { status: 200 },
+          )
+        : listing.fetchImpl(input, init)) as unknown as typeof globalThis.fetch;
+
+    const signal = () => {
+      let fire!: () => void;
+      const fired = new Promise<void>((resolve) => {
+        fire = resolve;
+      });
+      return { fire, fired };
+    };
+    const began = signal();
+    const listed = signal();
+    const committed = signal();
+
+    const press = db
+      .withSession(async (tx) => {
+        // The transaction is open from here, and its `now()` with it.
+        await tx.prepare(`SELECT 1`).run();
+        began.fire();
+        await listed.fired;
+        return actOnService(tx, userId, id, 'REVOKE', panelFetch);
+      })
+      .then((outcome) => {
+        committed.fire();
+        return outcome;
+      });
+    await began.fired;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const sync = syncSubscriptions(
+      db,
+      (async (input: string | URL | Request, init?: RequestInit) => {
+        const res = await panelFetch(input, init);
+        if (String(input).includes('/api/users?')) {
+          listed.fire();
+          await committed.fired;
+        }
+        return res;
+      }) as unknown as typeof globalThis.fetch,
+      NOW_MS,
+    );
+
+    expect((await press).status).toBe('OK');
+    await sync;
+    expect((await readService(id))?.subscription_url).toBe('https://sync.test/sub/new');
   });
 
   it('does not erase a link the panel stopped returning', async () => {

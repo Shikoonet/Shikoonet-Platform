@@ -93,9 +93,10 @@ export async function withLinkFromPanel(
     .catch(() => null);
   const url = links?.get(service.remote_username);
   if (!url) return service;
+  // `clock_timestamp()`, not `now()` — see the revoke in `actOnService`.
   await tx
     .prepare(
-      `UPDATE subscriptions SET subscription_url = ?3, updated_at = now()
+      `UPDATE subscriptions SET subscription_url = ?3, updated_at = clock_timestamp()
         WHERE id = ?1 AND user_id = ?2 AND subscription_url IS NULL`,
     )
     .bind(service.id, userId, url)
@@ -140,9 +141,14 @@ export async function actOnService(
   // echoes the same link, and rewriting it would touch a row for nothing.
   const url = result.subscriptionUrl ?? null;
   if (action === 'REVOKE' && url !== null) {
+    // Stamped with the moment of this write, not the transaction's start. The
+    // sync keeps a link written after its listing began (`listedAt` in
+    // sync.ts), and this transaction opened before the panel was asked
+    // anything — `now()` would date the new link to before the revoke, and a
+    // sync listing in the meantime would put the revoked one back.
     await tx
       .prepare(
-        `UPDATE subscriptions SET subscription_url = ?3, updated_at = now()
+        `UPDATE subscriptions SET subscription_url = ?3, updated_at = clock_timestamp()
           WHERE id = ?1 AND user_id = ?2`,
       )
       .bind(subscriptionId, userId, url)

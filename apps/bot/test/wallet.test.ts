@@ -884,12 +884,32 @@ describe('an open order the expiry sweep is closing at the same moment', () => {
     await isMarked;
 
     const tap = topupOrder(userId, 1_000_000);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Released once the tap's read is seen waiting on the row, not after a
+    // guessed delay: a read that merely started late would find the committed
+    // EXPIRED row and pass without any lock at all (CodeRabbit on #482).
+    // Without `FOR UPDATE` it never waits, so this gives up and the tap takes
+    // the closing order back — which is the failure below. Matched on a column
+    // only the reuse read names, not on `FOR UPDATE`: `pg_stat_activity` keeps
+    // the first 1,024 bytes of a query, and this one's comments run past that.
+    let waited = false;
+    for (const until = Date.now() + 3_000; !waited && Date.now() < until; ) {
+      const row = await db
+        .prepare(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE pid <> pg_backend_pid()
+              AND wait_event_type = 'Lock'
+              AND query LIKE '%bonus_volume_gb%'`,
+        )
+        .first<{ n: number }>();
+      waited = (row?.n ?? 0) > 0;
+      if (!waited) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     commit();
     await sweep;
     const second = await tap;
 
     expect(second.reused, 'a new order, not the one being closed').toBe(false);
     expect(second.id).not.toBe(first.id);
+    expect(waited, 'the tap waited for the row the sweep held').toBe(true);
   });
 });
