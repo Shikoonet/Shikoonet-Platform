@@ -55,6 +55,8 @@ SETTINGS_MENU_SECTIONS = (
             SettingsMenuItem("خرید تک‌پنل", "single_panel_buy_mode"),
             SettingsMenuItem("قفل کانال", "channel_lock"),
             SettingsMenuItem("ری‌اکشن استارت", "start_reaction", default=True, wide=True),
+            SettingsMenuItem("فقط مینی‌اپ (منوی ربات خاموش)", "miniapp_only_mode", wide=True),
+            SettingsMenuItem("دکمه‌های شیشه‌ای", "glass_buttons_mode", wide=True),
         ),
         separate_page=False,
     ),
@@ -65,6 +67,7 @@ SETTINGS_MENU_SECTIONS = (
         (
             SettingsMenuItem("دکمه کارت دستی", "pay_mode"),
             SettingsMenuItem("دکمه درگاه ارزی", "arz_mode"),
+            SettingsMenuItem("دکمه پرداخت استارز", "cart_sta"),
             SettingsMenuItem("درخواست شماره برای کارت‌به‌کارت", "pay_phone_verify", default=True, wide=True),
         ),
         columns=2,

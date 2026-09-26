@@ -1,0 +1,71 @@
+@import "tailwindcss";
+@import "./design/theme.css";
+@config "../tailwind.config.js";
+
+html {
+  width: 100%;
+  font-family: "Estedad", "Inter", system-ui, sans-serif;
+  scroll-behavior: smooth;
+  background-color: rgb(var(--c-bg-rgb));
+}
+
+body {
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background-color: rgb(var(--c-bg-rgb));
+  color: rgb(var(--c-text-rgb));
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.safe-area-pb {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Telegram's own floating chrome in Fullscreen launch mode (close/minimize
+ * controls, the Android status bar it draws under) sits on top of our
+ * content but isn't part of the OS notch, so env(safe-area-inset-top) alone
+ * doesn't account for it. --tg-safe-area-top / --tg-content-safe-area-top
+ * are set from Telegram.WebApp.safeAreaInset / contentSafeAreaInset by
+ * useTelegramSafeArea (see hooks/useTelegramViewportFix.ts). */
+.safe-area-pt {
+  padding-top: calc(
+    env(safe-area-inset-top, 0px) + var(--tg-safe-area-top, 0px) + var(--tg-content-safe-area-top, 0px)
+  );
+}
+
+.ltr-field {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: isolate;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--c-border-rgb) / 0.4);
+  border-radius: 999px;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--c-primary-rgb));
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.animate-shimmer {
+  animation: shimmer 1.8s ease-in-out infinite;
+}

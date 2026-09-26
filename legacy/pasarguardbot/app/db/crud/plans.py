@@ -38,8 +38,9 @@ class PlanManager:
                     "year": "سالانه",
                 }.get(data_limit_reset_strategy, "بدون ریست")
                 ip_limit_text = "نامحدود" if ip_limit == 0 else f"{ip_limit} کاربر"
+                duration_text = "نامحدود" if int(duration or 0) == 0 else f"{duration} روز"
 
-                return f"پلن {plan_type_text} با قیمت {price}، حجم {storage} گیگابایت، زمان {duration} روز، ریست {reset_text} و محدودیت کاربر {ip_limit_text} اضافه شد."
+                return f"پلن {plan_type_text} با قیمت {price}، حجم {storage} گیگابایت، زمان {duration_text}، ریست {reset_text} و محدودیت کاربر {ip_limit_text} اضافه شد."
         except SQLAlchemyError as e:
             return f"خطا در افزودن پنل: {e}"
 
@@ -77,6 +78,27 @@ class PlanManager:
         except SQLAlchemyError as e:
             log.error("Failed to fetch durations: %s", e)
             return []
+
+    async def get_unique_durations_for_panels(self, panel_codes: list) -> dict[int, list[int]]:
+        """Distinct durations per panel, batched in one query. Missing/invalid codes map to []."""
+        coerced_codes = [code for code in (as_int(c) for c in panel_codes) if code is not None]
+        result_by_panel: dict[int, list[int]] = {code: [] for code in coerced_codes}
+        if not coerced_codes:
+            return result_by_panel
+
+        try:
+            async with Session() as session:
+                stmt = select(Plan.panel_code, Plan.duration).where(Plan.panel_code.in_(coerced_codes)).distinct()
+                result = await session.execute(stmt)
+                for panel_code, duration in result.all():
+                    result_by_panel.setdefault(int(panel_code), []).append(duration)
+        except SQLAlchemyError as e:
+            log.error("Failed to fetch durations for panels: %s", e)
+            return result_by_panel
+
+        for code in result_by_panel:
+            result_by_panel[code] = sorted(result_by_panel[code])
+        return result_by_panel
 
     async def update_plan(self, plan_id, new_price=None, new_storage=None, new_duration=None, new_ip_limit=None):
 

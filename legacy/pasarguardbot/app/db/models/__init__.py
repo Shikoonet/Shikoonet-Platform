@@ -1,5 +1,6 @@
 from . import (
     app_files,
+    audit,
     bot_text,
     broadcast,
     channels,
@@ -20,6 +21,7 @@ from . import (
     secrets,
     services,
     settings,
+    stars_transaction,
     transaction,
     user,
     wallet,
@@ -27,6 +29,7 @@ from . import (
 
 __all__ = [
     "app_files",
+    "audit",
     "bot_text",
     "broadcast",
     "channels",
@@ -47,6 +50,7 @@ __all__ = [
     "secrets",
     "services",
     "settings",
+    "stars_transaction",
     "transaction",
     "user",
     "wallet",

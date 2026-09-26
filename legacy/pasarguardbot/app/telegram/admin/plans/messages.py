@@ -49,7 +49,8 @@ async def message_handler_plans(event: Message):
         with contextlib.suppress(Exception):
             await Kenzo.delete_messages(user_id, [event.message.id])
 
-        if is_number(msg):
+        plan_type = await get_data(user_id, "plan_type")
+        if is_number(msg) and not (plan_type == "volume" and float(msg) <= 0):
             hajm = float(msg)
             await set_data(user_id, "addPlanHajm", msg)
             buttons = [
@@ -60,7 +61,7 @@ async def message_handler_plans(event: Message):
             ]
             # Create message with previous data
             message_text = f"💾 **حجم:** {hajm} گیگابایت\n\n"
-            message_text += "📅 تعداد روز رو به عدد ( 123) وارد کنید:"
+            message_text += "📅 تعداد روز را وارد کنید (0 برای زمان نامحدود):"
 
             # Edit previous volume message to show time input
             prev_msg_id = await get_data(user_id, "addPlan_volume_msg_id")
@@ -85,17 +86,20 @@ async def message_handler_plans(event: Message):
                     Button.inline("🔙 بازگشت", data="BackToVolumeInput"),
                 ],
             ]
+            error_text = (
+                "❌ در پلن حجمی حجم نمی‌تواند صفر باشد."
+                if plan_type == "volume" and is_number(msg)
+                else "📅 فقط مجاز به ارسال عدد هستید"
+            )
             # Edit previous volume message to show error
             prev_msg_id = await get_data(user_id, "addPlan_volume_msg_id")
             if prev_msg_id:
                 try:
-                    await Kenzo.edit_message(
-                        user_id, int(prev_msg_id), "📅 فقط مجاز به ارسال عدد هستید", buttons=buttons
-                    )
+                    await Kenzo.edit_message(user_id, int(prev_msg_id), error_text, buttons=buttons)
                 except Exception:
-                    await event.respond("📅 فقط مجاز به ارسال عدد هستید", buttons=buttons)
+                    await event.respond(error_text, buttons=buttons)
             else:
-                await event.respond("📅 فقط مجاز به ارسال عدد هستید", buttons=buttons)
+                await event.respond(error_text, buttons=buttons)
 
     elif msg and await get_step(user_id) == "addPlan_2":
         # Delete user's message
@@ -116,8 +120,9 @@ async def message_handler_plans(event: Message):
                 ],
             ]
             # Create message with previous data
+            time_text = "♾️ نامحدود" if time_days == 0 else f"{time_days} روز"
             message_text = f"💾 **حجم:** {hajm_text}\n"
-            message_text += f"📅 **زمان:** {time_days} روز\n\n"
+            message_text += f"📅 **زمان:** {time_text}\n\n"
             message_text += "💰 قیمت پلن رو ارسال کنید\nمثال» 10.000"
 
             # Edit previous time message to show price input
@@ -167,7 +172,12 @@ async def message_handler_plans(event: Message):
             hajm = await get_data(user_id, "addPlanHajm")
             time_days = await get_data(user_id, "addPlanTime")
             hajm_text = f"{float(hajm)} گیگابایت" if hajm else "تعیین نشده"
-            time_text = f"{int(time_days)} روز" if time_days else "تعیین نشده"
+            if time_days is None or time_days == "":
+                time_text = "تعیین نشده"
+            elif int(time_days) == 0:
+                time_text = "♾️ نامحدود"
+            else:
+                time_text = f"{int(time_days)} روز"
 
             buttons = [
                 [
@@ -459,17 +469,17 @@ async def message_handler_plans(event: Message):
         await delete_data(user_id, "edit_duration_display_msg_id")
         await set_step(user_id, "panel")
 
-    elif msg and await get_step(user_id) == "duration_btn_set_icon":
+    elif (msg or event.message.media) and await get_step(user_id) == "duration_btn_set_icon":
         panel_code_data = await get_data(user_id, "duration_btn_panel_code")
         duration_data = await get_data(user_id, "duration_btn_duration")
-        panel_code = int(panel_code_data) if panel_code_data and panel_code_data.isdigit() else None
-        duration = int(duration_data) if duration_data and duration_data.isdigit() else None
+        panel_code = int(panel_code_data) if panel_code_data is not None and str(panel_code_data).isdigit() else None
+        duration = int(duration_data) if duration_data is not None and str(duration_data).isdigit() else None
         if panel_code is None or duration is None:
             await event.respond("❌ داده نامعتبر.")
             await set_step(user_id, "panel")
             return
         key = duration_keyboard_key(panel_code, duration)
-        if msg.strip().lower() == "/skip":
+        if msg and msg.strip().lower() == "/skip":
             await ensure_duration_button_record(panel_code, duration)
             saved = await KeyboardButtonCRUD().set_button(key, clear_icon=True)
         else:
@@ -528,16 +538,16 @@ async def message_handler_plans(event: Message):
         await delete_data(user_id, "edit_plan_display_msg_id")
         await set_step(user_id, "panel")
 
-    elif msg and await get_step(user_id) == "plan_btn_set_icon":
+    elif (msg or event.message.media) and await get_step(user_id) == "plan_btn_set_icon":
         plan_id_data = await get_data(user_id, "plan_btn_plan_id")
         page_data = await get_data(user_id, "plan_btn_page")
-        plan_id = int(plan_id_data) if plan_id_data and plan_id_data.isdigit() else None
-        current_page = int(page_data) if page_data and page_data.isdigit() else 1
+        plan_id = int(plan_id_data) if plan_id_data is not None and str(plan_id_data).isdigit() else None
+        current_page = int(page_data) if page_data is not None and str(page_data).isdigit() else 1
         if not plan_id:
             await event.respond("❌ پلن یافت نشد.")
             await set_step(user_id, "panel")
             return
-        if msg.strip().lower() == "/skip":
+        if msg and msg.strip().lower() == "/skip":
             saved = await PlanManager().update_plan_display(plan_id, clear_button_icon=True)
         else:
             icon_id = extract_custom_emoji_document_id(event.message)
@@ -744,6 +754,8 @@ async def _plans_message_filter(event: Message) -> bool:
     if msg == states.PLAN_MENU_MESSAGE:
         return True
     step = (await get_step(event.sender_id)) or ""
+    if step in states.ICON_STEPS and (msg or event.message.media):
+        return True
     if step in states.PLAN_INPUT_STEPS and msg:
         return True
     if step.startswith("edit_duration_display:") and msg:
