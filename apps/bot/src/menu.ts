@@ -3134,6 +3134,18 @@ export function volumeRunningOut(serviceName: string, remainingBytes: number): s
   ].join('\n');
 }
 
+/** The trial is over — said once, instead of the two «running out» warnings. */
+export function trialEnded(serviceName: string): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('TRIAL_ENDED_TITLE'),
+    '',
+    t.render('WARN_SERVICE', { service: withoutQuotedPrice(serviceName) }),
+    '',
+    t.render('TRIAL_ENDED_HINT', { renewButton: renewButtonLabel() }),
+  ].join('\n');
+}
+
 /**
  * The customer bought a service and has never connected to it.
  *

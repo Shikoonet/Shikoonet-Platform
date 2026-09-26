@@ -84,12 +84,28 @@ interface DueRow {
   purchased_at: string;
   remote_username: string | null;
   panel_status: string | null;
-  reason: 'time' | 'volume' | 'unused';
+  reason: 'time' | 'volume' | 'unused' | 'trial_ended';
 }
 
 /** The separator and the ceiling, so the assembly below reads as one line. */
 const UNION = '\n\n        UNION ALL\n\n';
 const LIMIT = '\n\n         LIMIT ?5';
+
+/**
+ * A free trial nobody has paid to extend.
+ *
+ * The TRIAL order stays on the row after a renewal, so the order alone would
+ * keep calling a paid service a trial for ever. A completed order aimed at the
+ * row (renewal or add-on) is what makes it a sale, and from then on it is
+ * warned like one.
+ *
+ * Sam, 2026-09-26: a trial gets no «رو به پایان» warning. A 24-hour trial sits
+ * inside the two-day window from the minute it is made, and its gigabyte is
+ * inside the one-gigabyte one, so both fired on every trial.
+ */
+const STILL_A_TRIAL = `EXISTS (SELECT 1 FROM orders t WHERE t.id = s.order_id AND t.kind = 'TRIAL')
+           AND NOT EXISTS (SELECT 1 FROM orders r
+                            WHERE r.target_subscription_id = s.id AND r.status = 'COMPLETED')`;
 
 /**
  * The three questions this sweep asks, each on its own switch.
@@ -121,6 +137,7 @@ const TIME_BRANCH = `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_
         WHERE s.status = 'ACTIVE'
           AND u.notify_enabled
           AND s.notify->>'time' IS DISTINCT FROM 'true'
+          AND NOT (${STILL_A_TRIAL})
           AND s.expires_at IS NOT NULL
           AND s.expires_at > to_timestamp(?1 / 1000.0)
           AND s.expires_at <= to_timestamp(?1 / 1000.0) + make_interval(days => ?2)`;
@@ -132,6 +149,7 @@ const VOLUME_BRANCH = `        SELECT s.id, u.telegram_id, s.plan_name_at_sale, 
          WHERE s.status = 'ACTIVE'
            AND u.notify_enabled
            AND s.notify->>'volume' IS DISTINCT FROM 'true'
+           AND NOT (${STILL_A_TRIAL})
            AND s.volume_gb IS NOT NULL
            AND s.used_bytes IS NOT NULL
            -- Still has something left. A service already at zero has run out
@@ -169,6 +187,7 @@ const UNUSED_BRANCH = `        -- Bought and never connected.
          WHERE s.status = 'ACTIVE'
            AND u.notify_enabled
            AND s.notify->>'unused' IS DISTINCT FROM 'true'
+           AND NOT (${STILL_A_TRIAL})
            AND s.last_synced_at IS NOT NULL
            AND s.used_bytes = 0
            AND s.purchased_at <= to_timestamp(?1 / 1000.0) - make_interval(days => ?6)
@@ -176,6 +195,24 @@ const UNUSED_BRANCH = `        -- Bought and never connected.
            -- somebody to go connect a thing that stopped working is worse than
            -- silence.
            AND (s.expires_at IS NULL OR s.expires_at > to_timestamp(?1 / 1000.0))`;
+
+const TRIAL_ENDED_BRANCH = `        -- The trial is over, by date or by gigabytes: said once, after the
+        -- fact, in place of the two warnings the other branches no longer send.
+        SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
+               s.volume_gb, s.used_bytes, s.purchased_at, s.remote_username, s.panel_status, 'trial_ended' AS reason
+          FROM subscriptions s
+          JOIN users u ON u.id = s.user_id
+         WHERE s.status = 'ACTIVE'
+           AND u.notify_enabled
+           AND s.notify->>'trial_ended' IS DISTINCT FROM 'true'
+           AND ${STILL_A_TRIAL}
+           AND (s.expires_at <= to_timestamp(?1 / 1000.0)
+                OR (s.volume_gb IS NOT NULL AND s.used_bytes IS NOT NULL
+                    AND s.volume_gb * ?4 - s.used_bytes <= 0))
+           -- Ended within the last day. Every trial has an expiry, and without
+           -- this the first sweep after release would tell each trial that
+           -- ended weeks ago, all at once.
+           AND s.expires_at > to_timestamp(?1 / 1000.0) - interval '1 day'`;
 
 /**
  * Warns about services running out of days or gigabytes, once each.
@@ -208,10 +245,9 @@ export async function warnExpiringServices(
     cron.warn_time ? TIME_BRANCH : null,
     cron.warn_volume ? VOLUME_BRANCH : null,
     cron.warn_unused ? UNUSED_BRANCH : null,
+    // No switch (`cronJobs.ts`), so the query always runs.
+    TRIAL_ENDED_BRANCH,
   ].filter((b): b is string => b !== null);
-  // Nothing on. Returned before the query rather than after it, so a shop with
-  // every warning off costs one settings read per cycle instead of a scan.
-  if (branches.length === 0) return 0;
 
   const { results } = await db
     .prepare(branches.join(UNION) + LIMIT)
@@ -238,12 +274,17 @@ export async function warnExpiringServices(
     // and told nobody. A warning is only useful before the thing runs out, so
     // "lost silently" was the one outcome worth engineering against.
     const claimed = await db.withSession(async (tx) => {
+      //
+      // «Still a trial» is asked again here, because it is the one condition a
+      // customer can change between the SELECT and this line: a renewal that
+      // lands in between would otherwise be answered with «your trial ended».
       const marked = await tx
         .prepare(
-          `UPDATE subscriptions
+          `UPDATE subscriptions AS s
               SET notify = notify || jsonb_build_object(?2::text, true),
                   updated_at = now()
-            WHERE id = ?1 AND notify->>?2 IS DISTINCT FROM 'true'`,
+            WHERE s.id = ?1 AND s.notify->>?2 IS DISTINCT FROM 'true'
+              ${row.reason === 'trial_ended' ? `AND ${STILL_A_TRIAL}` : ''}`,
         )
         .bind(row.id, row.reason)
         .run();
@@ -323,6 +364,8 @@ function messageFor(row: DueRow, now: number, supportHandle: string | null): str
         daysSince(row.purchased_at, now),
         supportHandle,
       );
+    case 'trial_ended':
+      return menu.trialEnded(row.plan_name_at_sale);
   }
 }
 
@@ -349,7 +392,9 @@ function cronNoticeFor(row: DueRow, now: number): string | null {
         status,
         remaining: menu.bytesText((row.volume_gb ?? 0) * 1024 ** 3 - (row.used_bytes ?? 0)),
       });
+    // Neither has a legacy notice to copy.
     case 'unused':
+    case 'trial_ended':
       return null;
   }
 }

@@ -610,6 +610,36 @@ describe('pollOnce', () => {
       .first<{ n: number }>();
     expect(claimed?.n).toBe(1);
   });
+
+  it('keeps what it would tidy away when the reply never arrived', async () => {
+    // `/start` deletes the «/start» the customer typed — but only once the
+    // answer to it is in the chat. Otherwise the chat is left with neither.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const deleted: number[] = [];
+    const start = async (sendFails: boolean): Promise<number> => {
+      const { updateId, telegramId } = ids();
+      const api = stubApi({
+        getUpdates: async () => [startUpdate(updateId, telegramId)],
+        sendMessage: async () => {
+          if (sendFails) throw new Error('telegram sendMessage failed');
+          return { messageId: null };
+        },
+        deleteMessage: async (_chatId, messageId) => {
+          deleted.push(messageId);
+        },
+      });
+      await pollOnce(db, api, updateId);
+      // `startUpdate` numbers the typed message after the update.
+      return updateId;
+    };
+
+    const lost = await start(true);
+    const answered = await start(false);
+    errors.mockRestore();
+
+    expect(deleted).not.toContain(lost);
+    expect(deleted).toContain(answered);
+  });
 });
 
 describe('button presses', () => {
