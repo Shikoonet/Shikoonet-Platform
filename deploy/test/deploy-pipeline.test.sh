@@ -235,6 +235,15 @@ sys.exit(0 if isinstance(d, dict) and "build_pack" in d else 1)'; then
           # The replacement container appears only once a deploy is queued.
           printf '%s\n' "$uuid" >>"$FAKE_REPLACED"
           printf '{"ok":true}' ;;
+        GET:/applications)
+          # The list the support application is looked for in: the three the
+          # config names and the three a cutover pointer names, unless a test
+          # says otherwise.
+          if [ -n "${FAKE_APPS_LIST:-}" ]; then
+            printf '%s' "$FAKE_APPS_LIST"
+          else
+            printf '[{"uuid":"aaaaaaaaaaaaaaaaaaaaaaa1","name":"shikoo-ingest"},{"uuid":"aaaaaaaaaaaaaaaaaaaaaaa2","name":"shikoo-dashboard"},{"uuid":"aaaaaaaaaaaaaaaaaaaaaaa3","name":"shikoo-bot"},{"uuid":"bbbbbbbbbbbbbbbbbbbbbbb1","name":"shikoo-prod-ingest"},{"uuid":"bbbbbbbbbbbbbbbbbbbbbbb2","name":"shikoo-prod-dashboard"},{"uuid":"bbbbbbbbbbbbbbbbbbbbbbb3","name":"shikoo-prod-bot"}]'
+          fi ;;
         GET:/applications/*)
           pack=${FAKE_BUILD_PACK:-dockerimage}
           # Somebody editing the application in the Coolify UI midway through a
@@ -1046,6 +1055,7 @@ run_deploy() { # bot-flag
     FAKE_DOCKER_PS_FAIL_UUID="${FAKE_DOCKER_PS_FAIL_UUID:-}" \
     FAKE_DOCKER_PS_FAIL_AFTER="${FAKE_DOCKER_PS_FAIL_AFTER:-}" \
     FAKE_DOCKER_PS_CALLS="$WORK/docker-ps-calls" \
+    FAKE_APPS_LIST="${FAKE_APPS_LIST:-}" \
     bash "$DEPLOY" production "${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a" "$SHA_MERGED" \
     >"$DEPLOY_LOG" 2>&1
   local rc=$?
@@ -1583,6 +1593,99 @@ else
   bad "$name" "pre-flight did not pass first, or a deploy was queued: $(tail -2 "$DEPLOY_LOG")"
 fi
 unset FAKE_FLIP_AFTER
+
+section 'deploy.sh — the support application rides with every release'
+
+# `SERVICE=support` (2026-09-26): found by name, next to the ingest's, and
+# deployed with the release so it never runs yesterday's queries against
+# today's schema. `aaaa…4` is the support application in these cases.
+SUP=aaaaaaaaaaaaaaaaaaaaaaa4
+THREE='{"uuid":"aaaaaaaaaaaaaaaaaaaaaaa1","name":"shikoo-prod-ingest"},{"uuid":"aaaaaaaaaaaaaaaaaaaaaaa2","name":"shikoo-prod-dashboard"},{"uuid":"aaaaaaaaaaaaaaaaaaaaaaa3","name":"shikoo-prod-bot"}'
+
+name='an environment with no support application deploys without one'
+if run_deploy false && ! grep -q "^$SUP$" "$WORK/deploys" &&
+  grep -qF 'support=none in this environment' "$DEPLOY_LOG"; then
+  ok "$name"
+else
+  bad "$name" "$(tail -3 "$DEPLOY_LOG")"
+fi
+
+FAKE_APPS_LIST="[$THREE,{\"uuid\":\"$SUP\",\"name\":\"shikoo-prod-support\"}]"
+name='the support application is deployed, after the dashboard and pinned to the digest'
+if run_deploy false && grep -q "^$SUP$" "$WORK/pins" &&
+  [ "$(grep -n "^$SUP$" "$WORK/deploys" | cut -d: -f1)" -gt \
+    "$(grep -n '^aaaaaaaaaaaaaaaaaaaaaaa2$' "$WORK/deploys" | cut -d: -f1)" ] &&
+  grep -qF 'support=deployed' "$DEPLOY_LOG"; then
+  ok "$name"
+else
+  bad "$name" "deploys=$(tr '\n' ' ' <"$WORK/deploys"): $(tail -3 "$DEPLOY_LOG")"
+fi
+
+# Staging's support application sits in the same Coolify. Production must not
+# take it for its own.
+FAKE_APPS_LIST="[$THREE,{\"uuid\":\"$SUP\",\"name\":\"shikoo-dev-support\"}]"
+name='another environment'"'"'s support application is left alone'
+if run_deploy false && ! grep -q "^$SUP$" "$WORK/deploys" && ! grep -q "^$SUP$" "$WORK/pins"; then
+  ok "$name"
+else
+  bad "$name" "deploys=$(tr '\n' ' ' <"$WORK/deploys"): $(tail -3 "$DEPLOY_LOG")"
+fi
+
+FAKE_APPS_LIST="[$THREE,{\"uuid\":\"$SUP\",\"name\":\"shikoo-prod-support\"},{\"uuid\":\"aaaaaaaaaaaaaaaaaaaaaaa5\",\"name\":\"shikoo-prod-support\"}]"
+name='two support applications are a refusal before anything is touched'
+if run_deploy false; then
+  bad "$name" 'it deployed anyway'
+elif grep -qF 'more than one application in Coolify has the support name' "$DEPLOY_LOG" &&
+  [ ! -s "$WORK/deploys" ] && [ ! -s "$WORK/pins" ]; then
+  ok "$name"
+else
+  bad "$name" "$(tail -3 "$DEPLOY_LOG")"
+fi
+
+FAKE_APPS_LIST="[{\"uuid\":\"aaaaaaaaaaaaaaaaaaaaaaa2\",\"name\":\"shikoo-prod-dashboard\"}]"
+name='an ingest missing from the Coolify list is a refusal, not «no support application»'
+if run_deploy false; then
+  bad "$name" 'it deployed anyway'
+elif grep -qF 'is not in the Coolify application list' "$DEPLOY_LOG" && [ ! -s "$WORK/deploys" ]; then
+  ok "$name"
+else
+  bad "$name" "$(tail -3 "$DEPLOY_LOG")"
+fi
+
+# A failed release takes the support application back with the other two —
+# and only when this release had moved it. The bot's first `docker ps` fails,
+# which is after the support application was rolled forward.
+#
+# «At least once more», not «exactly once more»: a `docker ps` that fails
+# inside `$(container_for …)` runs the ERR trap in that subshell as well as in
+# the script (`set -E`), so today the whole rollback runs twice. Older than
+# the support application, and the same for all four.
+FAKE_APPS_LIST="[$THREE,{\"uuid\":\"$SUP\",\"name\":\"shikoo-prod-support\"}]"
+FAKE_DOCKER_PS_FAIL_UUID=aaaaaaaaaaaaaaaaaaaaaaa3
+FAKE_DOCKER_PS_FAIL_AFTER=1
+: >"$WORK/docker-ps-calls"
+name='a failed release rolls the support application back with the others'
+if run_deploy true; then
+  bad "$name" 'it reported success'
+elif [ "$(grep -c "^$SUP$" "$WORK/deploys")" -ge 2 ] && grep -qF 'restoring' "$DEPLOY_LOG"; then
+  ok "$name"
+else
+  bad "$name" "deploys=$(tr '\n' ' ' <"$WORK/deploys"): $(tail -3 "$DEPLOY_LOG")"
+fi
+
+# The dashboard fails instead: the support application was never moved, so
+# the rollback must not start a deploy of it.
+FAKE_DOCKER_PS_FAIL_UUID=aaaaaaaaaaaaaaaaaaaaaaa2
+: >"$WORK/docker-ps-calls"
+name='a release that failed before the support application leaves it alone'
+if run_deploy false; then
+  bad "$name" 'it reported success'
+elif ! grep -q "^$SUP$" "$WORK/deploys" && grep -qF 'restoring' "$DEPLOY_LOG"; then
+  ok "$name"
+else
+  bad "$name" "deploys=$(tr '\n' ' ' <"$WORK/deploys"): $(tail -3 "$DEPLOY_LOG")"
+fi
+unset FAKE_APPS_LIST FAKE_DOCKER_PS_FAIL_UUID FAKE_DOCKER_PS_FAIL_AFTER
 
 section 'deploy.sh — the container must carry the digest that was deployed'
 

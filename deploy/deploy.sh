@@ -520,8 +520,50 @@ elif not any(r.get("key") == "ENV_NAME" and (r.get("value") or "").strip() for r
 # Only the applications this deploy will TOUCH. Demanding the right type of an
 # excluded bot would refuse a good deploy over a setting that does not matter
 # yet.
+# ------------------------------------------------------- the support service
+# The support bot's door runs as its own application (`SERVICE=support`, Sam
+# 2026-09-26), and not every environment has one. So it is FOUND, not
+# configured: the application named like the ingest with `-support` in place
+# of `-ingest` — `shikoo-prod-ingest` → `shikoo-prod-support`. None means this
+# environment has no support service and nothing here touches it. Two is a
+# refusal, because which one was meant is not a question this can answer.
+#
+# Deployed with every release, like the other two, because an application left
+# behind runs yesterday's queries against today's schema.
+#
+# One list call, not a read of the ingest's own record: the pre-flight's reads
+# of each application are counted by a test that flips an application's type
+# after them, and an extra read here would move that count.
+find_support_app() {
+  api GET "/applications" | python3 -c 'import json,sys
+ingest = sys.argv[1]
+rows = json.load(sys.stdin)
+if not isinstance(rows, list):
+    raise SystemExit("the application list from Coolify is not a list")
+names = {r.get("uuid"): str(r.get("name") or "") for r in rows if isinstance(r, dict)}
+own = names.get(ingest)
+if own is None:
+    raise SystemExit("the ingest application %s is not in the Coolify application list" % ingest)
+if not own.endswith("-ingest"):
+    raise SystemExit(0)
+want = own[: -len("-ingest")] + "-support"
+print("\n".join(u for u, n in names.items() if n == want))' "$APP_INGEST"
+}
+APP_SUPPORT=''
+SUPPORT_FOUND=$(find_support_app) || die "could not look for a support application in Coolify"
+SUPPORT_COUNT=$(printf '%s' "$SUPPORT_FOUND" | grep -c . || true)
+case $SUPPORT_COUNT in
+  0) say "support: this environment has no support application — not deployed" ;;
+  1)
+    APP_SUPPORT=$SUPPORT_FOUND
+    say "support: deploying $APP_SUPPORT with this release"
+    ;;
+  *) die "more than one application in Coolify has the support name for this environment ($(printf '%s' "$SUPPORT_FOUND" | tr '\n' ' ')) — delete or rename the extra one; this deploy will not pick" ;;
+esac
+
 assert_deployable "$APP_INGEST" ingest
 assert_deployable "$APP_DASHBOARD" dashboard
+[ -z "$APP_SUPPORT" ] || assert_deployable "$APP_SUPPORT" support
 if [ "$BOT_ENABLED" = 1 ]; then
   assert_deployable "$APP_BOT" bot
 elif [ "$PIN_STOPPED_BOT" = 1 ]; then
@@ -827,6 +869,10 @@ on_err() {
   if roll_one "$APP_INGEST" ingest "$PREV_TAG" "$PREV_SHA" &&
     roll_one "$APP_DASHBOARD" dashboard "$PREV_TAG" "$PREV_SHA"; then
     rollback_ok=1
+    # The same rule as the bot: back only if this deploy moved it forward.
+    if [ "$SUPPORT_TOUCHED" = 1 ] && ! roll_one "$APP_SUPPORT" support "$PREV_TAG" "$PREV_SHA"; then
+      rollback_ok=0
+    fi
     if [ "$BOT_ENABLED" = 1 ] && ! roll_one "$APP_BOT" bot "$PREV_TAG" "$PREV_SHA"; then
       rollback_ok=0
     fi
@@ -840,6 +886,7 @@ on_err() {
   fi
   exit 1
 }
+SUPPORT_TOUCHED=0
 trap on_err ERR
 
 # What the container is actually running, against the registry.
@@ -878,6 +925,17 @@ roll_one "$APP_INGEST" ingest "$COOLIFY_TAG" "$EXPECTED_SHA"
 assert_running_digest "$APP_INGEST" ingest
 roll_one "$APP_DASHBOARD" dashboard "$COOLIFY_TAG" "$EXPECTED_SHA"
 assert_running_digest "$APP_DASHBOARD" dashboard
+# Before the bot, after the schema's two readers: it reads and writes the same
+# tables the bot does, and a failure here must still leave the bot untouched.
+if [ -n "$APP_SUPPORT" ]; then
+  # Marked before the roll: a roll that fails halfway has still moved it.
+  SUPPORT_TOUCHED=1
+  roll_one "$APP_SUPPORT" support "$COOLIFY_TAG" "$EXPECTED_SHA"
+  assert_running_digest "$APP_SUPPORT" support
+  summary "support=deployed"
+else
+  summary "support=none in this environment"
+fi
 if [ "$BOT_ENABLED" = 1 ]; then
   roll_one "$APP_BOT" bot "$COOLIFY_TAG" "$EXPECTED_SHA"
   assert_running_digest "$APP_BOT" bot
@@ -931,6 +989,18 @@ smoke() {
         if (r.status !== 401) fail("/api/v1/version answered " + r.status + " with no session — the gate fell off");
       }),
     ]).then(() => process.exit(0), (e) => fail(String(e)));' || return 1
+  if [ -n "$APP_SUPPORT" ]; then
+    local sup
+    sup=$(container_for "$APP_SUPPORT")
+    [ -n "$sup" ] || return 1
+    docker run --rm --network "container:$sup" --entrypoint node \
+      -e EXPECTED_SHA="$EXPECTED_SHA" "$IMAGE_REF" -e '
+      const fail = (m) => { console.error("smoke: " + m); process.exit(1); };
+      fetch("http://127.0.0.1:8789/version").then((r) => r.json()).then((v) => {
+        if (v.version !== process.env.EXPECTED_SHA) fail("support /version says " + v.version);
+        process.exit(0);
+      }, (e) => fail(String(e)));' || return 1
+  fi
 }
 smoke || die "smoke checks failed"
 say "smoke: version matches, health answers, session gate intact"
@@ -964,7 +1034,7 @@ fi
 # ------------------------------------------- nothing quietly became public
 # There is no firewall on this host: a published port is a public port, and
 # Traefik is the only thing that may publish one.
-for pair in "$APP_INGEST ingest" "$APP_DASHBOARD dashboard" "$APP_BOT bot"; do
+for pair in "$APP_INGEST ingest" "$APP_DASHBOARD dashboard" "$APP_BOT bot" ${APP_SUPPORT:+"$APP_SUPPORT support"}; do
   uuid=${pair%% *}
   name=${pair##* }
   cid=$(container_for "$uuid")
