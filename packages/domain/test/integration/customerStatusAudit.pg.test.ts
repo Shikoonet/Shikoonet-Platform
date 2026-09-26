@@ -29,7 +29,7 @@
  * Needs DATABASE_URL with the schema applied.
  */
 
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPostgresD1 } from '@shikoo/db';
 import { setCustomerStatus } from '../../src/customerAdmin.js';
 
@@ -102,18 +102,28 @@ describe('an operator blocking from the panel', () => {
   });
 
   it('records the unblock too, and clears the stale reason', async () => {
-    await setCustomerStatus(db, {
-      userId,
-      status: 'BLOCKED',
-      reason: 'رسید جعلی',
-      actor: { kind: 'OPERATOR', email: 'op@example.com', role: 'ADMIN' },
-    });
-    await setCustomerStatus(db, {
-      userId,
-      status: 'ACTIVE',
-      reason: null,
-      actor: { kind: 'OPERATOR', email: 'op2@example.com', role: 'ADMIN' },
-    });
+    // The rows are read back by `created_at`, which is `Date.now()` in
+    // milliseconds and has no tiebreak — the id is a random UUID. Two calls in
+    // one millisecond tied, and CI got them back in the other order (#484,
+    // 2026-09-26). So the clock is pinned, a millisecond apart.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_790_000_000_000);
+    try {
+      await setCustomerStatus(db, {
+        userId,
+        status: 'BLOCKED',
+        reason: 'رسید جعلی',
+        actor: { kind: 'OPERATOR', email: 'op@example.com', role: 'ADMIN' },
+      });
+      clock.mockReturnValue(1_790_000_000_001);
+      await setCustomerStatus(db, {
+        userId,
+        status: 'ACTIVE',
+        reason: null,
+        actor: { kind: 'OPERATOR', email: 'op2@example.com', role: 'ADMIN' },
+      });
+    } finally {
+      clock.mockRestore();
+    }
 
     const rows = await auditRows();
     expect(rows.map((r) => r.action)).toEqual(['customer.blocked', 'customer.unblocked']);
