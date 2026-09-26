@@ -65,6 +65,9 @@ async function purge(): Promise<void> {
     .bind(`${PREFIX}%`)
     .run();
   await baseEnv.DB.prepare(`DELETE FROM client_apps WHERE name LIKE ?1`).bind(`${PREFIX}%`).run();
+  await baseEnv.DB.prepare(`DELETE FROM support_answers WHERE question LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
 }
 
 beforeAll(async () => {
@@ -249,5 +252,104 @@ describe('the apps screen', () => {
 
     expect(refused.status).toBe(409);
     expect(await appRow(id)).not.toBeNull();
+  });
+});
+
+describe('the support bot’s answers', () => {
+  // Written here, read by the support door on every customer message, so the
+  // list must stay editable and every older wording must be recoverable.
+  const send = (path: string, method: string, body: unknown, who = ADMIN) =>
+    app.request(
+      path,
+      { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+      envAs(who),
+    );
+  const lastLog = (id: number) =>
+    baseEnv.DB.prepare(
+      `SELECT action, before_json, after_json FROM audit_logs
+        WHERE entity_type = 'SUPPORT_ANSWER' AND entity_id = ?1
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+    )
+      .bind(String(id))
+      .first<{ action: string; before_json: string | null; after_json: string | null }>();
+
+  async function create(label: string, answer = 'جواب اول'): Promise<number> {
+    const res = await send('/api/v1/admin/support-answers', 'POST', {
+      question: `${PREFIX}${label}`,
+      answer,
+      sortOrder: 5,
+    });
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { answer: { id: number } }).answer.id;
+  }
+
+  it('lists hidden answers too, in their order', async () => {
+    const hidden = await create('b-hidden');
+    await send(`/api/v1/admin/support-answers/${hidden}`, 'POST', {
+      question: `${PREFIX}b-hidden`,
+      answer: 'جواب اول',
+      active: false,
+    });
+    await create('a-shown');
+
+    const res = await app.request('/api/v1/admin/support-answers', {}, envAs(REVIEWER));
+    const { items } = (await res.json()) as {
+      items: { question: string; active: boolean; version: number }[];
+    };
+    const mine = items.filter((i) => i.question.startsWith(PREFIX));
+    expect(mine.map((i) => [i.question, i.active])).toEqual([
+      [`${PREFIX}b-hidden`, false],
+      [`${PREFIX}a-shown`, true],
+    ]);
+  });
+
+  it('counts each edit and keeps the words it replaced', async () => {
+    const id = await create('edit', 'جواب اول');
+    expect((await lastLog(id))?.action).toBe('content.support_answer_created');
+
+    const res = await send(`/api/v1/admin/support-answers/${id}`, 'POST', {
+      question: `${PREFIX}edit`,
+      answer: 'جواب دوم',
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { answer: { version: number; active: boolean } }).answer).toMatchObject({
+      version: 2,
+      active: true,
+    });
+
+    const log = await lastLog(id);
+    expect(log?.action).toBe('content.support_answer_updated');
+    expect(JSON.parse(log!.before_json!)).toMatchObject({ answer: 'جواب اول', version: 1 });
+    expect(JSON.parse(log!.after_json!)).toMatchObject({ answer: 'جواب دوم', version: 2 });
+  });
+
+  it('deletes only a hidden answer, and the log keeps its words', async () => {
+    const id = await create('gone', 'متنی که می‌رود');
+    const path = `/api/v1/admin/support-answers/${id}`;
+
+    expect((await app.request(path, { method: 'DELETE' }, envAs(ADMIN))).status).toBe(409);
+
+    await send(path, 'POST', { question: `${PREFIX}gone`, answer: 'متنی که می‌رود', active: false });
+    expect((await app.request(path, { method: 'DELETE' }, envAs(ADMIN))).status).toBe(200);
+
+    const row = await baseEnv.DB.prepare(`SELECT 1 AS one FROM support_answers WHERE id = ?1`)
+      .bind(id)
+      .first();
+    expect(row).toBeNull();
+    const log = await lastLog(id);
+    expect(log?.action).toBe('content.support_answer_deleted');
+    expect(JSON.parse(log!.before_json!)).toMatchObject({ answer: 'متنی که می‌رود' });
+  });
+
+  it('lets only an admin write, and refuses an empty answer', async () => {
+    const body = { question: `${PREFIX}reviewer`, answer: 'جواب' };
+    expect((await send('/api/v1/admin/support-answers', 'POST', body, REVIEWER)).status).toBe(403);
+    expect(
+      (await send('/api/v1/admin/support-answers', 'POST', { ...body, answer: '   ' })).status,
+    ).toBe(400);
+    const none = await baseEnv.DB.prepare(`SELECT 1 AS one FROM support_answers WHERE question = ?1`)
+      .bind(body.question)
+      .first();
+    expect(none).toBeNull();
   });
 });

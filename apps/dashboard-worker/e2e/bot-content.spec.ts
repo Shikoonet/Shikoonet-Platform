@@ -153,3 +153,45 @@ test('a required channel must be switched off before it can be deleted', async (
     d.prepare(`DELETE FROM required_channels WHERE title = ?1`).bind(title).run(),
   );
 });
+
+test('a support answer written here is what the support bot is handed, and an edit is counted', async ({
+  page,
+}) => {
+  // «پرسش و پاسخ پشتیبانی» is read by the support door on every customer
+  // message, so the only witness to a save that did not land is a customer
+  // being passed to a person. The row and its version are read back from the
+  // database, not from the screen.
+  const question = 'e2e — ساعت کاری پشتیبانی؟';
+  const wipe = () =>
+    withDb((d) => d.prepare(`DELETE FROM support_answers WHERE question = ?1`).bind(question).run());
+  await wipe();
+  try {
+    await page.goto('/admin/content');
+    await page.getByRole('button', { name: 'پرسش و پاسخ پشتیبانی' }).click();
+    await page.getByRole('button', { name: 'پرسش و پاسخ تازه' }).click();
+    await page.locator('#kb-question').fill(question);
+    await page.locator('#kb-answer').fill('هر روز از ۱۰ صبح تا ۱۲ شب.');
+    await page.getByRole('button', { name: 'ذخیره' }).click();
+
+    const row = page.locator('tbody tr', { hasText: question });
+    await expect(row).toContainText('فعال');
+    await expect(row.getByRole('button', { name: 'حذف' })).toBeDisabled();
+
+    await row.getByRole('button', { name: 'ویرایش' }).click();
+    await page.locator('#kb-answer').fill('هر روز از ۹ صبح تا ۱۲ شب.');
+    await page.getByRole('button', { name: 'ذخیره' }).click();
+
+    await expect
+      .poll(() =>
+        withDb((d) =>
+          d
+            .prepare(`SELECT answer, version, active FROM support_answers WHERE question = ?1`)
+            .bind(question)
+            .first<{ answer: string; version: number; active: boolean }>(),
+        ),
+      )
+      .toEqual({ answer: 'هر روز از ۹ صبح تا ۱۲ شب.', version: 2, active: true });
+  } finally {
+    await wipe();
+  }
+});

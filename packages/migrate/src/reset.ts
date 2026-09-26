@@ -130,6 +130,10 @@ export const RESET_KEEP: readonly string[] = [
   // every link already out there. Their starts are not kept: they hang off
   // `users`, which the import rebuilds.
   'campaigns',
+  // «پرسش و پاسخ پشتیبانی» (0105). Written in the panel and read by the support
+  // bot on every message; no import re-supplies them, and an empty list would
+  // send every customer question to a person.
+  'support_answers',
 ];
 
 /** A table and how many rows it holds. */

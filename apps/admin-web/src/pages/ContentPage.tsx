@@ -22,8 +22,14 @@
  * bot, not this form.
  */
 
-import { useEffect, useState } from 'react';
-import { api, ApiError, type ClientAppRow, type HelpArticleRow } from '../api.js';
+import { useEffect, useRef, useState } from 'react';
+import {
+  api,
+  ApiError,
+  type ClientAppRow,
+  type HelpArticleRow,
+  type SupportAnswerRow,
+} from '../api.js';
 import { RequiredChannelsPanel } from '../hub/RequiredChannelsPanel.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
@@ -37,7 +43,7 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-type Tab = 'articles' | 'apps' | 'channels';
+type Tab = 'articles' | 'apps' | 'channels' | 'answers';
 
 /**
  * The third tab is a gate rather than content. It is drawn by
@@ -101,7 +107,7 @@ export function ContentPage() {
             {count(articles.length)} مطلب · {count(apps.length)} برنامه
           </div>
         </div>
-        {tab !== 'channels' && (
+        {(tab === 'articles' || tab === 'apps') && (
           <button
             type="button"
             className="btn btn-primary"
@@ -139,11 +145,19 @@ export function ContentPage() {
           >
             کانال اجباری
           </button>
+          <button
+            type="button"
+            className={tab === 'answers' ? 'btn btn-primary btn-sm' : 'btn btn-sm'}
+            onClick={() => setTab('answers')}
+          >
+            پرسش و پاسخ پشتیبانی
+          </button>
         </div>
 
         {tab === 'channels' && <RequiredChannelsPanel />}
+        {tab === 'answers' && <SupportAnswers />}
 
-        <div className="table-wrap" hidden={tab === 'channels'}>
+        <div className="table-wrap" hidden={tab === 'channels' || tab === 'answers'}>
           {tab === 'articles' ? (
             <table className="app-table">
               <thead>
@@ -257,10 +271,12 @@ export function ContentPage() {
           )}
         </div>
 
-        <p className="muted">
-          «پنهان» یعنی مشتری دیگر آن را نمی‌بیند و هر وقت خواستید برمی‌گردد. حذف فقط روی چیزی که از
-          قبل پنهان شده انجام می‌شود — سرور هم همین را می‌گوید، نه فقط این دکمه.
-        </p>
+        {tab !== 'answers' && (
+          <p className="muted">
+            «پنهان» یعنی مشتری دیگر آن را نمی‌بیند و هر وقت خواستید برمی‌گردد. حذف فقط روی چیزی که
+            از قبل پنهان شده انجام می‌شود — سرور هم همین را می‌گوید، نه فقط این دکمه.
+          </p>
+        )}
       </div>
 
       {editing?.kind === 'articles' && (editing.id === null || editingArticle) && (
@@ -284,6 +300,280 @@ export function ContentPage() {
         />
       )}
     </>
+  );
+}
+
+/**
+ * «پرسش و پاسخ پشتیبانی» — what the support bot may tell a customer (0105).
+ *
+ * The support door hands every visible row to the bot on every message, so a
+ * save here is live on the next question. The bot answers only from this list
+ * and passes anything else to a person, so an answer is written the way it
+ * should reach the customer. Hiding and deleting work as they do for «آموزش».
+ */
+function SupportAnswers() {
+  const w = useAdminWriteProps();
+  const [items, setItems] = useState<SupportAnswerRow[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState<number | 'new' | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setErr(null);
+    try {
+      setItems((await api.supportAnswers()).items);
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function remove(a: SupportAnswerRow): Promise<void> {
+    if (!window.confirm(`«${a.question}» برای همیشه حذف شود؟`)) return;
+    setErr(null);
+    setDone(null);
+    try {
+      await api.deleteSupportAnswer(a.id);
+      setDone('حذف شد.');
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    }
+  }
+
+  const current = typeof editing === 'number' ? (items.find((i) => i.id === editing) ?? null) : null;
+  const visible = items.filter((i) => i.active).length;
+  const nextSort = items.reduce((m, i) => Math.max(m, i.sortOrder), 0) + 10;
+
+  return (
+    <>
+      {err && <div className="alert alert-error">{err}</div>}
+      {done && <div className="alert alert-info">{done}</div>}
+
+      <div className="filters">
+        <span className="grow muted">
+          {count(visible)} فعال · {count(items.length - visible)} پنهان
+        </span>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          onClick={() => {
+            setDone(null);
+            setEditing('new');
+          }}
+          {...w}
+        >
+          پرسش و پاسخ تازه
+        </button>
+      </div>
+
+      <div className="table-wrap">
+        <table className="app-table">
+          <thead>
+            <tr>
+              <th>پرسش</th>
+              <th>جواب</th>
+              <th>ترتیب</th>
+              <th>نسخه</th>
+              <th>وضعیت</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {items.length === 0 && !loading && (
+              <tr>
+                <td className="empty" colSpan={6}>
+                  هیچ پرسش و پاسخی ثبت نشده است؛ ربات همهٔ سؤال‌ها را به اپراتور می‌سپارد.
+                </td>
+              </tr>
+            )}
+            {items.map((a) => (
+              <tr key={a.id}>
+                <td>{a.question}</td>
+                <td>{a.answer.length > 90 ? `${a.answer.slice(0, 90)}…` : a.answer}</td>
+                <td>{count(a.sortOrder)}</td>
+                <td>{count(a.version)}</td>
+                <td>
+                  <span className={a.active ? 'badge badge-active' : 'badge badge-block'}>
+                    {a.active ? 'فعال' : 'پنهان'}
+                  </span>
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => {
+                      setDone(null);
+                      setEditing(a.id);
+                    }}
+                  >
+                    ویرایش
+                  </button>{' '}
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={a.active}
+                    title={a.active ? 'اول پنهانش کنید' : ''}
+                    onClick={() => void remove(a)}
+                    {...w}
+                  >
+                    حذف
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="muted">
+        ربات پشتیبانی فقط از جواب‌های «فعال» همین فهرست جواب می‌دهد و هر سؤال دیگری را به اپراتور
+        می‌سپارد. هر ذخیره از پیام بعدی مشتری اثر دارد. هر ویرایش شمارهٔ نسخه را یکی بالا می‌برد و
+        متن قبلی در گزارش تغییرات می‌ماند.
+      </p>
+
+      {(editing === 'new' || current) && (
+        <AnswerEditor
+          key={editing ?? 'none'}
+          answer={current}
+          sortOrder={nextSort}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            setDone('ذخیره شد؛ ربات از پیام بعدی همین را می‌گوید.');
+            void load();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+/** The table's caps (0105): every visible answer rides in every prompt. */
+const QUESTION_MAX = 300;
+const ANSWER_MAX = 1500;
+
+function AnswerEditor({
+  answer,
+  sortOrder: firstSort,
+  onClose,
+  onSaved,
+}: {
+  answer: SupportAnswerRow | null;
+  sortOrder: number;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const w = useAdminWriteProps();
+  const [question, setQuestion] = useState(answer?.question ?? '');
+  const [text, setText] = useState(answer?.answer ?? '');
+  const [sortOrder, setSortOrder] = useState(String(answer?.sortOrder ?? firstSort));
+  const [active, setActive] = useState(answer?.active ?? true);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // The form opens under a list that is usually longer than the screen. A block
+  // body on purpose: Chrome's scrollIntoView now returns a Promise, and an effect
+  // that returns one hands React a «cleanup» that throws when the form closes.
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    box.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.saveSupportAnswer(answer?.id ?? null, {
+        question: question.trim(),
+        answer: text.trim(),
+        sortOrder: Number(sortOrder) || 0,
+        active,
+      });
+      onSaved();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }} ref={box}>
+      <div className="card__head">
+        <span className="card__title">{answer ? answer.question : 'پرسش و پاسخ تازه'}</span>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
+      </div>
+
+      {err && <div className="alert alert-error">{err}</div>}
+
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="kb-question">
+            پرسش — همان‌طور که مشتری می‌پرسد
+          </label>
+          <input
+            id="kb-question"
+            className="form-control"
+            type="text"
+            maxLength={QUESTION_MAX}
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="kb-sort">
+            ترتیب
+          </label>
+          <input
+            id="kb-sort"
+            className="form-control"
+            type="number"
+            min={0}
+            max={9999}
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <label className="form-label" htmlFor="kb-answer">
+        جواب — {count(text.length)} از {count(ANSWER_MAX)} نویسه
+      </label>
+      <textarea
+        id="kb-answer"
+        className="form-control"
+        rows={6}
+        maxLength={ANSWER_MAX}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+
+      <label className="form-label" style={{ display: 'block', marginBlockStart: 12 }}>
+        <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />{' '}
+        ربات از این جواب استفاده کند
+      </label>
+
+      <div className="filters" style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || question.trim() === '' || text.trim() === ''}
+          onClick={() => void save()}
+          {...w}
+        >
+          ذخیره
+        </button>
+      </div>
+    </div>
   );
 }
 

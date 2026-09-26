@@ -594,6 +594,13 @@ describe('every write route, asked directly', () => {
     // judged by, so ADMIN-only in the handler and audited as
     // `campaign.created` / `campaign.updated`. `campaigns.test.ts` pins the
     // REVIEWER 403 on both.
-    expect(writeRoutes().length).toBe(189);
+    //
+    // 190–192, 2026-09-26: «پرسش و پاسخ پشتیبانی» (0105). `POST /admin/
+    // support-answers`, `POST /admin/support-answers/:id` and `DELETE
+    // /admin/support-answers/:id` write what the support bot may tell a
+    // customer, live on the next message. ADMIN-only in the handler like
+    // «آموزش», and audited with the whole text before and after
+    // (`content.support_answer_*`); `content.test.ts` pins the REVIEWER 403.
+    expect(writeRoutes().length).toBe(192);
   });
 });

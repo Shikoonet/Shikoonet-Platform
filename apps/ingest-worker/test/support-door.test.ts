@@ -174,3 +174,42 @@ describe('who is asking', () => {
     expect(await res.json()).toEqual({ ok: false, error: 'invalid_body' });
   });
 });
+
+describe('«پرسش و پاسخ»', () => {
+  // What the panel's «پرسش و پاسخ پشتیبانی» holds is what the bot is handed:
+  // only visible rows, in the panel's order, numbered into one block.
+  const PREFIX = 'zz-kb-';
+  const add = (question: string, sortOrder: number, active = true) =>
+    env.DB.prepare(
+      `INSERT INTO support_answers (question, answer, sort_order, active) VALUES (?1, ?2, ?3, ?4)`,
+    )
+      .bind(`${PREFIX}${question}`, `جواب ${question}`, sortOrder, active)
+      .run();
+  const purge = () =>
+    env.DB.prepare(`DELETE FROM support_answers WHERE question LIKE ?1`).bind(`${PREFIX}%`).run();
+  afterEach(purge);
+  afterAll(purge);
+
+  it('hands over the visible answers in the panel’s order, and never a hidden one', async () => {
+    await add('second', 9991);
+    await add('hidden', 9990, false);
+    await add('first', 9990);
+
+    const res = await call('/kb', {});
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; count: number; text: string };
+    const visible = await env.DB.prepare(`SELECT count(*)::int AS n FROM support_answers WHERE active`).first<{
+      n: number;
+    }>();
+
+    expect(body.count).toBe(visible!.n);
+    expect(body.text.endsWith(
+      `${body.count - 1}) ${PREFIX}first\nجواب first\n\n${body.count}) ${PREFIX}second\nجواب second`,
+    )).toBe(true);
+    expect(body.text).not.toContain(`${PREFIX}hidden`);
+  });
+
+  it('is behind the same token as every other question', async () => {
+    expect((await call('/kb', {}, { token: null })).status).toBe(401);
+  });
+});
