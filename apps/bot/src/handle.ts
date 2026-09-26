@@ -3088,14 +3088,28 @@ async function handleCallback(
           menu.serviceDetailMenu(actionsFor(outcome.service, SHOP, tierFor(user))),
         );
       }
+      // A new link arrives the way the QR button sends one: a single picture
+      // with the link in its caption and a way back to the service. It used to
+      // be a text screen, so a customer who had tapped QR first ended with two
+      // messages and two links (Sam, 2026-09-26). The confirm screen is deleted
+      // rather than left asking a question that has been answered.
+      if (kind === 'REVOKE' && outcome.subscriptionUrl !== null) {
+        const url = outcome.subscriptionUrl;
+        return {
+          status: 'processed',
+          replies: [
+            { ...reply(chatId, menu.linkReplaced(url), menu.qrMenu(url, outcome.service.id)), qrOf: url },
+          ],
+          ...(editId === undefined ? {} : { deletes: [{ chatId, messageId: editId }] }),
+        };
+      }
       // The service is redrawn under the message, so the customer sees the new
       // state rather than being told about it and left on a stale screen.
       const detail = menu.serviceDetail(outcome.service, Date.now());
+      // A REVOKE still here came back without a link.
       const said =
         kind === 'REVOKE'
-          ? outcome.subscriptionUrl === null
-            ? menu.actionFailed(menu.ACTION_FAILED_NO_LINK)
-            : menu.linkReplaced(outcome.subscriptionUrl)
+          ? menu.actionFailed(menu.ACTION_FAILED_NO_LINK)
           : menu.serviceSwitched(kind === 'ENABLE');
       return screen(
         `${said}\n\n${detail}`,

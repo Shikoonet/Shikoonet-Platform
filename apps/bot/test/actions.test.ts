@@ -172,8 +172,14 @@ describe('replacing the subscription link', () => {
     expect(p.calls[0]?.url).toContain('/revoke_sub');
     const row = await serviceRow(service);
     expect(row?.subscription_url).toBe('https://panel.test/sub/u_act/1');
-    // The customer is given the new link, not told to go and look for it.
+    // The customer is given the new link, not told to go and look for it —
+    // as ONE message: the QR of the new link, the link in its caption.
+    expect(out.replies).toHaveLength(1);
+    expect(out.replies[0]?.qrOf).toBe('https://panel.test/sub/u_act/1');
     expect(out.replies[0]?.text).toContain('https://panel.test/sub/u_act/1');
+    expect(JSON.stringify(out.replies[0]?.keyboard)).toContain(`sub:${service}`);
+    // And the confirm screen it answered goes, rather than staying under it.
+    expect(out.deletes).toEqual([{ chatId: telegramId, messageId: 77 }]);
   });
 
   it('changes nothing here when the panel refuses', async () => {
