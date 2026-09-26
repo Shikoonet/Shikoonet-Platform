@@ -297,39 +297,36 @@ export function registerCampaignRoutes(
     }
 
     // The unique index answers, not a read first: two admins typing the same
-    // slug at once is exactly what a look-then-insert misses.
-    const row = await c.env.DB.prepare(
-      `INSERT INTO campaigns (slug, name, source, note, created_by)
-       VALUES (?1, ?2, ?3, ?4, ?5)
-       ON CONFLICT (slug) DO NOTHING
-       RETURNING id`,
-    )
-      .bind(
-        body.data.slug,
-        body.data.name,
-        body.data.source ?? '',
-        body.data.note ?? '',
-        ident.email,
-      )
-      .first<{ id: number }>();
-    if (!row) {
+    // slug at once is exactly what a look-then-insert misses. The audit row is
+    // in the same transaction, so a campaign never exists without the record
+    // of who made it — a failed audit insert rolls the campaign back.
+    const id = await c.env.DB.withSession(async (tx) => {
+      const row = await tx
+        .prepare(
+          `INSERT INTO campaigns (slug, name, source, note, created_by)
+           VALUES (?1, ?2, ?3, ?4, ?5)
+           ON CONFLICT (slug) DO NOTHING
+           RETURNING id`,
+        )
+        .bind(
+          body.data.slug,
+          body.data.name,
+          body.data.source ?? '',
+          body.data.note ?? '',
+          ident.email,
+        )
+        .first<{ id: number }>();
+      if (!row) return null;
+      await audit(tx, ident, 'campaign.created', 'CAMPAIGN', String(row.id), null, body.data, null);
+      return Number(row.id);
+    });
+    if (id === null) {
       return c.json(
         { ok: false, error: 'slug_taken', detail: 'این شناسه قبلاً برای کمپین دیگری استفاده شده.' },
         409,
       );
     }
-
-    await audit(
-      c.env.DB,
-      ident,
-      'campaign.created',
-      'CAMPAIGN',
-      String(row.id),
-      null,
-      body.data,
-      null,
-    );
-    return c.json({ ok: true, id: Number(row.id) });
+    return c.json({ ok: true, id });
   });
 
   /**
@@ -352,38 +349,34 @@ export function registerCampaignRoutes(
 
     // One statement, so the «before» in the audit row is the row this UPDATE
     // actually replaced — a separate read first could log a state another
-    // admin had already changed.
-    const before = await c.env.DB.prepare(
-      `WITH old AS (
-         SELECT id, name, source, note, status FROM campaigns WHERE id = ?1 FOR UPDATE
-       )
-       UPDATE campaigns c
-          SET name = COALESCE(?2, c.name), source = COALESCE(?3, c.source),
-              note = COALESCE(?4, c.note), status = COALESCE(?5, c.status), updated_at = now()
-         FROM old
-        WHERE c.id = old.id
-       RETURNING old.name, old.source, old.note, old.status`,
-    )
-      .bind(
-        id,
-        body.data.name ?? null,
-        body.data.source ?? null,
-        body.data.note ?? null,
-        body.data.status ?? null,
-      )
-      .first<{ name: string; source: string; note: string; status: string }>();
+    // admin had already changed. And one transaction with the audit row, so the
+    // edit and its record stand or fall together.
+    const before = await c.env.DB.withSession(async (tx) => {
+      const old = await tx
+        .prepare(
+          `WITH old AS (
+             SELECT id, name, source, note, status FROM campaigns WHERE id = ?1 FOR UPDATE
+           )
+           UPDATE campaigns c
+              SET name = COALESCE(?2, c.name), source = COALESCE(?3, c.source),
+                  note = COALESCE(?4, c.note), status = COALESCE(?5, c.status), updated_at = now()
+             FROM old
+            WHERE c.id = old.id
+           RETURNING old.name, old.source, old.note, old.status`,
+        )
+        .bind(
+          id,
+          body.data.name ?? null,
+          body.data.source ?? null,
+          body.data.note ?? null,
+          body.data.status ?? null,
+        )
+        .first<{ name: string; source: string; note: string; status: string }>();
+      if (!old) return null;
+      await audit(tx, ident, 'campaign.updated', 'CAMPAIGN', String(id), old, body.data, null);
+      return old;
+    });
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
-
-    await audit(
-      c.env.DB,
-      ident,
-      'campaign.updated',
-      'CAMPAIGN',
-      String(id),
-      before,
-      body.data,
-      null,
-    );
     return c.json({ ok: true });
   });
 }

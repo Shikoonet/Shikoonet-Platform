@@ -16,6 +16,23 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/index.js';
+
+/**
+ * An audit table that refuses, on demand. The two writes put their audit row
+ * in the same transaction as the change (CodeRabbit on #475): a campaign must
+ * never exist, or change, without the record of who did it.
+ */
+const auditDown = vi.hoisted(() => ({ on: false }));
+vi.mock('../src/adminAudit.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../src/adminAudit.js')>();
+  return {
+    ...real,
+    audit: async (...args: Parameters<typeof real.audit>) => {
+      if (auditDown.on) throw new Error('audit_logs refused the row');
+      return real.audit(...args);
+    },
+  };
+});
 import { applySchema, deleteFixtureUsers, env as baseEnv, FIXTURE_TG_BASE } from './helpers/env.js';
 
 const ADMIN = 'admin-campaigns@example.com';
@@ -411,6 +428,31 @@ describe('creating and editing', () => {
     const { items } = await list();
     const archivedAt = items.findIndex((i) => i.id === id);
     expect(items.slice(0, archivedAt).every((i) => i.status === 'ACTIVE')).toBe(true);
+  });
+
+  it('keeps no change the audit log could not record', async () => {
+    const id = await campaign('zz-cmp-audited');
+    auditDown.on = true;
+    try {
+      const made = await send('POST', '/api/v1/admin/campaigns', {
+        slug: 'zz-cmp-orphan',
+        name: 'x',
+      });
+      expect(made.status).toBeGreaterThanOrEqual(500);
+      const edited = await send('PATCH', `/api/v1/admin/campaigns/${id}`, { name: 'بی‌رد' });
+      expect(edited.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      auditDown.on = false;
+    }
+
+    const orphan = await baseEnv.DB.prepare(
+      `SELECT 1 FROM campaigns WHERE slug = 'zz-cmp-orphan'`,
+    ).first();
+    expect(orphan).toBeNull();
+    const row = await baseEnv.DB.prepare(`SELECT name FROM campaigns WHERE id = ?1`)
+      .bind(id)
+      .first<{ name: string }>();
+    expect(row?.name).toBe('zz-cmp-audited');
   });
 
   it('lets a reviewer read, and nothing more', async () => {
