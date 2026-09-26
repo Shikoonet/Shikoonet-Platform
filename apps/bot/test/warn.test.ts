@@ -500,27 +500,30 @@ describe('a free trial', () => {
         `INSERT INTO orders
            (public_id, user_id, kind, provider_id, quantity,
             unit_price_irr, discount_irr, total_irr, status, completed_at)
-         VALUES (?1, ?2, 'TRIAL', ?3, 1, 0, 0, 0, 'COMPLETED', now())
+         VALUES (?1, ?2, 'TRIAL', ?3, 1, 0, 0, 0, 'COMPLETED', ?4)
          RETURNING id`,
       )
-      .bind(`${fixture.publicId}-t`, userId, await providerId('sim-vip'))
+      .bind(`${fixture.publicId}-t`, userId, await providerId('sim-vip'), new Date(NOW_MS).toISOString())
       .first<{ id: number }>();
     await db
       .prepare(`UPDATE subscriptions SET order_id = ?2 WHERE id = ?1`)
       .bind(id, order?.id)
       .run();
-    if (renewed) {
-      await db
-        .prepare(
-          `INSERT INTO orders
-             (public_id, user_id, kind, target_subscription_id, quantity,
-              unit_price_irr, discount_irr, total_irr, status, completed_at)
-           VALUES (?1, ?2, 'RENEWAL', ?3, 1, 1950000, 0, 1950000, 'COMPLETED', now())`,
-        )
-        .bind(`${fixture.publicId}-r`, userId, id)
-        .run();
-    }
+    if (renewed) await renew(userId, id, fixture.publicId);
     return id;
+  }
+
+  /** The completed renewal that turns a trial into a sale. */
+  async function renew(userId: number, id: number, publicId: string): Promise<void> {
+    await db
+      .prepare(
+        `INSERT INTO orders
+           (public_id, user_id, kind, target_subscription_id, quantity,
+            unit_price_irr, discount_irr, total_irr, status, completed_at)
+         VALUES (?1, ?2, 'RENEWAL', ?3, 1, 1950000, 0, 1950000, 'COMPLETED', ?4)`,
+      )
+      .bind(`${publicId}-r`, userId, id, new Date(NOW_MS).toISOString())
+      .run();
   }
 
   it('is not warned that it is running out, by date or by gigabytes', async () => {
@@ -567,6 +570,26 @@ describe('a free trial', () => {
     await makeTrial(nextTelegramId(), { publicId: 'tr-old', expiresInDays: -3 });
 
     expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+  });
+
+  it('says nothing when the renewal lands between the sweep reading and claiming', async () => {
+    const telegramId = nextTelegramId();
+    const id = await makeTrial(telegramId, { publicId: 'tr-race', expiresInDays: -0.25 });
+    const owner = await db
+      .prepare(`SELECT user_id FROM subscriptions WHERE id = ?1`)
+      .bind(id)
+      .first<{ user_id: number }>();
+    // The renewal commits after the SELECT has picked the row, just before the
+    // claim transaction opens.
+    const withSession = db.withSession.bind(db);
+    vi.spyOn(db, 'withSession').mockImplementationOnce(async (work) => {
+      await renew(owner?.user_id ?? 0, id, 'tr-race');
+      return withSession(work);
+    });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+    expect(await notifyOf(id)).toEqual({});
+    expect((await pendingNotifications()).some((n) => n.chatId === telegramId)).toBe(false);
   });
 
   it('is warned like any sale once it has been renewed', async () => {

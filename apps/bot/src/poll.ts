@@ -390,6 +390,7 @@ export async function pollOnce(
     if (outcome.status === 'duplicate') {
       log.info('update.duplicate', { trace: traceOf(update) });
     }
+    let allDelivered = true;
     for (const reply of outcome.replies) {
       try {
         if (reply.qrOf !== undefined) {
@@ -460,6 +461,7 @@ export async function pollOnce(
         // now be a no-op against the claim, so the reply is simply lost and said
         // to be lost.
         log.error('reply.undelivered', { trace: traceOf(update) }, err);
+        allDelivered = false;
       }
     }
     // After the replies, and never before them: the screen being edited is one
@@ -471,7 +473,12 @@ export async function pollOnce(
     // delete a message older than 48 hours, and the customer may have deleted
     // it themselves — and none of it is worth failing an update that has
     // already committed. What it costs when it fails is a tidier chat.
-    for (const gone of outcome.deletes ?? []) {
+    //
+    // And not at all when a reply was lost: that is the same case one step
+    // further. «تغییر لینک» deletes its confirm screen and sends the new link
+    // as a QR; if the photo and its text fallback both fail, deleting the
+    // screen as well leaves the customer with nothing to show for the press.
+    for (const gone of allDelivered ? (outcome.deletes ?? []) : []) {
       try {
         await api.deleteMessage(gone.chatId, gone.messageId);
       } catch (err) {

@@ -274,12 +274,17 @@ export async function warnExpiringServices(
     // and told nobody. A warning is only useful before the thing runs out, so
     // "lost silently" was the one outcome worth engineering against.
     const claimed = await db.withSession(async (tx) => {
+      //
+      // «Still a trial» is asked again here, because it is the one condition a
+      // customer can change between the SELECT and this line: a renewal that
+      // lands in between would otherwise be answered with «your trial ended».
       const marked = await tx
         .prepare(
-          `UPDATE subscriptions
+          `UPDATE subscriptions AS s
               SET notify = notify || jsonb_build_object(?2::text, true),
                   updated_at = now()
-            WHERE id = ?1 AND notify->>?2 IS DISTINCT FROM 'true'`,
+            WHERE s.id = ?1 AND s.notify->>?2 IS DISTINCT FROM 'true'
+              ${row.reason === 'trial_ended' ? `AND ${STILL_A_TRIAL}` : ''}`,
         )
         .bind(row.id, row.reason)
         .run();
