@@ -12,7 +12,7 @@
  * channel and says — the one thing the tool this replaces got wrong.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { jalaliToIsoDate, toJalali, type JalaliDate } from '@shikoo/contracts';
 import {
   api,
@@ -422,7 +422,12 @@ function Composer({
     setDirty(true);
   };
 
+  // A ref, not `busy`: state is stale inside the event tick a double-click
+  // lands in, and «ذخیره» on a new post would make two drafts (CodeRabbit).
+  const inFlight = useRef(false);
   async function run(step: () => Promise<unknown>, ok: string) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       await step();
@@ -430,6 +435,7 @@ function Composer({
     } catch (e) {
       onError(message(e));
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }

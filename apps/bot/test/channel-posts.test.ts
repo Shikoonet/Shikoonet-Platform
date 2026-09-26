@@ -55,6 +55,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   resetPace();
   // A 429 test writes the ban down for the next process; it must not outlive the test.
   await db
@@ -113,12 +114,23 @@ describe('a scheduled channel post', () => {
       },
     });
 
+    // The process clock pinned for the pause (CLAUDE.md rule 5); the new
+    // send time is the database's, so it is measured against the database's
+    // own now() rather than across two clocks.
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
     expect(await sendDueChannelPost(db, api)).toBe(1);
 
     const row = await rowOf(id);
     expect(row).toMatchObject({ status: 'SCHEDULED', claimed_at: null });
-    expect(new Date(row!.send_at).getTime()).toBeGreaterThan(Date.now() + 20_000);
-    expect(pausedFor()).toBeGreaterThan(20_000);
+    const later = await db
+      .prepare(
+        `SELECT (send_at > now() + interval '20 seconds')::int AS ok FROM channel_posts WHERE id = ?1`,
+      )
+      .bind(id)
+      .first<{ ok: number }>();
+    expect(later?.ok).toBe(1);
+    expect(pausedFor(now)).toBeGreaterThan(20_000);
   });
 
   it('fails, and says why, when Telegram refuses it — nothing went out', async () => {

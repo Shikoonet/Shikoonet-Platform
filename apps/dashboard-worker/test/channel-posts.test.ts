@@ -395,21 +395,23 @@ describe('preview, then schedule', () => {
   });
 
   it('refuses a time already gone — never quietly turns it into «now»', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
     const id = await draft();
     await req('POST', `/api/v1/admin/channel-posts/${id}/preview`);
-    const gone = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const gone = new Date(NOW_MS - 2 * 3_600_000).toISOString();
 
     expect((await patch(id, { op: 'schedule', sendAt: gone })).status).toBe(400);
     expect((await row(id))?.status).toBe('DRAFT');
   });
 
   it('refuses a schedule past 90 days, and cancels one back to a draft', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
     const id = await draft();
     await req('POST', `/api/v1/admin/channel-posts/${id}/preview`);
-    const far = new Date(Date.now() + 100 * 86_400_000).toISOString();
+    const far = new Date(NOW_MS + 100 * 86_400_000).toISOString();
     expect((await patch(id, { op: 'schedule', sendAt: far })).status).toBe(400);
 
-    const soon = new Date(Date.now() + 3_600_000).toISOString();
+    const soon = new Date(NOW_MS + 3_600_000).toISOString();
     expect((await patch(id, { op: 'schedule', sendAt: soon })).status).toBe(200);
     expect((await patch(id, { op: 'cancel' })).status).toBe(200);
     expect((await row(id))?.status).toBe('DRAFT');
