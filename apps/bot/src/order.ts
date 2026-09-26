@@ -398,7 +398,15 @@ async function place(
           -- draws a new card now.
           AND (expires_at IS NULL OR expires_at > now())
         ORDER BY created_at DESC
-        LIMIT 1`,
+        LIMIT 1
+        -- Locked, because the expiry sweep runs beside the customer's presses
+        -- (2026-09-26) and closes the same row. Unlocked, a tap at the deadline
+        -- could take back an order the sweep was expiring, and a checkout would
+        -- then reserve wallet money on it after the refund had passed it by.
+        -- Locked, the tap either waits for the sweep and finds nothing — the
+        -- WHERE is checked again against the committed row — or holds the row
+        -- first, so the sweep skips it this round and expires it whole next.
+        FOR UPDATE`,
     )
     .bind(
       userId,

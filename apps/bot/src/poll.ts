@@ -37,7 +37,7 @@ import {
   markBroadcastRetryable,
   markBroadcastSent,
   markUnreachable,
-  strandedSendingCount,
+  failStrandedSends,
   SEND_CONCURRENCY,
   sendGapMs,
   type BroadcastMessage,
@@ -747,16 +747,23 @@ export async function sweepBroadcasts(
   // It is documented as cheap and idempotent and its NOT EXISTS makes it a
   // no-op when nothing has changed, so paying for it every cycle is the whole
   // cost of never losing the close.
+  //
+  // Behind the stranded rows, so a broadcast whose last open row was one of
+  // them closes on this same pass. They are closed FAILED, never retried —
+  // whether Telegram accepted the message before the process died is exactly
+  // what nobody knows, and guessing wrong spams a paying customer. Said once,
+  // when they are closed: it used to be said on every pass, about the same
+  // rows, for ever.
+  const stranded = await failStrandedSends(db).catch((err: unknown) => {
+    log.error('broadcast.stranded_unclosed', {}, err);
+    return 0;
+  });
+  if (stranded > 0) {
+    log.warn('broadcast.stranded', { messages: stranded, closed_as: 'FAILED' });
+  }
   await closeFinishedBroadcasts(db).catch((err: unknown) =>
     log.error('broadcast.close_failed', {}, err),
   );
-  // The only voice a stranded row has. It is deliberately not retried — whether
-  // Telegram accepted the message before the process died is exactly what
-  // nobody knows, and guessing wrong spams a paying customer.
-  const stranded = await strandedSendingCount(db).catch(() => 0);
-  if (stranded > 0) {
-    log.warn('broadcast.stranded', { messages: stranded });
-  }
   if (rateLimited > 0) {
     // A warning rather than an error: the queue kept them and the next cycle
     // takes them. It is logged at all because it is the shop's only sign that
@@ -889,12 +896,12 @@ export async function pruneUpdates(
 
 export interface RunOptions {
   timeoutSec?: number;
-  /** Prune every N cycles. At a 25s poll, 200 cycles is roughly 90 minutes. */
-  pruneEveryCycles?: number;
   /** Pause after a failed cycle. A knob because tests cannot wait five seconds. */
   backoffMs?: number;
   /** How long either drain sleeps on an empty queue. A knob for tests. */
   broadcastIdleMs?: number;
+  /** How long the sweeps rest between rounds when nothing woke them. A knob for tests. */
+  sweepGapMs?: number;
   signal?: AbortSignal;
   /**
    * Called once per completed cycle, for the container health check to read.
@@ -912,45 +919,267 @@ export interface RunOptions {
 /** How long `getUpdates` may keep failing before it alerts rather than warns. */
 export const READ_OUTAGE_ALERT_MS = 5 * 60_000;
 
+/**
+ * How long the sweeps rest between rounds when nothing woke them.
+ *
+ * They used to run once per poll cycle, which on a quiet bot is the 25-second
+ * long poll, so this is faster than before where a customer is waiting: a
+ * payment the hub verified is announced within seconds. A press that handled
+ * something wakes them at once instead (`wake` in `run`), so a wallet purchase
+ * is still delivered straight after the press, as it was when the sweeps ran
+ * right behind the batch.
+ */
+export const SWEEP_GAP_MS = 5_000;
+
+/**
+ * How long a round of sweeps may go unfinished before the health check hears
+ * that the bot is wedged.
+ *
+ * The heartbeat used to cover the sweeps for free, because they ran in the
+ * loop that beats. With a loop of their own, a round that never returns would
+ * leave the poll loop beating happily over a shop that no longer settles a
+ * payment. Ten minutes because a long round is legitimate — the panel sync took
+ * over a minute on production — and a wedge is not a long round, it is one that
+ * does not end.
+ */
+export const SWEEPS_WEDGED_MS = 10 * 60_000;
+
+/** How often the update claims and `app_events` are pruned: what 200 idle poll cycles used to be. */
+export const PRUNE_EVERY_MS = 90 * 60_000;
+
+/**
+ * When each rate-limited sweep was last ATTEMPTED, not when it last succeeded.
+ *
+ * `isDue` inside the sync asks `MAX(last_synced_at)`, which only moves when a
+ * panel answers. So a panel that cannot be reached is never due-satisfied and
+ * the sync runs again on every single round — each run paying a full adapter
+ * timeout before giving up.
+ *
+ * Measured on the practice server 2026-08-23, and it is not a small effect:
+ * `sync.panel_skipped — could not reach the panel: terminated` every 98
+ * seconds, which is the 60-second long poll plus ~38 seconds of timing out.
+ * Every one of those seconds sat between a customer pressing a button and the
+ * bot reading it, so Telegram's callback window closed first and the shop
+ * answered `query is too old` to every tap. A panel being slow made the whole
+ * SHOP unusable, on paths that never touch that panel.
+ *
+ * Zero rather than `Date.now()` for the sync and the meter, so the first round
+ * after a restart still runs them: a deploy is a legitimate reason to look
+ * again immediately. The prune starts from now, as it always did.
+ */
+interface SweepClocks {
+  sync: number;
+  meter: number;
+  prune: number;
+}
+
+/**
+ * One round of every sweep, in order.
+ *
+ * Lifted out of `run`'s read loop on 2026-09-26, unchanged, because of where it
+ * used to sit: between one `getUpdates` and the next. Production that day — the
+ * panel sync took over a minute, nothing pressed during it was read, and 174
+ * presses in 24 hours came back «query is too old», nine of them in one burst
+ * the moment a sync finished. None of this needs to happen before the next
+ * press is read, and none of it is made any safer by the customer waiting.
+ */
+async function sweepAll(db: D1Database, api: TelegramApi, clocks: SweepClocks): Promise<void> {
+  // Every sweep below sends the customer a sentence the shop is allowed to
+  // have rewritten, and the bindings those sentences are built from were
+  // only ever refreshed while handling an update. A quiet night — no
+  // updates at all — meant a settled payment or an expired invoice was
+  // announced in the wording the code ships. Cached for thirty seconds, so
+  // on a busy bot this is the same read `handleUpdate` just did.
+  await refreshShopContent(db);
+  // A payment is verified by the hub, in another process, with nothing to
+  // call us back. Sweeping here rather than adding a cron keeps it to one
+  // running service, and `SWEEP_GAP_MS` makes "verified" and "the customer
+  // was told" at most a few seconds apart.
+  await sweep('settling verified payments', () => settleVerifiedPayments(db));
+  // Delivery is its own sweep rather than a step inside settlement. The two
+  // fail for unrelated reasons — a claim that cannot be settled is a money
+  // problem, a panel that will not answer is not — and a panel being down
+  // must never hold up telling a customer their payment was confirmed.
+  await sweep('provisioning paid orders', () => provisionPaidOrders(db));
+  // Refreshing what «سرویس های من» shows. Produces no messages.
+  //
+  // The cadence is owned HERE and not left to the sweep's own gate. That
+  // gate is keyed on success — `MAX(last_synced_at)` only moves when a
+  // panel answers — so an unreachable panel turned a ten-minute job into a
+  // per-round one, and each attempt cost a full adapter timeout. The sweep's
+  // gate stays as the second line, for the case where more than one process
+  // is running.
+  if (Date.now() - clocks.sync >= SYNC_INTERVAL_MS) {
+    clocks.sync = Date.now();
+    try {
+      await syncSubscriptions(db);
+    } catch (err) {
+      log.error('sync.failed', { will_retry: true }, err);
+    }
+  }
+  // Beside the subscription sync and gated the same way — its own attempt
+  // clock here, and the sweep's `MAX(taken_at)` gate as the second line for
+  // the case where more than one process runs. Hourly rather than every few
+  // minutes: a reseller's usage is a monthly invoice, not a screen somebody
+  // refreshes, and reading it ninety-six times a day would move a number
+  // nobody looks at until the end of the month.
+  if (Date.now() - clocks.meter >= METER_INTERVAL_MS) {
+    clocks.meter = Date.now();
+    try {
+      await meterResellers(db);
+    } catch (err) {
+      log.error('reseller.meter_failed', { will_retry: true }, err);
+    }
+  }
+  // After the sync, so a service is warned about the volume the panel
+  // reports rather than the figure from ten minutes ago.
+  // Three registry jobs in one sweep, so it reports its own breakdown
+  // rather than being labelled with a single key — `warnExpiringServices`
+  // logs `sweep.acted` per reason. Passing one job here would put all
+  // three warnings' last-acted time on whichever key was named.
+  await sweep('warning about services running out', () => warnExpiringServices(db));
+  // The operator's own «stay with us» messages, after the shop's warning
+  // so a customer reads the general notice before the offer. Per-rule keys
+  // are logged inside, like warn's per-reason ones.
+  await sweep('reminding first buyers to renew', () => remindToRenew(db));
+  // After the warning, and the order matters: a customer is told their
+  // service is running out BEFORE anything is done to it. It also does
+  // nothing at all until a panel is given downgrade groups, so on every
+  // shop that has not set one this is a single indexed read per round.
+  await sweep('downgrading ended services', async () => {
+    const { moved } = await downgradeExpired(db);
+    return moved;
+  });
+  // A transfer that is not its invoice's amount goes to the wallet
+  // (`wrongAmount.ts`). Ahead of the expiry below, which would otherwise
+  // be the next thing to close that order.
+  await sweep('crediting wrong amounts to the wallet', () => creditWrongAmounts(db));
+  // Last, because it is the only sweep that closes something rather than
+  // advancing it, and an order settled or delivered earlier in this same
+  // round must have moved out of AWAITING_PAYMENT before this looks.
+  await sweep('expiring unpaid orders', () => expireUnpaidOrders(db), 'expire_orders');
+  // Five minutes after «پرداخت کردم» with no picture: ask once more
+  // (#308). Somebody who paid is waiting on this, so it sits ahead of
+  // the removals and the nudge.
+  await sweep('reminding customers who sent no receipt', () => remindMissingReceipt(db));
+  // The two that delete an account from a panel.
+  //
+  // After the sync, because both read `panel_status` and `panel_online_at`
+  // and a stale verdict is the one input that could make them remove a
+  // service the panel has since brought back. After the warnings for the
+  // ordinary reason: a customer hears their service is ending before
+  // anything happens to it.
+  //
+  // Both are off by default and return before touching the database when
+  // they are, so on every shop that has not turned them on this is two
+  // cached settings reads a round.
+  await sweep(
+    'removing expired services from panels',
+    async () => (await removeFinishedServices(db, 'expired')).removed,
+    'remove_expired',
+  );
+  await sweep(
+    'removing volume-exhausted services from panels',
+    async () => (await removeFinishedServices(db, 'volume')).removed,
+    'remove_volume',
+  );
+  // The nudge, after everything that concerns paying customers. It is the
+  // only sweep whose audience never gave us money, so it queues behind
+  // every message somebody is actually waiting for.
+  await sweep('nudging people who never bought', () => nudgeNeverBought(db));
+  // Yesterday's numbers, once. Cheap on the thousands of rounds a day that
+  // have nothing to do — it asks whether the report exists before it builds
+  // one, which is a primary-key hit against six aggregate queries.
+  await sweep('the daily report', async () => {
+    const queued = await sweepDailyReport(db);
+    // The dates, because after an outage this is more than one and the
+    // line is the only record of which nights were made up.
+    if (queued.length > 0) log.info('report.queued', { nights: queued.join(',') });
+    return queued.length;
+  });
+  // «🤖 بکاپ ربات», every three hours. Cheap when not due — one index read
+  // on `app_events` — and the `sweep.acted` row this helper writes when it
+  // returns 1 is what the next round measures three hours from.
+  await sweep('backing up the database', () => sweepBackup(db, api), 'backup');
+  // Neither the outbox nor the broadcast is sent here. Each has its own
+  // loop beside this one (`drainNotifications`, `drainBroadcasts`): a round
+  // that sends fifty rows would make everything it enqueues wait behind
+  // them. What the sweeps enqueue above goes out within a second.
+  if (Date.now() - clocks.prune >= PRUNE_EVERY_MS) {
+    clocks.prune = Date.now();
+    await pruneUpdates(db).catch((err: unknown) => {
+      log.error('prune.failed', { what: 'telegram_dead_updates' }, err);
+    });
+    // Same round, same reason: one housekeeping pass rather than a second
+    // scheduler that can stop without anyone noticing.
+    await pruneAppEvents(db).catch((err: unknown) => {
+      log.error('prune.failed', { what: 'app_events' }, err);
+    });
+  }
+}
+
 export async function run(
   db: D1Database,
   api: TelegramApi,
   options: RunOptions = {},
 ): Promise<void> {
   const timeoutSec = options.timeoutSec ?? 25;
-  const pruneEvery = options.pruneEveryCycles ?? 200;
   const backoffMs = options.backoffMs ?? 5_000;
+  const sweepGapMs = options.sweepGapMs ?? SWEEP_GAP_MS;
   let offset = 0;
-  let cycles = 0;
   // Deliberately in memory and deliberately not persisted, like the offset
   // above: a restart is a legitimate second chance, and an update that only
   // fails because of the state a crashed process left behind deserves one.
   const attempts = new Map<number, Attempt>();
-  /**
-   * When the panel sync was last ATTEMPTED, not when it last succeeded.
-   *
-   * `isDue` inside the sync asks `MAX(last_synced_at)`, which only moves when a
-   * panel answers. So a panel that cannot be reached is never due-satisfied and
-   * the sync runs again on every single cycle — each run paying a full adapter
-   * timeout before giving up.
-   *
-   * Measured on the practice server 2026-08-23, and it is not a small effect:
-   * `sync.panel_skipped — could not reach the panel: terminated` every 98
-   * seconds, which is the 60-second long poll plus ~38 seconds of timing out.
-   * Every one of those seconds sits between a customer pressing a button and
-   * the bot reading it, so Telegram's callback window closed first and the shop
-   * answered `query is too old` to every tap. A panel being slow made the whole
-   * SHOP unusable, on paths that never touch that panel.
-   *
-   * Zero rather than `Date.now()`, so the first cycle after a restart still
-   * syncs: a deploy is a legitimate reason to look again immediately.
-   */
-  let lastSyncAttemptMs = 0;
-  let lastMeterAttemptMs = 0;
+  const clocks: SweepClocks = { sync: 0, meter: 0, prune: Date.now() };
   // When `getUpdates` started failing, or null while it answers. One failed
   // read is a network blip the next cycle recovers from, and it was paging
   // the alert channel; Telegram gone for minutes is the incident.
   let readFailingSinceMs: number | null = null;
+
+  /**
+   * The sweeps, in a loop of their own, and the two loops owe each other
+   * nothing.
+   *
+   * The sweeps must not wait on Telegram: until 2026-08-23 a rejected
+   * `getUpdates` threw straight past all of them, and two orders sat in PAID
+   * for eight minutes with a panel that was up, because a second process on
+   * the token made Telegram refuse every read. And Telegram must not wait on
+   * the sweeps: until 2026-09-26 a press made during the panel sync was not
+   * even read until the sync finished, over a minute later.
+   *
+   * `wake` is how a press still reaches the sweeps quickly. The read loop calls
+   * it after a batch that handled something, which cuts the rest short — or,
+   * when a round is already running, makes the next one start straight after
+   * it rather than after the gap.
+   */
+  let woken = false;
+  let nap = new AbortController();
+  const wake = (): void => {
+    woken = true;
+    nap.abort();
+  };
+  options.signal?.addEventListener('abort', () => nap.abort(), { once: true });
+  // When the last round ended, for the heartbeat below.
+  let sweptAt = Date.now();
+  const sweeping = (async () => {
+    while (!options.signal?.aborted) {
+      woken = false;
+      try {
+        await sweepAll(db, api, clocks);
+      } catch (err) {
+        // Only what `sweep` does not already catch — the content refresh at
+        // the top. Backed off for the same reason a failed poll is: a database
+        // that is down must not be asked again at the speed of the loop.
+        log.error('sweep.round_failed', {}, err);
+        await sleep(backoffMs, options.signal);
+      }
+      sweptAt = Date.now();
+      if (woken || options.signal?.aborted) continue;
+      nap = new AbortController();
+      await sleep(sweepGapMs, nap.signal);
+    }
+  })();
 
   // Beside the cycle, not inside it — see `drainBroadcasts`. Awaited after the
   // loop so `stop()` still means «everything this process was doing is done».
@@ -958,210 +1187,58 @@ export async function run(
   const draining = Promise.all([
     drainBroadcasts(db, api, options.signal, idle),
     drainNotifications(db, api, options.signal, idle),
+    sweeping,
   ]);
 
   while (!options.signal?.aborted) {
+    let stalled = false;
     try {
-      // Reading Telegram is its OWN try, and that is the whole point of this
-      // shape. Every sweep below is downstream of this call, and none of them
-      // needs Telegram to do its work: settling a verified payment is a
-      // database transaction, provisioning a paid order is a call to a panel,
-      // expiring an invoice is a clock. Until 2026-08-23 a rejected
-      // `getUpdates` threw straight past all of them.
-      //
-      // Measured, not argued: two processes polling one token made Telegram
-      // answer `Conflict: terminated by other getUpdates request` on every
-      // cycle, and two orders sat in PAID for eight minutes with a panel that
-      // was up, credentials that worked and nothing wrong with them. A customer
-      // who has paid does not get their service because the shop cannot read
-      // its messages — and in this country Telegram being unreachable is a
-      // Tuesday, not an incident.
-      //
-      // `notify.flush` further down already carried the comment "Telegram being
-      // unreachable for a minute costs a minute rather than a customer". That
-      // was true of the flush and false of everything above it, because control
-      // never arrived.
-      let stalled = false;
-      try {
-        const result = await pollOnce(db, api, offset, timeoutSec, options.signal, attempts);
-        readFailingSinceMs = null;
-        stalled = result.failed > 0 && result.offset === offset;
-        offset = result.offset;
-      } catch (err) {
-        if (options.signal?.aborted) break;
-        readFailingSinceMs ??= Date.now();
-        const failingMs = Date.now() - readFailingSinceMs;
-        log[failingMs >= READ_OUTAGE_ALERT_MS ? 'error' : 'warn'](
-          'poll.read_failed',
-          { consequence: 'no updates this cycle; sweeps still run', failing_ms: failingMs },
-          err,
-        );
-        // The same backoff a failed cycle used to take, kept: without it the
-        // loop spins at the speed of the network against a Telegram that is
-        // refusing, which is how a five-minute outage became 6,000 log lines.
-        await sleep(backoffMs, options.signal);
-      }
-      // Nothing in the batch could be acknowledged, so getUpdates will hand the
-      // same failure straight back — and because there ARE updates waiting, it
-      // returns instantly instead of long-polling. Without this pause the loop
-      // spins at the speed of the network: a five-minute database outage
-      // produced 350 attempts and 6,000 log lines, hammering a database that
-      // was trying to come back and earning a 429 from Telegram on the way.
-      if (stalled) await sleep(backoffMs, options.signal);
-      // Every sweep below sends the customer a sentence the shop is allowed to
-      // have rewritten, and the bindings those sentences are built from were
-      // only ever refreshed while handling an update. A quiet night — no
-      // updates at all — meant a settled payment or an expired invoice was
-      // announced in the wording the code ships. Cached for thirty seconds, so
-      // on a busy bot this is the same read `handleUpdate` just did.
-      await refreshShopContent(db);
-      // A payment is verified by the hub, in another process, with nothing to
-      // call us back. Sweeping here rather than adding a cron keeps it to one
-      // running service, and a 25-second poll makes "verified" and "the customer
-      // was told" at most one cycle apart.
-      await sweep('settling verified payments', () => settleVerifiedPayments(db));
-      // Delivery is its own sweep rather than a step inside settlement. The two
-      // fail for unrelated reasons — a claim that cannot be settled is a money
-      // problem, a panel that will not answer is not — and a panel being down
-      // must never hold up telling a customer their payment was confirmed.
-      await sweep('provisioning paid orders', () => provisionPaidOrders(db));
-      // Refreshing what «سرویس های من» shows. Produces no messages.
-      //
-      // The cadence is owned HERE and not left to the sweep's own gate. That
-      // gate is keyed on success — `MAX(last_synced_at)` only moves when a
-      // panel answers — so an unreachable panel turned a ten-minute job into a
-      // per-cycle one, and each attempt cost a full adapter timeout in the
-      // middle of the read loop. The sweep's gate stays as the second line, for
-      // the case where more than one process is running.
-      if (Date.now() - lastSyncAttemptMs >= SYNC_INTERVAL_MS) {
-        lastSyncAttemptMs = Date.now();
-        try {
-          await syncSubscriptions(db);
-        } catch (err) {
-          log.error('sync.failed', { will_retry: true }, err);
-        }
-      }
-      // Beside the subscription sync and gated the same way — its own attempt
-      // clock here, and the sweep's `MAX(taken_at)` gate as the second line for
-      // the case where more than one process runs. Hourly rather than every few
-      // minutes: a reseller's usage is a monthly invoice, not a screen somebody
-      // refreshes, and reading it ninety-six times a day would move a number
-      // nobody looks at until the end of the month.
-      if (Date.now() - lastMeterAttemptMs >= METER_INTERVAL_MS) {
-        lastMeterAttemptMs = Date.now();
-        try {
-          await meterResellers(db);
-        } catch (err) {
-          log.error('reseller.meter_failed', { will_retry: true }, err);
-        }
-      }
-      // After the sync, so a service is warned about the volume the panel
-      // reports rather than the figure from ten minutes ago.
-      // Three registry jobs in one sweep, so it reports its own breakdown
-      // rather than being labelled with a single key — `warnExpiringServices`
-      // logs `sweep.acted` per reason. Passing one job here would put all
-      // three warnings' last-acted time on whichever key was named.
-      await sweep('warning about services running out', () => warnExpiringServices(db));
-      // The operator's own «stay with us» messages, after the shop's warning
-      // so a customer reads the general notice before the offer. Per-rule keys
-      // are logged inside, like warn's per-reason ones.
-      await sweep('reminding first buyers to renew', () => remindToRenew(db));
-      // After the warning, and the order matters: a customer is told their
-      // service is running out BEFORE anything is done to it. It also does
-      // nothing at all until a panel is given downgrade groups, so on every
-      // shop that has not set one this is a single indexed read per cycle.
-      await sweep('downgrading ended services', async () => {
-        const { moved } = await downgradeExpired(db);
-        return moved;
-      });
-      // A transfer that is not its invoice's amount goes to the wallet
-      // (`wrongAmount.ts`). Ahead of the expiry below, which would otherwise
-      // be the next thing to close that order.
-      await sweep('crediting wrong amounts to the wallet', () => creditWrongAmounts(db));
-      // Last, because it is the only sweep that closes something rather than
-      // advancing it, and an order settled or delivered earlier in this same
-      // cycle must have moved out of AWAITING_PAYMENT before this looks.
-      await sweep('expiring unpaid orders', () => expireUnpaidOrders(db), 'expire_orders');
-      // Five minutes after «پرداخت کردم» with no picture: ask once more
-      // (#308). Somebody who paid is waiting on this, so it sits ahead of
-      // the removals and the nudge.
-      await sweep('reminding customers who sent no receipt', () => remindMissingReceipt(db));
-      // The two that delete an account from a panel.
-      //
-      // After the sync, because both read `panel_status` and `panel_online_at`
-      // and a stale verdict is the one input that could make them remove a
-      // service the panel has since brought back. After the warnings for the
-      // ordinary reason: a customer hears their service is ending before
-      // anything happens to it.
-      //
-      // Both are off by default and return before touching the database when
-      // they are, so on every shop that has not turned them on this is two
-      // cached settings reads a cycle.
-      await sweep(
-        'removing expired services from panels',
-        async () => (await removeFinishedServices(db, 'expired')).removed,
-        'remove_expired',
-      );
-      await sweep(
-        'removing volume-exhausted services from panels',
-        async () => (await removeFinishedServices(db, 'volume')).removed,
-        'remove_volume',
-      );
-      // The nudge, after everything that concerns paying customers. It is the
-      // only sweep whose audience never gave us money, so it queues behind
-      // every message somebody is actually waiting for.
-      await sweep('nudging people who never bought', () => nudgeNeverBought(db));
-      // Yesterday's numbers, once. Cheap on the ~3,400 cycles a day that have
-      // nothing to do — it asks whether the report exists before it builds one,
-      // which is a primary-key hit against six aggregate queries.
-      await sweep('the daily report', async () => {
-        const queued = await sweepDailyReport(db);
-        // The dates, because after an outage this is more than one and the
-        // line is the only record of which nights were made up.
-        if (queued.length > 0) log.info('report.queued', { nights: queued.join(',') });
-        return queued.length;
-      });
-      // «🤖 بکاپ ربات», every three hours. Cheap when not due — one index read
-      // on `app_events` — and the `sweep.acted` row this helper writes when it
-      // returns 1 is what the next cycle measures three hours from.
-      await sweep('backing up the database', () => sweepBackup(db, api), 'backup');
-      // Neither the outbox nor the broadcast is sent here. Each has its own
-      // loop beside this one (`drainNotifications`, `drainBroadcasts`), started
-      // above: a sweep that runs once per cycle sends once per 25-second wait,
-      // and a cycle that sends fifty rows makes every customer wait behind
-      // them. What the sweeps enqueue above goes out within a second, not at
-      // the bottom of this cycle.
+      const result = await pollOnce(db, api, offset, timeoutSec, options.signal, attempts);
+      readFailingSinceMs = null;
+      stalled = result.failed > 0 && result.offset === offset;
+      offset = result.offset;
+      // A press that did something may have left the sweeps work — a wallet
+      // purchase is an order in PAID — so they start now instead of at the end
+      // of their rest. Without this, moving them out of this loop would have
+      // made a delivery up to one gap slower than it was.
+      if (result.counts.processed > 0) wake();
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.
       if (options.signal?.aborted) break;
-      // Telegram down, network down, database down: back off and keep the
-      // process alive. A crash-loop here is indistinguishable from an outage
-      // and much harder to read in the logs.
-      log.error('poll.cycle_failed', {}, err);
+      readFailingSinceMs ??= Date.now();
+      const failingMs = Date.now() - readFailingSinceMs;
+      log[failingMs >= READ_OUTAGE_ALERT_MS ? 'error' : 'warn'](
+        'poll.read_failed',
+        { consequence: 'no updates this cycle; sweeps still run', failing_ms: failingMs },
+        err,
+      );
+      // Without it the loop spins at the speed of the network against a
+      // Telegram that is refusing, which is how a five-minute outage became
+      // 6,000 log lines.
       await sleep(backoffMs, options.signal);
     }
+    // Nothing in the batch could be acknowledged, so getUpdates will hand the
+    // same failure straight back — and because there ARE updates waiting, it
+    // returns instantly instead of long-polling. Without this pause the loop
+    // spins at the speed of the network: a five-minute database outage
+    // produced 350 attempts and 6,000 log lines, hammering a database that
+    // was trying to come back and earning a 429 from Telegram on the way.
+    if (stalled) await sleep(backoffMs, options.signal);
     // After the cycle, including after a failed one that backed off — the
     // question the probe asks is "is this loop still turning", and a loop that
     // is retrying a database outage every five seconds IS still turning. What
     // it must not survive is a cycle that never returns, which is exactly the
     // case a liveness check on PID 1 cannot see.
-    options.onCycle?.();
-    if (++cycles % pruneEvery === 0) {
-      await pruneUpdates(db).catch((err: unknown) => {
-        log.error('prune.failed', { what: 'telegram_dead_updates' }, err);
-      });
-      // Same cycle, same reason: one housekeeping pass rather than a second
-      // scheduler that can stop without anyone noticing.
-      await pruneAppEvents(db).catch((err: unknown) => {
-        log.error('prune.failed', { what: 'app_events' }, err);
-      });
-    }
+    //
+    // And not while the sweeps are wedged: one probe answers for both loops,
+    // and a round that never ends is the same failure one loop over.
+    if (Date.now() - sweptAt < SWEEPS_WEDGED_MS) options.onCycle?.();
   }
   await draining;
-  // The drains stop the moment the signal fires, and the sweeps of the last
-  // cycle may have enqueued after that. One pass so a customer told «paid» at
-  // the top of the final cycle is not left waiting for the next container.
+  // The drains stop the moment the signal fires, and the last round of sweeps
+  // may have enqueued after that. One pass so a customer told «paid» at the top
+  // of the final round is not left waiting for the next container.
   await notify.flush(db, api).catch((err: unknown) => {
     log.error('notify.drain_failed', { will_retry: false }, err);
   });

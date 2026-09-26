@@ -165,7 +165,7 @@ const EXPIRED_DUE = `
        -- customer whose account ran out of gigabytes, who stopped connecting,
        -- and who has just PAID to top it up, still carries panel_status
        -- 'limited' and a weeks-old panel_online_at until the next sync lands.
-       -- This sweep runs every twenty-five seconds. It would have deleted the
+       -- This sweep runs every few seconds. It would have deleted the
        -- account they had just bought, and there is no putting it back.
        --
        -- Waiting for one real sync is the whole fix: it either re-confirms the

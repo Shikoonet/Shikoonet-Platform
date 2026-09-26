@@ -25,6 +25,7 @@ import { sweepBroadcasts } from '../src/poll.js';
 import { enqueue, flush } from '../src/notify.js';
 import { loadPause, pace, pauseFor, resetPace } from '../src/pace.js';
 import { TelegramRejection } from '../src/telegram.js';
+import { setEventSink } from '@shikoo/domain';
 
 const GAP_MS = 300;
 process.env['BROADCAST_SEND_GAP_MS'] = String(GAP_MS);
@@ -233,5 +234,72 @@ describe('a broadcast across a restart', () => {
 
     expect(await statusCounts(id)).toEqual({ SENT: 8 });
     expect([...sent].sort()).toEqual([...chats].sort());
+  });
+});
+
+describe('a row a dead process left SENDING', () => {
+  it('is closed as FAILED once it is old enough, said once, and its broadcast can finish', async () => {
+    // Production, 2026-09-26: 15,181 `broadcast.stranded` warnings in a day —
+    // the same rows counted again on every drain pass, for ever, because
+    // nothing ever took a row out of SENDING. And `closeFinishedBroadcasts`
+    // counts SENDING as outstanding, so their broadcast could never finish.
+    const { id } = await queueBroadcast(3);
+    // Two claimed by a process that died hours ago…
+    await db
+      .prepare(
+        `UPDATE broadcast_recipients SET status = 'SENDING', claimed_at = now() - interval '3 hours'
+          WHERE broadcast_id = ?1
+            AND user_id IN (SELECT user_id FROM broadcast_recipients
+                             WHERE broadcast_id = ?1 ORDER BY user_id LIMIT 2)`,
+      )
+      .bind(id)
+      .run();
+    // …and one claimed a minute ago by a sweep that may still be sending it.
+    await db
+      .prepare(
+        `UPDATE broadcast_recipients SET status = 'SENDING', claimed_at = now() - interval '1 minute'
+          WHERE broadcast_id = ?1 AND status = 'PENDING'`,
+      )
+      .bind(id)
+      .run();
+
+    const warned: unknown[] = [];
+    setEventSink((record) => {
+      if (record.evt === 'broadcast.stranded') warned.push(record.fields['messages']);
+    });
+    const sends: number[] = [];
+    const api = stubApi({
+      sendMessage: async (chat) => {
+        sends.push(chat);
+        return { messageId: null };
+      },
+    });
+    try {
+      await sweepBroadcasts(db, api);
+      await sweepBroadcasts(db, api);
+    } finally {
+      setEventSink(null);
+    }
+
+    expect(await statusCounts(id)).toEqual({ FAILED: 2, SENDING: 1 });
+    expect(sends, 'never sent again — nobody knows whether they arrived').toEqual([]);
+    expect(warned, 'once, not on every pass').toEqual([2]);
+    const reasons = await db
+      .prepare(`SELECT DISTINCT error FROM broadcast_recipients WHERE broadcast_id = ?1 AND status = 'FAILED'`)
+      .bind(id)
+      .all<{ error: string }>();
+    expect(reasons.results?.map((r) => r.error)).toEqual(['stranded: delivery unknown']);
+
+    // The live one lands, and nothing is left holding the broadcast open.
+    await db
+      .prepare(`UPDATE broadcast_recipients SET status = 'SENT' WHERE broadcast_id = ?1 AND status = 'SENDING'`)
+      .bind(id)
+      .run();
+    await sweepBroadcasts(db, api);
+    const closed = await db
+      .prepare(`SELECT finished_at IS NOT NULL AS done FROM broadcasts WHERE id = ?1`)
+      .bind(id)
+      .first<{ done: boolean }>();
+    expect(closed?.done).toBe(true);
   });
 });
