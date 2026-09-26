@@ -2343,8 +2343,13 @@ type MirroredColumns = Record<keyof typeof MIRRORED_IDENTIFIER_KINDS, string | n
 
 const AccountUpdate = AccountCreate.partial().extend({
   active: z.boolean().optional(),
-  /** 0090: whether the bot may hand this account's cards to customers. Books unaffected. */
-  customer_visible: z.boolean().optional(),
+  /**
+   * 0090, widened by 0104 (#474): whose invoices show this account's cards.
+   * 0 nobody (books only — ingest, matching and sums unaffected), 1 customers,
+   * 2 resellers only. A boolean is still taken — the switch the older screen
+   * sends — and means 1 or 0.
+   */
+  customer_visible: z.union([z.boolean(), z.literal(0), z.literal(1), z.literal(2)]).optional(),
 });
 
 app.patch('/api/v1/accounts/:id', async (c) => {
@@ -2357,6 +2362,24 @@ app.patch('/api/v1/accounts/:id', async (c) => {
     .bind(id)
     .first();
   if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+  /*
+   * Moving an account into or out of the reseller line is the owner's call
+   * (#474). A reviewer may switch an account's cards on and off for customers,
+   * as before; turning a customer account into a reseller one empties the
+   * customers' queue by one card, and the other way round hands a card kept
+   * for resellers to every customer — both decisions about where money lands.
+   */
+  const wanted = parsed.data.customer_visible;
+  const wantedAudience =
+    wanted === undefined ? undefined : wanted === true ? 1 : wanted === false ? 0 : wanted;
+  const audienceNow = Number((before as { customer_visible?: unknown }).customer_visible);
+  const touchesResellers =
+    wantedAudience !== undefined &&
+    wantedAudience !== audienceNow &&
+    (wantedAudience === 2 || audienceNow === 2);
+  if (touchesResellers && ident.role !== 'ADMIN') {
+    return c.json({ ok: false, error: 'forbidden' }, 403);
+  }
   const fields: string[] = [];
   const values: (string | number | null)[] = [];
   let i = 1;

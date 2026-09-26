@@ -1,4 +1,4 @@
-import type { EnvName } from '@shikoo/contracts';
+import { IRR_PER_TOMAN, MAX_SINGLE_PAYMENT_IRR, type EnvName } from '@shikoo/contracts';
 /**
  * مدیریت پنل‌ها — the panels that actually fulfil an order.
  *
@@ -65,6 +65,9 @@ import {
   seal,
   splitCredential,
   NOT_A_SHELF,
+  RESELLER_MAX_TB,
+  RESELLER_SALE_KEY,
+  resellerSaleFor,
 } from '@shikoo/domain';
 import type { ProviderContext, ProvisioningAdapter } from '@shikoo/domain';
 import { faNum } from './fa.js';
@@ -220,9 +223,68 @@ const PanelPatch = z
      * means «leave ended accounts alone», which is what happens today.
      */
     downgradeGroupIds: z.array(z.number().int().positive()).max(20).nullable().optional(),
+    /**
+     * «فروش به نماینده» (#474): what a reseller pays for their own panel's
+     * volume on this panel, in TOMAN as the operator types it, stored as IRR
+     * under `config.reseller_sale` — a new key, so it is IRR from the start.
+     *
+     * The whole order is priced at the tier its total falls into (Sam,
+     * 2026-09-26); the first tier is the smallest order. `maxOrderToman` is
+     * one transfer's worth — null is the shop's card ceiling — and can be no
+     * higher than that ceiling, the line every money field here is held to.
+     * Null for the whole object stops selling on this panel.
+     */
+    resellerSale: z
+      .object({
+        tiers: z
+          .array(
+            z
+              .object({
+                fromTb: z.number().int().min(1).max(RESELLER_MAX_TB),
+                pricePerTbToman: z
+                  .number()
+                  .int()
+                  .positive()
+                  .max(MAX_SINGLE_PAYMENT_IRR / IRR_PER_TOMAN),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(20),
+        roleId: z.number().int().min(2).max(1_000_000).nullable(),
+        termDays: z.number().int().positive().max(3650).nullable(),
+        maxOrderToman: z
+          .number()
+          .int()
+          .positive()
+          .max(MAX_SINGLE_PAYMENT_IRR / IRR_PER_TOMAN)
+          .nullable(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
+
+/**
+ * The form's view of `config.reseller_sale`, read through `resellerSaleFor` —
+ * the function the bot sells with — so the screen and the bot agree on what
+ * is for sale. Toman, because that is what the operator typed.
+ */
+function resellerSaleFormOf(config: Record<string, unknown>) {
+  const sale = resellerSaleFor(config);
+  if (sale === null) return null;
+  return {
+    tiers: sale.tiers.map((t) => ({
+      fromTb: t.fromTb,
+      pricePerTbToman: t.pricePerTbIrr / IRR_PER_TOMAN,
+    })),
+    roleId: sale.roleId,
+    termDays: sale.termDays,
+    maxOrderToman: sale.maxOrderIrr === null ? null : sale.maxOrderIrr / IRR_PER_TOMAN,
+  };
+}
 
 /**
  * The credential half of a write, kept in one schema so both routes that accept
@@ -813,6 +875,7 @@ function shape(r: PanelRow, seesLink: boolean) {
     newcomersOnly: (r.config ?? {})['newcomers_only'] === true,
     dashboardPath: dashboardPathOf(r.config ?? {}),
     downgradeGroupIds: downgradeGroupsFor(r.config ?? {}) ?? [],
+    resellerSale: resellerSaleFormOf(r.config ?? {}),
     // Whether a credential is configured, never which one. An unconfigured
     // panel cannot provision, and that is worth seeing on the list.
     hasSecretRef: r.has_secret_ref,
@@ -2337,6 +2400,50 @@ export function registerPanelRoutes(
     }
     if (patch.downgradeGroupIds !== undefined) {
       configPatch['downgrade_group_ids'] = patch.downgradeGroupIds ?? [];
+    }
+    if (patch.resellerSale !== undefined) {
+      const sale = patch.resellerSale;
+      if (sale === null) {
+        configPatch[RESELLER_SALE_KEY] = null;
+      } else {
+        // Ascending, and the smallest order payable in one transfer — the two
+        // things the schema above cannot say about a list. A table that fails
+        // either would save and then sell nothing, which is the setting that
+        // looks on and is off.
+        const ascending = sale.tiers.every((t, i) => i === 0 || t.fromTb > sale.tiers[i - 1]!.fromTb);
+        if (!ascending) {
+          return c.json(
+            {
+              ok: false,
+              error: 'invalid_body',
+              detail: 'پله‌ها باید به ترتیب «از … ترابایت» صعودی و بدون تکرار باشند.',
+            },
+            400,
+          );
+        }
+        const first = sale.tiers[0]!;
+        const capToman = sale.maxOrderToman ?? MAX_SINGLE_PAYMENT_IRR / IRR_PER_TOMAN;
+        if (first.fromTb * first.pricePerTbToman > capToman) {
+          return c.json(
+            {
+              ok: false,
+              error: 'invalid_body',
+              detail:
+                'کوچک‌ترین سفارش (اولین پله) از سقف یک سفارش گران‌تر است؛ هیچ نماینده‌ای نمی‌تواند بخرد.',
+            },
+            400,
+          );
+        }
+        configPatch[RESELLER_SALE_KEY] = {
+          tiers: sale.tiers.map((t) => ({
+            from_tb: t.fromTb,
+            price_per_tb_irr: t.pricePerTbToman * IRR_PER_TOMAN,
+          })),
+          role_id: sale.roleId,
+          term_days: sale.termDays,
+          max_order_irr: sale.maxOrderToman === null ? null : sale.maxOrderToman * IRR_PER_TOMAN,
+        };
+      }
     }
     /*
      * The two settings that can be saved into doing nothing, refused.

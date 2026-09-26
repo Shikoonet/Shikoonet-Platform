@@ -115,7 +115,7 @@ const ListQuery = z.object({
  * not a trial. Both the customer card and «زیرمجموعه‌ها» count with this, so
  * the two screens can never disagree with the commission rule (rule 6).
  */
-const REFERRAL_PURCHASE = `o.kind NOT IN ('WALLET_TOPUP', 'TRIAL')
+const REFERRAL_PURCHASE = `o.kind NOT IN ('WALLET_TOPUP', 'TRIAL', 'RESELLER_VOLUME')
                   AND o.status IN ('PAID', 'PROVISIONING', 'COMPLETED')`;
 
 /**

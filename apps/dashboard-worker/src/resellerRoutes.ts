@@ -35,6 +35,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import type { EnvName } from '@shikoo/contracts';
+import { RESELLER_USERNAME } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 interface ResellerListRow {
@@ -79,15 +80,69 @@ const Capacity = z
   })
   .strict();
 
+/**
+ * A franchise, as the operator registers it (#474).
+ *
+ * `ACTIVE` links an admin that already exists on the panel; `PENDING` names
+ * the admin the bot will create on the reseller's first paid order. A PENDING
+ * row has bought nothing, so it carries no volume, and its name must be one
+ * the bot can create: PasarGuard validates admin names not at all and stores
+ * 34 characters at most, so the rule is ours (`RESELLER_USERNAME`). 34, not
+ * the 120 this used to allow, for an existing admin too — no panel admin is
+ * longer.
+ */
 const NewReseller = Capacity.extend({
   userId: z.number().int().positive(),
   providerId: z.number().int().positive(),
-  panelAdminUsername: z.string().trim().min(1).max(120),
-}).strict();
+  panelAdminUsername: z.string().trim().min(1).max(34),
+  status: z.enum(['ACTIVE', 'PENDING']).default('ACTIVE'),
+})
+  .strict()
+  .refine(
+    (b) => b.status !== 'PENDING' || (RESELLER_USERNAME.test(b.panelAdminUsername) && b.dataLimitBytes === null),
+    { message: 'a new panel needs a username of 3–34 of A-Z a-z 0-9 . _ - and no volume yet' },
+  );
+
+/**
+ * A change to a franchise — only the fields that are sent (#474).
+ *
+ * The volume is the one that moves by itself now: the bot adds to it on every
+ * sale. So a volume edit says what the operator SAW (`expectedDataLimitBytes`)
+ * and is refused when the row has moved since — an edit from a list loaded
+ * before a sale must not wipe that sale's terabytes. It is the way to settle a
+ * reseller whose panel limit was changed by hand, and nothing else writes it.
+ */
+const CapacityPatch = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    dataLimitBytes: z.number().int().positive().nullable().optional(),
+    expectedDataLimitBytes: z.number().int().positive().nullable().optional(),
+    expiresAtMs: z.number().int().positive().nullable().optional(),
+    installationUrl: z.string().trim().max(300).nullable().optional(),
+    note: z.string().trim().max(500).nullable().optional(),
+  })
+  .strict()
+  .refine((b) => b.dataLimitBytes === undefined || b.expectedDataLimitBytes !== undefined, {
+    message: 'a volume change needs the volume it replaces',
+  });
 
 const StatusChange = z
   .object({ status: z.enum(['ACTIVE', 'SUSPENDED', 'CLOSED']) })
   .strict();
+
+/**
+ * Which statuses each target may be reached from (#474).
+ *
+ * PENDING → ACTIVE is not a button: a PENDING row has no admin on the panel,
+ * and ACTIVE is what the bot sets once it has created one. Calling it active
+ * by hand would meter an admin that does not exist and sell to it. CLOSED is
+ * the end — reopening a franchise is registering it again.
+ */
+const REACHABLE_FROM: Record<'ACTIVE' | 'SUSPENDED' | 'CLOSED', readonly string[]> = {
+  ACTIVE: ['SUSPENDED'],
+  SUSPENDED: ['ACTIVE'],
+  CLOSED: ['PENDING', 'ACTIVE', 'SUSPENDED'],
+};
 
 export function registerResellerRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
@@ -221,10 +276,10 @@ export function registerResellerRoutes(
     const row = await c.env.DB.prepare(
       `INSERT INTO reseller_accounts
          (user_id, provider_id, panel_admin_username, name, data_limit_bytes,
-          expires_at, installation_url, note)
+          expires_at, installation_url, note, status)
        VALUES (?1, ?2, ?3, ?4, ?5,
                CASE WHEN ?6::bigint IS NULL THEN NULL ELSE to_timestamp(?6 / 1000.0) END,
-               ?7, ?8)
+               ?7, ?8, ?9)
        RETURNING id`,
     )
       .bind(
@@ -236,6 +291,7 @@ export function registerResellerRoutes(
         body.expiresAtMs,
         body.installationUrl,
         body.note,
+        body.status,
       )
       .first<{ id: number }>();
     if (!row) return c.json({ ok: false, error: 'could not create' }, 500);
@@ -244,7 +300,11 @@ export function registerResellerRoutes(
     return c.json({ ok: true, id: row.id });
   });
 
-  /** Capacity and term. Not the panel admin — that would move the meter. */
+  /**
+   * Name, term, notes — and the volume, by compare-and-set. Only what is sent
+   * changes, so moving a deadline cannot rewrite anything else. Not the panel
+   * admin — that would move the meter.
+   */
   app.patch('/api/v1/admin/resellers/:id', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
@@ -252,7 +312,7 @@ export function registerResellerRoutes(
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'bad id' }, 400);
 
-    const parsed = Capacity.safeParse(await c.req.json().catch(() => null));
+    const parsed = CapacityPatch.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'bad request' }, 400);
     const body = parsed.data;
 
@@ -264,16 +324,53 @@ export function registerResellerRoutes(
       .first<Record<string, unknown>>();
     if (!before) return c.json({ ok: false, error: 'not found' }, 404);
 
-    await c.env.DB.prepare(
+    // `?k::boolean` says whether field k was sent; the value beside it is only
+    // read when it was. The volume's guard is in the same statement, so a sale
+    // that lands between the read above and this write makes it match nothing.
+    const changed = await c.env.DB.prepare(
       `UPDATE reseller_accounts
-          SET name = ?2, data_limit_bytes = ?3,
-              expires_at = CASE WHEN ?4::bigint IS NULL THEN NULL
-                                ELSE to_timestamp(?4 / 1000.0) END,
-              installation_url = ?5, note = ?6, updated_at = now()
-        WHERE id = ?1`,
+          SET name             = CASE WHEN ?2::boolean  THEN ?3 ELSE name END,
+              data_limit_bytes = CASE WHEN ?4::boolean  THEN ?5::bigint ELSE data_limit_bytes END,
+              expires_at       = CASE WHEN ?7::boolean
+                                      THEN CASE WHEN ?8::bigint IS NULL THEN NULL
+                                                ELSE to_timestamp(?8 / 1000.0) END
+                                      ELSE expires_at END,
+              installation_url = CASE WHEN ?9::boolean  THEN ?10 ELSE installation_url END,
+              note             = CASE WHEN ?11::boolean THEN ?12 ELSE note END,
+              updated_at = now()
+        WHERE id = ?1
+          AND (NOT ?4::boolean OR data_limit_bytes IS NOT DISTINCT FROM ?6::bigint)`,
     )
-      .bind(id, body.name, body.dataLimitBytes, body.expiresAtMs, body.installationUrl, body.note)
+      .bind(
+        id,
+        body.name !== undefined,
+        body.name ?? null,
+        body.dataLimitBytes !== undefined,
+        body.dataLimitBytes ?? null,
+        body.expectedDataLimitBytes ?? null,
+        body.expiresAtMs !== undefined,
+        body.expiresAtMs ?? null,
+        body.installationUrl !== undefined,
+        body.installationUrl ?? null,
+        body.note !== undefined,
+        body.note ?? null,
+      )
       .run();
+    if (changed.meta.changes === 0) {
+      const now = await c.env.DB.prepare(
+        `SELECT data_limit_bytes FROM reseller_accounts WHERE id = ?1`,
+      )
+        .bind(id)
+        .first<{ data_limit_bytes: string | number | null }>();
+      return c.json(
+        {
+          ok: false,
+          error: 'volume_moved',
+          currentDataLimitBytes: asNumber(now?.data_limit_bytes ?? null),
+        },
+        409,
+      );
+    }
 
     await audit(c.env.DB, ident, 'reseller.update', 'reseller', String(id), before, body, null);
     return c.json({ ok: true });
@@ -303,12 +400,21 @@ export function registerResellerRoutes(
       .bind(id)
       .first<{ status: string }>();
     if (!before) return c.json({ ok: false, error: 'not found' }, 404);
+    // Pressing the status it already has is an answer, not a refusal.
+    if (before.status === parsed.data.status) return c.json({ ok: true });
 
-    await c.env.DB.prepare(
-      `UPDATE reseller_accounts SET status = ?2, updated_at = now() WHERE id = ?1`,
+    // The allowed «from» is in the WHERE, not only in the check above it: a
+    // row the bot activates between the read and this write is not then
+    // flipped by a button drawn for the old status.
+    const moved = await c.env.DB.prepare(
+      `UPDATE reseller_accounts SET status = ?2, updated_at = now()
+        WHERE id = ?1 AND status = ANY(?3::text[])`,
     )
-      .bind(id, parsed.data.status)
+      .bind(id, parsed.data.status, REACHABLE_FROM[parsed.data.status])
       .run();
+    if (moved.meta.changes === 0) {
+      return c.json({ ok: false, error: 'transition_refused', from: before.status }, 409);
+    }
 
     await audit(
       c.env.DB,
