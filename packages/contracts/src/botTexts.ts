@@ -2201,6 +2201,20 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'خط آخر هر دو هشدار — {renewButton} نام زندهٔ دکمهٔ تمدید است',
   },
+  // A trial is never warned that it is running out — it is meant to run out.
+  // It is told once that it HAS, and where to go next (Sam, 2026-09-26).
+  TRIAL_ENDED_TITLE: {
+    default: '⌛️ سرویس تست شما به پایان رسید.',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'وقتی زمان یا حجم اکانت تست تمام می‌شود',
+  },
+  TRIAL_ENDED_HINT: {
+    default: 'اگر می‌خواهید ادامه دهید، از دکمهٔ «{renewButton}» در منوی اصلی تمدیدش کنید.',
+    placeholders: ['renewButton'],
+    screen: 'warnings',
+    hint: 'خط آخر پیام پایان تست — {renewButton} نام زندهٔ دکمهٔ تمدید است',
+  },
 
 
 

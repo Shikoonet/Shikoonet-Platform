@@ -37,6 +37,7 @@ export type CronJobKey =
   | 'warn_time'
   | 'warn_volume'
   | 'warn_unused'
+  | 'warn_trial_ended'
   | 'expire_orders'
   | 'remove_expired'
   | 'remove_volume'
@@ -176,6 +177,17 @@ export const CRON_JOBS: readonly CronJob[] = [
       },
     ],
     texts: ['WARN_UNUSED_TITLE', 'WARN_UNUSED_DAYS', 'WARN_UNUSED_SUPPORT'],
+    destructive: false,
+  },
+  {
+    key: 'warn_trial_ended',
+    name: 'پایان اکانت تست',
+    what: 'وقتی زمان یا حجم اکانت تست تمام می‌شود، یک بار به مشتری می‌گوید تمام شد و با دکمهٔ تمدید ادامه دهد. اکانت تست هشدار «رو به پایان» نمی‌گیرد.',
+    // ponytail: no switch — a switch is a settings row, which is a migration.
+    // Add one the way warn_unused has it if a shop ever wants this silent.
+    toggle: null,
+    numbers: [],
+    texts: ['TRIAL_ENDED_TITLE', 'WARN_SERVICE', 'TRIAL_ENDED_HINT'],
     destructive: false,
   },
   {

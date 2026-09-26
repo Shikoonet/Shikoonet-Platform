@@ -14,7 +14,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { DAYS_WARN, VOLUME_WARN_BYTES, warnExpiringServices } from '../src/warn.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { DEFAULT_SHOP_SETTINGS, invalidateShopSettings } from '../src/settings.js';
-import { ensureCatalog, makeCustomer } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer, providerId } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 7, 13, 12, 0, 0);
 const DAY = 86_400_000;
@@ -483,6 +483,105 @@ describe('bought and never connected', () => {
   });
 });
 
+describe('a free trial', () => {
+  /**
+   * A trial the way the bot writes one: a TRIAL order on the row. `renewed`
+   * adds the completed renewal that makes it a sale.
+   */
+  async function makeTrial(
+    telegramId: number,
+    fixture: Fixture,
+    renewed = false,
+  ): Promise<number> {
+    const userId = await makeCustomer(telegramId);
+    const id = await makeService(userId, fixture);
+    const order = await db
+      .prepare(
+        `INSERT INTO orders
+           (public_id, user_id, kind, provider_id, quantity,
+            unit_price_irr, discount_irr, total_irr, status, completed_at)
+         VALUES (?1, ?2, 'TRIAL', ?3, 1, 0, 0, 0, 'COMPLETED', now())
+         RETURNING id`,
+      )
+      .bind(`${fixture.publicId}-t`, userId, await providerId('sim-vip'))
+      .first<{ id: number }>();
+    await db
+      .prepare(`UPDATE subscriptions SET order_id = ?2 WHERE id = ?1`)
+      .bind(id, order?.id)
+      .run();
+    if (renewed) {
+      await db
+        .prepare(
+          `INSERT INTO orders
+             (public_id, user_id, kind, target_subscription_id, quantity,
+              unit_price_irr, discount_irr, total_irr, status, completed_at)
+           VALUES (?1, ?2, 'RENEWAL', ?3, 1, 1950000, 0, 1950000, 'COMPLETED', now())`,
+        )
+        .bind(`${fixture.publicId}-r`, userId, id)
+        .run();
+    }
+    return id;
+  }
+
+  it('is not warned that it is running out, by date or by gigabytes', async () => {
+    // Twelve hours and half a gigabyte left: inside both windows. A paid
+    // service here gets two warnings; a trial is meant to end, and gets none.
+    const id = await makeTrial(nextTelegramId(), {
+      publicId: 'tr-running',
+      expiresInDays: 0.5,
+      volumeGb: 1,
+      usedBytes: GIB / 2,
+    });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+    expect(await notifyOf(id)).toEqual({});
+  });
+
+  it('is told once that it ended, and pointed at renewal', async () => {
+    const telegramId = nextTelegramId();
+    const id = await makeTrial(telegramId, { publicId: 'tr-expired', expiresInDays: -0.25 });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
+    const text = (await pendingNotifications()).find((n) => n.chatId === telegramId)?.text;
+    expect(text).toContain('به پایان رسید');
+    expect(text).toContain('تمدید');
+    expect(await notifyOf(id)).toEqual({ trial_ended: true });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+  });
+
+  it('is told when its gigabytes run out before its date', async () => {
+    const id = await makeTrial(nextTelegramId(), {
+      publicId: 'tr-used-up',
+      expiresInDays: 0.5,
+      volumeGb: 1,
+      usedBytes: GIB,
+    });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
+    expect(await notifyOf(id)).toEqual({ trial_ended: true });
+  });
+
+  it('says nothing about a trial that ended days ago', async () => {
+    // The first sweep after release must not reach back over every old trial.
+    await makeTrial(nextTelegramId(), { publicId: 'tr-old', expiresInDays: -3 });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+  });
+
+  it('is warned like any sale once it has been renewed', async () => {
+    // The TRIAL order is still on the row; the renewal is what changed.
+    const id = await makeTrial(
+      nextTelegramId(),
+      { publicId: 'tr-renewed', expiresInDays: 1 },
+      true,
+    );
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
+    expect(await notifyOf(id)).toEqual({ time: true });
+  });
+});
+
 describe('the switch an admin can turn off', () => {
   /**
    * The proof each switch asks for is not «the count went down» — it is that
@@ -579,7 +678,7 @@ describe('the switch an admin can turn off', () => {
     expect(await warnedReasons()).toEqual(['sw-time:time', 'sw-volume:volume']);
   });
 
-  it('asks the database nothing when all three are off', async () => {
+  it('warns about nothing when all three are off', async () => {
     await threeDueServices();
     await setSwitch('cron_warn_time', false);
     await setSwitch('cron_warn_volume', false);
