@@ -58,16 +58,35 @@ const AppBody = z
   })
   .strict();
 
-// The caps are the table's CHECKs (0105). The answer is shorter than an article:
-// every visible answer goes into the support bot's prompt on every message.
+// The caps are the table's CHECKs (0105, 0106).
+const answerFields = {
+  question: z.string().trim().min(1).max(300),
+  answer: z.string().trim().min(1).max(1500),
+  // How customers asked it, one per line: what the bot recognises a message by.
+  variants: z.string().max(4000).optional(),
+  category: z.string().trim().max(60).optional(),
+  // The right reply is a person: the bot passes these on instead of answering.
+  handOff: z.boolean().optional(),
+  note: z.string().max(1000).optional(),
+  sortOrder: z.number().int().min(0).max(9999).optional(),
+  active: z.boolean().optional(),
+};
+
 const AnswerBody = z
   .object({
-    question: z.string().trim().min(1).max(300),
-    answer: z.string().trim().min(1).max(1500),
-    sortOrder: z.number().int().min(0).max(9999).optional(),
-    active: z.boolean().optional(),
+    ...answerFields,
     // On an edit, the version the form opened; a save made since is refused.
     version: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+/** One row of an imported dataset; `sourceKey` is its id there, so a re-import skips it. */
+const ImportBody = z
+  .object({
+    items: z
+      .array(z.object({ ...answerFields, sourceKey: z.string().trim().min(1).max(80) }).strict())
+      .min(1)
+      .max(500),
   })
   .strict();
 
@@ -75,6 +94,11 @@ interface AnswerRow {
   id: number;
   question: string;
   answer: string;
+  variants: string;
+  category: string;
+  hand_off: boolean;
+  note: string;
+  source_key: string | null;
   sort_order: number;
   active: boolean;
   version: number;
@@ -85,14 +109,38 @@ const shapeAnswer = (r: AnswerRow) => ({
   id: Number(r.id),
   question: r.question,
   answer: r.answer,
+  variants: r.variants,
+  category: r.category,
+  handOff: r.hand_off,
+  note: r.note,
+  sourceKey: r.source_key,
   sortOrder: r.sort_order,
   active: r.active,
   version: r.version,
   updatedAt: r.updated_at,
 });
 
-const SELECT_ANSWER = `SELECT id, question, answer, sort_order, active, version, updated_at
-                         FROM support_answers`;
+const ANSWER_COLUMNS = `id, question, answer, variants, category, hand_off, note, source_key,
+                        sort_order, active, version, updated_at`;
+const SELECT_ANSWER = `SELECT ${ANSWER_COLUMNS} FROM support_answers`;
+
+/** What an edit's audit row keeps: every field a later reader might want back. */
+const answerHistory = (r: AnswerRow) => ({
+  question: r.question,
+  answer: r.answer,
+  variants: r.variants,
+  handOff: r.hand_off,
+  active: r.active,
+  version: r.version,
+});
+
+/** A pasted list may use Windows line ends, blank lines, or stray spaces. */
+const cleanVariants = (v: string | undefined) =>
+  (v ?? '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('\n');
 
 interface ArticleRow {
   id: number;
@@ -317,11 +365,21 @@ export function registerContentRoutes(
     const created = await c.env.DB.withSession(async (tx) => {
       const row = await tx
         .prepare(
-          `INSERT INTO support_answers (question, answer, sort_order, active)
-           VALUES (?1, ?2, ?3, ?4)
-           RETURNING id, question, answer, sort_order, active, version, updated_at`,
+          `INSERT INTO support_answers
+             (question, answer, variants, category, hand_off, note, sort_order, active)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+           RETURNING ${ANSWER_COLUMNS}`,
         )
-        .bind(body.data.question, body.data.answer, body.data.sortOrder ?? 0, body.data.active ?? true)
+        .bind(
+          body.data.question,
+          body.data.answer,
+          cleanVariants(body.data.variants),
+          body.data.category ?? '',
+          body.data.handOff ?? false,
+          body.data.note ?? '',
+          body.data.sortOrder ?? 0,
+          body.data.active ?? true,
+        )
         .first<AnswerRow>();
       if (!row) return null;
       await audit(
@@ -331,13 +389,77 @@ export function registerContentRoutes(
         'SUPPORT_ANSWER',
         String(row.id),
         null,
-        { question: row.question, answer: row.answer, active: row.active },
+        answerHistory(row),
         null,
       );
       return row;
     });
     if (!created) return c.json({ ok: false, error: 'insert_failed' }, 500);
     return c.json({ ok: true, answer: shapeAnswer(created) });
+  });
+
+  /**
+   * A whole dataset at once: the two hundred answers read out of the support
+   * chats, uploaded from the admin's own machine (the file is private and
+   * never in git). A row whose `sourceKey` is already here is skipped, not
+   * overwritten, so importing again adds only what is new and keeps every
+   * edit. Rows arrive hidden unless the file says otherwise; one audit row
+   * names every key that went in.
+   */
+  app.post('/api/v1/admin/support-answers/import', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const body = ImportBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      const issue = body.error.issues[0];
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: `${issue?.path.join('.')}: ${issue?.message}` },
+        400,
+      );
+    }
+
+    const added = await c.env.DB.withSession(async (tx) => {
+      const base = await tx
+        .prepare(`SELECT COALESCE(max(sort_order), 0)::int AS top FROM support_answers`)
+        .first<{ top: number }>();
+      const keys: string[] = [];
+      for (const [i, it] of body.data.items.entries()) {
+        const row = await tx
+          .prepare(
+            `INSERT INTO support_answers
+               (question, answer, variants, category, hand_off, note, sort_order, active, source_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT (source_key) DO NOTHING
+             RETURNING id`,
+          )
+          .bind(
+            it.question,
+            it.answer,
+            cleanVariants(it.variants),
+            it.category ?? '',
+            it.handOff ?? false,
+            it.note ?? '',
+            it.sortOrder ?? Math.min(9999, (base?.top ?? 0) + 10 * (i + 1)),
+            it.active ?? false,
+            it.sourceKey,
+          )
+          .first<{ id: number }>();
+        if (row) keys.push(it.sourceKey);
+      }
+      await audit(
+        tx,
+        ident,
+        'content.support_answers_imported',
+        'SUPPORT_ANSWER',
+        'import',
+        null,
+        { added: keys.length, skipped: body.data.items.length - keys.length, keys },
+        null,
+      );
+      return keys.length;
+    });
+    return c.json({ ok: true, added, skipped: body.data.items.length - added });
   });
 
   app.post('/api/v1/admin/support-answers/:id', async (c) => {
@@ -371,15 +493,20 @@ export function registerContentRoutes(
       const after = await tx
         .prepare(
           `UPDATE support_answers
-              SET question = ?2, answer = ?3, sort_order = ?4, active = ?5,
+              SET question = ?2, answer = ?3, variants = ?4, category = ?5, hand_off = ?6,
+                  note = ?7, sort_order = ?8, active = ?9,
                   version = version + 1, updated_at = now()
             WHERE id = ?1
-           RETURNING id, question, answer, sort_order, active, version, updated_at`,
+           RETURNING ${ANSWER_COLUMNS}`,
         )
         .bind(
           id,
           body.data.question,
           body.data.answer,
+          body.data.variants === undefined ? before.variants : cleanVariants(body.data.variants),
+          body.data.category ?? before.category,
+          body.data.handOff ?? before.hand_off,
+          body.data.note ?? before.note,
           body.data.sortOrder ?? before.sort_order,
           body.data.active ?? before.active,
         )
@@ -393,8 +520,8 @@ export function registerContentRoutes(
         'content.support_answer_updated',
         'SUPPORT_ANSWER',
         String(id),
-        { question: before.question, answer: before.answer, active: before.active, version: before.version },
-        { question: after.question, answer: after.answer, active: after.active, version: after.version },
+        answerHistory(before),
+        answerHistory(after),
         null,
       );
       return after;

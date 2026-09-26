@@ -399,3 +399,96 @@ describe('the support bot’s answers', () => {
     expect(none).toBeNull();
   });
 });
+
+const send = (path: string, method: string, body: unknown, who = ADMIN) =>
+  app.request(
+    path,
+    { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+    envAs(who),
+  );
+
+describe('importing the support-chat dataset', () => {
+  // Two hundred answers read out of the support chats arrive from a file on the
+  // admin's machine. They land hidden unless asked, a row already imported is
+  // left as it is, and the customer phrasings come with them.
+  const KEY = 'zz-import-';
+  const importItems = (items: unknown[], who = ADMIN) =>
+    app.request(
+      '/api/v1/admin/support-answers/import',
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items }) },
+      envAs(who),
+    );
+  const item = (n: number, extra: Record<string, unknown> = {}) => ({
+    sourceKey: `${KEY}${n}`,
+    question: `${PREFIX}import ${n}`,
+    answer: `جواب ${n}`,
+    variants: 'وصل نمیشه\r\n\r\n  قطعم  ',
+    category: 'connection',
+    handOff: n === 2,
+    note: 'مقدارهای متغیر: …',
+    ...extra,
+  });
+  const rows = () =>
+    baseEnv.DB.prepare(
+      `SELECT source_key, variants, hand_off, active, category FROM support_answers
+        WHERE source_key LIKE ?1 ORDER BY source_key`,
+    )
+      .bind(`${KEY}%`)
+      .all<{ source_key: string; variants: string; hand_off: boolean; active: boolean; category: string }>();
+
+  beforeEach(() => baseEnv.DB.prepare(`DELETE FROM support_answers WHERE source_key LIKE ?1`).bind(`${KEY}%`).run());
+  afterAll(() => baseEnv.DB.prepare(`DELETE FROM support_answers WHERE source_key LIKE ?1`).bind(`${KEY}%`).run());
+
+  it('adds the rows hidden, with their phrasings, and skips them the second time', async () => {
+    const first = await importItems([item(1), item(2)]);
+    expect(await first.json()).toEqual({ ok: true, added: 2, skipped: 0 });
+    expect((await rows()).results).toEqual([
+      { source_key: `${KEY}1`, variants: 'وصل نمیشه\nقطعم', hand_off: false, active: false, category: 'connection' },
+      { source_key: `${KEY}2`, variants: 'وصل نمیشه\nقطعم', hand_off: true, active: false, category: 'connection' },
+    ]);
+
+    // An admin edits one; importing the file again must not undo it.
+    const one = await baseEnv.DB.prepare(`SELECT id FROM support_answers WHERE source_key = ?1`)
+      .bind(`${KEY}1`)
+      .first<{ id: number }>();
+    await send(`/api/v1/admin/support-answers/${one!.id}`, 'POST', {
+      question: `${PREFIX}import 1`,
+      answer: 'جواب ویرایش‌شده',
+      active: true,
+    });
+    const again = await importItems([item(1), item(2), item(3, { active: true })]);
+    expect(await again.json()).toEqual({ ok: true, added: 1, skipped: 2 });
+    const edited = await baseEnv.DB.prepare(`SELECT answer, active FROM support_answers WHERE source_key = ?1`)
+      .bind(`${KEY}1`)
+      .first<{ answer: string; active: boolean }>();
+    expect(edited).toEqual({ answer: 'جواب ویرایش‌شده', active: true });
+    expect((await rows()).results!.find((r) => r.source_key === `${KEY}3`)?.active).toBe(true);
+
+    const log = await baseEnv.DB.prepare(
+      `SELECT after_json FROM audit_logs WHERE action = 'content.support_answers_imported'
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).first<{ after_json: string }>();
+    expect(JSON.parse(log!.after_json)).toEqual({ added: 1, skipped: 2, keys: [`${KEY}3`] });
+  });
+
+  it('is for an admin only, and refuses a row without a key', async () => {
+    expect((await importItems([item(1)], REVIEWER)).status).toBe(403);
+    expect((await importItems([{ ...item(1), sourceKey: '' }])).status).toBe(400);
+    expect((await rows()).results).toEqual([]);
+  });
+
+  it('keeps an answer’s phrasings when an edit does not send them', async () => {
+    await importItems([item(4)]);
+    const row = await baseEnv.DB.prepare(`SELECT id FROM support_answers WHERE source_key = ?1`)
+      .bind(`${KEY}4`)
+      .first<{ id: number }>();
+    await send(`/api/v1/admin/support-answers/${row!.id}`, 'POST', {
+      question: `${PREFIX}import 4`,
+      answer: 'جواب ۴',
+    });
+    const after = await baseEnv.DB.prepare(`SELECT variants, category FROM support_answers WHERE id = ?1`)
+      .bind(row!.id)
+      .first<{ variants: string; category: string }>();
+    expect(after).toEqual({ variants: 'وصل نمیشه\nقطعم', category: 'connection' });
+  });
+});

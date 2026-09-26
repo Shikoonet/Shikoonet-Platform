@@ -142,6 +142,61 @@ support.post('/kb', async (c) => {
   });
 });
 
+/**
+ * Every visible question with its number, and how customers have asked it: what
+ * the bot reads to pick the answers that fit a message (0106). Answers are not
+ * here: the bot asks `/kb/answers` for the few it picked, so the prompt stays
+ * small however long the list grows.
+ */
+support.post('/kb/index', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, question, variants FROM support_answers WHERE active ORDER BY sort_order, id`,
+  ).all<{ id: number; question: string; variants: string }>();
+  const rows = results ?? [];
+  const line = (r: { id: number; question: string; variants: string }) => {
+    const also = r.variants
+      .split('\n')
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .slice(0, KB_INDEX_VARIANTS);
+    return `#${r.id} ${r.question.trim()}${also.length ? ` (یا: ${also.join(' | ')})` : ''}`;
+  };
+  return c.json({ ok: true, count: rows.length, text: rows.map(line).join('\n') });
+});
+
+/** How many customer phrasings each index line carries; the rest stay in the panel. */
+const KB_INDEX_VARIANTS = 3;
+
+const AnswersBody = z
+  .object({ ids: z.array(z.number().int().positive().max(Number.MAX_SAFE_INTEGER)).max(8) })
+  .strict();
+
+/**
+ * The answers for the numbers the bot picked from `/kb/index`, visible ones
+ * only, in the order asked. A row an admin marked «به همکار بسپار» says so in
+ * place of its text, so the bot passes the customer on instead of answering.
+ */
+support.post('/kb/answers', async (c) => {
+  const body = AnswersBody.safeParse(await jsonOf(c));
+  if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+  if (body.data.ids.length === 0) return c.json({ ok: true, count: 0, text: '' });
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, question, answer, hand_off FROM support_answers
+      WHERE active AND id = ANY(?1::bigint[])`,
+  )
+    .bind(body.data.ids)
+    .all<{ id: number; question: string; answer: string; hand_off: boolean }>();
+  const byId = new Map((results ?? []).map((r) => [Number(r.id), r]));
+  const rows = body.data.ids.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
+  const block = (r: { id: number; question: string; answer: string; hand_off: boolean }) =>
+    `#${r.id} ${r.question.trim()}\n` +
+    (r.hand_off ? HAND_OFF : r.answer.trim());
+  return c.json({ ok: true, count: rows.length, text: rows.map(block).join('\n\n') });
+});
+
+/** What the bot reads in place of a hand-off row's text. */
+const HAND_OFF = '[به همکار بسپار] این مورد را فقط همکار انجام می‌دهد؛ فقط ESCALATE بنویس.';
+
 /** Whether the shop bot asks for its rules: `bot/roll_Status = rolleon`. */
 async function rulesGateOn(db: Db): Promise<boolean> {
   const gate = await db

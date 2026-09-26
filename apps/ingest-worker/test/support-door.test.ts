@@ -213,3 +213,58 @@ describe('«پرسش و پاسخ»', () => {
     expect((await call('/kb', {}, { token: null })).status).toBe(401);
   });
 });
+
+describe('«پرسش و پاسخ»: the index and the answers the bot picks from it', () => {
+  // The bot reads every question with a few customer phrasings, picks the
+  // numbers that fit, and asks for only those answers. A row marked «به همکار
+  // بسپار» comes back as an instruction to pass the customer on, not as text.
+  const PREFIX = 'zz-kbi-';
+  const add = async (
+    label: string,
+    opts: { active?: boolean; handOff?: boolean; variants?: string } = {},
+  ): Promise<number> => {
+    const row = await env.DB.prepare(
+      `INSERT INTO support_answers (question, answer, variants, hand_off, sort_order, active)
+       VALUES (?1, ?2, ?3, ?4, 9990, ?5) RETURNING id`,
+    )
+      .bind(`${PREFIX}${label}`, `جواب ${label}`, opts.variants ?? '', opts.handOff ?? false, opts.active ?? true)
+      .first<{ id: number }>();
+    return Number(row!.id);
+  };
+  const purge = () =>
+    env.DB.prepare(`DELETE FROM support_answers WHERE question LIKE ?1`).bind(`${PREFIX}%`).run();
+  afterEach(purge);
+  afterAll(purge);
+
+  it('lists visible questions with their number and at most three phrasings', async () => {
+    const shown = await add('shown', { variants: 'یک\nدو\n\nسه\nچهار' });
+    await add('hidden', { active: false });
+
+    const body = (await (await call('/kb/index', {})).json()) as { ok: boolean; text: string };
+    expect(body.text).toContain(`#${shown} ${PREFIX}shown (یا: یک | دو | سه)`);
+    expect(body.text).not.toContain('چهار');
+    expect(body.text).not.toContain(`${PREFIX}hidden`);
+  });
+
+  it('returns the answers asked for, in that order, a hand-off as an instruction, never a hidden one', async () => {
+    const a = await add('a');
+    const b = await add('b', { handOff: true });
+    const hidden = await add('h', { active: false });
+
+    const res = await call('/kb/answers', { ids: [b, hidden, a] });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { count: number; text: string };
+    expect(body.count).toBe(2);
+    expect(body.text).toBe(
+      `#${b} ${PREFIX}b\n[به همکار بسپار] این مورد را فقط همکار انجام می‌دهد؛ فقط ESCALATE بنویس.\n\n#${a} ${PREFIX}a\nجواب a`,
+    );
+    expect(body.text).not.toContain('جواب b');
+  });
+
+  it('refuses a body that is not a short list of numbers', async () => {
+    expect((await call('/kb/answers', { ids: ['1'] })).status).toBe(400);
+    expect((await call('/kb/answers', { ids: [1, 2, 3, 4, 5, 6, 7, 8, 9] })).status).toBe(400);
+    expect((await call('/kb/answers', { ids: [1], extra: true })).status).toBe(400);
+    expect(await (await call('/kb/answers', { ids: [] })).json()).toEqual({ ok: true, count: 0, text: '' });
+  });
+});
