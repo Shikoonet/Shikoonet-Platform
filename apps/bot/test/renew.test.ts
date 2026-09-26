@@ -2290,6 +2290,48 @@ describe('reserving a renewal that is not needed yet', () => {
     );
   });
 
+  it('gets a reserve whose date has passed into the batch ahead of fifty that are only close', async () => {
+    // Every other test's reserve out of the way: this one counts the batch.
+    await db
+      .prepare(`UPDATE renewal_reserves SET status = 'FAILED', failure_reason = 'isolated' WHERE status = 'WAITING'`)
+      .run();
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    // Fifty older reserves at 45 of 50 GB, dated well past LATER: asked about
+    // every round, never due — the panel does not even have them.
+    await db
+      .prepare(
+        `WITH subs AS (
+           INSERT INTO subscriptions (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
+                                      remote_username, volume_gb, used_bytes, status, purchased_at, expires_at)
+           SELECT 'near-' || ?1 || '-' || g, ?2, ?3, 'near', 1, 'near_' || ?1 || '_' || g,
+                  50, 45 * 1073741824::bigint, 'ACTIVE', now(), to_timestamp(?4 / 1000.0)
+             FROM generate_series(1, 50) g
+           RETURNING id, user_id),
+         ords AS (
+           -- legacy_ref: sold elsewhere, so the sweep that re-sends a lost
+           -- delivery message leaves them alone instead of filling its batch.
+           INSERT INTO orders (public_id, user_id, kind, plan_id, target_subscription_id, quantity,
+                               unit_price_irr, total_irr, status, legacy_ref)
+           SELECT 'near-o-' || id, user_id, 'RENEWAL', ?5, id, 1, 1000, 1000, 'COMPLETED', 'near-o-' || id
+             FROM subs
+           RETURNING id, target_subscription_id)
+         INSERT INTO renewal_reserves (order_id, subscription_id, volume_gb, duration_days, created_at)
+         SELECT id, target_subscription_id, 50, 30, now() - interval '1 day' FROM ords`,
+      )
+      .bind(target.telegramId, target.userId, panelId, LATER_MS + 10 * DAY, target.plan)
+      .run();
+    vi.spyOn(Date, 'now').mockReturnValue(LATER_MS);
+    try {
+      expect(await activateReserves(db, running(target.username, { status: 'expired' }).fetchImpl, LATER_MS)).toBe(1);
+      expect((await reserveOf(target.order.id))?.status).toBe('APPLIED');
+    } finally {
+      await db
+        .prepare(`UPDATE renewal_reserves SET status = 'FAILED', failure_reason = 'isolated' WHERE status = 'WAITING'`)
+        .run();
+    }
+  });
+
   it('says on the service screen that a renewal is waiting', async () => {
     const target = await paidEarly();
     await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);

@@ -2194,7 +2194,15 @@ export async function activateReserves(
              OR (s.volume_gb > 0
                  AND (s.used_bytes IS NULL OR s.used_bytes >= s.volume_gb * ?2::numeric * ?3::numeric))
           )
-        ORDER BY rr.created_at
+          -- Run out by our own figures first. A reserve that is only close to
+          -- its quota comes back every round until it runs out, and without
+          -- this fifty of those filled the batch and a reserve whose date had
+          -- passed never got into it (CodeRabbit on #488). One close to its
+          -- quota that loses its place is caught once the sync says it ran out.
+        ORDER BY ((s.expires_at IS NOT NULL AND s.expires_at <= to_timestamp(?1 / 1000.0))
+                  OR s.status NOT IN ('ACTIVE', 'ON_HOLD', 'DISABLED')
+                  OR (s.volume_gb > 0 AND s.used_bytes >= s.volume_gb * ?2::numeric)) DESC NULLS LAST,
+                 rr.created_at
         LIMIT ?4`,
     )
     .bind(now, GB, RESERVE_NEAR_SHARE, RESERVE_BATCH)
