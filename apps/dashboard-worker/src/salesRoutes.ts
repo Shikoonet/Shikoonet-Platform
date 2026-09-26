@@ -209,7 +209,15 @@ const OrderQuery = z.object({
     ])
     .optional(),
   kind: z
-    .enum(['NEW_PURCHASE', 'RENEWAL', 'ADD_VOLUME', 'ADD_TIME', 'WALLET_TOPUP', 'TRANSFER'])
+    .enum([
+      'NEW_PURCHASE',
+      'RENEWAL',
+      'ADD_VOLUME',
+      'ADD_TIME',
+      'WALLET_TOPUP',
+      'TRANSFER',
+      'RESELLER_VOLUME',
+    ])
     .optional(),
 });
 

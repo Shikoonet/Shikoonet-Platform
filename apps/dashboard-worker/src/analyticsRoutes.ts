@@ -810,9 +810,14 @@ export async function loadCardAnalytics(
           ? 'account_deactivated'
           : r.account_status !== 'ACTIVE'
             ? `account_${r.account_status.toLowerCase()}`
-            : Number(r.account_customer_visible) !== 1
-              ? 'account_hidden'
-              : 'hub_active',
+            : // A card kept for resellers (0104, #474) is in a rotation of its
+              // own, not the customers' — named apart so it is not read as a
+              // card somebody switched off.
+              Number(r.account_customer_visible) === 2
+              ? 'account_reseller_only'
+              : Number(r.account_customer_visible) !== 1
+                ? 'account_hidden'
+                : 'hub_active',
   }));
 
   // Appended, not merged in: they sort after the mapped cards because they are

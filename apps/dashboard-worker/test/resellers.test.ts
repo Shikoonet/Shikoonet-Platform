@@ -63,9 +63,12 @@ async function fixtures(): Promise<void> {
 
 /** Snapshots refuse DELETE, so the whole pair is truncated between tests. */
 async function purge(): Promise<void> {
-  await baseEnv.DB.prepare(
-    `TRUNCATE reseller_usage_snapshots, reseller_accounts RESTART IDENTITY`,
-  ).run();
+  // Snapshots are truncated; the accounts are DELETEd, because since 0104
+  // `orders.target_reseller_id` references them and Postgres will not TRUNCATE
+  // a referenced table without CASCADE — which would empty every order the
+  // later dashboard suites read. None of this file's rows is referenced.
+  await baseEnv.DB.prepare(`TRUNCATE reseller_usage_snapshots RESTART IDENTITY`).run();
+  await baseEnv.DB.prepare(`DELETE FROM reseller_accounts`).run();
 }
 
 async function makeReseller(name: string, over: Record<string, unknown> = {}): Promise<number> {
@@ -360,5 +363,171 @@ describe('who may change it', () => {
     );
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe('the bot sells to it now (#474)', () => {
+  async function post(body: Record<string, unknown>) {
+    return app.request(
+      '/api/v1/admin/resellers',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          providerId,
+          name: 'new shop',
+          dataLimitBytes: null,
+          expiresAtMs: null,
+          installationUrl: null,
+          note: null,
+          ...body,
+        }),
+      },
+      envAs(ADMIN),
+    );
+  }
+
+  async function patch(id: number, body: Record<string, unknown>) {
+    return app.request(
+      `/api/v1/admin/resellers/${id}`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      envAs(ADMIN),
+    );
+  }
+
+  async function status(id: number, to: string) {
+    return app.request(
+      `/api/v1/admin/resellers/${id}/status`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: to }),
+      },
+      envAs(ADMIN),
+    );
+  }
+
+  async function row(id: number) {
+    return baseEnv.DB.prepare(
+      `SELECT status, data_limit_bytes, expires_at::text AS expires_at, name
+         FROM reseller_accounts WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ status: string; data_limit_bytes: string | number | null; expires_at: string | null; name: string }>();
+  }
+
+  it('registers a panel the bot will create, and only under a name the bot can create', async () => {
+    const ok = await post({ panelAdminUsername: 'new.shop-1', status: 'PENDING' });
+    expect(ok.status).toBe(200);
+    const { id } = (await ok.json()) as { id: number };
+    expect((await row(id))?.status).toBe('PENDING');
+
+    // PasarGuard validates admin names not at all, so the rule is ours.
+    for (const bad of ['a b', 'علی', 'ab', 'x'.repeat(35)]) {
+      expect((await post({ panelAdminUsername: bad, status: 'PENDING' })).status).toBe(400);
+    }
+    // A panel that does not exist yet has bought nothing.
+    expect(
+      (await post({ panelAdminUsername: 'with_volume', status: 'PENDING', dataLimitBytes: GIB })).status,
+    ).toBe(400);
+  });
+
+  it('changes only what is sent — moving a deadline leaves the volume alone', async () => {
+    const id = await makeReseller('partial');
+    const deadline = Date.UTC(2026, 11, 1);
+    expect((await patch(id, { expiresAtMs: deadline })).status).toBe(200);
+    const after = await row(id);
+    expect(Number(after!.data_limit_bytes)).toBe(100 * GIB);
+    expect(Date.parse(after!.expires_at!)).toBe(deadline);
+    expect(after!.name).toBe('partial');
+    // And it comes off again.
+    expect((await patch(id, { expiresAtMs: null })).status).toBe(200);
+    expect((await row(id))!.expires_at).toBeNull();
+  });
+
+  it('refuses a volume edit from a stale screen — the bot may have sold since', async () => {
+    const id = await makeReseller('cas');
+    // The bot adds a terabyte while the operator's list still shows 100 GiB.
+    await baseEnv.DB.prepare(
+      `UPDATE reseller_accounts SET data_limit_bytes = data_limit_bytes + ?2 WHERE id = ?1`,
+    )
+      .bind(id, 1024 * GIB)
+      .run();
+
+    const stale = await patch(id, { dataLimitBytes: 200 * GIB, expectedDataLimitBytes: 100 * GIB });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({
+      error: 'volume_moved',
+      currentDataLimitBytes: 1124 * GIB,
+    });
+    expect(Number((await row(id))!.data_limit_bytes)).toBe(1124 * GIB);
+
+    // Without the value it replaces, not at all.
+    expect((await patch(id, { dataLimitBytes: 200 * GIB })).status).toBe(400);
+    // With the right one, yes.
+    expect(
+      (await patch(id, { dataLimitBytes: 200 * GIB, expectedDataLimitBytes: 1124 * GIB })).status,
+    ).toBe(200);
+    expect(Number((await row(id))!.data_limit_bytes)).toBe(200 * GIB);
+  });
+
+  it('puts no volume on a panel that does not exist yet', async () => {
+    const created = await post({ panelAdminUsername: 'no_volume_yet', status: 'PENDING' });
+    const { id } = (await created.json()) as { id: number };
+    // The operator's edit would reach the panel with the first sale, as
+    // terabytes nobody paid for.
+    const res = await patch(id, { dataLimitBytes: 1024 * GIB, expectedDataLimitBytes: null });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'pending_has_no_volume', status: 'PENDING' });
+    expect((await row(id))!.data_limit_bytes).toBeNull();
+  });
+
+  it('does not close a reseller while an order of theirs is on its way', async () => {
+    const id = await makeReseller('in_flight');
+    const order = await baseEnv.DB.prepare(
+      `INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, discount_irr,
+                           total_irr, status, provider_id, target_reseller_id)
+       VALUES ('rs-inflight', ?1, 'RESELLER_VOLUME', 1, 30000000, 0, 30000000,
+               'AWAITING_PAYMENT', ?2, ?3)
+       RETURNING id`,
+    )
+      .bind(userId, providerId, id)
+      .first<{ id: number }>();
+    try {
+      const refused = await status(id, 'CLOSED');
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ error: 'orders_in_flight' });
+      expect((await row(id))!.status).toBe('ACTIVE');
+      // Once it has ended, the reseller can be closed.
+      await baseEnv.DB.prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?1`)
+        .bind(order!.id)
+        .run();
+      expect((await status(id, 'CLOSED')).status).toBe(200);
+    } finally {
+      await baseEnv.DB.prepare(`DELETE FROM orders WHERE id = ?1`).bind(order!.id).run();
+    }
+  });
+
+  it('never makes a PENDING panel ACTIVE by hand, and never reopens a CLOSED one', async () => {
+    const created = await post({ panelAdminUsername: 'pending_one', status: 'PENDING' });
+    const { id } = (await created.json()) as { id: number };
+
+    // ACTIVE is the bot's word, once it has created the admin on the panel.
+    const toActive = await status(id, 'ACTIVE');
+    expect(toActive.status).toBe(409);
+    expect(await toActive.json()).toMatchObject({ error: 'transition_refused', from: 'PENDING' });
+    expect((await status(id, 'SUSPENDED')).status).toBe(409);
+    expect((await row(id))!.status).toBe('PENDING');
+
+    expect((await status(id, 'CLOSED')).status).toBe(200);
+    expect((await status(id, 'ACTIVE')).status).toBe(409);
+    expect((await row(id))!.status).toBe('CLOSED');
+    // The status it already has is an answer, not a refusal.
+    expect((await status(id, 'CLOSED')).status).toBe(200);
   });
 });

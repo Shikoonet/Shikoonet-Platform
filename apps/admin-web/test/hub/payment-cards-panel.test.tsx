@@ -57,7 +57,7 @@ afterEach(() => {
 
 describe('editing a card', () => {
   it('saves a typed holder name AND the button pressed straight afterwards', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" accountActive customerVisible />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive audience={1} />);
     await screen.findByText('5047-0616-7456-0137');
 
     const name = screen.getByLabelText('نام صاحب کارت — روی فاکتور مشتری');
@@ -77,7 +77,7 @@ describe('editing a card', () => {
   });
 
   it('sends only the field that changed, so one save cannot revert another', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" accountActive customerVisible />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive audience={1} />);
     await screen.findByText('5047-0616-7456-0137');
 
     fireEvent.click(screen.getByRole('button', { name: 'خاموش کن' }));
@@ -87,7 +87,7 @@ describe('editing a card', () => {
   });
 
   it('does not save a name the operator did not change', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" accountActive customerVisible />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive audience={1} />);
     await screen.findByText('5047-0616-7456-0137');
 
     fireEvent.blur(screen.getByLabelText('نام صاحب کارت — روی فاکتور مشتری'));
@@ -107,7 +107,7 @@ describe('editing a card', () => {
  */
 describe('what the badge says when the account is off', () => {
   it('does not claim a card is in rotation when its account is not', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" accountActive={false} customerVisible />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive={false} audience={1} />);
     await screen.findByText('5047-0616-7456-0137');
 
     // Neither «در گردش» (a lie) nor «خاموش» (true of the card, and it points
@@ -117,17 +117,25 @@ describe('what the badge says when the account is off', () => {
   });
 
   it('still says «در گردش» when both switches are on', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" accountActive customerVisible />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive audience={1} />);
     expect(await screen.findByText('در گردش')).toBeTruthy();
   });
 
   it('names the customer switch when that is the one that is off (0090)', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" accountActive customerVisible={false} />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive audience={0} />);
     await screen.findByText('5047-0616-7456-0137');
 
     expect(screen.queryByText('در گردش')).toBeNull();
     expect(screen.queryByText('حساب خاموش است')).toBeNull();
     expect(await screen.findByText('پنهان از مشتری')).toBeTruthy();
+  });
+
+  it('says a reseller-only card is in rotation for resellers, not customers (0104)', async () => {
+    render(<PaymentCardsPanel accountId="acc-1" accountActive audience={2} />);
+
+    expect(await screen.findByText('در گردش نماینده')).toBeTruthy();
+    expect(screen.queryByText('در گردش')).toBeNull();
+    expect(screen.queryByText('پنهان از مشتری')).toBeNull();
   });
 });
 
@@ -140,7 +148,7 @@ describe('what the badge says when the account is off', () => {
  */
 describe('the queue badges', () => {
   it('shows the card’s place in the line, and no weight control', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" accountActive customerVisible />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive audience={1} />);
     await screen.findByText('5047-0616-7456-0137');
 
     expect(screen.getByText('نوبت ۳')).toBeTruthy();
@@ -155,7 +163,7 @@ describe('the queue badges', () => {
         json: async () => ({ ok: true, items: [{ ...CARD, held_until: Date.UTC(2026, 8, 15, 10, 0) }] }),
       }) as Response,
     );
-    render(<PaymentCardsPanel accountId="acc-1" accountActive customerVisible />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive audience={1} />);
     await screen.findByText('5047-0616-7456-0137');
 
     // The help text below the list says the same words; the badge is the claim.
@@ -163,7 +171,7 @@ describe('the queue badges', () => {
   });
 
   it('shows neither for a card that is off — it is not in the line', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" accountActive={false} customerVisible />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive={false} audience={1} />);
     await screen.findByText('5047-0616-7456-0137');
 
     expect(screen.queryByText(/نوبت/, { selector: '.badge' })).toBeNull();

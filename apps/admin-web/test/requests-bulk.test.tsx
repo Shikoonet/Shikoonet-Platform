@@ -155,3 +155,28 @@ describe('writing to an applicant (#330)', () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe('an approved request', () => {
+  it('links to «نمایندگان» with that user filled in, and a pending one does not', async () => {
+    resellerRequests.mockResolvedValueOnce({
+      ok: true,
+      total: 2,
+      page: 1,
+      pageSize: 25,
+      items: [
+        { ...ROWS[0]!, id: 41, status: 'APPROVED', customer: { ...ROWS[0]!.customer, id: 77 } },
+        ROWS[1]!,
+      ],
+    });
+    draw();
+    const link = await screen.findByRole('link', { name: 'ثبت پنل نماینده' });
+    expect(link.getAttribute('href')).toBe('/resellers?user=77');
+    // One link, for the approved row only.
+    expect(screen.getAllByRole('link', { name: 'ثبت پنل نماینده' })).toHaveLength(1);
+
+    fireEvent.click(link);
+    expect(window.location.pathname).toBe('/resellers');
+    expect(window.location.search).toBe('?user=77');
+    window.history.replaceState(null, '', '/');
+  });
+});

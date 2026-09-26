@@ -28,6 +28,8 @@ import {
   extraBoundsFor,
   renewAllowed,
   renewModeFor,
+  resellerPrice,
+  resellerSaleFor,
   sanitiseUsernamePart,
 } from '@shikoo/domain';
 import { actOnService, withLinkFromPanel } from './actions.js';
@@ -65,6 +67,7 @@ import {
   placeAddonOrder,
   placeOrder,
   placeRenewalOrder,
+  placeResellerOrder,
   placeTopupOrder,
   placeTrialOrder,
 } from './order.js';
@@ -77,6 +80,12 @@ import {
   referrerFromPayload,
 } from './referral.js';
 import { applyForReseller, hasOpenRequest } from './reseller.js';
+import {
+  checkReady,
+  panelLoginUrl,
+  resellerAdapterFor,
+  resetPanelPassword,
+} from './resellerPanel.js';
 import {
   DEFAULT_SHOP_SETTINGS,
   enableCustomEmoji,
@@ -94,8 +103,11 @@ import {
   renewableForUserById,
   type RenewableSubscription,
   hideDeadServiceForUser,
+  resellerAccountForUser,
+  resellerAccountsForUser,
   subscriptionOnPanelForUser,
   subscriptionsForUser,
+  type OwnedResellerAccount,
 } from './owned.js';
 import {
   customEmojiIn,
@@ -162,6 +174,14 @@ export interface Reply {
    * standing in the chat above a new message.
    */
   invoiceOf?: string;
+  /**
+   * Sent with Telegram's `protect_content`, so it cannot be forwarded or saved
+   * out of the chat. Only the reseller's new panel password (#474) sets it —
+   * a reply that carries a credential, and is therefore never an edit of a
+   * screen with buttons: a press on such a screen would carry its text into
+   * `telegram_dead_updates` if the update ever failed.
+   */
+  protectContent?: boolean;
 }
 
 /** Marks every reply of an outcome as the invoice for this checkout. */
@@ -551,7 +571,7 @@ export async function handleUpdate(
     }
     // Everything else typed is an answer to something the bot asked, and what
     // it asked is in the session — never in the message.
-    return handleTypedAnswer(tx, message);
+    return handleTypedAnswer(tx, message, fetchImpl);
   });
 }
 
@@ -620,6 +640,12 @@ interface Caller {
    * having forgotten to ask.
    */
   is_admin: boolean;
+  /**
+   * Owns a reseller account that is not CLOSED (#474) — draws «🏢 پنل نمایندگی».
+   * Like `is_admin`, only the menu reads it; every reseller handler re-reads
+   * the row itself through `resellerAccountForUser`.
+   */
+  has_reseller_account: boolean;
 }
 
 /** Same expression in both places a `Caller` is loaded, so they cannot drift. */
@@ -648,6 +674,19 @@ const IS_ADMIN = `EXISTS (
   SELECT 1 FROM admins a
    WHERE a.telegram_id = ?1 AND a.active AND a.role IN ('OWNER', 'ADMIN')
  ) AS is_admin`;
+
+/**
+ * Whether this customer owns a reseller panel (#474), in all three `Caller`
+ * loads for the reason `IS_ADMIN` is. No bind parameters, for the reason
+ * `DISCOUNT_PERCENT` below gives, and the table named `users` unaliased so
+ * the one string fits the INSERT's and the UPDATE's RETURNING as well as the
+ * SELECT. Postgres answers a real boolean here — never compare it with 1.
+ * `idx_reseller_accounts_user` (0104) is what keeps it cheap on every update.
+ */
+const HAS_RESELLER_ACCOUNT = `EXISTS (
+  SELECT 1 FROM reseller_accounts ra
+   WHERE ra.user_id = users.id AND ra.status <> 'CLOSED'
+ ) AS has_reseller_account`;
 
 /**
  * The percentage `priceForUser` is fed, in the one expression all three
@@ -741,7 +780,7 @@ async function upsertUser(
              ${NOTIFY_REACHABLE},
              updated_at = now()
        RETURNING id, status, is_reseller, reseller_tier, (xmax = 0) AS is_new,
-                 ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
+                 ${DISCOUNT_PERCENT}, ${IS_ADMIN}, ${HAS_RESELLER_ACCOUNT}`,
     )
     .bind(from.id, from.username ?? null, from.first_name ?? null)
     .first<Caller>();
@@ -1099,12 +1138,15 @@ interface Session {
 async function handleTypedAnswer(
   tx: D1DatabaseSession,
   message: TelegramMessage,
+  /** For the one typed answer that asks a panel: a reseller's terabytes (#474). */
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<HandleOutcome> {
   const from = message.from;
   if (!from) return IGNORED;
   const user = await tx
     .prepare(
-      `SELECT id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}
+      `SELECT id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN},
+              ${HAS_RESELLER_ACCOUNT}
          FROM users WHERE telegram_id = ?1`,
     )
     .bind(from.id)
@@ -1177,6 +1219,13 @@ async function handleTypedAnswer(
   }
   if (session.step === 'agent') {
     return withCleanChat(await handleResellerRequest(tx, message, user), message, session);
+  }
+  if (session.step === 'rsvol') {
+    return withCleanChat(
+      await handleResellerVolume(tx, message, user, session, fetchImpl),
+      message,
+      session,
+    );
   }
   if (session.step === 'uname') {
     return withCleanChat(await handleCustomerName(tx, message, user, session), message, session);
@@ -1448,6 +1497,10 @@ function navigationParent(raw: string | undefined): string | null {
     case 'tpo':
     case 'gft':
       return 'wal';
+    case 'rsb':
+    case 'rspw':
+    case 'rspw2':
+      return withId('rsp');
     case 'order':
     case 'auto':
     case 'paid':
@@ -2294,6 +2347,126 @@ async function heldRenewalName(
 }
 
 /** The text of a reseller application. */
+/**
+ * A refusal the reseller was told about in one sentence, and the operator in
+ * full (#474) — the reason names what to fix on the panel or the dashboard.
+ * Once an hour per reseller and reason, so a reseller tapping «buy» again and
+ * again does not fill the errors topic.
+ */
+async function reportResellerRefusal(
+  tx: D1DatabaseSession,
+  telegramId: number,
+  account: OwnedResellerAccount,
+  reason: string,
+): Promise<void> {
+  const hour = Math.floor(Date.now() / 3_600_000);
+  await report(
+    tx,
+    SHOP,
+    'errorreport',
+    `reseller-refused:${account.id}:${hour}:${reason.slice(0, 80)}`,
+    menu.resellerRefusedReport({
+      telegramId,
+      name: account.name,
+      panelAdmin: account.panel_admin_username,
+      reason,
+    }),
+  );
+}
+
+/**
+ * The terabytes a reseller typed after «➕ خرید حجم» / «🆕 ساخت پنل» (#474).
+ *
+ * The panel is asked AGAIN here, because the question and the answer are two
+ * updates and anything can change between them, and the price is read from the
+ * panel's table now rather than from the session — a session carries which
+ * account, never what it costs.
+ */
+async function handleResellerVolume(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  session: Session,
+  fetchImpl: typeof globalThis.fetch,
+): Promise<HandleOutcome> {
+  const accountId = Number(session.data['resellerAccountId']);
+  if (!Number.isSafeInteger(accountId)) return IGNORED;
+  const reply = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+  const account = await resellerAccountForUser(tx, user.id, accountId);
+  if (!account) {
+    await clearSession(tx, user.id);
+    return reply(menu.resellerPanelGone(), menu.mainMenu(user));
+  }
+  const back = menu.promptMenu(encode('rsp', account.id));
+
+  // Both digit blocks, like every other typed number. Four digits at most:
+  // the per-order ceiling is far below that, and nothing longer is a size.
+  const typed = toAsciiDigits(message.text!.trim());
+  if (!/^[0-9]{1,4}$/.test(typed) || Number(typed) <= 0) {
+    return reply(menu.resellerTbNotANumber(), back);
+  }
+  const tb = Number(typed);
+
+  const telegramId = message.from!.id;
+  const ready = await checkReady(tx, account, telegramId, SHOP.topupMaxIrr, fetchImpl);
+  if (!ready.ok) {
+    await clearSession(tx, user.id);
+    await reportResellerRefusal(tx, telegramId, account, ready.reason);
+    return reply(menu.resellerNotReady(), menu.resellerBackMenu(account.id));
+  }
+  if (tb < ready.minTb) return reply(menu.resellerTbTooLittle(ready.minTb), back);
+  const price = resellerPrice(ready.sale.tiers, tb);
+  if (price === null || price.totalIrr > ready.capIrr) {
+    return reply(menu.resellerTbTooMuch(ready.maxTb), back);
+  }
+
+  const placed = await placeResellerOrder(
+    tx,
+    user.id,
+    account.id,
+    account.provider_id,
+    tb,
+    price.unitIrr,
+  );
+  // Cleared the moment the order exists, for `handleAddonAmount`'s reason: a
+  // number typed afterwards must not place a second order.
+  await clearSession(tx, user.id);
+  if (!placed) return reply(menu.ORDER_NOT_PAYABLE, menu.resellerBackMenu(account.id));
+
+  // `checkoutFor` reads the kind and draws from the reseller cards, with nothing
+  // from the wallet. No card is «no card» — never a customer's card instead.
+  const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
+  if (!checkout) return reply(menu.NO_CARD_AVAILABLE, menu.resellerBackMenu(account.id));
+  if (checkout.claimed) return reply(menu.paidAlready(checkout.publicId), menu.afterPaidMenu(placed.id));
+
+  return asInvoice(
+    reply(
+      menu.resellerCheckout(
+        placed.publicId,
+        tb,
+        account.panel_admin_username,
+        checkout.amountIrr,
+        checkout.cardDigits,
+        checkout.cardHolder,
+        placed.expiresAt,
+      ),
+      // No wallet argument: neither «pay from the balance» nor «top up the
+      // rest» is drawn under a reseller invoice.
+      menu.checkoutMenu(
+        placed.id,
+        checkout.amountIrr,
+        checkout.cardDigits,
+        undefined,
+        SHOP.showsCopyButtons,
+      ),
+    ),
+    checkout.publicId,
+  );
+}
+
 async function handleResellerRequest(
   tx: D1DatabaseSession,
   message: TelegramMessage,
@@ -2591,6 +2764,17 @@ async function handleCallback(
     status: 'processed',
     replies: [reply(chatId, text, keyboard, editId)],
   });
+  /** «🏢 پنل نمایندگی» for one account (#474). Buy and password need a panel that can sell. */
+  const resellerPanel = (account: OwnedResellerAccount, several: boolean): HandleOutcome =>
+    screen(
+      menu.resellerPanelScreen(account, panelLoginUrl(account), Date.now()),
+      menu.resellerPanelMenu(
+        account,
+        resellerAdapterFor(account.provider_kind) !== null &&
+          resellerSaleFor(account.provider_config ?? {}) !== null,
+        several,
+      ),
+    );
 
   const user = await tx
     .prepare(
@@ -2598,7 +2782,8 @@ async function handleCallback(
       // a customer who only presses buttons never reaches `upsertUser`.
       `UPDATE users SET last_seen_at = now(), ${NOTIFY_REACHABLE}, updated_at = now()
         WHERE telegram_id = ?1
-        RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
+        RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN},
+                  ${HAS_RESELLER_ACCOUNT}`,
     )
     .bind(query.from.id)
     .first<Caller>();
@@ -2887,6 +3072,97 @@ async function handleCallback(
       }
       await ask(tx, user.id, 'agent', {}, editId);
       return screen(menu.ASK_RESELLER_REQUEST, menu.promptMenu(encode('menu')));
+    }
+
+    // ── «🏢 پنل نمایندگی» (#474) ──────────────────────────────────────────
+    //
+    // Every id here is a `reseller_accounts` row, re-read through
+    // `resellerAccountForUser` with the caller's own id: posting somebody
+    // else's finds nothing. Hiding the main-menu button is not the guard.
+    case 'rsp': {
+      if (action.id === undefined) {
+        const mine = await resellerAccountsForUser(tx, user.id);
+        if (mine.length === 0) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+        if (mine.length > 1) return screen(menu.resellerPanelsText(), menu.resellerPanelsMenu(mine));
+        return resellerPanel(mine[0]!, false);
+      }
+      const account = await resellerAccountForUser(tx, user.id, action.id);
+      if (!account) return screen(menu.resellerPanelGone(), menu.mainMenu(user));
+      const several = (await resellerAccountsForUser(tx, user.id)).length > 1;
+      return resellerPanel(account, several);
+    }
+
+    case 'rsb': {
+      if (action.id === undefined) return IGNORED;
+      const account = await resellerAccountForUser(tx, user.id, action.id);
+      if (!account) return screen(menu.resellerPanelGone(), menu.mainMenu(user));
+      // The panel is asked NOW, before anything is paid: a sale that could not
+      // be delivered is refused here rather than refunded from a bank later.
+      const ready = await checkReady(tx, account, query.from.id, SHOP.topupMaxIrr, fetchImpl);
+      if (!ready.ok) {
+        await reportResellerRefusal(tx, query.from.id, account, ready.reason);
+        return screen(menu.resellerNotReady(), menu.resellerBackMenu(account.id));
+      }
+      await ask(tx, user.id, 'rsvol', { resellerAccountId: account.id }, editId);
+      return screen(
+        menu.resellerAskTb(account.panel_admin_username, ready.sale.tiers, ready.minTb, ready.maxTb),
+        menu.promptMenu(encode('rsp', account.id)),
+      );
+    }
+
+    case 'rspw': {
+      if (action.id === undefined) return IGNORED;
+      const account = await resellerAccountForUser(tx, user.id, action.id);
+      if (!account || account.status === 'PENDING') {
+        return screen(menu.resellerPanelGone(), menu.mainMenu(user));
+      }
+      return screen(
+        menu.resellerPasswordConfirm(account.panel_admin_username),
+        menu.resellerPasswordConfirmMenu(account.id),
+      );
+    }
+
+    case 'rspw2': {
+      if (action.id === undefined) return IGNORED;
+      const account = await resellerAccountForUser(tx, user.id, action.id);
+      if (!account || account.status === 'PENDING') {
+        return screen(menu.resellerPanelGone(), menu.mainMenu(user));
+      }
+      const reset = await resetPanelPassword(account, query.from.id, fetchImpl);
+      if (!reset.ok) {
+        await reportResellerRefusal(tx, query.from.id, account, `password: ${reset.reason}`);
+        return screen(menu.resellerPasswordFailed(), menu.resellerBackMenu(account.id));
+      }
+      // The trail, without the secret: which admin, whose, when. The password
+      // itself is in the second reply below and nowhere else — not the outbox
+      // (`bot_notifications` keeps its text), not the session, not a log.
+      await report(
+        tx,
+        SHOP,
+        'otherreport',
+        `reseller-password:${account.id}:${Date.now()}`,
+        menu.resellerPasswordReport({
+          telegramId: query.from.id,
+          panelAdmin: account.panel_admin_username,
+          atMs: Date.now(),
+        }),
+      );
+      const panel = resellerPanel(account, false);
+      return {
+        status: 'processed',
+        replies: [
+          // The confirm screen goes back to being the panel...
+          ...panel.replies,
+          // ...and the password arrives as a message of its own: no buttons,
+          // so no press can ever carry its text into `telegram_dead_updates`,
+          // and protected, so it cannot be forwarded out of the chat.
+          {
+            chatId,
+            text: menu.resellerPasswordMessage(account.panel_admin_username, reset.password),
+            protectContent: true,
+          },
+        ],
+      };
     }
 
     case 'order': {
@@ -3339,7 +3615,9 @@ async function handleCallback(
                 order.id,
                 result.amountIrr,
                 result.cardDigits,
-                order.kind === 'WALLET_TOPUP'
+                // No wallet row on a deposit, nor on a reseller's volume, which
+                // is never paid from the balance (#474).
+                order.kind === 'WALLET_TOPUP' || order.kind === 'RESELLER_VOLUME'
                   ? undefined
                   : { balanceIrr: await balanceFor(tx, user.id), totalIrr: result.amountIrr },
                 SHOP.showsCopyButtons,
@@ -3566,6 +3844,12 @@ async function handleCallback(
       if (action.id === undefined) return IGNORED;
       const order = await orderForUser(tx, user.id, action.id);
       if (!order) return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      // A reseller's volume is paid into a reseller card and never from the
+      // balance (#474), so there is no shortfall to top up — and a deposit
+      // made here would be paid into a CUSTOMER card. `checkoutMenu` does not
+      // draw this button for one; `callback_data` is unsigned, so it is
+      // refused here as well.
+      if (order.kind === 'RESELLER_VOLUME') return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       // Recomputed from the order and the balance as they are now. The amount
       // is never taken from the button, because a customer could name their own.
       // Less what the invoice already took from the balance (#317): a deposit
@@ -3602,6 +3886,12 @@ async function handleCallback(
       // The money simply left, and no row said where it went.
       if (order.kind === 'WALLET_TOPUP') {
         return screen(menu.ORDER_GONE, menu.walletMenu());
+      }
+      // Nor a reseller's volume (#474): it is paid into the accounts kept for
+      // resellers, and a balance spent on it would be customer money on a sale
+      // the books file under a reseller card. The same unsigned-button reason.
+      if (order.kind === 'RESELLER_VOLUME') {
+        return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       }
       /*
        * And refused when the customer has ALREADY told us they sent bank money

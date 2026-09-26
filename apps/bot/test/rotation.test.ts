@@ -19,7 +19,7 @@
  */
 
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
-import { CARD_HOLD_MS } from '@shikoo/domain';
+import { CARD_HOLD_MS, CUSTOMER_CARDS } from '@shikoo/domain';
 import { afterEach, describe, expect, it } from 'vitest';
 import { rotateCard, ticketBusyCard } from '../src/payment.js';
 import { db } from './helpers/env.js';
@@ -110,7 +110,7 @@ async function draw(times: number, at: number = T): Promise<Map<string, number>>
   const counts = new Map<string, number>();
   for (let i = 0; i < times; i++) {
     const card = await db.withSession(async (tx) => {
-      const picked = await rotateCard(tx, at + i);
+      const picked = await rotateCard(tx, at + i, CUSTOMER_CARDS);
       if (picked) await ticketBusyCard(tx, picked);
       return picked;
     });
@@ -671,7 +671,7 @@ describe('a card is only handed out while its account is in service', () => {
 
     await accountState(0, 'ACTIVE');
 
-    const card = await db.withSession((tx) => rotateCard(tx, T));
+    const card = await db.withSession((tx) => rotateCard(tx, T, CUSTOMER_CARDS));
     // Null is the honest answer, and `checkoutFor` turns it into «کارت موجود
     // نیست». Handing the card out anyway is what this is fixing.
     expect(card).toBeNull();
@@ -682,7 +682,7 @@ describe('a card is only handed out while its account is in service', () => {
       await pool(3);
       await accountState(1, status);
 
-      expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
+      expect(await db.withSession((tx) => rotateCard(tx, T, CUSTOMER_CARDS))).toBeNull();
     });
   }
 
@@ -691,11 +691,11 @@ describe('a card is only handed out while its account is in service', () => {
     // a gate with no way back is a shop that cannot sell again.
     await pool(3);
     await accountState(0, 'ACTIVE');
-    expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
+    expect(await db.withSession((tx) => rotateCard(tx, T, CUSTOMER_CARDS))).toBeNull();
 
     await accountState(1, 'ACTIVE');
 
-    const card = await db.withSession((tx) => rotateCard(tx, T + 1));
+    const card = await db.withSession((tx) => rotateCard(tx, T + 1, CUSTOMER_CARDS));
     expect(card?.card_digits).toBeTruthy();
   });
 
@@ -761,10 +761,10 @@ describe('a card is only handed out while its account is shown to customers', ()
     expect(await drawOne()).toBeTruthy();
 
     await visible(0);
-    expect(await db.withSession((tx) => rotateCard(tx, T))).toBeNull();
+    expect(await db.withSession((tx) => rotateCard(tx, T, CUSTOMER_CARDS))).toBeNull();
 
     await visible(1);
-    expect((await db.withSession((tx) => rotateCard(tx, T + 1)))?.card_digits).toBeTruthy();
+    expect((await db.withSession((tx) => rotateCard(tx, T + 1, CUSTOMER_CARDS)))?.card_digits).toBeTruthy();
   });
 
   it('is what a new account starts as: hidden, until an operator turns it on', async () => {

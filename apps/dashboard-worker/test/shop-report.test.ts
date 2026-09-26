@@ -66,6 +66,8 @@ interface Report {
   activeSubscriptions: number;
   walletHeldIrr: number;
   earnedIrr: number;
+  resellerCount: number;
+  resellerIrr: number;
   gateways: { method: string; count: number; irr: number }[];
   byService: {
     productId: number | null;
@@ -207,6 +209,8 @@ async function purge(): Promise<void> {
   // refused rather than ignored and every later file inherits the leftovers.
   await db.prepare(`DELETE FROM payments WHERE public_id LIKE '${PREFIX}%'`).run();
   await db.prepare(`DELETE FROM orders   WHERE public_id LIKE '${PREFIX}%'`).run();
+  // After the orders that name it, before the panel and the user it names.
+  await db.prepare(`DELETE FROM reseller_accounts WHERE panel_admin_username LIKE '${PREFIX}%'`).run();
   await db.prepare(`DELETE FROM subscriptions WHERE public_id LIKE '${PREFIX}%'`).run();
   await db.prepare(`DELETE FROM products WHERE code LIKE '${PREFIX}%'`).run();
   await db.prepare(`DELETE FROM provisioning_providers WHERE code LIKE '${PREFIX}%'`).run();
@@ -333,6 +337,24 @@ beforeAll(async () => {
   await order(gus, 'NEW_PURCHASE', 300_000, serviceAt, 's5', { planName: 'خرید اولی' });
   await order(gus, 'WALLET_TOPUP', 999_000, serviceAt, 's6');
   await order(gus, 'TRIAL', 0, serviceAt, 's7', { providerId: panel!.id });
+  // Two terabytes for a reseller's own panel (#474): in «درآمد», on no service.
+  const franchise = await db
+    .prepare(
+      `INSERT INTO reseller_accounts (user_id, provider_id, panel_admin_username, name)
+            VALUES (?1, ?2, ?3, 'fixture franchise') RETURNING id`,
+    )
+    .bind(gus, panel!.id, `${PREFIX}franchise`)
+    .first<{ id: number }>();
+  await db
+    .prepare(
+      `INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, discount_irr,
+                           total_irr, status, created_at, completed_at, provider_id,
+                           target_reseller_id)
+            VALUES (?1, ?2, 'RESELLER_VOLUME', 2, 300000, 0, 600000, 'COMPLETED',
+                    to_timestamp(?3 / 1000.0), to_timestamp(?3 / 1000.0), ?4, ?5)`,
+    )
+    .bind(`${PREFIX}s8`, gus, serviceAt, panel!.id, franchise!.id)
+    .run();
 
   await payment(ann, 'CARD_TO_CARD', 1_000_000, NOW_MS - 5 * HOUR_MS, 'p1');
   await payment(bob, 'CARD_TO_CARD', 500_000, NOW_MS - 6 * HOUR_MS, 'p2');
@@ -521,6 +543,8 @@ describe('sales by service', () => {
     ).toEqual([
       // 1,000,000 bought + 200,000 renewed + 50,000 added on the subscription.
       [`${PREFIX}alpha`, 1, 1, 1, 1_250_000],
+      // A reseller's terabytes: a row of their own, not the legacy bucket.
+      ['حجم نمایندگی', 1, 0, 0, 600_000],
       [`${PREFIX}beta`, 1, 0, 0, 400_000],
       // Names a plan that never existed here, so it is history, not a service.
       ['سفارش‌های قدیمی', 1, 0, 0, 300_000],
@@ -532,6 +556,7 @@ describe('sales by service', () => {
     const r = await report(SERVICE_DAY);
     // 999,000 of top-up and a free trial are in the window and in neither sum.
     expect(r.byService.reduce((sum, s) => sum + s.irr, 0)).toBe(r.earnedIrr);
-    expect(r.earnedIrr).toBe(1_950_000);
+    expect(r.earnedIrr).toBe(2_550_000);
+    expect([r.resellerCount, r.resellerIrr]).toEqual([1, 600_000]);
   });
 });

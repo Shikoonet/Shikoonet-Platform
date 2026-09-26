@@ -427,6 +427,7 @@ export async function pollOnce(
               reply.keyboard,
               undefined,
               reply.replyKeyboard,
+              reply.protectContent,
             ),
           );
           await rememberInvoice(traceOf(update), reply, sent.messageId);

@@ -75,6 +75,12 @@ export async function creditWrongAmounts(db: D1Database, now: number = Date.now(
            FROM payment_claims c
            JOIN payments p ON c.external_order_id = 'shikoo:' || p.public_id
                           AND p.status = 'AWAITING_REVIEW'
+           -- Not a reseller's volume (#474). Its invoice is paid into an
+           -- account kept for resellers and never from the wallet, so the
+           -- remedy below — credit the transfer, pay the rest from the balance
+           -- — would turn reseller money into customer credit on a sale that
+           -- cannot take it. A wrong amount there is a person's to settle.
+           JOIN orders ord ON ord.id = p.order_id AND ord.kind <> 'RESELLER_VOLUME'
           WHERE c.source_system = ?1
             AND c.status IN ('PENDING','MATCH_SUGGESTED')
             AND c.suspect_reason = 'NO_TRANSACTION_AFTER_10M'

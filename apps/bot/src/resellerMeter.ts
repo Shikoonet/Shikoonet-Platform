@@ -39,7 +39,11 @@
 import type { D1Database } from '@shikoo/database';
 import { adapterFor, createLogger } from '@shikoo/domain';
 import type { PanelAdmin, ProviderContext } from '@shikoo/domain';
+import * as menu from './menu.js';
+import { enqueue } from './notify.js';
 import { credentialsFor } from './provision.js';
+import { report } from './reports.js';
+import { loadShopSettings } from './settings.js';
 
 const log = createLogger('bot');
 
@@ -59,6 +63,8 @@ interface ResellerRow {
   provider_id: number;
   panel_admin_username: string;
   expires_at: string | null;
+  /** Our ledger of what they bought through the bot (#474), compared, never written. */
+  data_limit_bytes: string | number | null;
   code: string;
   name: string;
   kind: string;
@@ -77,6 +83,8 @@ export interface MeterSummary {
   failed: number;
   /** Resellers whose term ran out and were moved to SUSPENDED. */
   suspended: number;
+  /** Resellers told their deadline is a week or less away (#474). Once per deadline. */
+  warned: number;
   /**
    * Resellers we hold a row for whose admin the panel did not report.
    *
@@ -92,8 +100,12 @@ const NOTHING: MeterSummary = {
   readings: 0,
   failed: 0,
   suspended: 0,
+  warned: 0,
   missing: 0,
 };
+
+/** How far ahead of a reseller's deadline they are told about it (#474). */
+export const DEADLINE_WARN_MS = 7 * 86_400_000;
 
 /**
  * True when it is worth asking the panels again.
@@ -137,17 +149,79 @@ async function suspendExpired(db: D1Database, now: number): Promise<number> {
         WHERE status = 'ACTIVE'
           AND expires_at IS NOT NULL
           AND expires_at <= to_timestamp(?1 / 1000.0)
-        RETURNING id`,
+        RETURNING id, name, panel_admin_username, expires_at::text AS expires_at`,
     )
     .bind(now)
-    .all<{ id: number }>();
+    .all<{ id: number; name: string; panel_admin_username: string; expires_at: string }>();
   const suspended = results ?? [];
+  const shop = suspended.length > 0 ? await loadShopSettings(db) : null;
   for (const row of suspended) {
     // Named at warn: a franchise going dark is something an operator wants to
     // find in the log without going looking for it.
     log.warn('reseller.term_ended', { ref: String(row.id) });
+    // And told to the reports group (#474): what happens at the deadline is
+    // still Sam's decision, so nothing here touches the panel — this is the
+    // person's cue to make it. Keyed on the deadline, so a term an operator
+    // extends and that ends again is reported again.
+    await db.withSession((tx) =>
+      report(
+        tx,
+        shop!,
+        'otherreport',
+        `reseller-deadline:${row.id}:${row.expires_at}`,
+        menu.resellerDeadlineReport({
+          name: row.name,
+          panelAdmin: row.panel_admin_username,
+          expiresAt: row.expires_at,
+        }),
+      ),
+    );
   }
   return suspended.length;
+}
+
+/**
+ * A reseller whose deadline is a week or less away hears it from the bot,
+ * once (#474) — Sam: the resellers who work slowly are warned, the good ones
+ * have no deadline at all.
+ *
+ * The dedupe key carries the deadline itself, so an operator who moves it
+ * gets a fresh warning for the new date rather than silence.
+ */
+async function warnDeadlines(db: D1Database, now: number): Promise<number> {
+  const { results } = await db
+    .prepare(
+      `SELECT r.id, r.panel_admin_username, r.expires_at::text AS expires_at,
+              (EXTRACT(EPOCH FROM r.expires_at) * 1000)::bigint AS expires_ms,
+              u.telegram_id
+         FROM reseller_accounts r
+         JOIN users u ON u.id = r.user_id
+        WHERE r.status = 'ACTIVE'
+          AND r.expires_at IS NOT NULL
+          AND r.expires_at >  to_timestamp(?1 / 1000.0)
+          AND r.expires_at <= to_timestamp((?1 + ?2) / 1000.0)
+          AND u.telegram_id IS NOT NULL`,
+    )
+    .bind(now, DEADLINE_WARN_MS)
+    .all<{
+      id: number;
+      panel_admin_username: string;
+      expires_at: string;
+      expires_ms: string | number;
+      telegram_id: number;
+    }>();
+  let warned = 0;
+  for (const row of results ?? []) {
+    const sent = await db.withSession((tx) =>
+      enqueue(tx, {
+        dedupeKey: `reseller-deadline-warning:${row.id}:${row.expires_ms}`,
+        chatId: Number(row.telegram_id),
+        text: menu.resellerDeadlineWarning(row.panel_admin_username, row.expires_at, now),
+      }),
+    );
+    if (sent) warned++;
+  }
+  return warned;
 }
 
 /**
@@ -166,12 +240,14 @@ export async function meterResellers(
 
   const summary: MeterSummary = { ...NOTHING };
   summary.suspended = await suspendExpired(db, now);
+  summary.warned = await warnDeadlines(db, now);
 
   // Read AFTER the suspension above, so a reseller whose term just ended is
   // already out of this set.
   const { results } = await db
     .prepare(
       `SELECT r.id, r.provider_id, r.panel_admin_username, r.expires_at::text AS expires_at,
+              r.data_limit_bytes,
               pv.code, pv.name, pv.kind, pv.base_url, pv.secret_ref, ps.sealed, pv.config
          FROM reseller_accounts r
          JOIN provisioning_providers pv ON pv.id = r.provider_id
@@ -239,6 +315,15 @@ export async function meterResellers(
       if (admin.usedBytes === null || admin.lifetimeUsedBytes === null) {
         log.warn('reseller.unreadable_meter', { ref: first.code });
         continue;
+      }
+      // Our ledger and the panel's own limit, compared and NEVER reconciled
+      // here (#474). The bot's sale is the only writer of the ledger: a meter
+      // that copied the panel's figure over it would be a second writer, and a
+      // reading taken just before a sale and written just after it would take
+      // that sale's terabytes back. A difference nobody's order explains is
+      // for a person, and the next «buy» refuses until they settle it.
+      if (row.data_limit_bytes !== null && Number(row.data_limit_bytes) !== admin.dataLimitBytes) {
+        log.warn('reseller.ledger_differs', { ref: String(row.id) });
       }
 
       await db

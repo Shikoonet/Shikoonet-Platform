@@ -317,7 +317,7 @@ export function StatsPage() {
                       icon="money"
                       value={tomanCompact(data.earnedIrr)}
                       label="درآمد"
-                      foot="فروش + تمدید + افزودنی، فقط سفارش‌های تکمیل‌شده"
+                      foot="فروش + تمدید + افزودنی + حجم نمایندگی، فقط سفارش‌های تکمیل‌شده"
                     />
                     <Stat
                       tone="tone-orange"
@@ -431,6 +431,18 @@ export function StatsPage() {
                 label="جمع افزودنی"
                 foot={exact(data.addonsIrr)}
               />
+              {/* Only once a reseller has bought — the rule the hub's add-ons
+                  line follows, so a shop without resellers sees no standing
+                  «۰». `?? 0` for a server that predates the field. */}
+              {(data.resellerCount ?? 0) > 0 && (
+                <Stat
+                  tone="tone-blue"
+                  icon="package"
+                  value={tomanCompact(data.resellerIrr)}
+                  label="حجم نمایندگی"
+                  foot={`${count(data.resellerCount)} سفارش · ${toman(data.resellerIrr)}`}
+                />
+              )}
               <Stat
                 tone="tone-orange"
                 icon="wallet"
@@ -482,7 +494,7 @@ export function StatsPage() {
 
           <Section
             title="فروش به تفکیک سرویس"
-            sub="کدام سرویس چقدر فروخت — خرید تازه، تمدید و افزودنی، در همین بازه. جمع ستون «فروش» همان «درآمد» بالاست."
+            sub="کدام سرویس چقدر فروخت — خرید تازه، تمدید، افزودنی و حجم نمایندگی، در همین بازه. جمع ستون «فروش» همان «درآمد» بالاست."
           >
             {data.byService.length === 0 ? (
               <p className="muted">در این بازه هیچ فروشی ثبت نشده.</p>
@@ -500,7 +512,7 @@ export function StatsPage() {
                   </thead>
                   <tbody>
                     {data.byService.map((s) => (
-                      <tr key={s.productId ?? 'legacy'}>
+                      <tr key={s.productId ?? s.name}>
                         {/* The imported bucket is a heap of old orders, not a
                             service anybody can sell today, so it reads as the
                             aside it is. */}

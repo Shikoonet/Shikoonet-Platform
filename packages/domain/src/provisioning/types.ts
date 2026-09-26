@@ -364,7 +364,63 @@ export interface PanelAdmin {
    * — so this is the field that says "they ran out", not "somebody acted".
    */
   limited: boolean;
+  /**
+   * The three fields the bot checks before it writes to this admin (#474).
+   *
+   * `telegramId` is the proof of ownership: PasarGuard keeps it unique across
+   * admins, the bot sets it on an admin it creates, and an operator sets it by
+   * hand on one that already existed. `role` is what it may do — a role that
+   * can edit admins could raise its own limit. `note` carries
+   * `resellerNote(id)` on an admin the bot created, which is how a 409 on a
+   * retried create is told apart from somebody else's admin.
+   */
+  note: string | null;
+  telegramId: number | null;
+  role: PanelAdminRole | null;
 }
+
+/** The role an admin carries, as `GET /api/admins` nests it. */
+export interface PanelAdminRole {
+  id: number;
+  isOwner: boolean;
+  /** PasarGuard's permission tree, unread here — `isSafeResellerRole` judges it. */
+  permissions: unknown;
+}
+
+/**
+ * One admin looked up by its exact name. `admin: null` is «the panel has no
+ * admin by that name», which is a different answer from «could not ask».
+ */
+export type PanelAdminLookup =
+  | { ok: true; admin: PanelAdmin | null }
+  | { ok: false; reason: string; retryable: boolean };
+
+/** One role by id; `role: null` when the panel has none by that id. */
+export type PanelRoleLookup =
+  | { ok: true; role: PanelAdminRole | null }
+  | { ok: false; reason: string; retryable: boolean };
+
+/** A reseller's panel admin, as the bot creates it on their first paid order. */
+export interface NewPanelAdmin {
+  username: string;
+  /** Random, and never shown: the reseller asks for one with «🔑 رمز جدید». */
+  password: string;
+  roleId: number;
+  /** Always > 0 — PasarGuard reads 0 as unlimited. */
+  dataLimitBytes: number;
+  telegramId: number;
+  note: string;
+}
+
+/**
+ * A write to a panel admin. `conflict` is the panel's 409: an admin by that
+ * name or Telegram id already exists. The caller reads the admin back before
+ * believing a create either way — on a SQLite-backed panel a `role_id` that
+ * does not exist is not even refused (#474 probe).
+ */
+export type PanelAdminWriteResult =
+  | { ok: true }
+  | { ok: false; reason: string; retryable: boolean; conflict: boolean };
 
 /**
  * Absent rather than empty when a panel cannot be asked.
@@ -601,6 +657,24 @@ export interface ProvisioningAdapter {
    * "cannot be asked". `ok: false` means the same — never "used nothing".
    */
   listPanelAdmins?(provider: ProviderContext): Promise<PanelAdminsResult>;
+
+  /**
+   * Selling a reseller their panel's volume (#474): read one admin exactly,
+   * read one role, create an admin, change one's limit or password.
+   *
+   * Optional, and all four together: a panel kind that cannot do all of them
+   * cannot be sold to resellers, and the bot hides the button rather than
+   * failing after the money has arrived. The next kind — WireGuard — is these
+   * four methods on its own adapter, not a change to the sale.
+   */
+  getPanelAdmin?(provider: ProviderContext, username: string): Promise<PanelAdminLookup>;
+  getPanelRole?(provider: ProviderContext, roleId: number): Promise<PanelRoleLookup>;
+  createPanelAdmin?(provider: ProviderContext, admin: NewPanelAdmin): Promise<PanelAdminWriteResult>;
+  setPanelAdmin?(
+    provider: ProviderContext,
+    username: string,
+    change: { dataLimitBytes?: number; password?: string },
+  ): Promise<PanelAdminWriteResult>;
 
   /**
    * Every inbound this panel has, whether or not a group uses it.

@@ -1375,6 +1375,11 @@ describe('reading the meter off a panel', () => {
         status: 'active',
         disabled: false,
         limited: false,
+        // The three the reseller sale checks before it writes (#474); this
+        // captured response predates them, and absent reads as null.
+        note: null,
+        telegramId: null,
+        role: null,
       },
     ]);
   });

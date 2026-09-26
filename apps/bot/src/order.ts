@@ -219,6 +219,59 @@ export async function placeAddonOrder(
 }
 
 /**
+ * Terabytes for a reseller's own panel admin (#474).
+ *
+ * `quantity` is the terabytes and `unit_price_irr` the tier's rate for one of
+ * them, both decided by the caller from the panel's price table
+ * (`resellerPrice`) — the whole order at the tier it falls into, which is the
+ * rule Sam chose. The schema's `total = unit × quantity − discount` check
+ * verifies the arithmetic. No discount: neither the standing percentage nor
+ * a code applies to a reseller's volume.
+ *
+ * `providerId` is the reseller row's own panel, read by the caller from the
+ * row — never from a button.
+ */
+export async function placeResellerOrder(
+  tx: D1DatabaseSession,
+  userId: number,
+  resellerAccountId: number,
+  providerId: number,
+  terabytes: number,
+  unitPriceIrr: number,
+): Promise<PlaceResult> {
+  if (!Number.isSafeInteger(terabytes) || terabytes <= 0) {
+    throw new Error(`reseller order of ${terabytes} TB is not a usable amount`);
+  }
+  if (!Number.isSafeInteger(unitPriceIrr) || unitPriceIrr <= 0) {
+    throw new Error(`reseller unit price ${unitPriceIrr} is not a usable price`);
+  }
+  // The reseller row, held until this transaction ends, and asked again under
+  // the lock. The dashboard closes an account under the same lock and refuses
+  // while an order is on its way, so the two are one behind the other: an
+  // order is never written for an account that closed after the panel was
+  // asked, and a close never lands between this check and the insert.
+  const account = await tx
+    .prepare(`SELECT status FROM reseller_accounts WHERE id = ?1 AND user_id = ?2 FOR UPDATE`)
+    .bind(resellerAccountId, userId)
+    .first<{ status: string }>();
+  if (!account || account.status === 'CLOSED') return null;
+  return notShelf(
+    place(
+      tx,
+      userId,
+      null,
+      { unitPriceIrr, discountIrr: 0, totalIrr: unitPriceIrr * terabytes },
+      'RESELLER_VOLUME',
+      null,
+      terabytes,
+      null,
+      0,
+      { accountId: resellerAccountId, providerId },
+    ),
+  );
+}
+
+/**
  * The free account, and the counter that is the only thing rationing it.
  *
  * ## Why this does not go through `place`
@@ -262,7 +315,7 @@ async function place(
   userId: number,
   planId: number | null,
   price: Price,
-  kind: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP' | 'ADD_VOLUME' | 'ADD_TIME',
+  kind: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP' | 'ADD_VOLUME' | 'ADD_TIME' | 'RESELLER_VOLUME',
   subscriptionId: number | null,
   /** Gigabytes or days on an add-on; one of everything else. The schema's
    *  `total = unit x quantity - discount` check is what keeps the three
@@ -277,6 +330,12 @@ async function place(
    * written. Zero for every caller but a purchase or renewal with such a code.
    */
   bonusVolumeGb = 0,
+  /**
+   * RESELLER_VOLUME only: whose franchise, and on which panel (0104). Part of
+   * the open-order tuple below, so one person's two panels never share an
+   * invoice.
+   */
+  reseller: { accountId: number; providerId: number } | null = null,
 ): Promise<PlaceOrResult> {
   // An order that costs nothing is refused here, once, for all four callers.
   //
@@ -330,6 +389,7 @@ async function place(
           AND target_subscription_id IS NOT DISTINCT FROM ?5
           AND quantity = ?6
           AND bonus_volume_gb = ?7
+          AND target_reseller_id IS NOT DISTINCT FROM ?8
           AND status = 'AWAITING_PAYMENT'
           -- Not one whose deadline has passed, even if the sweep has not
           -- reached it yet: its card is already free for the next customer,
@@ -340,7 +400,16 @@ async function place(
         ORDER BY created_at DESC
         LIMIT 1`,
     )
-    .bind(userId, planId, price.totalIrr, kind, subscriptionId, quantity, bonusVolumeGb)
+    .bind(
+      userId,
+      planId,
+      price.totalIrr,
+      kind,
+      subscriptionId,
+      quantity,
+      bonusVolumeGb,
+      reseller?.accountId ?? null,
+    )
     .first<{ id: number; public_id: string; total_irr: number; expires_at: string | null }>();
   if (open) {
     /*
@@ -440,10 +509,10 @@ async function place(
       `INSERT INTO orders
          (public_id, user_id, kind, plan_id, plan_name_at_sale, target_subscription_id, quantity,
           unit_price_irr, discount_irr, total_irr, status, expires_at, username_text,
-          bonus_volume_gb)
+          bonus_volume_gb, target_reseller_id, provider_id)
        VALUES (?1, ?2, ?3, ?4, (SELECT name FROM product_plans WHERE id = ?4), ?5, ?9, ?6, ?7, ?8,
                'AWAITING_PAYMENT',
-               now() + make_interval(mins => ${CARD_HOLD_MINUTES_SQL}), ?10, ?11)
+               now() + make_interval(mins => ${CARD_HOLD_MINUTES_SQL}), ?10, ?11, ?12, ?13)
        RETURNING id, public_id, total_irr, expires_at`,
     )
     .bind(
@@ -458,6 +527,8 @@ async function place(
       quantity,
       usernameText,
       bonusVolumeGb,
+      reseller?.accountId ?? null,
+      reseller?.providerId ?? null,
     )
     .first<{ id: number; public_id: string; total_irr: number; expires_at: string }>();
   if (!row) throw new Error('order insert returned no row');

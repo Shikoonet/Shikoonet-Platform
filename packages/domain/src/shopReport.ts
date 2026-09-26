@@ -105,6 +105,14 @@ export interface ShopReport {
    */
   addonsCount: number;
   addonsIrr: number;
+  /**
+   * Terabytes sold to resellers for their own panels (#474) — the fourth term
+   * of «درآمد». Its own line for the reason add-ons got theirs: counted in
+   * `earnedIrr` and shown nowhere, the parts on the screen would stop adding
+   * up to the total beside them.
+   */
+  resellerCount: number;
+  resellerIrr: number;
   topupsIrr: number;
   /**
    * The three above, together: what the shop earned in this window.
@@ -233,6 +241,9 @@ export async function shopReport(
            count(*) FILTER (WHERE o.kind IN ('ADD_VOLUME','ADD_TIME'))::int   AS addons_count,
            COALESCE(sum(o.total_irr) FILTER (
              WHERE o.kind IN ('ADD_VOLUME','ADD_TIME')), 0)                     AS addons_irr,
+           count(*) FILTER (WHERE o.kind = 'RESELLER_VOLUME')::int            AS reseller_count,
+           COALESCE(sum(o.total_irr) FILTER (
+             WHERE o.kind = 'RESELLER_VOLUME'), 0)                              AS reseller_irr,
            -- Everything sold, which is every kind except the two that sell
            -- nothing: a top-up is money moved, and a TRANSFER is always zero.
            COALESCE(sum(o.total_irr) FILTER (
@@ -255,6 +266,8 @@ export async function shopReport(
         renewals_irr: string | number;
         addons_count: number;
         addons_irr: string | number;
+        reseller_count: number;
+        reseller_irr: string | number;
         earned_irr: string | number;
         topups_irr: string | number;
         buyers: number;
@@ -403,6 +416,8 @@ export async function shopReport(
     renewalsIrr,
     addonsCount: flows?.addons_count ?? 0,
     addonsIrr: Number(flows?.addons_irr ?? 0),
+    resellerCount: flows?.reseller_count ?? 0,
+    resellerIrr: Number(flows?.reseller_irr ?? 0),
     earnedIrr: Number(flows?.earned_irr ?? 0),
     topupsIrr: Number(flows?.topups_irr ?? 0),
 
@@ -463,6 +478,9 @@ export const ORDER_PRODUCT_JOINS = `
 
 /** The name the page gives the one bucket of orders that name no service. */
 export const LEGACY_SERVICE_NAME = 'سفارش‌های قدیمی';
+
+/** The row a reseller's panel volume gets (#474): it is no service's, and not legacy either. */
+export const RESELLER_SERVICE_NAME = 'حجم نمایندگی';
 
 /**
  * The same money as `earnedIrr`, one row per service.
@@ -529,7 +547,7 @@ export async function salesByService(
       addon_count: number;
       irr: string | number;
     }>();
-  return (rows.results ?? []).map((s) => ({
+  const services: ServiceTotal[] = (rows.results ?? []).map((s) => ({
     productId: s.product_id === null ? null : Number(s.product_id),
     name: s.name ?? LEGACY_SERVICE_NAME,
     newCount: s.new_count,
@@ -537,4 +555,29 @@ export async function salesByService(
     addonCount: s.addon_count,
     irr: Number(s.irr),
   }));
+
+  // A reseller's terabytes (#474) are in `earnedIrr` and name no service, so
+  // they get a row of their own — without it the table stops summing to the
+  // «درآمد» it says it sums to. Not in the query above: its orders have no
+  // product, and would fall into the legacy bucket.
+  const reseller = await db
+    .prepare(
+      `SELECT count(*)::int AS n, COALESCE(sum(o.total_irr), 0) AS irr
+         FROM orders o
+        WHERE o.status = 'COMPLETED' AND o.kind = 'RESELLER_VOLUME'${orders.sql}`,
+    )
+    .bind(...orders.binds)
+    .first<{ n: number; irr: string | number }>();
+  if ((reseller?.n ?? 0) > 0) {
+    services.push({
+      productId: null,
+      name: RESELLER_SERVICE_NAME,
+      newCount: reseller!.n,
+      renewalCount: 0,
+      addonCount: 0,
+      irr: Number(reseller!.irr),
+    });
+    services.sort((a, b) => b.irr - a.irr);
+  }
+  return services;
 }

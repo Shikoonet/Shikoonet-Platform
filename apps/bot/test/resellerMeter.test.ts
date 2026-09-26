@@ -135,7 +135,12 @@ async function statusOf(resellerId: number): Promise<string> {
  * file is the only thing that writes them.
  */
 async function purge(): Promise<void> {
-  await db.prepare(`TRUNCATE reseller_usage_snapshots, reseller_accounts RESTART IDENTITY`).run();
+  // CASCADE since 0104: `orders.target_reseller_id` references the table, and
+  // Postgres refuses a TRUNCATE of a referenced table on its own. The bot's
+  // `resetBot` already empties `orders` with `users`, so nothing extra goes.
+  await db
+    .prepare(`TRUNCATE reseller_usage_snapshots, reseller_accounts RESTART IDENTITY CASCADE`)
+    .run();
 }
 
 let panelId: number;

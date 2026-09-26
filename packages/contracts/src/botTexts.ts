@@ -1860,6 +1860,193 @@ export const TEXTS = {
     hint: 'وقتی از قبل نماینده است',
   },
 
+  // --- پنل نمایندگی (#474) ---------------------------------------------------
+  RESELLER_PANELS_CHOOSE: {
+    default: '🏢 پنل‌های نمایندگی شما — یکی را انتخاب کنید:',
+    placeholders: [],
+    screen: 'reseller',
+    hint: 'وقتی یک نفر بیش از یک پنل نمایندگی دارد',
+  },
+  RESELLER_PANEL_TITLE: {
+    default: '🏢 پنل نمایندگی — {name}',
+    placeholders: ['name'],
+    screen: 'reseller',
+    hint: 'بالای صفحهٔ پنل نمایندگی',
+  },
+  RESELLER_PANEL_USERNAME: {
+    default: '👤 نام کاربری پنل: {username}',
+    placeholders: ['username'],
+    screen: 'reseller',
+    hint: 'نام ادمین نماینده روی پنل',
+  },
+  RESELLER_PANEL_LOGIN: {
+    default: '🔗 ورود به پنل: {url}',
+    placeholders: ['url'],
+    screen: 'reseller',
+    hint: 'آدرس ورود به پنل',
+  },
+  RESELLER_PANEL_PENDING: {
+    default:
+      '🆕 این پنل هنوز ساخته نشده است. با اولین خرید حجم، ربات آن را با همین نام کاربری می‌سازد.',
+    placeholders: [],
+    screen: 'reseller',
+    hint: 'نماینده‌ای که تایید شده ولی پنلش هنوز ساخته نشده',
+  },
+  RESELLER_PANEL_VOLUME: {
+    default: '📦 حجم خریداری‌شده: {total} ترابایت',
+    placeholders: ['total'],
+    screen: 'reseller',
+    hint: 'جمع حجمی که نماینده از فروشگاه خریده',
+  },
+  RESELLER_PANEL_USED: {
+    default: '📊 مصرف: {used} گیگابایت (آخرین خوانش {time})',
+    placeholders: ['used', 'time'],
+    screen: 'reseller',
+    hint: 'مصرف ادمین نماینده، از خوانش ساعتی پنل',
+  },
+  RESELLER_PANEL_DEADLINE: {
+    default: '⏳ مهلت: {date} ({days} روز مانده)',
+    placeholders: ['date', 'days'],
+    screen: 'reseller',
+    hint: 'مهلت پنل نمایندگی، وقتی ادمین تعیین کرده باشد',
+  },
+  RESELLER_PANEL_DEADLINE_PASSED: {
+    default: '⏳ مهلت این پنل {date} تمام شده است. برای ادامه با پشتیبانی در تماس باشید.',
+    placeholders: ['date'],
+    screen: 'reseller',
+    hint: 'وقتی مهلت پنل نمایندگی گذشته است',
+  },
+  RESELLER_NOT_READY: {
+    default:
+      '⚠️ خرید برای این پنل فعلاً آماده نیست. پشتیبانی در جریان است و به‌زودی درستش می‌کند.',
+    placeholders: [],
+    screen: 'reseller',
+    hint: 'وقتی ربات قبل از پرداخت می‌بیند خرید ممکن نیست — علت برای ادمین گزارش می‌شود',
+  },
+  RESELLER_PANEL_GONE: {
+    default: 'این پنل نمایندگی دیگر در دسترس نیست.',
+    placeholders: [],
+    screen: 'reseller',
+    hint: 'دکمهٔ کهنهٔ پنلی که بسته شده',
+  },
+  RESELLER_ASK_TB: {
+    default:
+      '➕ خرید حجم برای {username}\n\n{tiers}\n\nکمترین خرید {min} ترابایت و بیشترین در هر سفارش {max} ترابایت است.\nتعداد ترابایت را به عدد بفرستید:',
+    placeholders: ['username', 'tiers', 'min', 'max'],
+    screen: 'reseller',
+    hint: 'پرسیدن تعداد ترابایت، با جدول قیمت پله‌ای',
+  },
+  RESELLER_TIER_LINE: {
+    default: '• از {from} ترابایت: هر ترابایت {price} تومان',
+    placeholders: ['from', 'price'],
+    screen: 'reseller',
+    hint: 'یک ردیف جدول قیمت — کل سفارش با نرخ پلهٔ خودش حساب می‌شود',
+  },
+  RESELLER_TB_NOT_A_NUMBER: {
+    default: 'لطفاً فقط یک عدد صحیح بفرستید — مثلاً 3.',
+    placeholders: [],
+    screen: 'reseller',
+    hint: 'وقتی تعداد ترابایت عدد نیست',
+  },
+  RESELLER_TB_TOO_LITTLE: {
+    default: 'کمترین خرید {min} ترابایت است.',
+    placeholders: ['min'],
+    screen: 'reseller',
+    hint: 'زیر پایین‌ترین پله',
+  },
+  RESELLER_TB_TOO_MUCH: {
+    default:
+      'بیشترین خرید در یک سفارش {max} ترابایت است — هر سفارش یک واریز است. برای حجم بیشتر، چند سفارش جدا ثبت کنید.',
+    placeholders: ['max'],
+    screen: 'reseller',
+    hint: 'بالای سقف یک سفارش (سقف کارت‌به‌کارت)',
+  },
+  CHECKOUT_RESELLER_ITEM: {
+    default: '📦 {tb} ترابایت برای پنل {username}',
+    placeholders: ['tb', 'username'],
+    screen: 'reseller',
+    hint: 'ردیف فاکتور خرید حجم نمایندگی',
+  },
+  RESELLER_VOLUME_ADDED: {
+    default: '✅ {tb} ترابایت به پنل {username} اضافه شد.\n📦 حجم کل: {total} ترابایت',
+    placeholders: ['tb', 'username', 'total'],
+    screen: 'reseller',
+    hint: 'بعد از تحویل حجم به پنل نماینده',
+  },
+  RESELLER_PANEL_CREATED: {
+    default:
+      '✅ پنل نمایندگی شما ساخته شد.\n\n👤 نام کاربری: {username}\n📦 حجم: {total} ترابایت\n{login}\n\nرمز ورود را از «🏢 پنل نمایندگی» ← «🔑 رمز جدید» بگیرید.',
+    placeholders: ['username', 'total', 'login'],
+    screen: 'reseller',
+    hint: 'بعد از ساخت پنل تازه با اولین خرید',
+  },
+  RESELLER_PASSWORD_CONFIRM: {
+    default:
+      '🔑 رمز جدید برای {username}\n\nبا ساختن رمز جدید، رمز فعلی دیگر کار نمی‌کند. ادامه می‌دهید؟',
+    placeholders: ['username'],
+    screen: 'reseller',
+    hint: 'پیش از عوض‌کردن رمز پنل',
+  },
+  RESELLER_PASSWORD_NEW: {
+    default:
+      '🔑 رمز جدید پنل {username}:\n\n{password}\n\nجایی امن نگهش دارید — ربات دوباره نشانش نمی‌دهد و با «رمز جدید» فقط یک رمز تازه می‌سازد.',
+    placeholders: ['username', 'password'],
+    screen: 'reseller',
+    hint: 'پیام جداگانه‌ای که رمز تازه را می‌دهد — بدون دکمه، و ذخیره نمی‌شود',
+  },
+  RESELLER_PASSWORD_FAILED: {
+    default: '⚠️ ساختن رمز جدید الان ممکن نشد. پشتیبانی در جریان است.',
+    placeholders: [],
+    screen: 'reseller',
+    hint: 'وقتی پنل رمز تازه را نپذیرفت',
+  },
+  RESELLER_DEADLINE_WARNING: {
+    default:
+      '⏳ مهلت پنل نمایندگی {username} تا {date} است — {days} روز دیگر. برای تمدید مهلت با پشتیبانی در تماس باشید.',
+    placeholders: ['username', 'date', 'days'],
+    screen: 'reseller',
+    hint: 'هفت روز پیش از مهلت پنل نمایندگی، یک بار',
+  },
+  REPORT_RESELLER_VOLUME: {
+    default:
+      '🏢 خرید حجم نمایندگی\n\n🪪 آیدی عددی : {telegramId}\n👤 نام کاربری : {username}\n🏷 نماینده : {name}\n🖥 ادمین پنل : {panelAdmin}\n🌍 پنل : {panel}\n📦 حجم خریداری شده : {tb} ترابایت\n📦 حجم کل : {total} ترابایت\n💰 مبلغ : {price} تومان\n🔖 کد پیگیری : {tracking}\n⏰ زمان : {time}',
+    placeholders: [
+      'telegramId',
+      'username',
+      'name',
+      'panelAdmin',
+      'panel',
+      'tb',
+      'total',
+      'price',
+      'tracking',
+      'time',
+    ],
+    screen: 'reseller',
+    hint: 'به تاپیک «📌 گزارش خرید خدمات»، بعد از تحویل حجم نمایندگی',
+  },
+  REPORT_RESELLER_REFUSED: {
+    default:
+      '⚠️ خرید نمایندگی آماده نیست\n\n🪪 آیدی عددی : {telegramId}\n🏷 نماینده : {name}\n🖥 ادمین پنل : {panelAdmin}\n❗️ علت : {reason}',
+    placeholders: ['telegramId', 'name', 'panelAdmin', 'reason'],
+    screen: 'reseller',
+    hint: 'به تاپیک خطاها، وقتی ربات پیش از پرداخت خرید نماینده را رد کرد',
+  },
+  REPORT_RESELLER_PASSWORD: {
+    default:
+      '🔑 رمز پنل نمایندگی عوض شد\n\n🪪 آیدی عددی : {telegramId}\n🖥 ادمین پنل : {panelAdmin}\n⏰ زمان : {time}',
+    placeholders: ['telegramId', 'panelAdmin', 'time'],
+    screen: 'reseller',
+    hint: 'ردپای عوض‌شدن رمز — خود رمز هرگز در گزارش نیست',
+  },
+  REPORT_RESELLER_DEADLINE: {
+    default:
+      '⏳ مهلت پنل نمایندگی تمام شد\n\n🏷 نماینده : {name}\n🖥 ادمین پنل : {panelAdmin}\n📅 مهلت : {date}\n\nپنل و حجمش دست نخورده است — تصمیم با ادمین.',
+    placeholders: ['name', 'panelAdmin', 'date'],
+    screen: 'reseller',
+    hint: 'وقتی مهلت یک نماینده گذشت — ربات کاری روی پنل نمی‌کند',
+  },
+
   // --- هشدارهای خودکار -----------------------------------------------------
   WARN_TIME_TITLE: {
     default: '⏳ سرویس شما رو به پایان است.',

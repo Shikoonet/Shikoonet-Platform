@@ -3,7 +3,7 @@ import type { Cache } from './query.js';
 import { useMediaQuery } from './useMediaQuery.js';
 import { forMutation, QK } from './queries.js';
 import { count } from '../format.js';
-import { useWriteProps } from '../role.js';
+import { useCanWriteAdmin, useWriteProps } from '../role.js';
 import { formatTomanFromIrr, formatTime } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { SortableHeader } from './SortableHeader.js';
@@ -89,6 +89,7 @@ function formatPaymentCardCell(a: AccountListItem): string {
         const name = c.holder_name ? `${c.display} (${c.holder_name})` : c.display;
         if (accountOff) return `${name} — حساب خاموش`;
         if (a.customer_visible === 0) return `${name} — پنهان از مشتری`;
+        if (a.customer_visible === 2) return `${name} — فقط نماینده`;
         // `!== 'ACTIVE'` rather than `=== 'DISABLED'`: an older response with
         // no status must read as live, which is what it always was.
         return c.status !== undefined && c.status !== 'ACTIVE' ? `${name} — خاموش` : name;
@@ -118,7 +119,7 @@ function PaymentCardCell({ a }: { a: AccountListItem }) {
           <CardStateBadges
             card={c}
             accountActive={a.active !== 0}
-            customerVisible={a.customer_visible !== 0}
+            audience={a.customer_visible}
           />
         </span>
       ))}
@@ -340,21 +341,30 @@ export function AccountsView({ cache }: AccountsViewProps) {
   }
 
   /**
-   * The third switch — 0090, Sam 2026-09-20: an account whose texts must
-   * reach the books but whose cards no customer may see. `active` off takes
-   * the books down with it, so it could not be that switch.
+   * Who this account's cards are for — 0090 made it an on/off, 0104 a third
+   * value (Sam, 2026-09-26): `0` books only, `1` customers, `2` resellers only.
+   * `active` off takes the books down with it, so it could not be that switch.
    *
-   * Asks only on the way ON: that is the direction that puts a card in front
-   * of customers. Off is the safe direction and the books do not change.
+   * The number is sent as chosen, never derived from «on/off»: a toggle that
+   * sent `!on` would have turned a reseller-only account (2) into a customer
+   * one (1) with one click, putting reseller cards on a customer's invoice.
+   *
+   * Asks on the way to either audience — that is the direction that puts a
+   * card in front of somebody. Hiding is the safe direction; the books do not
+   * change.
    */
-  async function setCustomerVisible(id: string, on: boolean) {
+  async function setCustomerVisible(id: string, next: Audience) {
     const acc = items.find((x) => x.id === id);
+    if (acc?.customer_visible === next) return;
     const name = acc?.display_name ?? id;
     if (
-      on &&
+      next !== 0 &&
       !window.confirm(
-        `«${name}» به مشتری نشان داده شود؟ ربات از این پس کارت‌های این حساب را در صف می‌گذارد ` +
-          `و روی فاکتور مشتری می‌نویسد.`,
+        next === 1
+          ? `«${name}» به مشتری نشان داده شود؟ ربات از این پس کارت‌های این حساب را در صف ` +
+              `می‌گذارد و روی فاکتور مشتری می‌نویسد.`
+          : `کارت‌های «${name}» فقط به نماینده‌ها داده شود؟ مشتری عادی دیگر هیچ‌کدام را ` +
+              `نمی‌بیند؛ فقط خرید پنل نمایندگی به این کارت‌ها پرداخت می‌شود.`,
       )
     ) {
       return;
@@ -362,11 +372,13 @@ export function AccountsView({ cache }: AccountsViewProps) {
     setBusy(id);
     setError(null);
     try {
-      await api.updateAccount(id, { customer_visible: on });
+      await api.updateAccount(id, { customer_visible: next });
       setSuccess(
-        on
+        next === 1
           ? `«${name}» به صف مشتری برگشت.`
-          : `«${name}» از صف مشتری بیرون رفت؛ پیامک‌ها و حساب‌کتابش همچنان ثبت می‌شود.`,
+          : next === 2
+            ? `«${name}» فقط در صف نماینده‌هاست.`
+            : `«${name}» از صف بیرون رفت؛ پیامک‌ها و حساب‌کتابش همچنان ثبت می‌شود.`,
       );
       cache.invalidate(QK.accounts);
       setTimeout(() => setSuccess(null), 4000);
@@ -704,7 +716,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                 onEdit={() => setEditing(a.id)}
                 onDeactivate={() => deactivate(a.id)}
                 onActivate={() => activate(a.id)}
-                onCustomerVisible={(on) => setCustomerVisible(a.id, on)}
+                onCustomerVisible={(next) => setCustomerVisible(a.id, next)}
                 onDelete={() => setDeletingId(a.id)}
                 onRerunAssignment={() => setRerunAssignmentFor(a.id)}
                 onAccept={() => runStatusTransition(a.id, 'accept')}
@@ -780,12 +792,16 @@ export function AccountsView({ cache }: AccountsViewProps) {
                       {a.active !== 0 && a.customer_visible === 0 && (
                         <span className="status-pill status-muted">پنهان از مشتری</span>
                       )}
+                      {a.active !== 0 && a.customer_visible === 2 && (
+                        <span className="status-pill status-muted">فقط نماینده</span>
+                      )}
                     </td>
                     <td className="actions-cell">
-                      <CustomerVisibleSwitch
-                        on={a.customer_visible !== 0}
+                      <AudienceSelect
+                        value={a.customer_visible}
+                        name={a.display_name}
                         busy={busy === a.id}
-                        onChange={(on) => setCustomerVisible(a.id, on)}
+                        onChange={(next) => setCustomerVisible(a.id, next)}
                       />{' '}
                       <button type="button" onClick={() => setEditing(a.id)}>
                         ویرایش
@@ -1065,7 +1081,7 @@ function AccountCard({
   onEdit: () => void;
   onDeactivate: () => void;
   onActivate: () => void;
-  onCustomerVisible: (on: boolean) => void;
+  onCustomerVisible: (next: Audience) => void;
   onDelete: () => void;
   onRerunAssignment: () => void;
   onAccept: () => void;
@@ -1088,6 +1104,9 @@ function AccountCard({
         {a.active === 0 && <span className="status-pill status-muted">خاموش</span>}
         {a.active !== 0 && a.customer_visible === 0 && (
           <span className="status-pill status-muted">پنهان از مشتری</span>
+        )}
+        {a.active !== 0 && a.customer_visible === 2 && (
+          <span className="status-pill status-muted">فقط نماینده</span>
         )}
       </div>
       <div className="card-row">
@@ -1113,7 +1132,12 @@ function AccountCard({
       )}
 
       <div className="card-actions">
-        <CustomerVisibleSwitch on={a.customer_visible !== 0} busy={busy} onChange={onCustomerVisible} />
+        <AudienceSelect
+          value={a.customer_visible}
+          name={a.display_name}
+          busy={busy}
+          onChange={onCustomerVisible}
+        />
         <button type="button" onClick={onEdit}>
           ویرایش
         </button>
@@ -1224,64 +1248,84 @@ interface PaymentCardRow {
  * a tooltip. An older list response carries neither field; then only the
  * state is drawn.
  */
+/** `financial_accounts.customer_visible`: 0 books only, 1 customers, 2 resellers only. */
+type Audience = 0 | 1 | 2;
+
+const AUDIENCE: ReadonlyArray<{ value: Audience; label: string }> = [
+  { value: 0, label: 'پنهان' },
+  { value: 1, label: 'مشتری' },
+  { value: 2, label: 'نماینده' },
+];
+
 /**
- * The on/off switch for «نمایش به مشتری» (0090). A `role="switch"` button, so
- * a screen reader says on/off and the two states are one control, not two
- * buttons that swap. Draws from the write-props hook like every other press
- * on this screen.
+ * «کارت‌ها برای» — who the bot may hand this account's cards to (0090, 0104).
+ *
+ * A `<select>` rather than the old on/off switch: with three values, «flip»
+ * has no meaning, and the one it used to have (`!on` → 1) turned a
+ * reseller-only account into a customer one. Every change here is a choice of
+ * a named value.
+ *
+ * Only an ADMIN may move an account to or from «نماینده» — the server answers
+ * 403 to anybody else, so the option is disabled for them, and the whole
+ * control is when the account is already there.
  */
-function CustomerVisibleSwitch({
-  on,
+function AudienceSelect({
+  value,
+  name,
   busy,
   onChange,
 }: {
-  on: boolean;
+  value: number;
+  name: string;
   busy: boolean;
-  onChange: (on: boolean) => void;
+  onChange: (next: Audience) => void;
 }) {
   const w = useWriteProps();
+  const admin = useCanWriteAdmin();
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      className={`switch${on ? ' switch--on' : ''}`}
-      disabled={busy}
-      onClick={() => onChange(!on)}
-      title={
-        on
-          ? 'ربات کارت‌های این حساب را به مشتری می‌دهد'
-          : 'فقط در حساب‌کتاب؛ به مشتری نشان داده نمی‌شود'
-      }
-      {...w}
-    >
-      <span className="switch__track" aria-hidden="true">
-        <span className="switch__knob" />
-      </span>
-      نمایش به مشتری
-    </button>
+    <label className="audience-select">
+      کارت‌ها برای{' '}
+      <select
+        aria-label={`کارت‌های «${name}» برای`}
+        value={value}
+        disabled={busy || (!admin && value === 2)}
+        onChange={(e) => onChange(Number(e.target.value) as Audience)}
+        {...w}
+      >
+        {AUDIENCE.map((o) => (
+          <option key={o.value} value={o.value} disabled={!admin && o.value === 2}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
 function CardStateBadges({
   card: c,
   accountActive,
-  customerVisible,
+  audience,
 }: {
   card: { status?: string; queue_position?: number; held_until?: number | null };
   accountActive: boolean;
-  /** 0090: the third switch the picker asks. Required for the same reason `accountActive` is. */
-  customerVisible: boolean;
+  /**
+   * 0090/0104: `customer_visible` as stored. Required for the same reason
+   * `accountActive` is. `2` is in rotation — for resellers, not customers.
+   */
+  audience: number;
 }) {
   // `!== 'DISABLED'` rather than `=== 'ACTIVE'`: an older response with no
   // status must read as live, which is what it always was.
   const cardOn = c.status !== 'DISABLED';
-  const on = cardOn && accountActive && customerVisible;
+  const on = cardOn && accountActive && audience !== 0;
   return (
     <>
       <span className={`badge ${on ? 'badge-active' : 'badge-block'}`}>
         {on
-          ? 'در گردش'
+          ? audience === 2
+            ? 'در گردش نماینده'
+            : 'در گردش'
           : !cardOn
             ? 'خاموش'
             : !accountActive
@@ -1301,12 +1345,12 @@ function CardStateBadges({
 export function PaymentCardsPanel({
   accountId,
   accountActive,
-  customerVisible,
+  audience,
   onChanged,
 }: {
   accountId: string;
-  /** 0090: whether the bot may show this account's cards at all. Same contract as `accountActive`. */
-  customerVisible: boolean;
+  /** 0090/0104: `customer_visible` as stored — 0 hidden, 1 customers, 2 resellers only. */
+  audience: number;
   /**
    * Whether the ACCOUNT these cards belong to is in service.
    *
@@ -1453,7 +1497,7 @@ export function PaymentCardsPanel({
           // `financial_accounts` and requires the account to be live, so a card
           // that is ACTIVE on an account that is not is a card nobody will ever
           // be shown — and this badge is the only place that says so.
-          const on = c.status === 'ACTIVE' && accountActive && customerVisible;
+          const on = c.status === 'ACTIVE' && accountActive && audience !== 0;
           return (
             <li key={c.id} className={on ? undefined : 'is-off'}>
               {/* Line one is the card's identity and its one state. The state
@@ -1464,7 +1508,7 @@ export function PaymentCardsPanel({
                 <CardStateBadges
                   card={c}
                   accountActive={accountActive}
-                  customerVisible={customerVisible}
+                  audience={audience}
                 />
                 <IdentifierText value={c.display} />
                 {c.bank_name && <span className="badge">{c.bank_name}</span>}
@@ -1826,7 +1870,7 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
         <PaymentCardsPanel
           accountId={account.id}
           accountActive={account.active !== 0}
-          customerVisible={account.customer_visible !== 0}
+          audience={account.customer_visible}
           {...(onCardsChanged ? { onChanged: onCardsChanged } : {})}
         />
       )}

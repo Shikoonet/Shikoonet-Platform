@@ -124,6 +124,18 @@ export const CALLBACK_ACTIONS = [
   'dxr', // <subscriptionId> — take it back off the renewal
   'gft', // ask for a gift code to credit the wallet
   'agr', // ask for a reseller application
+  // ── the reseller panel (#474) ─────────────────────────────────────────────
+  //
+  // Every id below is a `reseller_accounts` row, and every handler re-reads it
+  // through `resellerAccountForUser`, scoped to the caller — so an id of
+  // somebody else's franchise finds nothing.
+  'rsp', // [resellerAccountId] — the panel screen; without an id, the one
+  //        panel, or the list when there are several
+  'rsb', // <resellerAccountId> — buy volume (or the first panel): the panel is
+  //        asked whether a sale can go through, THEN the terabytes are asked
+  'rspw', // <resellerAccountId> — ask before replacing the panel password
+  'rspw2', // <resellerAccountId> — do it. Separate action, like `rvk2`: the old
+  //         password stops working the moment this runs
   'sup', // how to reach support
   'ref', // the customer's referral link and what it has earned
   'hlp', // [articleId] — the education list, or one article

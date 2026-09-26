@@ -349,6 +349,12 @@ export interface TelegramApi {
      * reported a screen with no buttons.
      */
     replyKeyboard?: ReplyKeyboard,
+    /**
+     * Telegram's `protect_content`: the message cannot be forwarded or saved
+     * from the chat. Set on exactly one message — a reseller's new panel
+     * password (#474) — which should live nowhere but the reseller's own screen.
+     */
+    protectContent?: boolean,
   ): Promise<SentMessage>;
   /**
    * Re-sends a photo we were sent, by its `file_id`.
@@ -955,7 +961,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       return parsed.data.status;
     },
 
-    async sendMessage(chatId, text, keyboard, threadId, replyKeyboard) {
+    async sendMessage(chatId, text, keyboard, threadId, replyKeyboard, protectContent) {
       // Refused rather than resolved. One `reply_markup` per message is
       // Telegram's rule, so a caller asking for both has decided something it
       // cannot have — and whichever half this dropped silently would show up as
@@ -966,7 +972,17 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       const result = await withEmojiFallback(
         text,
         keyboard,
-        (body) => call('sendMessage', { chat_id: chatId, ...body, ...topic(threadId) }, 15_000),
+        (body) =>
+          call(
+            'sendMessage',
+            {
+              chat_id: chatId,
+              ...body,
+              ...topic(threadId),
+              ...(protectContent === true ? { protect_content: true } : {}),
+            },
+            15_000,
+          ),
         replyKeyboard,
       );
       // Lenient on purpose: a result without an id is still a delivered

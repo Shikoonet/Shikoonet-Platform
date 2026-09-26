@@ -596,6 +596,9 @@ export interface ShopStatsResponse {
   renewalsIrr: number;
   addonsCount: number;
   addonsIrr: number;
+  /** Completed RESELLER_VOLUME orders — a reseller topping up their own panel. */
+  resellerCount: number;
+  resellerIrr: number;
   /** Sales + renewals + add-ons. Not top-ups — that is money moved, not earned. */
   earnedIrr: number;
   topupsIrr: number;
@@ -1531,6 +1534,20 @@ export type BroadcastAudience =
   | { kind: 'provider'; providerId: number }
   | { kind: 'customer'; telegramId: number };
 
+/**
+ * A panel's reseller price table, in TOMAN like every price on this screen.
+ *
+ * The whole order is priced at the tier its size falls in; the cheapest
+ * purchase is the first tier. `null` on the three settings is «not set»:
+ * no role (refused by the bot), no term, and the shop's card-to-card cap.
+ */
+export interface ResellerSale {
+  tiers: { fromTb: number; pricePerTbToman: number }[];
+  roleId: number | null;
+  termDays: number | null;
+  maxOrderToman: number | null;
+}
+
 export interface PanelItem {
   id: number;
   code: string;
@@ -1575,6 +1592,8 @@ export interface PanelItem {
   extraTimeTomanPerDay: PanelTierPrices;
   /** Where an ended account is moved. Empty means «leave it alone» — today's behaviour. */
   downgradeGroupIds: number[];
+  /** «فروش به نماینده» — volume a reseller buys for their own panel. Null = not sold here. */
+  resellerSale: ResellerSale | null;
   hasSecretRef: boolean;
   productCount: number;
   planCount: number;
@@ -2027,7 +2046,11 @@ export interface CronJobRow {
 export interface ResellerRow {
   id: number;
   name: string;
-  status: 'ACTIVE' | 'SUSPENDED' | 'CLOSED';
+  /**
+   * `PENDING` is approved but not yet on the panel: the bot creates the admin
+   * on the reseller's first paid purchase.
+   */
+  status: 'PENDING' | 'ACTIVE' | 'SUSPENDED' | 'CLOSED';
   telegramId: string | null;
   username: string | null;
   providerId: number;
@@ -3291,6 +3314,8 @@ export const api = {
       extraVolumeTomanPerGb?: PanelTierPrices;
       extraTimeTomanPerDay?: PanelTierPrices;
       downgradeGroupIds?: number[] | null;
+      /** The whole table or null; refusals come back as a Persian `detail`. */
+      resellerSale?: ResellerSale | null;
     },
   ) {
     return req<{
@@ -3577,10 +3602,37 @@ export const api = {
     expiresAtMs: number | null;
     installationUrl: string | null;
     note: string | null;
+    /**
+     * `ACTIVE` links an admin that already exists on the panel; `PENDING`
+     * leaves it for the bot to create, and then `dataLimitBytes` must be null.
+     */
+    status?: 'ACTIVE' | 'PENDING';
   }) {
     return req<{ ok: boolean; id: number }>('/resellers', {
       method: 'POST',
       body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * A partial edit. `dataLimitBytes` needs `expectedDataLimitBytes` beside it
+   * — the value the operator saw — and a 409 `volume_moved` answers a row the
+   * bot topped up in the meantime.
+   */
+  updateReseller(
+    id: number,
+    patch: {
+      name?: string;
+      expiresAtMs?: number | null;
+      installationUrl?: string | null;
+      note?: string | null;
+      dataLimitBytes?: number | null;
+      expectedDataLimitBytes?: number | null;
+    },
+  ) {
+    return req<{ ok: boolean }>(`/resellers/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
     });
   },
 

@@ -32,6 +32,7 @@ import {
   isMenuAction,
   MENUS,
   ADMIN_ONLY,
+  RESELLER_ACCOUNT_ONLY,
   RESELLER_ONLY_HIDDEN,
   type ButtonPlacement,
   type MenuId,
@@ -138,6 +139,23 @@ export function buildMenu(
 export interface MenuViewer {
   is_reseller: boolean;
   is_admin: boolean;
+  /** Owns a reseller account that is not CLOSED (#474) — draws «🏢 پنل نمایندگی». */
+  has_reseller_account: boolean;
+}
+
+/**
+ * The one audience rule, for both the drawing side and the typed-label side.
+ *
+ * «درخواست نمایندگی» is hidden from somebody who already has a panel as well
+ * as from a tiered reseller: they have nothing left to apply for.
+ */
+function viewerSees(viewer: MenuViewer, action: string): boolean {
+  if ((viewer.is_reseller || viewer.has_reseller_account) && RESELLER_ONLY_HIDDEN.has(action)) {
+    return false;
+  }
+  if (!viewer.is_admin && ADMIN_ONLY.has(action)) return false;
+  if (!viewer.has_reseller_account && RESELLER_ACCOUNT_ONLY.has(action)) return false;
+  return true;
 }
 
 /**
@@ -152,15 +170,10 @@ export function buildMainMenu(
   buttons: readonly ButtonPlacement[],
   viewer: MenuViewer,
 ): InlineKeyboard {
-  return buildMenu('main', buttons, {
-    applies: (action) => {
-      if (viewer.is_reseller && RESELLER_ONLY_HIDDEN.has(action)) return false;
-      // The other half of the rule this function's docstring has always
-      // described. `is_admin` was computed on every screen and read by nothing.
-      if (!viewer.is_admin && ADMIN_ONLY.has(action)) return false;
-      return true;
-    },
-  });
+  // `viewerSees` holds both halves of the rule this function's docstring has
+  // always described — `is_admin` was once computed on every screen and read by
+  // nothing — and the third, the reseller panel.
+  return buildMenu('main', buttons, { applies: (action) => viewerSees(viewer, action) });
 }
 
 /**
@@ -208,12 +221,11 @@ export function actionForLabel(
   if (typed === '') return null;
   for (const button of buttons) {
     if (!button.visible || button.action === 'back') continue;
-    if (viewer.is_reseller && RESELLER_ONLY_HIDDEN.has(button.action)) continue;
     // The same audience rule the drawing side applies. A bottom keyboard sends
     // TEXT, so without this a customer who typed the admin button's label word
     // for word would be routed to its action — the handler refuses them anyway,
     // but a door that is locked and also not drawn is the shape this wants.
-    if (!viewer.is_admin && ADMIN_ONLY.has(button.action)) continue;
+    if (!viewerSees(viewer, button.action)) continue;
     const label = fill(button.label, {});
     const split = splitCustomEmojiLabel(label);
     if (typed === anchorLabel(split.text) || typed === split.text) return button.action;

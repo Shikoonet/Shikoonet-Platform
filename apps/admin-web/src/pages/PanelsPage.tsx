@@ -62,6 +62,7 @@ import type {
   PanelTestResult,
   PanelTierPrices,
   PanelUsernameMode,
+  ResellerSale,
 } from '../api.js';
 
 /**
@@ -870,6 +871,74 @@ function sameIds(a: number[], b: number[]): boolean {
   return a.length === b.length && a.every((id) => b.includes(id));
 }
 
+/** One «فروش به نماینده» row as typed. */
+interface SaleRow {
+  fromTb: string;
+  price: string;
+}
+
+/** The route's own ceiling on the table. */
+const MAX_SALE_ROWS = 20;
+
+/**
+ * The reseller table as typed, or the Persian reason it cannot be sent.
+ *
+ * No rows is `null` — «not sold to resellers here». The rows go out in the
+ * order they are on screen and the prices as typed, in Toman: sorting them
+ * here would save a table the operator never saw, so an out-of-order one is
+ * refused instead. The cheapest-order-against-cap check is the server's; it
+ * answers with a `detail` that is shown as it comes.
+ */
+function resellerSaleValue(
+  rows: SaleRow[],
+  role: string,
+  term: string,
+  max: string,
+): { sale: ResellerSale | null } | { err: string } {
+  if (rows.length === 0) return { sale: null };
+  const tiers: ResellerSale['tiers'] = [];
+  for (const r of rows) {
+    const fromTb = positiveIntOrNull(r.fromTb);
+    const price = positiveIntOrNull(r.price);
+    if (typeof fromTb !== 'number' || typeof price !== 'number') {
+      return {
+        err: 'هر پلهٔ فروش به نماینده یک «از … ترابایت» و یک قیمت صحیح بزرگ‌تر از صفر لازم دارد.',
+      };
+    }
+    const prev = tiers[tiers.length - 1];
+    if (prev && fromTb <= prev.fromTb) {
+      return {
+        err: 'پله‌های فروش به نماینده باید صعودی باشند — هر «از … ترابایت» بزرگ‌تر از قبلی.',
+      };
+    }
+    tiers.push({ fromTb, pricePerTbToman: price });
+  }
+  const roleId = positiveIntOrNull(role);
+  const termDays = positiveIntOrNull(term);
+  const maxOrderToman = positiveIntOrNull(max);
+  if (roleId === 'bad' || (roleId !== null && roleId <= 1)) {
+    return { err: 'شناسهٔ نقش PasarGuard باید عدد صحیح بزرگ‌تر از ۱ باشد — نقش ۱ مالک پنل است.' };
+  }
+  if (termDays === 'bad' || maxOrderToman === 'bad') {
+    return { err: 'مهلت و سقف سفارش باید عدد صحیح بزرگ‌تر از صفر باشند — خالی یعنی تنظیم‌نشده.' };
+  }
+  return { sale: { tiers, roleId, termDays, maxOrderToman } };
+}
+
+function sameSale(a: ResellerSale | null, b: ResellerSale | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.roleId === b.roleId &&
+    a.termDays === b.termDays &&
+    a.maxOrderToman === b.maxOrderToman &&
+    a.tiers.length === b.tiers.length &&
+    a.tiers.every((t, i) => {
+      const u = b.tiers[i]!;
+      return t.fromTb === u.fromTb && t.pricePerTbToman === u.pricePerTbToman;
+    })
+  );
+}
+
 const TIERS: ReadonlyArray<{ key: keyof TierText; label: string }> = [
   { key: 'f', label: 'مشتری عادی' },
   { key: 'n', label: 'نماینده' },
@@ -946,6 +1015,17 @@ function PanelModal({
   );
   /** The deny list costs a request, so it is not asked for until somebody looks. */
   const [hiddenOpened, setHiddenOpened] = useState(false);
+  // `?? null` for a server that predates the field: the same «not sold here».
+  const storedSale = panel?.resellerSale ?? null;
+  const [saleRows, setSaleRows] = useState<SaleRow[]>(
+    (storedSale?.tiers ?? []).map((t) => ({
+      fromTb: String(t.fromTb),
+      price: String(t.pricePerTbToman),
+    })),
+  );
+  const [saleRole, setSaleRole] = useState(numText(storedSale?.roleId));
+  const [saleTerm, setSaleTerm] = useState(numText(storedSale?.termDays));
+  const [saleMax, setSaleMax] = useState(numText(storedSale?.maxOrderToman));
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1044,6 +1124,14 @@ function PanelModal({
         setErr('حداقل خرید باید عدد صحیح بزرگ‌تر از صفر باشد — خالی یعنی حداقلی ندارد.');
         return;
       }
+      const sale =
+        kind === 'pasarguard'
+          ? resellerSaleValue(saleRows, saleRole, saleTerm, saleMax)
+          : { sale: storedSale };
+      if ('err' in sale) {
+        setErr(sale.err);
+        return;
+      }
       const panelText = usernameText.trim() === '' ? null : usernameText.trim();
       /*
        * The trial's three fields move together and the two price tables move
@@ -1097,6 +1185,7 @@ function PanelModal({
         ...(minTimeValue === panel.extraTimeMinDays ? {} : { extraTimeMinDays: minTimeValue }),
         ...(newcomersOnly === panel.newcomersOnly ? {} : { newcomersOnly }),
         ...(dashboardPathValue === panel.dashboardPath ? {} : { dashboardPath: dashboardPathValue }),
+        ...(sameSale(sale.sale, storedSale) ? {} : { resellerSale: sale.sale }),
       });
       setNote(statusNote(updated.panel, updated.probe));
       setPassword('');
@@ -1705,6 +1794,131 @@ function PanelModal({
                 می‌تواند یک گیگابایت هم بخرد.
               </p>
             </Fold>
+
+            {kind === 'pasarguard' && (
+              <Fold title="🏢 فروش به نماینده">
+                {saleRows.length === 0 && (
+                  <p className="muted">
+                    روی این پنل به نماینده حجم فروخته نمی‌شود. با «افزودن پله» روشنش کنید؛ حذف همهٔ
+                    پله‌ها دوباره خاموشش می‌کند.
+                  </p>
+                )}
+                {saleRows.map((r, i) => (
+                  <div className="filters" key={i} style={{ alignItems: 'flex-end' }}>
+                    <div className="grow">
+                      <label className="form-label" htmlFor={`panel-sale-from-${i}`}>
+                        از … ترابایت (پلهٔ {count(i + 1)})
+                      </label>
+                      <input
+                        id={`panel-sale-from-${i}`}
+                        className="form-control ltr"
+                        type="text"
+                        inputMode="numeric"
+                        value={r.fromTb}
+                        onChange={(e) =>
+                          setSaleRows(
+                            saleRows.map((x, j) => (j === i ? { ...x, fromTb: e.target.value } : x)),
+                          )
+                        }
+                        {...w}
+                      />
+                    </div>
+                    <div className="grow">
+                      <label className="form-label" htmlFor={`panel-sale-price-${i}`}>
+                        قیمت هر ترا — تومان (پلهٔ {count(i + 1)})
+                      </label>
+                      <input
+                        id={`panel-sale-price-${i}`}
+                        className="form-control ltr"
+                        type="text"
+                        inputMode="numeric"
+                        value={r.price}
+                        onChange={(e) =>
+                          setSaleRows(
+                            saleRows.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)),
+                          )
+                        }
+                        {...w}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      aria-label={`حذف پلهٔ ${count(i + 1)}`}
+                      onClick={() => setSaleRows(saleRows.filter((_, j) => j !== i))}
+                      {...w}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={{ marginBlockStart: 8 }}
+                  disabled={saleRows.length >= MAX_SALE_ROWS}
+                  onClick={() => setSaleRows([...saleRows, { fromTb: '', price: '' }])}
+                  {...w}
+                >
+                  افزودن پله
+                </button>
+                <p className="muted" style={{ marginBlockStart: 4 }}>
+                  کل سفارش با نرخ پله‌ای حساب می‌شود که حجمش در آن می‌افتد. کمترین خرید = اولین پله.
+                </p>
+
+                <div className="filters" style={{ marginBlockStart: 10 }}>
+                  <div className="grow">
+                    <label className="form-label" htmlFor="panel-sale-role">
+                      شناسهٔ نقش PasarGuard
+                    </label>
+                    <input
+                      id="panel-sale-role"
+                      className="form-control ltr"
+                      type="text"
+                      inputMode="numeric"
+                      value={saleRole}
+                      onChange={(e) => setSaleRole(e.target.value)}
+                      {...w}
+                    />
+                  </div>
+                  <div className="grow">
+                    <label className="form-label" htmlFor="panel-sale-term">
+                      مهلت پنل جدید (روز)
+                    </label>
+                    <input
+                      id="panel-sale-term"
+                      className="form-control ltr"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="بی‌مهلت"
+                      value={saleTerm}
+                      onChange={(e) => setSaleTerm(e.target.value)}
+                      {...w}
+                    />
+                  </div>
+                  <div className="grow">
+                    <label className="form-label" htmlFor="panel-sale-max">
+                      سقف هر سفارش (تومان)
+                    </label>
+                    <input
+                      id="panel-sale-max"
+                      className="form-control ltr"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="سقف کارت‌به‌کارت فروشگاه"
+                      value={saleMax}
+                      onChange={(e) => setSaleMax(e.target.value)}
+                      {...w}
+                    />
+                  </div>
+                </div>
+                <p className="muted" style={{ marginBlockStart: 4 }}>
+                  نقش همان نقشی است که ربات به ادمینِ پنل نماینده می‌دهد — نه مالک، و بدون دسترسی به
+                  ادمین‌ها و تنظیمات. مهلت خالی یعنی پنلی که ربات می‌سازد بی‌مهلت است؛ سقف خالی
+                  یعنی همان سقف کارت‌به‌کارت فروشگاه. هر سفارش یک واریز است.
+                </p>
+              </Fold>
+            )}
 
             <Fold title="گروه‌های پنل" open>
               <PanelGroupsSection panel={panel} groups={groups} />
