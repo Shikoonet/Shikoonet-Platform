@@ -275,6 +275,19 @@ export interface RemoteAccount {
   admin: string | null;
 }
 
+/** One account read on its own (`accountStates`). NULLs as on `RemoteAccount`. */
+export interface AccountState {
+  /** The panel's own word, lowercased: `active`, `limited`, `expired`, `disabled`, `on_hold`. */
+  status: string | null;
+  usedBytes: number | null;
+  /** NULL: unmetered. */
+  limitBytes: number | null;
+  /** NULL: no date, or held until the first connection. */
+  expiresAtMs: number | null;
+  note: string | null;
+  subscriptionUrl: string | null;
+}
+
 /** One group as the panel reports it. `name` is for a person to recognise. */
 export interface PanelGroup {
   id: number;
@@ -621,6 +634,16 @@ export interface ProvisioningAdapter {
    * map; `null` only when the panel could not be reached at all.
    */
   accountLinks?(provider: ProviderContext, usernames: string[]): Promise<Map<string, string> | null>;
+
+  /**
+   * Each named account as the panel holds it right now, one read per account.
+   *
+   * For the caller that cannot wait for the ten-minute sync: a reserved
+   * renewal has to be applied the moment the quota runs out (Sam, 2026-09-26),
+   * and `listAccounts` carries no quota at all. `accountLinks` is this, keeping
+   * only the link. Absence and `null` mean what they mean there.
+   */
+  accountStates?(provider: ProviderContext, usernames: string[]): Promise<Map<string, AccountState> | null>;
 
   /**
    * The groups this panel offers, as the panel itself reports them.

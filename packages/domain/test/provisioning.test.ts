@@ -734,6 +734,88 @@ describe('listing every account on a panel', () => {
 });
 
 /**
+ * Named accounts read one at a time, for the reserved-renewal sweep: it has to
+ * see a quota run out, and the listing carries no quota.
+ */
+describe('reading named accounts as they are now', () => {
+  it('reads status, usage, limit, date and note, and leaves out an account the panel does not have', async () => {
+    const panel = fakePanel({
+      users: {
+        full: {
+          username: 'full',
+          status: 'Limited',
+          used_traffic: 10 * 1024 ** 3,
+          data_limit: 10 * 1024 ** 3,
+          expire: 1_788_000_000,
+          note: '369469521 | buy renew S-1',
+          subscription_url: '/sub/full-tok',
+        },
+        // Zero and absent are the panel saying «no limit» and «no date».
+        open: { username: 'open', status: 'active', used_traffic: 5, data_limit: 0, expire: 0 },
+      },
+    });
+
+    const states = await marzbanAdapter.accountStates!(provider({ fetch: panel.fetchImpl }), [
+      'full',
+      'open',
+      'gone',
+    ]);
+
+    expect(states && Object.fromEntries(states)).toEqual({
+      full: {
+        status: 'limited',
+        usedBytes: 10 * 1024 ** 3,
+        limitBytes: 10 * 1024 ** 3,
+        expiresAtMs: 1_788_000_000_000,
+        note: '369469521 | buy renew S-1',
+        subscriptionUrl: 'https://panel.example.com/sub/full-tok',
+      },
+      open: {
+        status: 'active',
+        usedBytes: 5,
+        limitBytes: null,
+        expiresAtMs: null,
+        note: null,
+        subscriptionUrl: null,
+      },
+    });
+  });
+
+  it('answers null when it cannot log in, rather than an empty map', async () => {
+    // Empty would read as «none of these accounts exist», and a caller would
+    // be entitled to act on that.
+    const fetchImpl = (async () => new Response('{}', { status: 401 })) as unknown as typeof globalThis.fetch;
+    expect(await marzbanAdapter.accountStates!(provider({ fetch: fetchImpl }), ['a'])).toBeNull();
+  });
+
+  it('stops after a round in which nothing answered', async () => {
+    let reads = 0;
+    const fetchImpl = (async (input: string | URL | Request) => {
+      if (String(input).endsWith('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 't' }), { status: 200 });
+      }
+      reads += 1;
+      throw new Error('connect ETIMEDOUT');
+    }) as unknown as typeof globalThis.fetch;
+    const names = Array.from({ length: 25 }, (_, i) => `u_${i}`);
+
+    const states = await marzbanAdapter.accountStates!(provider({ fetch: fetchImpl }), names);
+
+    // One batch of ten, not twenty-five timeouts inside the poll loop.
+    expect(reads).toBe(10);
+    expect(states?.size).toBe(0);
+  });
+
+  it('is what the link lookup keeps the links of', async () => {
+    const panel = fakePanel({
+      users: { a: { username: 'a', subscription_url: '/sub/a-tok' }, b: { username: 'b' } },
+    });
+    const links = await marzbanAdapter.accountLinks!(provider({ fetch: panel.fetchImpl }), ['a', 'b']);
+    expect(links && Object.fromEntries(links)).toEqual({ a: 'https://panel.example.com/sub/a-tok' });
+  });
+});
+
+/**
  * Which renewal mode a panel uses, read from the settings the admin already
  * made in the old bot.
  *
