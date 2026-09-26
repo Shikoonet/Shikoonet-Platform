@@ -1,7 +1,7 @@
 #!/bin/sh
 # Which of the three this container is.
 #
-# Set `SERVICE` to bot, ingest or dashboard. There is no default on purpose: an
+# Set `SERVICE` to bot, ingest, dashboard or support. There is no default on purpose: an
 # image that picks one for you starts the wrong process on a typo and looks
 # healthy doing it. Same reasoning as the boot guards inside the services —
 # a setting nobody decided is refused here rather than guessed.
@@ -40,6 +40,8 @@ case "${SERVICE:-}" in
   bot)       schema_gate; exec node --import tsx apps/bot/src/server.ts ;;
   ingest)    schema_gate; exec node --import tsx apps/ingest-worker/src/server.ts ;;
   dashboard) schema_gate; exec node --import tsx apps/dashboard-worker/src/server.ts ;;
+  # The support bot's door alone, out of the SMS service's process (2026-09-26).
+  support)   schema_gate; exec node --import tsx apps/ingest-worker/src/supportServer.ts ;;
   # Applies what the gate refuses to start on, then exits. A one-off container
   # rather than a step inside the three, because a service that migrates on boot
   # migrates once per replica and once per restart loop, and the moment it runs
@@ -49,11 +51,11 @@ case "${SERVICE:-}" in
   # it.
   migrate)   exec node --import tsx packages/db/src/schemaCli.ts up ;;
   '')
-    echo "SERVICE is required: one of bot, ingest, dashboard, migrate" >&2
+    echo "SERVICE is required: one of bot, ingest, dashboard, support, migrate" >&2
     exit 1
     ;;
   *)
-    echo "SERVICE=${SERVICE} is not one of bot, ingest, dashboard, migrate" >&2
+    echo "SERVICE=${SERVICE} is not one of bot, ingest, dashboard, support, migrate" >&2
     exit 1
     ;;
 esac
