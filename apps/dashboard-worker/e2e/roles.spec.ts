@@ -104,8 +104,12 @@ const WITHHELD = [
  * each reached is shop operation, not customer data — the screen shows
  * counts, never a name — and the write behind it is ADMIN-only in the route;
  * `write-roles.test.ts` counts it separately.
+ *
+ * Twenty-one again on 2026-09-26. «کمپین‌ها» (#471) is readable for the reason
+ * «آمار فروشگاه» is: counts and sums per campaign, and no customer named on it.
+ * Its two writes are ADMIN-only in the route.
  */
-const OFFERED_TO_A_READER = 20;
+const OFFERED_TO_A_READER = 21;
 
 async function signInAsReader(page: Page): Promise<void> {
   await page.goto(`${BASE}/admin/`);

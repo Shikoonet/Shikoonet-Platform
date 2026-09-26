@@ -536,6 +536,45 @@ export type StatsRange =
   | 'day'
   | 'between';
 
+/** One campaign and its funnel in the chosen range — `campaignRoutes.ts`. */
+export interface CampaignFunnel {
+  id: number;
+  slug: string;
+  name: string;
+  source: string;
+  note: string;
+  status: 'ACTIVE' | 'ARCHIVED';
+  createdAt: number;
+  starts: number;
+  newUsers: number;
+  buyers: number;
+  newBuyers: number;
+  revenueIrr: number;
+  newRevenueIrr: number;
+}
+
+export interface CampaignList {
+  ok: boolean;
+  startMs: number | null;
+  endMs: number | null;
+  /** `bot/username`; null when it is not set, and the links cannot be built. */
+  botUsername: string | null;
+  items: CampaignFunnel[];
+}
+
+export interface CampaignDetail extends Omit<CampaignList, 'items'> {
+  campaign: CampaignFunnel;
+  byDay: Array<{ day: string; starts: number; revenueIrr: number }>;
+}
+
+/** The `?range=&day=&to=` every stats-shaped screen sends. */
+function rangeQuery(range: StatsRange, day?: string, to?: string): string {
+  const q = new URLSearchParams({ range });
+  if ((range === 'day' || range === 'between') && day) q.set('day', day);
+  if (range === 'between' && to) q.set('to', to);
+  return q.toString();
+}
+
 export interface ShopStatsResponse {
   ok: boolean;
   range: StatsRange;
@@ -3729,10 +3768,29 @@ export const api = {
    * to clear the date picker when the operator moves back to a period button.
    */
   stats(range: StatsRange, day?: string, to?: string) {
-    const q = new URLSearchParams({ range });
-    if ((range === 'day' || range === 'between') && day) q.set('day', day);
-    if (range === 'between' && to) q.set('to', to);
-    return req<ShopStatsResponse>(`/stats?${q.toString()}`);
+    return req<ShopStatsResponse>(`/stats?${rangeQuery(range, day, to)}`);
+  },
+
+  campaigns(range: StatsRange, day?: string, to?: string) {
+    return req<CampaignList>(`/campaigns?${rangeQuery(range, day, to)}`);
+  },
+
+  campaign(id: number, range: StatsRange, day?: string, to?: string) {
+    return req<CampaignDetail>(`/campaigns/${id}?${rangeQuery(range, day, to)}`);
+  },
+
+  addCampaign(body: { slug: string; name: string; source?: string; note?: string }) {
+    return req<{ ok: boolean; id: number }>('/campaigns', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  editCampaign(
+    id: number,
+    body: { name?: string; source?: string; note?: string; status?: 'ACTIVE' | 'ARCHIVED' },
+  ) {
+    return req<{ ok: boolean }>(`/campaigns/${id}`, { method: 'PUT', body: JSON.stringify(body) });
   },
 
   importFiles() {

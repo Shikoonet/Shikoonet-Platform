@@ -48,6 +48,7 @@ export type PageId =
   | HubPageId
   | 'dashboard'
   | 'stats'
+  | 'campaigns'
   | 'customers'
   | 'referrals'
   | 'bulk'
@@ -101,6 +102,10 @@ export const NAV: NavGroup[] = [
       // ساخت» and «هر شریک چقدر برداشته». A report, so it sits with the other
       // two rather than beside the ledger it is added up from.
       { id: 'profit', label: 'سود و زیان', icon: 'bars' },
+      // Sam, 2026-09-26 (#471): which link brought a customer and what they
+      // bought. A report of the same shape as the two above — a range, cards,
+      // a chart — so it sits with them.
+      { id: 'campaigns', label: 'کمپین‌ها', icon: 'send' },
     ],
   },
   {
@@ -228,6 +233,8 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'dashboard',
   // Every figure on it is an aggregate — nothing there names a customer.
   'stats',
+  // The same kind of page: counts and sums per campaign, no customer named.
+  'campaigns',
   // All five finance screens. Not an oversight and not generosity: reviewing
   // payments is the entire reason the READ_ONLY role exists, and `mayRead`
   // withholds nothing on these paths — its list is `/api/v1/admin/*` only, and
