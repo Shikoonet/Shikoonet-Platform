@@ -420,6 +420,33 @@ describe('sending it, and being refused', () => {
     expect(refused).toHaveBeenCalledTimes(1);
   });
 
+  it('sends a picture’s caption the same way, and lands it plain the same way', async () => {
+    // A delivery is one message since 2026-09-26: the service card is the QR
+    // picture's caption, so the shop's custom emoji now ride on a photo.
+    const forms: FormData[] = [];
+    const fetchImpl = (async (_url: string, init: { body: FormData }) => {
+      forms.push(init.body);
+      return forms.length === 1
+        ? new Response(
+            JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: CUSTOM_EMOJI_INVALID' }),
+            { status: 400 },
+          )
+        : new Response(JSON.stringify({ ok: true, result: { message_id: 42 } }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const api = createTelegramApi({ token: 't', baseUrl: 'https://x.test', fetch: fetchImpl });
+    const keyboard = [[{ text: 'منو', callback_data: 'x' }]];
+
+    await api.sendPhotoBytes(1, new Uint8Array([1]), `قیمت < ۱۰۰ ${FIRE}`, keyboard);
+
+    expect(forms).toHaveLength(2);
+    expect(forms[0]!.get('parse_mode')).toBe('HTML');
+    expect(forms[0]!.get('caption')).toContain('&lt;');
+    expect(forms[1]!.get('parse_mode')).toBeNull();
+    expect(forms[1]!.get('caption')).toBe('قیمت < ۱۰۰ 🔥');
+    expect(forms[1]!.get('photo')).toBeInstanceOf(Blob);
+    expect(JSON.parse(forms[1]!.get('reply_markup') as string)).toEqual({ inline_keyboard: keyboard });
+  });
+
   it('puts a leading emoji on the BUTTON, as an icon rather than as markup', async () => {
     // A button's `text` is plain — Telegram parses no markup in it — so the
     // only way a premium emoji reaches one is `icon_custom_emoji_id`. Sent as

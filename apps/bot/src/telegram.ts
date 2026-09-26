@@ -382,6 +382,10 @@ export interface TelegramApi {
    * Distinct from `sendPhoto` because there is no `file_id` to send: a QR code
    * exists only for the message it is attached to. The upload is multipart,
    * which is the one place in this file that is not JSON.
+   *
+   * The caption and keyboard land like `sendMessage`'s — HTML when the caption
+   * carries markup, plain on a refusal — because a delivery sends its whole
+   * service card here as the caption.
    */
   sendPhotoBytes(
     chatId: number,
@@ -1001,22 +1005,28 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     },
 
     async sendPhotoBytes(chatId, png, caption, keyboard) {
-      const form = new FormData();
-      form.set('chat_id', String(chatId));
       // Copied into a fresh ArrayBuffer: `Buffer` is a view onto a shared pool,
       // and handing that view to Blob can send whatever else is in the pool.
       const bytes = new Uint8Array(png.byteLength);
       bytes.set(png);
-      form.set('photo', new Blob([bytes], { type: 'image/png' }), 'qr.png');
-      if (caption !== undefined) form.set('caption', clampCaption(caption));
-      if (keyboard !== undefined) {
-        // Plain, not premium. The one keyboard that reaches here is the QR
-        // screen's own «copy the link» button, which the bot writes itself and
-        // no admin can put markup into — and a multipart upload has no second
-        // attempt to land on if Telegram refused an icon.
-        form.set('reply_markup', JSON.stringify({ inline_keyboard: keyboardFor(keyboard, false) }));
-      }
-      await callForm('sendPhoto', form, 30_000);
+      // Through the same landing as `sendMessage`, because the delivery card
+      // rides here as a caption now — with the shop's custom emoji in its text
+      // and its buttons. A caption that fits keeps its markup; one that does not
+      // is cut as plain text, since cutting HTML can leave half a tag.
+      const text = caption ?? '';
+      const fitted =
+        stripMarkup(text).length > MAX_CAPTION_LENGTH ? clampCaption(stripMarkup(text)) : text;
+      await withEmojiFallback(fitted, keyboard, (body) => {
+        const form = new FormData();
+        form.set('chat_id', String(chatId));
+        form.set('photo', new Blob([bytes], { type: 'image/png' }), 'qr.png');
+        const { text: said, ...rest } = body;
+        if (said !== '') form.set('caption', String(said));
+        for (const [key, value] of Object.entries(rest)) {
+          form.set(key, typeof value === 'string' ? value : JSON.stringify(value));
+        }
+        return callForm('sendPhoto', form, 30_000);
+      });
     },
 
     async sendDocumentBytes(chatId, bytes, filename, caption, threadId) {

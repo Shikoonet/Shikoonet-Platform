@@ -218,7 +218,7 @@ async function reclaimStalled(db: D1Database): Promise<void> {
 export interface Delivered {
   text: string;
   keyboard?: InlineKeyboard | null;
-  /** Sent as a photo before the text. In practice the subscription link. */
+  /** Sent as a photo, the text its caption. In practice the subscription link. */
   qrPayload?: string | null;
   /**
    * True only when this message hands a bought service to the customer.
