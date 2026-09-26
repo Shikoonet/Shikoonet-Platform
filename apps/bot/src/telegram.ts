@@ -531,10 +531,13 @@ export const TRUNCATION_MARK = '\n…';
  * alternative is a bot that silently fails to answer, which is how the customer
  * would otherwise find out.
  *
- * The slice is by UTF-16 code unit, matching Telegram's own count.
+ * The slice is by UTF-16 code unit, matching Telegram's own count. The length
+ * is measured without the markup, because Telegram counts after parsing it: a
+ * delivery card's caption can carry 4,000 characters of emoji tags and draw 200
+ * (CodeRabbit on #477).
  */
 function clamp(text: string): string {
-  if (text.length <= MAX_MESSAGE_LENGTH) return text;
+  if (stripMarkup(text).length <= MAX_MESSAGE_LENGTH) return text;
   log.warn('telegram.message_truncated', { chars: text.length, limit: MAX_MESSAGE_LENGTH });
   return cutTo(text, MAX_MESSAGE_LENGTH - TRUNCATION_MARK.length) + TRUNCATION_MARK;
 }

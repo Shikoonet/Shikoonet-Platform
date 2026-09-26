@@ -30,7 +30,7 @@ import { setEventSink, type LogRecord } from '@shikoo/domain';
 import { assertSchema, db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
-import { createTelegramApi } from '../src/telegram.js';
+import { createTelegramApi, MAX_MESSAGE_LENGTH } from '../src/telegram.js';
 import {
   CUSTOM_EMOJI_PAUSE_MS,
   CUSTOM_EMOJI_SETTING,
@@ -445,6 +445,26 @@ describe('sending it, and being refused', () => {
     expect(forms[1]!.get('caption')).toBe('قیمت < ۱۰۰ 🔥');
     expect(forms[1]!.get('photo')).toBeInstanceOf(Blob);
     expect(JSON.parse(forms[1]!.get('reply_markup') as string)).toEqual({ inline_keyboard: keyboard });
+  });
+
+  it('does not cut a caption that fits because its tags pass the message limit', async () => {
+    // 90 tags are 4,860 characters written and 180 drawn. Telegram counts the
+    // drawn ones; measured by the written ones, the card was cut mid-tag and
+    // the row marked SENT (CodeRabbit on #477).
+    const forms: FormData[] = [];
+    const fetchImpl = (async (_url: string, init: { body: FormData }) => {
+      forms.push(init.body);
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 42 } }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const api = createTelegramApi({ token: 't', baseUrl: 'https://x.test', fetch: fetchImpl });
+    const caption = FIRE.repeat(90);
+    expect(caption.length).toBeGreaterThan(MAX_MESSAGE_LENGTH);
+
+    await api.sendPhotoBytes(1, new Uint8Array([1]), caption);
+
+    expect(forms).toHaveLength(1);
+    expect(forms[0]!.get('parse_mode')).toBe('HTML');
+    expect(forms[0]!.get('caption')).toBe(caption);
   });
 
   it('puts a leading emoji on the BUTTON, as an icon rather than as markup', async () => {
