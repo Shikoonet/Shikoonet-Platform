@@ -81,7 +81,12 @@ export function CampaignsPage() {
         setData(d);
         setErr(null);
       })
-      .catch((e: unknown) => alive && setErr(message(e)))
+      .catch((e: unknown) => {
+        if (!alive) return;
+        // Not last range's rows under this range's buttons.
+        setData(null);
+        setErr(message(e));
+      })
       .finally(() => alive && setBusy(false));
     return () => {
       alive = false;
@@ -137,13 +142,17 @@ export function CampaignsPage() {
       {err && <div className="alert alert-error">{err}</div>}
       {done && <div className="alert alert-info">{done}</div>}
       {data && bot === null && (
-        <div className="alert alert-error">
-          نام کاربری ربات در «ربات» ثبت نشده، پس لینک کمپین‌ها ساخته نمی‌شود.
+        <div className="alert alert-info">
+          نام کاربری ربات هنوز ثبت نشده — ربات بار اول که روشن می‌شود آن را ثبت می‌کند. تا آن موقع
+          لینک کمپین‌ها ساخته نمی‌شود.
         </div>
       )}
 
       {editing && (
         <CampaignForm
+          // A new form per row: the fields are initial state, and without a key
+          // switching «ویرایش» from A to B keeps A's values under B's title.
+          key={editing === 'new' ? 'new' : editing.id}
           row={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={(msg) => {
@@ -258,7 +267,7 @@ export function CampaignsPage() {
         </p>
       </div>
 
-      {openId !== null && <Detail id={openId} range={range} day={day} to={to} />}
+      {openId !== null && <Detail id={openId} range={range} day={day} to={to} reload={reload} />}
     </>
   );
 }
@@ -268,17 +277,24 @@ function Detail({
   range,
   day,
   to,
+  reload,
 }: {
   id: number;
   range: StatsRange;
   day: string;
   to?: string | undefined;
+  /** Bumped by the page after an edit, so the card is not a campaign's old name. */
+  reload: number;
 }) {
   const [data, setData] = useState<CampaignDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
+    // Another campaign or another window: nothing of the last one on screen
+    // while this one loads.
+    setData(null);
+    setErr(null);
     api
       .campaign(id, range, day, to)
       .then((d) => {
@@ -290,7 +306,7 @@ function Detail({
     return () => {
       alive = false;
     };
-  }, [id, range, day, to]);
+  }, [id, range, day, to, reload]);
 
   if (err) return <div className="alert alert-error">{err}</div>;
   if (!data) return <p className="muted">در حال بارگذاری…</p>;
@@ -330,6 +346,9 @@ function Detail({
           foot={`${tomanCompact(c.newRevenueIrr)} از کاربر جدید`}
         />
       </div>
+      {data.chartCapped && (
+        <p className="muted">نمودار ۱۲۰ روز آخرِ بازه را نشان می‌دهد؛ کارت‌های بالا کل بازه‌اند.</p>
+      )}
       <BarChart
         title="استارت روزانه"
         series={data.byDay.map((d) => ({ label: dateOnly(d.day), value: d.starts }))}

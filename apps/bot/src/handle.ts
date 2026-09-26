@@ -965,9 +965,16 @@ async function handleStart(
   // `/start c_spring-ads` is somebody arriving on a campaign link (#471). The
   // slug is untrusted and only ever a lookup key: one that names no campaign
   // inserts nothing. Once per campaign and customer — the same link pressed
-  // again changes nothing — and before the gate below, because a customer who
-  // arrives from an ad is exactly the one not yet in the channel.
-  const campaign = /^c_([a-z0-9][a-z0-9-]{2,61})$/.exec(payload ?? '')?.[1];
+  // again changes nothing — and before the channel gate below, because a
+  // customer who arrives from an ad is exactly the one not yet in the channel.
+  // Any case: slugs are stored lower-case, and a link somebody retyped with
+  // capitals on a story is still that campaign.
+  //
+  // The closed sign (`handleUpdate`) answers before this function runs, so an
+  // arrival during a pause records nothing — not the customer, not a referrer,
+  // not this. Kept that way on purpose: recording them would make the customer
+  // «not new» on the /start after the pause, and lose their new-user report.
+  const campaign = /^c_([a-z0-9][a-z0-9-]{2,61})$/i.exec(payload ?? '')?.[1]?.toLowerCase();
   if (campaign !== undefined) {
     await tx
       .prepare(

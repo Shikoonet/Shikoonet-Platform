@@ -29,12 +29,21 @@ const SPRING = {
   newRevenueIrr: 30_000_000,
 };
 
+const AUTUMN = {
+  ...SPRING,
+  id: 2,
+  slug: 'autumn-channel',
+  name: 'کانال پاییز',
+  source: 'کانال شیکو',
+  note: 'پست سنجاق‌شده',
+};
+
 let listed: CampaignList = {
   ok: true,
   startMs: null,
   endMs: null,
   botUsername: 'shikoonet_bot',
-  items: [SPRING],
+  items: [SPRING, AUTUMN],
 };
 const campaigns = vi.fn(async () => listed);
 const add = vi.fn(async (_body: unknown) => ({ ok: true, id: 2 }));
@@ -88,7 +97,26 @@ describe('«کمپین‌ها»', () => {
 
     await screen.findByText('اینستاگرام بهار');
     expect((screen.getByText('کمپین تازه') as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByText('بایگانی') as HTMLButtonElement).disabled).toBe(true);
+    for (const b of screen.getAllByText('بایگانی')) {
+      expect((b as HTMLButtonElement).disabled).toBe(true);
+    }
+  });
+
+  it('edits the row it was opened on, not the one opened before it', async () => {
+    // Found in review: the form's fields are initial state, so without a key
+    // «ویرایش» on A then on B kept A's values under B's title — and «ذخیره»
+    // wrote them onto B.
+    draw();
+    await screen.findByText('اینستاگرام بهار');
+    const [editA, editB] = screen.getAllByText('ویرایش');
+
+    fireEvent.click(editA!);
+    expect((screen.getByLabelText('نام') as HTMLInputElement).value).toBe('اینستاگرام بهار');
+    fireEvent.click(editB!);
+    expect((screen.getByLabelText('نام') as HTMLInputElement).value).toBe('کانال پاییز');
+    expect((screen.getByLabelText('شناسه در لینک') as HTMLInputElement).value).toBe(
+      'autumn-channel',
+    );
   });
 
   it('creates a campaign from its slug and name', async () => {

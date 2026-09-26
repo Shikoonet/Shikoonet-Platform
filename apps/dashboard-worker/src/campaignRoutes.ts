@@ -71,6 +71,13 @@ function windowOf(range: string | undefined, day: string | undefined, to: string
   };
 }
 
+/**
+ * A path id, or null. Digits only and within 2^53: `Number()` alone takes
+ * «1e3» and «0x10», and an integer too large for `bigint` reaches Postgres and
+ * comes back a 500 instead of a 404.
+ */
+const idOf = (raw: string): number | null => (/^[1-9][0-9]{0,14}$/.test(raw) ? Number(raw) : null);
+
 interface FunnelRow {
   id: number;
   slug: string;
@@ -117,6 +124,7 @@ async function funnels(
                 (count(*) FILTER (WHERE is_new_user))::int     AS new_users
            FROM campaign_starts
           WHERE first_at >= to_timestamp(?1 / 1000.0) AND first_at < to_timestamp(?2 / 1000.0)
+            AND (?3::bigint IS NULL OR campaign_id = ?3)
           GROUP BY campaign_id
        ), sa AS (
          SELECT s.campaign_id,
@@ -127,6 +135,7 @@ async function funnels(
            FROM campaign_starts s
            JOIN orders o ON ${EARNED}
           WHERE o.completed_at >= to_timestamp(?1 / 1000.0) AND o.completed_at < to_timestamp(?2 / 1000.0)
+            AND (?3::bigint IS NULL OR s.campaign_id = ?3)
           GROUP BY s.campaign_id
        )
        SELECT c.id, c.slug, c.name, c.source, c.note, c.status, c.created_at,
@@ -151,6 +160,11 @@ async function funnels(
  * One bar per Tehran day, empty days included — the shape `shopReport`'s
  * `byDay` has, for the reason it gives: three starts on three consecutive days
  * and three spread over a month are different campaigns.
+ *
+ * Capped at the same 120 days, and SAYS so: past the cap the bars cover the
+ * window's last 120 days while the cards cover all of it, and a chart that
+ * silently adds up to less than the cards above it is the disagreement this
+ * screen exists to remove.
  */
 async function byDay(
   db: D1Database,
@@ -158,7 +172,8 @@ async function byDay(
   w: { start: number; end: number; all: boolean },
   createdMs: number,
 ) {
-  const chartStart = Math.max(w.all ? createdMs : w.start, w.end - CHART_DAYS_MAX * DAY_MS);
+  const from = w.all ? createdMs : w.start;
+  const chartStart = Math.max(from, w.end - CHART_DAYS_MAX * DAY_MS);
   const { results } = await db
     .prepare(
       `WITH days AS (
@@ -192,11 +207,14 @@ async function byDay(
     )
     .bind(w.start, w.end, id, chartStart)
     .all<{ day: string; starts: number; revenue_irr: number }>();
-  return (results ?? []).map((r) => ({
-    day: r.day,
-    starts: Number(r.starts),
-    revenueIrr: Number(r.revenue_irr),
-  }));
+  return {
+    capped: chartStart > from,
+    days: (results ?? []).map((r) => ({
+      day: r.day,
+      starts: Number(r.starts),
+      revenueIrr: Number(r.revenue_irr),
+    })),
+  };
 }
 
 /** `bot/username`, which the link on the screen is built from. Null says so. */
@@ -245,31 +263,25 @@ export function registerCampaignRoutes(
 ) {
   app.get('/api/v1/admin/campaigns', async (c) => {
     const w = windowOf(c.req.query('range'), c.req.query('day'), c.req.query('to'));
-    const rows = await funnels(c.env.DB, w, null);
+    const [rows, bot] = await Promise.all([funnels(c.env.DB, w, null), botUsername(c.env.DB)]);
     return c.json({
       ok: true,
       startMs: w.all ? null : w.start,
       endMs: w.all ? null : w.end,
-      botUsername: await botUsername(c.env.DB),
+      botUsername: bot,
       items: rows.map(shape),
     });
   });
 
   app.get('/api/v1/admin/campaigns/:id', async (c) => {
-    const id = Number(c.req.param('id'));
-    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    const id = idOf(c.req.param('id'));
+    if (id === null) return c.json({ ok: false, error: 'invalid_id' }, 400);
     const w = windowOf(c.req.query('range'), c.req.query('day'), c.req.query('to'));
     const [row] = await funnels(c.env.DB, w, id);
     if (!row) return c.json({ ok: false, error: 'not_found' }, 404);
     const campaign = shape(row);
-    return c.json({
-      ok: true,
-      startMs: w.all ? null : w.start,
-      endMs: w.all ? null : w.end,
-      botUsername: await botUsername(c.env.DB),
-      campaign,
-      byDay: await byDay(c.env.DB, id, w, campaign.createdAt),
-    });
+    const chart = await byDay(c.env.DB, id, w, campaign.createdAt);
+    return c.json({ ok: true, campaign, byDay: chart.days, chartCapped: chart.capped });
   });
 
   app.post('/api/v1/admin/campaigns', async (c) => {
@@ -320,13 +332,16 @@ export function registerCampaignRoutes(
     return c.json({ ok: true, id: Number(row.id) });
   });
 
-  /** Name, where it runs, a note, and archiving. Never the slug. */
-  app.put('/api/v1/admin/campaigns/:id', async (c) => {
+  /**
+   * Name, where it runs, a note, and archiving. Never the slug. PATCH, like
+   * every other partial edit on this surface: an omitted field is kept.
+   */
+  app.patch('/api/v1/admin/campaigns/:id', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
 
-    const id = Number(c.req.param('id'));
-    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    const id = idOf(c.req.param('id'));
+    if (id === null) return c.json({ ok: false, error: 'invalid_id' }, 400);
     const body = CampaignPatch.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
       return c.json(
@@ -335,18 +350,19 @@ export function registerCampaignRoutes(
       );
     }
 
+    // One statement, so the «before» in the audit row is the row this UPDATE
+    // actually replaced — a separate read first could log a state another
+    // admin had already changed.
     const before = await c.env.DB.prepare(
-      `SELECT name, source, note, status FROM campaigns WHERE id = ?1`,
-    )
-      .bind(id)
-      .first<{ name: string; source: string; note: string; status: string }>();
-    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
-
-    await c.env.DB.prepare(
-      `UPDATE campaigns
-          SET name = COALESCE(?2, name), source = COALESCE(?3, source),
-              note = COALESCE(?4, note), status = COALESCE(?5, status), updated_at = now()
-        WHERE id = ?1`,
+      `WITH old AS (
+         SELECT id, name, source, note, status FROM campaigns WHERE id = ?1 FOR UPDATE
+       )
+       UPDATE campaigns c
+          SET name = COALESCE(?2, c.name), source = COALESCE(?3, c.source),
+              note = COALESCE(?4, c.note), status = COALESCE(?5, c.status), updated_at = now()
+         FROM old
+        WHERE c.id = old.id
+       RETURNING old.name, old.source, old.note, old.status`,
     )
       .bind(
         id,
@@ -355,7 +371,8 @@ export function registerCampaignRoutes(
         body.data.note ?? null,
         body.data.status ?? null,
       )
-      .run();
+      .first<{ name: string; source: string; note: string; status: string }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     await audit(
       c.env.DB,

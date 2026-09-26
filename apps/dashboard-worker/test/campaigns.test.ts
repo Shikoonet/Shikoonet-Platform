@@ -14,13 +14,19 @@
  * - the list, the detail and the daily chart add up to the same numbers.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/index.js';
 import { applySchema, deleteFixtureUsers, env as baseEnv, FIXTURE_TG_BASE } from './helpers/env.js';
 
 const ADMIN = 'admin-campaigns@example.com';
 const REVIEWER = 'reviewer-campaigns@example.com';
 const TG = FIXTURE_TG_BASE + 955_000_000;
+/**
+ * The clock every «کل» window ends at (CLAUDE.md rule 5). Unpinned, the end of
+ * the window is the machine's today, and on a clock before the fixtures below
+ * every expectation would be about orders the window no longer holds.
+ */
+const NOW_MS = Date.UTC(2026, 8, 26, 9, 0, 0);
 
 const envAs = (email: string) => ({ ...baseEnv, TEST_ACCESS_USER: email });
 const send = (method: string, path: string, body: unknown, email = ADMIN) =>
@@ -215,6 +221,13 @@ beforeAll(async () => {
 
 afterAll(purge);
 
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 /** Who arrived new — the `is_new_user` the starts above were written with. */
 const NEW = new Set(['u1', 'u3']);
 
@@ -296,6 +309,31 @@ describe('the funnel', () => {
   });
 });
 
+describe('the detail', () => {
+  it('says when the chart is cut to the last 120 days, and not before', async () => {
+    type Detail = { byDay: unknown[]; chartCapped: boolean };
+    const detail = async (q: string) =>
+      (await (await get(`/api/v1/admin/campaigns/${A}${q}`)).json()) as Detail;
+
+    const long = await detail('?range=between&day=2026-01-01&to=2026-08-05');
+    expect(long.chartCapped).toBe(true);
+    expect(long.byDay.length).toBeLessThanOrEqual(121);
+
+    expect((await detail('?range=between&day=2026-08-01&to=2026-08-05')).chartCapped).toBe(false);
+  });
+
+  it('answers a malformed or impossible id with 400, not a database error', async () => {
+    for (const raw of ['1e3', '0x10', '99999999999999999999', '-1', '0']) {
+      expect((await get(`/api/v1/admin/campaigns/${raw}`)).status, raw).toBe(400);
+      expect(
+        (await send('PATCH', `/api/v1/admin/campaigns/${raw}`, { name: 'x' })).status,
+        raw,
+      ).toBe(400);
+    }
+    expect((await get('/api/v1/admin/campaigns/999999999')).status).toBe(404);
+  });
+});
+
 describe('creating and editing', () => {
   it('takes a slug in lower case and refuses one already taken', async () => {
     const res = await send('POST', '/api/v1/admin/campaigns', {
@@ -332,10 +370,10 @@ describe('creating and editing', () => {
     const id = await campaign('zz-cmp-edit');
 
     expect(
-      (await send('PUT', `/api/v1/admin/campaigns/${id}`, { slug: 'zz-cmp-moved' })).status,
+      (await send('PATCH', `/api/v1/admin/campaigns/${id}`, { slug: 'zz-cmp-moved' })).status,
     ).toBe(400);
     expect(
-      (await send('PUT', `/api/v1/admin/campaigns/${id}`, { name: 'بهار', status: 'ARCHIVED' }))
+      (await send('PATCH', `/api/v1/admin/campaigns/${id}`, { name: 'بهار', status: 'ARCHIVED' }))
         .status,
     ).toBe(200);
 
@@ -349,7 +387,22 @@ describe('creating and editing', () => {
     )
       .bind(String(id))
       .all<{ action: string }>();
-    expect((audited.results ?? []).map((r) => r.action)).toEqual([
+    // The «before» is the row the edit replaced — read in the same statement.
+    const edited = await baseEnv.DB.prepare(
+      `SELECT before_json FROM audit_logs
+        WHERE entity_type = 'CAMPAIGN' AND entity_id = ?1 AND action = 'campaign.updated'`,
+    )
+      .bind(String(id))
+      .first<{ before_json: unknown }>();
+    const before =
+      typeof edited?.before_json === 'string'
+        ? JSON.parse(edited.before_json)
+        : edited?.before_json;
+    expect(before).toMatchObject({ name: 'zz-cmp-edit', status: 'ACTIVE' });
+
+    // Which actions, not their order: the clock is pinned, so both rows carry
+    // the same stamp.
+    expect((audited.results ?? []).map((r) => r.action).sort()).toEqual([
       'campaign.created',
       'campaign.updated',
     ]);
@@ -367,7 +420,7 @@ describe('creating and editing', () => {
         .status,
     ).toBe(403);
     expect(
-      (await send('PUT', `/api/v1/admin/campaigns/${A}`, { name: 'x' }, REVIEWER)).status,
+      (await send('PATCH', `/api/v1/admin/campaigns/${A}`, { name: 'x' }, REVIEWER)).status,
     ).toBe(403);
   });
 });

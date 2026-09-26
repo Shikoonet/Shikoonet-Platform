@@ -588,7 +588,7 @@ describe('every write route, asked directly', () => {
     //
     // 188–189, 2026-09-26: «کمپین‌ها» (#471, 0103). `POST /admin/campaigns`
     // creates a campaign — a slug printed on ads that the bot then counts
-    // starts against — and `PUT /admin/campaigns/:id` renames or archives one;
+    // starts against — and `PATCH /admin/campaigns/:id` renames or archives one;
     // the slug itself has no route that changes it. Neither moves money or
     // touches a customer, but a campaign is what the shop's marketing spend is
     // judged by, so ADMIN-only in the handler and audited as

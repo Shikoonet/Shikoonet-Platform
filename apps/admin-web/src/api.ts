@@ -562,9 +562,12 @@ export interface CampaignList {
   items: CampaignFunnel[];
 }
 
-export interface CampaignDetail extends Omit<CampaignList, 'items'> {
+export interface CampaignDetail {
+  ok: boolean;
   campaign: CampaignFunnel;
   byDay: Array<{ day: string; starts: number; revenueIrr: number }>;
+  /** The bars cover only the window's last 120 days; the cards cover all of it. */
+  chartCapped: boolean;
 }
 
 /** The `?range=&day=&to=` every stats-shaped screen sends. */
@@ -3790,7 +3793,10 @@ export const api = {
     id: number,
     body: { name?: string; source?: string; note?: string; status?: 'ACTIVE' | 'ARCHIVED' },
   ) {
-    return req<{ ok: boolean }>(`/campaigns/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+    return req<{ ok: boolean }>(`/campaigns/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
   },
 
   importFiles() {

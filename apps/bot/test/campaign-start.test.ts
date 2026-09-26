@@ -127,12 +127,20 @@ describe('/start c_<slug>', () => {
     );
   });
 
+  it('counts a link retyped with capitals as the same campaign', async () => {
+    const { updateId, telegramId } = ids();
+
+    await handleUpdate(db, starts(updateId, telegramId, `/start c_${SLUG.toUpperCase()}`));
+    await handleUpdate(db, starts(updateId + 1, telegramId, `/start c_${SLUG}`));
+
+    expect(await startsOf(telegramId)).toEqual([{ campaign_id: campaignId, is_new_user: true }]);
+  });
+
   it('writes nothing for a slug that names no campaign, or is not a slug at all', async () => {
     const { updateId, telegramId } = ids();
 
     for (const [i, text] of [
       '/start c_zz-bot-nobody',
-      '/start c_ZZ-BOT-SPRING',
       "/start c_x'--",
       '/start c_ab',
       `/start c_${SLUG}_`,
