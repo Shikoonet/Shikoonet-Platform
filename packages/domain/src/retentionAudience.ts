@@ -16,8 +16,21 @@ import type { D1Database } from '@shikoo/database';
 
 import { paidServiceSql } from './bought.js';
 
+/**
+ * The service `s` has a renewal reserved and waiting (migration 0108).
+ *
+ * Every sweep that acts on «this service is running out, or has» asks this
+ * first: the customer already renewed. A reminder to renew would sell them a
+ * second reserve the service may not hold, and a downgrade or a removal would
+ * act on an account that is about to be renewed. The partial index serves it.
+ */
+export const WAITING_RESERVE_SQL = `EXISTS (
+                  SELECT 1 FROM renewal_reserves rr
+                   WHERE rr.subscription_id = s.id AND rr.status = 'WAITING')`;
+
 /** The window: from `daysAfter` days past expiry up to `daysBefore` days before it. */
 export const RETENTION_AUDIENCE_WHERE = `s.status = 'ACTIVE'
+                AND NOT ${WAITING_RESERVE_SQL}
                 AND s.hidden_at IS NULL
                 AND u.notify_enabled
                 AND (?2::bigint IS NULL OR s.provider_id = ?2)

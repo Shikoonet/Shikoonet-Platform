@@ -544,6 +544,41 @@ describe('the state of a service, as a pure function', () => {
   });
 });
 
+/**
+ * Whether a renewal now comes too early and is reserved (Sam, 2026-09-26):
+ * only while BOTH volume and time are left, and only on a service that can
+ * run out at all — otherwise nothing would ever apply the reserve.
+ */
+describe('both volume and time left', () => {
+  const future = new Date(NOW_MS + DAY).toISOString();
+  const past = new Date(NOW_MS - 1).toISOString();
+  const s = (over: Partial<menu.ServiceView>) => ({
+    status: 'ACTIVE',
+    volume_gb: 10,
+    used_bytes: 5 * GIB,
+    expires_at: future,
+    duration_days: null,
+    ...over,
+  });
+
+  it.each([
+    ['metered, dated, half used', s({}), true],
+    ['the date has passed', s({ expires_at: past }), false],
+    ['the volume is used up', s({ used_bytes: 10 * GIB }), false],
+    ['unmetered, dated', s({ volume_gb: null }), true],
+    ['metered, no date', s({ expires_at: null }), true],
+    ['unmetered and no date — it can never run out', s({ volume_gb: null, expires_at: null }), false],
+    ['usage never synced counts as left', s({ used_bytes: null }), true],
+    ['held with its days waiting', s({ status: 'ON_HOLD', expires_at: null, used_bytes: 0, duration_days: 30 }), true],
+    ['held, unmetered, no days', s({ status: 'ON_HOLD', expires_at: null, volume_gb: null, duration_days: null }), false],
+    ['switched off by the customer, both left', s({ status: 'DISABLED' }), true],
+    ['switched off and run out underneath', s({ status: 'DISABLED', expires_at: past }), false],
+    ['removed', s({ status: 'REMOVED' }), false],
+  ])('%s', (_name, service, expected) => {
+    expect(menu.hasBothLeft(service, NOW_MS)).toBe(expected);
+  });
+});
+
 describe('volume, in the units the panel counts in', () => {
   it('treats a gigabyte as 1024³ bytes, which is what Marzban reports', () => {
     // Outside truth: `data_limit` is written as `volumeGb * 1024 ** 3` by the

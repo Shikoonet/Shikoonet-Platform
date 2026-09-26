@@ -41,7 +41,7 @@ import * as menu from './menu.js';
 import { loadShopSettings, settingText } from './settings.js';
 import { enqueue } from './notify.js';
 import { report } from './reports.js';
-import { createLogger } from '@shikoo/domain';
+import { createLogger, WAITING_RESERVE_SQL } from '@shikoo/domain';
 
 const log = createLogger('bot');
 
@@ -137,6 +137,8 @@ const TIME_BRANCH = `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_
         WHERE s.status = 'ACTIVE'
           AND u.notify_enabled
           AND s.notify->>'time' IS DISTINCT FROM 'true'
+          -- Renewed already: the reserve starts when this runs out (0108).
+          AND NOT ${WAITING_RESERVE_SQL}
           AND NOT (${STILL_A_TRIAL})
           AND s.expires_at IS NOT NULL
           AND s.expires_at > to_timestamp(?1 / 1000.0)
@@ -149,6 +151,7 @@ const VOLUME_BRANCH = `        SELECT s.id, u.telegram_id, s.plan_name_at_sale, 
          WHERE s.status = 'ACTIVE'
            AND u.notify_enabled
            AND s.notify->>'volume' IS DISTINCT FROM 'true'
+           AND NOT ${WAITING_RESERVE_SQL}
            AND NOT (${STILL_A_TRIAL})
            AND s.volume_gb IS NOT NULL
            AND s.used_bytes IS NOT NULL

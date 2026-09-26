@@ -50,6 +50,7 @@ import {
   adapterFor,
   createLogger,
   downgradeGroupsFor,
+  WAITING_RESERVE_SQL,
   type AccountActionResult,
   type ProviderContext,
 } from '@shikoo/domain';
@@ -116,6 +117,9 @@ export async function downgradeExpired(
          LEFT JOIN provider_secrets ps ON ps.provider_id = pv.id
         WHERE s.status = 'ACTIVE'
           AND s.downgraded_at IS NULL
+          -- A renewal waits for this moment and applies within the round
+          -- (0108); moving the account first would only be undone again.
+          AND NOT ${WAITING_RESERVE_SQL}
           AND s.remote_username IS NOT NULL
           AND s.expires_at IS NOT NULL
           AND s.expires_at < now()

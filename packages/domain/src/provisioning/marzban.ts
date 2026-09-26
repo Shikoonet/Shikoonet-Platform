@@ -68,6 +68,7 @@ import type {
   InboundsResult,
   PanelGroup,
   PanelHost,
+  AccountState,
 } from './types.js';
 
 const GB = 1024 * 1024 * 1024;
@@ -435,6 +436,46 @@ function expiryMs(raw: unknown): number | null {
 function quotaBytes(raw: unknown): number | null {
   const n = asByteCount(raw);
   return n === null || n === 0 ? null : n;
+}
+
+/** `accountStates` on the adapter, and what `accountLinks` reads its links from. */
+async function accountStates(
+  provider: ProviderContext,
+  usernames: string[],
+): Promise<Map<string, AccountState> | null> {
+  try {
+    const auth = await login(provider);
+    if ('error' in auth) return null;
+    const base = provider.baseUrl!.replace(/\/+$/, '');
+    const states = new Map<string, AccountState>();
+    // ponytail: fixed batches of 10 in flight; a pool if one slow account holds up its batch
+    for (let at = 0; at < usernames.length; at += 10) {
+      const answered = await Promise.all(
+        usernames.slice(at, at + 10).map(async (username) => {
+          const found = await getUser(provider, auth.token, username).catch(() => null);
+          if (found?.state === 'found') {
+            states.set(username, {
+              // Read the way `listAccounts` reads the same fields.
+              status: asString(found.user.status)?.toLowerCase() ?? null,
+              usedBytes: asByteCount(found.user.used_traffic),
+              limitBytes: quotaBytes(found.user.data_limit),
+              expiresAtMs: expiryMs(found.user.expire),
+              note: asString(found.user.note),
+              subscriptionUrl: absoluteSubUrl(found.user.subscription_url, base),
+            });
+          }
+          return found !== null;
+        }),
+      );
+      // A round where nothing answered is a panel that is not answering: the
+      // rest would each wait out the full timeout, inside the poll loop. A
+      // 404 is an answer. The names left over come round next sweep.
+      if (!answered.some(Boolean)) break;
+    }
+    return states;
+  } catch {
+    return null;
+  }
 }
 
 /** Plan-level settings win over panel-level ones, same precedence as the legacy bot. */
@@ -1678,31 +1719,16 @@ export const marzbanAdapter: ProvisioningAdapter = {
   },
 
   async accountLinks(provider: ProviderContext, usernames: string[]): Promise<Map<string, string> | null> {
-    try {
-      const auth = await login(provider);
-      if ('error' in auth) return null;
-      const base = provider.baseUrl!.replace(/\/+$/, '');
-      const links = new Map<string, string>();
-      // ponytail: fixed batches of 10 in flight; a pool if one slow account holds up its batch
-      for (let at = 0; at < usernames.length; at += 10) {
-        const answered = await Promise.all(
-          usernames.slice(at, at + 10).map(async (username) => {
-            const found = await getUser(provider, auth.token, username).catch(() => null);
-            const url = found?.state === 'found' ? absoluteSubUrl(found.user.subscription_url, base) : null;
-            if (url !== null) links.set(username, url);
-            return found !== null;
-          }),
-        );
-        // A round where nothing answered is a panel that is not answering: the
-        // rest would each wait out the full timeout, inside the poll loop. A
-        // 404 is an answer. The names left over come round next sweep.
-        if (!answered.some(Boolean)) break;
-      }
-      return links;
-    } catch {
-      return null;
+    const states = await accountStates(provider, usernames);
+    if (states === null) return null;
+    const links = new Map<string, string>();
+    for (const [username, state] of states) {
+      if (state.subscriptionUrl !== null) links.set(username, state.subscriptionUrl);
     }
+    return links;
   },
+
+  accountStates,
 
   async listAccounts(provider: ProviderContext): Promise<AccountsResult> {
     try {

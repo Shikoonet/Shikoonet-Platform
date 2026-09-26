@@ -18,7 +18,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
-import { provisionPaidOrders } from '../src/provision.js';
+import { activateReserves, provisionPaidOrders } from '../src/provision.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import {
@@ -65,6 +65,8 @@ interface PanelAccount {
   data_limit?: number;
   used_traffic?: number;
   note?: string;
+  /** The panel's word: `active`, `limited`, `expired` — what a reserve waits for. */
+  status?: string;
 }
 
 /** A panel holding one account, which remembers every change asked of it. */
@@ -580,6 +582,9 @@ describe('choosing what to renew', () => {
       publicId: `ren-${telegramId}-short`,
       username: `u_${telegramId}`,
       expiresInDays: 5,
+      // Volume used up, so the renewal is applied now and the RESET warning
+      // is the promise; with both left it would be the reserve's.
+      usedBytes: 50 * GIB,
       planId: sold,
     });
     // The expected words from the catalogue row itself, not from the code.
@@ -988,6 +993,8 @@ describe('choosing what to renew', () => {
       publicId: `ren-${telegramId}-left`,
       username: `u_${telegramId}`,
       expiresInDays: 6,
+      // Days left, volume gone — the one case where «time left» is renewed now.
+      usedBytes: 50 * GIB,
     });
 
     const out = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
@@ -1054,6 +1061,8 @@ describe('changing tier across rows of one panel', () => {
       publicId: `ren-${telegramId}-tc`,
       username: `u_${telegramId}`,
       expiresInDays: 5,
+      // Volume used up: a tier change applied now, remainder and all.
+      usedBytes: 50 * GIB,
       planNameAtSale: 'سرویس طلایی',
     });
     // Gold ADDs on its own renewals — so a tier change resetting is the
@@ -1222,6 +1231,7 @@ describe('applying it', () => {
     options: {
       expiresInDays?: number | null;
       volumeGb?: number | null;
+      usedBytes?: number | null;
       status?: 'ACTIVE' | 'ON_HOLD' | 'DISABLED';
       planId?: number | null;
       planNameAtSale?: string;
@@ -1234,6 +1244,9 @@ describe('applying it', () => {
       username: `u_${telegramId}`,
       expiresInDays: options.expiresInDays === undefined ? 5 : options.expiresInDays,
       volumeGb: options.volumeGb === undefined ? 50 : options.volumeGb,
+      // The volume used up and days left: a renewal applied now. With both
+      // left it would be reserved instead (Sam, 2026-09-26) — tested below.
+      usedBytes: options.usedBytes === undefined ? 50 * GIB : options.usedBytes,
       status: options.status ?? 'ACTIVE',
       planId: options.planId,
       planNameAtSale: options.planNameAtSale,
@@ -1573,7 +1586,7 @@ describe('applying it', () => {
     // And the counter is NOT reset, because the quota grew instead.
     expect(panel.resets).toHaveLength(0);
     const sub = await subscriptionRow(target.subId);
-    expect(sub?.used_bytes).toBe(20 * GIB);
+    expect(sub?.used_bytes).toBe(50 * GIB);
     expect(sub?.volume_gb).toBe(100);
   });
 
@@ -1689,6 +1702,8 @@ describe('the renewal cashback', () => {
       publicId: `cb-${telegramId}`,
       username: `c_${telegramId}`,
       expiresInDays: 5,
+      // Volume used up: renewed now, not reserved.
+      usedBytes: 50 * GIB,
     });
     const plan = await planId('sim-vip-1m-50');
     await handleUpdate(db, press(updateId, telegramId, `rord:${subId}:${plan}`));
@@ -1857,5 +1872,472 @@ describe('the renewal cashback', () => {
     const rows = await cashbackRows(target.userId);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.amount_irr).toBe(Math.floor((target.totalIrr * 5) / 100));
+  });
+});
+
+/**
+ * Sam, 2026-09-26: «تمدید موقعی معنی پیدا می‌کنه که یا حجم تموم شده یا زمان».
+ * A renewal paid for while the service still has BOTH volume and time is
+ * reserved — a sale now, the panel untouched — and applied the moment the
+ * current period runs out, whichever runs out first, from zero and exactly as
+ * the plan was sold. One waiting reserve per service, held by Postgres.
+ *
+ * Every reserve-writing test lives in this file: the guard test below drops
+ * the partial index for a moment, and nothing else may be writing reserves
+ * while it is gone.
+ */
+describe('reserving a renewal that is not needed yet', () => {
+  /** Six days on: past the five-day fixture's date. */
+  const LATER_MS = NOW_MS + 6 * DAY;
+
+  async function bothLeft(
+    options: {
+      expiresInDays?: number | null;
+      volumeGb?: number | null;
+      usedBytes?: number | null;
+      status?: 'ACTIVE' | 'ON_HOLD' | 'DISABLED';
+      durationDays?: number | null;
+    } = {},
+  ) {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `rsv-${telegramId}`,
+      username: `r_${telegramId}`,
+      expiresInDays: options.expiresInDays === undefined ? 5 : options.expiresInDays,
+      volumeGb: options.volumeGb === undefined ? 50 : options.volumeGb,
+      usedBytes: options.usedBytes === undefined ? 20 * GIB : options.usedBytes,
+      ...(options.status ? { status: options.status } : {}),
+      durationDays: options.durationDays ?? null,
+    });
+    const plan = await planId('sim-vip-1m-50');
+    return { userId, subId, plan, updateId, telegramId, username: `r_${telegramId}` };
+  }
+
+  async function paidEarly(options: Parameters<typeof bothLeft>[0] = {}) {
+    const service = await bothLeft(options);
+    await handleUpdate(db, press(service.updateId, service.telegramId, `rord:${service.subId}:${service.plan}`));
+    const order = await markPaid(service.userId);
+    return { ...service, order };
+  }
+
+  async function reserveOf(orderId: number) {
+    return db
+      .prepare(
+        `SELECT status, subscription_id, volume_gb::float8 AS volume_gb, duration_days, failure_reason
+           FROM renewal_reserves WHERE order_id = ?1`,
+      )
+      .bind(orderId)
+      .first<{
+        status: string;
+        subscription_id: number;
+        volume_gb: number | null;
+        duration_days: number | null;
+        failure_reason: string | null;
+      }>();
+  }
+
+  async function waitingFor(subId: number): Promise<number> {
+    const row = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM renewal_reserves WHERE subscription_id = ?1 AND status = 'WAITING'`,
+      )
+      .bind(subId)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  async function noteFor(telegramId: number, dedupeKey: string) {
+    return (await pendingNotifications()).find((n) => n.chatId === telegramId && n.dedupeKey === dedupeKey);
+  }
+
+  /** The panel as it holds this account while it still has both left. */
+  function running(username: string, over: Record<string, unknown> = {}) {
+    return fakePanel({
+      [username]: {
+        expire: new Date(NOW_MS + 5 * DAY).toISOString(),
+        data_limit: 50 * GIB,
+        used_traffic: 20 * GIB,
+        ...over,
+      },
+    });
+  }
+
+  afterEach(async () => {
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('shop', 'chashbackextend', '"0"'::jsonb)
+         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+      )
+      .run();
+    invalidateShopSettings();
+  });
+
+  it('reserves a renewal of a service with both left, and never calls the panel', async () => {
+    const target = await paidEarly();
+    const panel = running(target.username);
+    const before = await subscriptionRow(target.subId);
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts).toEqual([]);
+    expect(panel.resets).toEqual([]);
+    // A sale now: the money arrived, and the reports count COMPLETED.
+    expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
+    // The plan as sold — 30 days, 50 GB — frozen on the row.
+    expect(await reserveOf(target.order.id)).toMatchObject({
+      status: 'WAITING',
+      subscription_id: target.subId,
+      volume_gb: 50,
+      duration_days: 30,
+    });
+    // The service is exactly as it was.
+    expect(await subscriptionRow(target.subId)).toEqual(before);
+    const told = await noteFor(target.telegramId, `provision:${target.order.publicId}`);
+    expect(told?.text).toContain(TEXTS.RENEW_RESERVED.default.split('\n')[0]!);
+  });
+
+  it('pays the cashback at the reserve, once, and not again when it activates', async () => {
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('shop', 'chashbackextend', '"5"'::jsonb)
+         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+      )
+      .run();
+    invalidateShopSettings();
+    const target = await paidEarly();
+    const cashback = async () =>
+      (
+        await db
+          .prepare(`SELECT count(*)::int AS n FROM wallet_entries WHERE order_id = ?1 AND kind = 'RENEWAL_CASHBACK'`)
+          .bind(target.order.id)
+          .first<{ n: number }>()
+      )?.n;
+
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    expect(await cashback()).toBe(1);
+    expect((await noteFor(target.telegramId, `provision:${target.order.publicId}`))?.text).toContain('🎁');
+
+    vi.spyOn(Date, 'now').mockReturnValue(LATER_MS);
+    await activateReserves(db, running(target.username, { status: 'expired' }).fetchImpl, LATER_MS);
+
+    expect((await reserveOf(target.order.id))?.status).toBe('APPLIED');
+    expect(await cashback()).toBe(1);
+  });
+
+  it('reserves a service on hold too — it has everything left (Sam)', async () => {
+    const target = await paidEarly({ status: 'ON_HOLD', expiresInDays: null, usedBytes: 0, durationDays: 30 });
+    const panel = fakePanel({ [target.username]: { expire: 0, data_limit: 50 * GIB } });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts).toEqual([]);
+    expect((await reserveOf(target.order.id))?.status).toBe('WAITING');
+  });
+
+  it('renews at once when the date has passed, as before', async () => {
+    const target = await paidEarly({ expiresInDays: -1 });
+    const panel = running(target.username);
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts).toHaveLength(1);
+    expect(await reserveOf(target.order.id)).toBeNull();
+  });
+
+  it('renews at once a service that could never run out, since nothing would apply the reserve', async () => {
+    const target = await paidEarly({ expiresInDays: null, volumeGb: null });
+    const panel = running(target.username, { expire: 0, data_limit: 0 });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts).toHaveLength(1);
+    expect(await reserveOf(target.order.id)).toBeNull();
+  });
+
+  it('promises the reserve instead of the panel’s mode, and drops the tier-change warning', async () => {
+    const service = await bothLeft();
+
+    const out = await handleUpdate(db, press(service.updateId, service.telegramId, `rnw:${service.subId}`));
+
+    expect(
+      out.replies[0]?.text.startsWith(`<blockquote><b>${TEXTS.RENEW_MODE_RESERVE.default}</b></blockquote>`),
+    ).toBe(true);
+    // Not «مصرف قبلی صفر می‌گردد»: a reserve burns nothing.
+    expect(out.replies[0]?.text).not.toContain(TEXTS.RENEW_MODE_RESET.default);
+  });
+
+  it('offers no second renewal while one is reserved, on the list screen and on the order button', async () => {
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+
+    const list = await handleUpdate(db, press(target.updateId + 1, target.telegramId, `rnw:${target.subId}`));
+    const order = await handleUpdate(
+      db,
+      press(target.updateId + 2, target.telegramId, `rord:${target.subId}:${target.plan}`),
+    );
+
+    expect(list.replies[0]?.text).toBe(menu.serviceReserved());
+    expect(order.replies[0]?.text).toBe(menu.serviceReserved());
+    const open = await db
+      .prepare(`SELECT count(*)::int AS n FROM orders WHERE user_id = ?1 AND status = 'AWAITING_PAYMENT'`)
+      .bind(target.userId)
+      .first<{ n: number }>();
+    expect(open?.n).toBe(0);
+  });
+
+  /** Two renewals of one service, both paid before the sweep sees either. */
+  async function twoPaid() {
+    const service = await bothLeft();
+    const other = (await planIdsIn('sim-vip-platinum'))[0]!;
+    await handleUpdate(db, press(service.updateId, service.telegramId, `rord:${service.subId}:${service.plan}`));
+    await handleUpdate(db, press(service.updateId + 1, service.telegramId, `rord:${service.subId}:${other}`));
+    await markPaid(service.userId);
+    const { results } = await db
+      .prepare(`SELECT id FROM orders WHERE user_id = ?1 AND status = 'PAID' ORDER BY id`)
+      .bind(service.userId)
+      .all<{ id: number }>();
+    expect(results).toHaveLength(2);
+    return { ...service, orders: results!.map((r) => r.id) };
+  }
+
+  it('reserves one of two renewals paid together, and fails and refunds the other', async () => {
+    const target = await twoPaid();
+
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+
+    expect(await orderRow(target.orders[0]!)).toMatchObject({ status: 'COMPLETED' });
+    expect(await orderRow(target.orders[1]!)).toMatchObject({
+      status: 'FAILED',
+      failure_reason: 'this service already has a renewal waiting',
+    });
+    expect(await waitingFor(target.subId)).toBe(1);
+    // And the database says no on its own, whoever asks.
+    await expect(
+      db
+        .prepare(`INSERT INTO renewal_reserves (order_id, subscription_id) VALUES (?1, ?2)`)
+        .bind(target.orders[1], target.subId)
+        .run(),
+    ).rejects.toThrow(/renewal_reserves_one_waiting/);
+  });
+
+  it('reserves both without the partial unique index — it is the guard, not the code', async () => {
+    const target = await twoPaid();
+    await db.prepare(`DROP INDEX renewal_reserves_one_waiting`).run();
+    try {
+      await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+      expect(await waitingFor(target.subId)).toBe(2);
+    } finally {
+      await db
+        .prepare(`UPDATE renewal_reserves SET status = 'FAILED', failure_reason = 'test' WHERE subscription_id = ?1`)
+        .bind(target.subId)
+        .run();
+      await db
+        .prepare(
+          `CREATE UNIQUE INDEX renewal_reserves_one_waiting ON renewal_reserves (subscription_id) WHERE status = 'WAITING'`,
+        )
+        .run();
+    }
+  });
+
+  it('activates when the date passes: from zero, the plan as bought, written down, and told', async () => {
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    vi.spyOn(Date, 'now').mockReturnValue(LATER_MS);
+    const panel = running(target.username, { status: 'expired' });
+
+    expect(await activateReserves(db, panel.fetchImpl, LATER_MS)).toBe(1);
+
+    expect(panel.resets).toEqual([target.username]);
+    expect(panel.puts).toHaveLength(1);
+    expect(panel.puts[0]?.body['data_limit']).toBe(50 * GIB);
+    expect(panel.puts[0]?.body['expire']).toBe(Math.floor((LATER_MS + 30 * DAY) / 1000));
+    const sub = await subscriptionRow(target.subId);
+    expect(sub).toMatchObject({ used_bytes: 0, volume_gb: 50, duration_days: 30, status: 'ACTIVE' });
+    expect(Date.parse(sub!.expires_at!)).toBe(LATER_MS + 30 * DAY);
+    expect((await reserveOf(target.order.id))?.status).toBe('APPLIED');
+    const snapshot = await db
+      .prepare(`SELECT mode FROM renewal_snapshots WHERE order_id = ?1`)
+      .bind(target.order.id)
+      .first<{ mode: string }>();
+    expect(snapshot?.mode).toBe('RESET');
+    expect((await noteFor(target.telegramId, `reserve:${target.order.publicId}`))?.text).toContain(
+      TEXTS.SERVICE_RENEWED_TITLE.default,
+    );
+  });
+
+  it('activates when the panel says the volume ran out, between two syncs', async () => {
+    const target = await paidEarly({ usedBytes: 45 * GIB });
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    // The last sync saw 45 of 50; the panel has since cut the account off.
+    const panel = running(target.username, { used_traffic: 50 * GIB, status: 'limited' });
+
+    expect(await activateReserves(db, panel.fetchImpl, NOW_MS)).toBe(1);
+
+    expect(panel.puts[0]?.body['expire']).toBe(Math.floor((NOW_MS + 30 * DAY) / 1000));
+    expect((await reserveOf(target.order.id))?.status).toBe('APPLIED');
+  });
+
+  it('leaves a reserve waiting while the panel says both are still left', async () => {
+    const target = await paidEarly({ usedBytes: 45 * GIB });
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    const panel = running(target.username, { used_traffic: 46 * GIB, status: 'active' });
+
+    expect(await activateReserves(db, panel.fetchImpl, NOW_MS)).toBe(0);
+
+    expect(panel.puts).toEqual([]);
+    expect((await reserveOf(target.order.id))?.status).toBe('WAITING');
+  });
+
+  it('activates from zero even on a panel that adds (Sam’s decision 2)', async () => {
+    await setPanelConfig(panelId, { Methodextend: 'اضافه شدن زمان و حجم به ماه بعد', status_extend: 'on_extend' });
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    vi.spyOn(Date, 'now').mockReturnValue(LATER_MS);
+    const panel = running(target.username, { status: 'expired' });
+
+    await activateReserves(db, panel.fetchImpl, LATER_MS);
+
+    expect(panel.resets).toEqual([target.username]);
+    // 50, not 50 + 50; thirty days from now, not from the old date.
+    expect(panel.puts[0]?.body['data_limit']).toBe(50 * GIB);
+    expect(panel.puts[0]?.body['expire']).toBe(Math.floor((LATER_MS + 30 * DAY) / 1000));
+  });
+
+  it('applies what the reserve froze, not what the plan says today', async () => {
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    // The row is the record of the sale; the catalogue is shared, so the row
+    // is what this test moves.
+    await db
+      .prepare(`UPDATE renewal_reserves SET volume_gb = 7, duration_days = 9 WHERE order_id = ?1`)
+      .bind(target.order.id)
+      .run();
+    vi.spyOn(Date, 'now').mockReturnValue(LATER_MS);
+    const panel = running(target.username, { status: 'expired' });
+
+    await activateReserves(db, panel.fetchImpl, LATER_MS);
+
+    expect(panel.puts[0]?.body['data_limit']).toBe(7 * GIB);
+    expect(panel.puts[0]?.body['expire']).toBe(Math.floor((LATER_MS + 9 * DAY) / 1000));
+  });
+
+  it('leaves the reserve waiting when the panel is down, and applies it once when it is back', async () => {
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    vi.spyOn(Date, 'now').mockReturnValue(LATER_MS);
+
+    expect(await activateReserves(db, deadPanel, LATER_MS)).toBe(0);
+    expect((await reserveOf(target.order.id))?.status).toBe('WAITING');
+
+    const panel = running(target.username, { status: 'expired' });
+    expect(await activateReserves(db, panel.fetchImpl, LATER_MS)).toBe(1);
+    expect(await activateReserves(db, panel.fetchImpl, LATER_MS)).toBe(0);
+    expect(panel.puts).toHaveLength(1);
+  });
+
+  it('stops for a person when the account is gone from the panel, and says so', async () => {
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    vi.spyOn(Date, 'now').mockReturnValue(LATER_MS);
+
+    await activateReserves(db, fakePanel({}).fetchImpl, LATER_MS);
+
+    const reserve = await reserveOf(target.order.id);
+    expect(reserve?.status).toBe('FAILED');
+    expect(reserve?.failure_reason).toContain(target.username);
+    // Still a sale: nothing was refunded, a person owes the renewal.
+    expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
+    expect((await noteFor(target.telegramId, `reserve:${target.order.publicId}`))?.text).toContain(
+      target.order.publicId,
+    );
+  });
+
+  it('applies an add-on now, beside a waiting reserve', async () => {
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    const addon = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, target_subscription_id, quantity,
+                             unit_price_irr, total_irr, status)
+         VALUES (?1, ?2, 'ADD_VOLUME', ?3, 5, 10000, 50000, 'PAID')
+         RETURNING id`,
+      )
+      .bind(`xv-${target.telegramId}`, target.userId, target.subId)
+      .first<{ id: number }>();
+    const panel = running(target.username);
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(panel.puts).toHaveLength(1);
+    expect(panel.puts[0]?.body['data_limit']).toBe(55 * GIB);
+    expect(await orderRow(addon!.id)).toMatchObject({ status: 'COMPLETED' });
+    expect((await reserveOf(target.order.id))?.status).toBe('WAITING');
+  });
+
+  it('rebuilds a lost message as the reserve, not as the old service’s card', async () => {
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    await db
+      .prepare(`DELETE FROM bot_notifications WHERE dedupe_key = ?1`)
+      .bind(`provision:${target.order.publicId}`)
+      .run();
+
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+
+    expect((await noteFor(target.telegramId, `provision:${target.order.publicId}`))?.text).toContain(
+      TEXTS.RENEW_RESERVED.default.split('\n')[0]!,
+    );
+  });
+
+  it('gets a reserve whose date has passed into the batch ahead of fifty that are only close', async () => {
+    // Every other test's reserve out of the way: this one counts the batch.
+    await db
+      .prepare(`UPDATE renewal_reserves SET status = 'FAILED', failure_reason = 'isolated' WHERE status = 'WAITING'`)
+      .run();
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+    // Fifty older reserves at 45 of 50 GB, dated well past LATER: asked about
+    // every round, never due — the panel does not even have them.
+    await db
+      .prepare(
+        `WITH subs AS (
+           INSERT INTO subscriptions (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
+                                      remote_username, volume_gb, used_bytes, status, purchased_at, expires_at)
+           SELECT 'near-' || ?1 || '-' || g, ?2, ?3, 'near', 1, 'near_' || ?1 || '_' || g,
+                  50, 45 * 1073741824::bigint, 'ACTIVE', now(), to_timestamp(?4 / 1000.0)
+             FROM generate_series(1, 50) g
+           RETURNING id, user_id),
+         ords AS (
+           -- legacy_ref: sold elsewhere, so the sweep that re-sends a lost
+           -- delivery message leaves them alone instead of filling its batch.
+           INSERT INTO orders (public_id, user_id, kind, plan_id, target_subscription_id, quantity,
+                               unit_price_irr, total_irr, status, legacy_ref)
+           SELECT 'near-o-' || id, user_id, 'RENEWAL', ?5, id, 1, 1000, 1000, 'COMPLETED', 'near-o-' || id
+             FROM subs
+           RETURNING id, target_subscription_id)
+         INSERT INTO renewal_reserves (order_id, subscription_id, volume_gb, duration_days, created_at)
+         SELECT id, target_subscription_id, 50, 30, now() - interval '1 day' FROM ords`,
+      )
+      .bind(target.telegramId, target.userId, panelId, LATER_MS + 10 * DAY, target.plan)
+      .run();
+    vi.spyOn(Date, 'now').mockReturnValue(LATER_MS);
+    try {
+      expect(await activateReserves(db, running(target.username, { status: 'expired' }).fetchImpl, LATER_MS)).toBe(1);
+      expect((await reserveOf(target.order.id))?.status).toBe('APPLIED');
+    } finally {
+      await db
+        .prepare(`UPDATE renewal_reserves SET status = 'FAILED', failure_reason = 'isolated' WHERE status = 'WAITING'`)
+        .run();
+    }
+  });
+
+  it('says on the service screen that a renewal is waiting', async () => {
+    const target = await paidEarly();
+    await provisionPaidOrders(db, running(target.username).fetchImpl, NOW_MS);
+
+    const out = await handleUpdate(db, press(target.updateId + 1, target.telegramId, `sub:${target.subId}`));
+
+    expect(out.replies[0]?.text).toContain(TEXTS.SERVICE_RESERVED.default);
   });
 });

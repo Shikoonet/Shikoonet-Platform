@@ -63,13 +63,15 @@ async function paidRenewal(): Promise<{
   // The plan's own panel: `beforeAll` turns every provider into a live one, so
   // the renewal resolves against the account's panel exactly as production does.
   const provider = await providerId('sim-vip');
+  // The volume used up, one day left: renewed at once. With both left it
+  // would be reserved (0108) and never reach the panel this file waits on.
   const sub = await db
     .prepare(
       `INSERT INTO subscriptions
          (public_id, user_id, plan_id, provider_id, plan_name_at_sale,
-          provider_name_at_sale, price_irr, remote_username, volume_gb,
+          provider_name_at_sale, price_irr, remote_username, volume_gb, used_bytes,
           status, purchased_at, expires_at)
-       VALUES (?1, ?2, ?3, ?4, 'یک‌ماهه', 'لوکیشن تست', 1950000, ?5, 50,
+       VALUES (?1, ?2, ?3, ?4, 'یک‌ماهه', 'لوکیشن تست', 1950000, ?5, 50, 50 * 1073741824::bigint,
                'ACTIVE', now(), now() + interval '1 day')
        RETURNING id`,
     )
