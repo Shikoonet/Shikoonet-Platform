@@ -32,6 +32,7 @@ import { RequiredChannelsPanel } from '../hub/RequiredChannelsPanel.js';
 import { CustomerMessageSection } from '../hub/CustomerMessageSection.js';
 import { count, dateTime } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
+import { pathForPage } from '../route.js';
 
 const SCOPE_FA: Record<string, string> = {
   bot: 'ربات',
@@ -631,6 +632,26 @@ export function RequestsPage() {
                     )}
                   </td>
                   <td>
+                    {/* Approved is where «نمایندگان» takes over: the link opens
+                        its form with this user filled in (#474). A real href,
+                        so middle-click still opens a tab — `CustomerLink`'s
+                        reasoning, same interception. */}
+                    {r.status === 'APPROVED' && (
+                      <a
+                        className="btn btn-sm"
+                        href={`${pathForPage('resellers')}?user=${r.customer.id}`}
+                        onClick={(e) => {
+                          if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+                            return;
+                          }
+                          e.preventDefault();
+                          window.history.pushState(null, '', e.currentTarget.href);
+                          window.dispatchEvent(new PopStateEvent('popstate'));
+                        }}
+                      >
+                        ثبت پنل نماینده
+                      </a>
+                    )}
                     {/* Decided once: the buttons disappear afterwards, and the
                         server refuses a second decision from a stale screen. */}
                     {r.status === 'PENDING' && (

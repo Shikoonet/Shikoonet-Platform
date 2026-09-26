@@ -3895,48 +3895,11 @@
   align-self: end;
 }
 
-/* === «نمایش به مشتری» — the per-account on/off switch (0090) ===
-   One `role="switch"` button: a track with a knob that rests on the left
-   when off and slides to the right when on — Sam's reading, 2026-09-21:
-   «دستگیره چپ یعنی خاموش، راست یعنی روشن». That is the LTR convention kept
-   on purpose in an RTL panel, so it is written in physical `left`/`right`,
-   not inline-start/end. The label sits beside it. Green when on, the same
-   green `.badge-active` uses for «در گردش», because the two say the same
-   thing about the account's cards. */
-.switch {
+/* === «کارت‌ها برای» — who an account's cards are for (0090, 0104) ===
+   Replaced the on/off switch when a third audience («نماینده») arrived. */
+.audience-select {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.35rem;
   white-space: nowrap;
-}
-.switch__track {
-  position: relative;
-  display: inline-block;
-  inline-size: 28px;
-  block-size: 16px;
-  border-radius: 999px;
-  background: var(--surface-3);
-  border: 1px solid var(--border-mid);
-  transition: background 120ms ease;
-}
-.switch__knob {
-  position: absolute;
-  inset-block-start: 1px;
-  left: 1px;
-  inline-size: 12px;
-  block-size: 12px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  transition: transform 120ms ease, background 120ms ease;
-}
-.switch--on .switch__track {
-  background: var(--success-soft);
-  border-color: rgba(34, 197, 94, 0.35);
-}
-.switch--on .switch__knob {
-  background: var(--success);
-  transform: translateX(12px);
-}
-.switch--on {
-  color: var(--success);
 }

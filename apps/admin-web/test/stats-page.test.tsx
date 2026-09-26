@@ -36,6 +36,8 @@ const BASE: ShopStatsResponse = {
   renewalsIrr: 825_450_000,
   addonsCount: 37,
   addonsIrr: 34_160_000,
+  resellerCount: 0,
+  resellerIrr: 0,
   // The three above it, and written as the sum so a reader can see that it is.
   earnedIrr: 3_508_678_650 + 825_450_000 + 34_160_000,
   topupsIrr: 120_000_000,
@@ -308,6 +310,23 @@ describe('the exact figure under a compacted one', () => {
     const card = (await screen.findByText('شارژ کیف پول')).closest('.stat-card')!;
     // It read «۰ ت» with «۰ تومان» underneath — the same number, twice.
     expect(card.textContent).not.toContain('تومان');
+  });
+});
+
+describe('«حجم نمایندگی»', () => {
+  it('is drawn beside the add-ons once a reseller has bought', async () => {
+    stats.mockResolvedValueOnce({ ...BASE, resellerCount: 2, resellerIrr: 50_000_000 });
+    draw();
+    const card = (await screen.findByText('حجم نمایندگی')).closest('.stat-card')!;
+    expect(card.textContent).toContain('۵ میلیون ت');
+    expect(card.textContent).toContain('۲ سفارش');
+    expect(card.textContent).toContain('۵٬۰۰۰٬۰۰۰ تومان');
+  });
+
+  it('is not drawn for a shop no reseller has bought from', async () => {
+    draw();
+    await screen.findByText('جمع افزودنی');
+    expect(screen.queryByText('حجم نمایندگی')).toBeNull();
   });
 });
 

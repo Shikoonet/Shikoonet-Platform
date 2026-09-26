@@ -48,6 +48,7 @@ function panel(id: number, code: string, name: string): PanelItem {
     extraVolumeTomanPerGb: { f: null, n: null, n2: null },
     extraTimeTomanPerDay: { f: null, n: null, n2: null },
     downgradeGroupIds: [],
+    resellerSale: null,
     hasSecretRef: true,
     productCount: 0,
     planCount: 0,

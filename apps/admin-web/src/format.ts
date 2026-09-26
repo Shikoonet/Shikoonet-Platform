@@ -281,6 +281,7 @@ export const ORDER_KIND_FA: Record<string, string> = {
   ADD_TIME: 'زمان اضافه',
   WALLET_TOPUP: 'شارژ کیف پول',
   TRANSFER: 'انتقال',
+  RESELLER_VOLUME: 'حجم نمایندگی',
 };
 
 /**
@@ -302,6 +303,8 @@ export const ORDER_KIND_FA: Record<string, string> = {
 export function whatWasBought(o: { kind: string; quantity: number; planName: string | null }): string {
   if (o.kind === 'ADD_VOLUME') return `${count(o.quantity)} گیگ`;
   if (o.kind === 'ADD_TIME') return `${count(o.quantity)} روز`;
+  // A reseller buys whole terabytes for their own panel; `quantity` is the TB.
+  if (o.kind === 'RESELLER_VOLUME') return `${count(o.quantity)} ترا`;
   return planDisplayName(o.planName) ?? ORDER_KIND_FA[o.kind] ?? '—';
 }
 

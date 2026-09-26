@@ -18,18 +18,80 @@
  *
  * And «هنوز خوانده نشده» is drawn for `null` rather than «۰ گیگ». On a screen
  * about money those are the same glyph and opposite facts.
+ *
+ * ## «پنل نمایندگی» (#474)
+ *
+ * A row is either linked to an admin that already exists on the panel
+ * (`ACTIVE`) or left for the bot to create on the reseller's first paid
+ * purchase (`PENDING`). Volume is never typed here: the bot seeds it from the
+ * panel, and after that only a paid order moves it.
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { api, ApiError, type ResellerReading, type ResellerRow } from '../api.js';
-import { count, dateOnly, dateTime, gigabytes } from '../format.js';
+import {
+  api,
+  ApiError,
+  type CustomerListItem,
+  type PanelItem,
+  type ResellerReading,
+  type ResellerRow,
+} from '../api.js';
+import { count, dateOnly, dateTime, endOfTehranDay, gigabytes } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
 const STATUS_LABEL: Record<string, string> = {
+  PENDING: 'در انتظار ساخت',
   ACTIVE: 'فعال',
   SUSPENDED: 'معلق',
   CLOSED: 'بسته',
 };
+
+type Target = 'ACTIVE' | 'SUSPENDED' | 'CLOSED';
+
+/**
+ * The only moves the server accepts from each status — anything else is a
+ * 409 `transition_refused`, so it is not drawn. CLOSED has no way out.
+ * Removing a deadline does not reactivate a suspended row; «فعال‌سازی» does.
+ */
+const MOVES: Record<string, ReadonlyArray<{ to: Target; label: string }>> = {
+  PENDING: [{ to: 'CLOSED', label: 'بستن' }],
+  ACTIVE: [
+    { to: 'SUSPENDED', label: 'تعلیق' },
+    { to: 'CLOSED', label: 'بستن' },
+  ],
+  SUSPENDED: [
+    { to: 'ACTIVE', label: 'فعال‌سازی' },
+    { to: 'CLOSED', label: 'بستن' },
+  ],
+};
+
+/** A name the bot may create on PasarGuard. The server checks the same pattern. */
+const NEW_ADMIN_NAME = /^[A-Za-z0-9_.-]{3,34}$/;
+
+/** The server's refusals, in the operator's words. */
+function reason(e: unknown, fallback: string): string {
+  if (!(e instanceof ApiError)) return fallback;
+  if (e.code === 'that panel admin is already taken') {
+    return 'این ادمین پنل قبلاً به نمایندهٔ دیگری وصل شده است.';
+  }
+  if (e.code === 'transition_refused') {
+    return 'این تغییر وضعیت پذیرفته نشد — وضعیت همین حالا عوض شده؛ صفحه را تازه کنید.';
+  }
+  if (e.code === 'volume_moved') return 'حجم همین حالا عوض شد؛ صفحه را تازه کنید.';
+  if (e.code === 'bad request') return 'ورودی پذیرفته نشد — فیلدها را دوباره ببینید.';
+  if (e.code === 'forbidden') return 'این کار فقط با نقش «مدیر» ممکن است.';
+  return e.message;
+}
+
+/** «@username · 123456», or the telegram id alone — how every screen names a customer. */
+function customerLabel(c: { telegramId: number; username: string | null }): string {
+  return c.username ? `@${c.username} · ${c.telegramId}` : String(c.telegramId);
+}
+
+/** `YYYY-MM-DD` from a date input → the first instant after that Tehran day. */
+function deadlineMs(day: string): number {
+  return Date.parse(endOfTehranDay(day));
+}
 
 /**
  * What the meter says about capacity, as one sentence.
@@ -39,6 +101,7 @@ const STATUS_LABEL: Record<string, string> = {
  * their head is how that gets missed.
  */
 function capacityLine(row: ResellerRow): string {
+  if (row.status === 'PENDING') return 'هنوز ساخته نشده';
   if (row.dataLimitBytes === null) return 'نامحدود';
   const used = row.billableBytes;
   // A cap of ZERO is a real state and not the same as no cap — the whole
@@ -54,6 +117,444 @@ function capacityLine(row: ResellerRow): string {
   return `${gigabytes(used)} از ${gigabytes(row.dataLimitBytes)} (${count(pct)}٪)`;
 }
 
+/**
+ * «ثبت نماینده». Two ways in, and the difference is who makes the panel admin.
+ *
+ * `?user=<id>` pre-fills the user: «لیست درخواست‌ها» links here from an
+ * approved request, so the operator does not copy a number across screens.
+ * Otherwise the user is FOUND, by telegram id or @username, through the same
+ * search «کاربران» uses — nobody knows our internal `users.id` by heart.
+ */
+function NewResellerForm({
+  initialUserId,
+  onCreated,
+  onCancel,
+}: {
+  initialUserId: string;
+  onCreated: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const w = useAdminWriteProps();
+  const [mode, setMode] = useState<'ACTIVE' | 'PENDING'>('ACTIVE');
+  const prefillId = Number(initialUserId);
+  const [picked, setPicked] = useState<{ id: number; label: string } | null>(
+    Number.isInteger(prefillId) && prefillId > 0
+      ? { id: prefillId, label: `کاربر #${count(prefillId)}` }
+      : null,
+  );
+  const [q, setQ] = useState('');
+  /** `null` = not searched yet; `[]` = searched and nobody matched. */
+  const [matches, setMatches] = useState<CustomerListItem[] | null>(null);
+  const [panels, setPanels] = useState<PanelItem[] | null>(null);
+  const [providerId, setProviderId] = useState('');
+  const [adminName, setAdminName] = useState('');
+  const [name, setName] = useState('');
+  const [expiresOn, setExpiresOn] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .panels()
+      .then((r) => live && setPanels(r.items))
+      .catch(() => live && setErr('فهرست پنل‌ها خوانده نشد'));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // The prefilled id already IS the answer; this only puts a face on it. A
+  // failure leaves «کاربر #id», which is still the right user.
+  useEffect(() => {
+    if (!(Number.isInteger(prefillId) && prefillId > 0)) return;
+    let live = true;
+    api
+      .customer(prefillId)
+      .then((r) => live && setPicked({ id: prefillId, label: customerLabel(r.customer) }))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [prefillId]);
+
+  async function search() {
+    const term = q.trim();
+    if (term === '') return;
+    setErr(null);
+    try {
+      const r = await api.customers({ q: term, page: 1, pageSize: 10 });
+      setMatches(r.items);
+    } catch (e) {
+      setErr(reason(e, 'جست‌وجوی کاربر انجام نشد'));
+    }
+  }
+
+  // The bot can create an admin only on PasarGuard today (#474); linking an
+  // existing admin is whatever panel the meter can read.
+  const offered = (panels ?? []).filter((p) => mode === 'ACTIVE' || p.kind === 'pasarguard');
+  const panel = offered.find((p) => String(p.id) === providerId) ?? null;
+  const uid = picked?.id ?? 0;
+  const admin = adminName.trim();
+  const adminOk =
+    mode === 'PENDING' ? NEW_ADMIN_NAME.test(admin) : admin.length >= 1 && admin.length <= 34;
+  const ready =
+    Number.isInteger(uid) && uid > 0 && panel !== null && adminOk && name.trim() !== '';
+
+  async function submit() {
+    if (!ready || panel === null) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.createReseller({
+        userId: uid,
+        providerId: panel.id,
+        panelAdminUsername: admin,
+        name: name.trim(),
+        // Never typed here: the bot reads it from the panel once, then only a
+        // paid order moves it. For PENDING the server refuses anything else.
+        dataLimitBytes: null,
+        expiresAtMs: expiresOn === '' ? null : deadlineMs(expiresOn),
+        installationUrl: null,
+        note: null,
+        status: mode,
+      });
+      onCreated(name.trim());
+    } catch (e) {
+      setErr(reason(e, 'نماینده ثبت نشد'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockEnd: 16 }}>
+      <h2>ثبت نمایندهٔ تازه</h2>
+      {err !== null && (
+        <div className="alert alert-error" role="alert">
+          {err}
+        </div>
+      )}
+
+      <fieldset className="filters" style={{ border: 0, padding: 0, margin: 0 }}>
+        <legend className="form-label">ادمین پنل</legend>
+        <label className="form-label">
+          <input
+            type="radio"
+            name="reseller-mode"
+            checked={mode === 'ACTIVE'}
+            onChange={() => setMode('ACTIVE')}
+          />{' '}
+          ادمین موجود روی پنل
+        </label>
+        <label className="form-label">
+          <input
+            type="radio"
+            name="reseller-mode"
+            checked={mode === 'PENDING'}
+            onChange={() => setMode('PENDING')}
+          />{' '}
+          پنل جدید بسازد
+        </label>
+      </fieldset>
+      <p className="muted">
+        {mode === 'ACTIVE'
+          ? 'ادمین از قبل روی پنل هست. تا نقشش روی پنل «نماینده» و آیدی تلگرامش آیدی همین ' +
+            'کاربر نشود، ربات هیچ خریدی را روی آن نمی‌پذیرد.'
+          : 'ربات ادمین را با همین یوزرنیم روی پنل می‌سازد — در اولین خرید پرداخت‌شدهٔ ' +
+            'نماینده. تا آن موقع ردیف «در انتظار ساخت» است.'}
+      </p>
+
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="reseller-user-q">
+            کاربر — آیدی عددی تلگرام یا @یوزرنیم
+          </label>
+          <div className="filters">
+            <input
+              id="reseller-user-q"
+              className="form-control ltr grow"
+              type="search"
+              autoComplete="off"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void search();
+                }
+              }}
+              {...w}
+            />
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={q.trim() === ''}
+              onClick={() => void search()}
+              {...w}
+            >
+              جست‌وجو
+            </button>
+          </div>
+          <p className="muted" aria-live="polite" data-testid="reseller-picked">
+            {/* `<bdi dir="ltr">` so «@name · 123» is not reordered by the RTL line. */}
+            {picked === null ? (
+              'هنوز کاربری انتخاب نشده.'
+            ) : (
+              <>
+                انتخاب‌شده: <bdi dir="ltr">{picked.label}</bdi>
+              </>
+            )}
+          </p>
+          {matches !== null && matches.length === 0 && (
+            <div className="alert alert-warning">
+              این کاربر هنوز ربات را استارت نکرده — اول باید یک بار /start بزند.
+            </div>
+          )}
+          {matches !== null && matches.length > 0 && (
+            <div className="filters" role="group" aria-label="کاربرهای پیدا شده">
+              {matches.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={picked?.id === c.id ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
+                  aria-pressed={picked?.id === c.id}
+                  dir="ltr"
+                  onClick={() => setPicked({ id: c.id, label: customerLabel(c) })}
+                  {...w}
+                >
+                  {customerLabel(c)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="reseller-panel">
+            پنل
+          </label>
+          <select
+            id="reseller-panel"
+            className="form-control"
+            value={panel === null ? '' : String(panel.id)}
+            onChange={(e) => setProviderId(e.target.value)}
+            {...w}
+          >
+            <option value="">{panels === null ? 'در حال خواندن…' : 'انتخاب کنید'}</option>
+            {offered.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      {mode === 'PENDING' && panel !== null && (panel.resellerSale ?? null) === null && (
+        <div className="alert alert-warning">
+          «فروش به نماینده» روی این پنل تنظیم نشده؛ تا تنظیم نشود ربات خرید را نمی‌پذیرد.
+        </div>
+      )}
+
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="reseller-admin">
+            {mode === 'PENDING' ? 'یوزرنیم ادمین جدید' : 'یوزرنیم ادمین روی پنل'}
+          </label>
+          <input
+            id="reseller-admin"
+            className="form-control ltr"
+            type="text"
+            autoComplete="off"
+            maxLength={34}
+            aria-invalid={admin !== '' && !adminOk}
+            aria-describedby="reseller-admin-hint"
+            value={adminName}
+            onChange={(e) => setAdminName(e.target.value)}
+            {...w}
+          />
+          <p
+            id="reseller-admin-hint"
+            className={admin !== '' && !adminOk ? 'alert alert-error' : 'muted'}
+          >
+            {mode === 'PENDING'
+              ? 'فقط حروف انگلیسی، عدد، نقطه، خط تیره و زیرخط؛ ۳ تا ۳۴ کاراکتر'
+              : 'دقیقاً همان‌طور که روی پنل نوشته شده — بزرگی و کوچکی حروف فرق دارد؛ ' +
+                'حداکثر ۳۴ کاراکتر'}
+          </p>
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="reseller-name">
+            نام نماینده
+          </label>
+          <input
+            id="reseller-name"
+            className="form-control"
+            type="text"
+            maxLength={80}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            {...w}
+          />
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="reseller-expires">
+            مهلت <span className="muted">(خالی = بی‌مهلت)</span>
+          </label>
+          <input
+            id="reseller-expires"
+            className="form-control ltr"
+            type="date"
+            value={expiresOn}
+            onChange={(e) => setExpiresOn(e.target.value)}
+            {...w}
+          />
+        </div>
+      </div>
+
+      <div className="modal-actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || !ready}
+          onClick={() => void submit()}
+          {...w}
+        >
+          {busy ? 'در حال ثبت…' : 'ثبت نماینده'}
+        </button>
+        <button type="button" className="btn btn-sm" onClick={onCancel}>
+          انصراف
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Name, note and deadline — the PATCH is partial, so only what changed goes.
+ *
+ * No volume box: the bot writes it on every paid order, and an edit here would
+ * race that. The server guards it (`volume_moved`) for whoever does add one.
+ */
+function EditReseller({
+  row,
+  onSaved,
+  onCancel,
+}: {
+  row: ResellerRow;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const w = useAdminWriteProps();
+  const [name, setName] = useState(row.name);
+  const [note, setNote] = useState(row.note ?? '');
+  const [expiresOn, setExpiresOn] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function send(patch: Parameters<typeof api.updateReseller>[1]) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.updateReseller(row.id, patch);
+      onSaved();
+    } catch (e) {
+      setErr(reason(e, 'تغییر ذخیره نشد'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const noteValue = note.trim() === '' ? null : note.trim();
+  const patch = {
+    ...(name.trim() !== row.name ? { name: name.trim() } : {}),
+    ...(noteValue !== row.note ? { note: noteValue } : {}),
+    ...(expiresOn !== '' ? { expiresAtMs: deadlineMs(expiresOn) } : {}),
+  };
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <h2>ویرایش «{row.name}»</h2>
+      {err !== null && (
+        <div className="alert alert-error" role="alert">
+          {err}
+        </div>
+      )}
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="reseller-edit-name">
+            نام نماینده
+          </label>
+          <input
+            id="reseller-edit-name"
+            className="form-control"
+            type="text"
+            maxLength={80}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            {...w}
+          />
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="reseller-edit-expires">
+            مهلت تازه{' '}
+            <span className="muted">
+              (الان: {row.expiresAt === null ? 'بدون سررسید' : dateOnly(row.expiresAt)})
+            </span>
+          </label>
+          <input
+            id="reseller-edit-expires"
+            className="form-control ltr"
+            type="date"
+            value={expiresOn}
+            onChange={(e) => setExpiresOn(e.target.value)}
+            {...w}
+          />
+        </div>
+      </div>
+      <label className="form-label" htmlFor="reseller-edit-note">
+        یادداشت
+      </label>
+      <textarea
+        id="reseller-edit-note"
+        className="form-control"
+        rows={2}
+        maxLength={500}
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        {...w}
+      />
+      <p className="muted">
+        برداشتن مهلت نمایندهٔ معلق را فعال نمی‌کند — برای آن «فعال‌سازی» را در ردیفش بزنید.
+      </p>
+      <div className="modal-actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || Object.keys(patch).length === 0 || name.trim() === ''}
+          onClick={() => void send(patch)}
+          {...w}
+        >
+          ذخیره
+        </button>
+        {row.expiresAt !== null && (
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={busy}
+            onClick={() => void send({ expiresAtMs: null })}
+            {...w}
+          >
+            برداشتن مهلت
+          </button>
+        )}
+        <button type="button" className="btn btn-sm" onClick={onCancel}>
+          انصراف
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function ResellersPage() {
   const w = useAdminWriteProps();
   const [rows, setRows] = useState<ResellerRow[]>([]);
@@ -61,6 +562,13 @@ export function ResellersPage() {
   const [busy, setBusy] = useState<number | null>(null);
   const [open, setOpen] = useState<number | null>(null);
   const [readings, setReadings] = useState<ResellerReading[]>([]);
+  // `?user=` from «لیست درخواست‌ها» opens the form on that user.
+  const [prefillUser] = useState(
+    () => new URLSearchParams(window.location.search).get('user') ?? '',
+  );
+  const [creating, setCreating] = useState(prefillUser !== '');
+  const [editing, setEditing] = useState<number | null>(null);
+  const [done, setDone] = useState<string | null>(null);
   // What is selected RIGHT NOW, readable from inside a promise that started
   // earlier. `open` in a closure is the value it had when the request began.
   const idRef = useRef<number | null>(null);
@@ -102,19 +610,32 @@ export function ResellersPage() {
     }
   }
 
-  async function setStatus(id: number, status: 'ACTIVE' | 'SUSPENDED') {
-    setBusy(id);
+  async function setStatus(r: ResellerRow, status: Target) {
+    // Closing has no way back, and takes «پنل نمایندگی» out of their menu.
+    // The admin on the panel is not touched — that is done on the panel.
+    if (
+      status === 'CLOSED' &&
+      !window.confirm(
+        `«${r.name}» بسته شود؟ ردیف بسته دوباره باز نمی‌شود و «پنل نمایندگی» از منوی ربات ` +
+          `او برداشته می‌شود. ادمینش روی پنل دست نمی‌خورد.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(r.id);
+    setErr(null);
     try {
-      await api.setResellerStatus(id, status);
+      await api.setResellerStatus(r.id, status);
       await load();
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : 'وضعیت عوض نشد');
+      setErr(reason(e, 'وضعیت عوض نشد'));
     } finally {
       setBusy(null);
     }
   }
 
   const active = rows.filter((r) => r.status === 'ACTIVE').length;
+  const editRow = rows.find((r) => r.id === editing) ?? null;
 
   return (
     <div className="page">
@@ -133,7 +654,30 @@ export function ResellersPage() {
             {count(rows.length)} نماینده · {count(active)} فعال
           </div>
         </div>
+        {!creating && (
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setCreating(true)}
+            {...w}
+          >
+            ثبت نماینده
+          </button>
+        )}
       </div>
+
+      {creating && (
+        <NewResellerForm
+          initialUserId={prefillUser}
+          onCancel={() => setCreating(false)}
+          onCreated={(name) => {
+            setCreating(false);
+            setDone(`«${name}» ثبت شد.`);
+            void load();
+          }}
+        />
+      )}
+      {done !== null && <div className="alert alert-ok">{done}</div>}
 
       <p className="muted" style={{ maxWidth: '60ch' }}>
         هر نماینده یک نصب کامل و جدا دارد — ربات، دیتابیس و پنل مدیریتی خودش — و فقط به
@@ -142,7 +686,7 @@ export function ResellersPage() {
       </p>
 
       {err !== null && (
-        <div className="alert alert--error" role="alert">
+        <div className="alert alert-error" role="alert">
           {err}
         </div>
       )}
@@ -184,7 +728,7 @@ export function ResellersPage() {
                       franchise's customers. Worth its own badge: it is the one
                       state where nothing of ours acted and everything stopped. */}
                   {r.latestPanelIsLimited === true && (
-                    <div className="badge badge--danger">به سقف رسیده</div>
+                    <div className="badge badge-block">به سقف رسیده</div>
                   )}
                 </td>
                 <td>{r.latestUsedBytes === null ? '—' : gigabytes(r.latestUsedBytes)}</td>
@@ -202,7 +746,7 @@ export function ResellersPage() {
                 <td>
                   <button
                     type="button"
-                    className="btn btn--ghost"
+                    className="btn btn-sm"
                     onClick={() => void showReadings(r.id)}
                   >
                     {open === r.id ? 'بستن خوانش‌ها' : 'خوانش‌ها'}
@@ -210,21 +754,45 @@ export function ResellersPage() {
                   {r.status !== 'CLOSED' && (
                     <button
                       type="button"
-                      className="btn btn--ghost"
-                      disabled={busy === r.id || w.disabled}
-                      title={w.title}
-                      onClick={() =>
-                        void setStatus(r.id, r.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE')
-                      }
+                      className="btn btn-sm"
+                      aria-label={`ویرایش ${r.name}`}
+                      onClick={() => setEditing(editing === r.id ? null : r.id)}
+                      {...w}
                     >
-                      {r.status === 'ACTIVE' ? 'تعلیق' : 'فعال‌سازی'}
+                      ویرایش
                     </button>
                   )}
+                  {(MOVES[r.status] ?? []).map((m) => (
+                    <button
+                      key={m.to}
+                      type="button"
+                      className={m.to === 'CLOSED' ? 'btn btn-sm btn-danger' : 'btn btn-sm'}
+                      aria-label={`${m.label} ${r.name}`}
+                      disabled={busy === r.id}
+                      onClick={() => void setStatus(r, m.to)}
+                      {...w}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+      )}
+
+      {editRow !== null && (
+        <EditReseller
+          key={editRow.id}
+          row={editRow}
+          onCancel={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            setDone(`«${editRow.name}» ذخیره شد.`);
+            void load();
+          }}
+        />
       )}
 
       {open !== null && (
