@@ -37,7 +37,7 @@ import {
   markBroadcastRetryable,
   markBroadcastSent,
   markUnreachable,
-  strandedSendingCount,
+  failStrandedSends,
   SEND_CONCURRENCY,
   sendGapMs,
   type BroadcastMessage,
@@ -746,16 +746,23 @@ export async function sweepBroadcasts(
   // It is documented as cheap and idempotent and its NOT EXISTS makes it a
   // no-op when nothing has changed, so paying for it every cycle is the whole
   // cost of never losing the close.
+  //
+  // Behind the stranded rows, so a broadcast whose last open row was one of
+  // them closes on this same pass. They are closed FAILED, never retried —
+  // whether Telegram accepted the message before the process died is exactly
+  // what nobody knows, and guessing wrong spams a paying customer. Said once,
+  // when they are closed: it used to be said on every pass, about the same
+  // rows, for ever.
+  const stranded = await failStrandedSends(db).catch((err: unknown) => {
+    log.error('broadcast.stranded_unclosed', {}, err);
+    return 0;
+  });
+  if (stranded > 0) {
+    log.warn('broadcast.stranded', { messages: stranded, closed_as: 'FAILED' });
+  }
   await closeFinishedBroadcasts(db).catch((err: unknown) =>
     log.error('broadcast.close_failed', {}, err),
   );
-  // The only voice a stranded row has. It is deliberately not retried — whether
-  // Telegram accepted the message before the process died is exactly what
-  // nobody knows, and guessing wrong spams a paying customer.
-  const stranded = await strandedSendingCount(db).catch(() => 0);
-  if (stranded > 0) {
-    log.warn('broadcast.stranded', { messages: stranded });
-  }
   if (rateLimited > 0) {
     // A warning rather than an error: the queue kept them and the next cycle
     // takes them. It is logged at all because it is the shop's only sign that

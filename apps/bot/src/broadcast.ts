@@ -319,25 +319,49 @@ export async function releaseBroadcastClaims(
 }
 
 /**
- * Rows somebody claimed and never finished, older than `olderThanMs`.
+ * How old a SENDING row must be before it is given up on.
  *
- * The age matters: a row claimed a second ago belongs to the sweep that is
- * running right now, and reporting it would make every healthy broadcast look
- * stuck.
+ * A live sweep holds its claim for as long as the batch takes plus any pause
+ * a 429 imposes, and the longest ban this shop has met is fifty minutes. Two
+ * hours is that with room to spare; a row still SENDING after it belongs to a
+ * process that is gone.
+ *
+ * ponytail: an age, not a check that the claimer is alive. A ban longer than
+ * this would see its rows closed under it; the send still happens after the
+ * ban, and `markBroadcastSent`'s `status = 'SENDING'` guard leaves them FAILED
+ * — a count short by what that batch delivered, never a customer told twice.
  */
-export async function strandedSendingCount(
+export const STRANDED_AFTER_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Closes the rows a dead process left SENDING, as FAILED with the reason, and
+ * returns how many.
+ *
+ * Never back to PENDING: whether Telegram accepted the message before the
+ * process died is exactly what nobody knows, and guessing wrong spams a paying
+ * customer. This only stops them being open for ever. Until 2026-09-26 they
+ * were counted on every drain pass and nothing else — 15,181
+ * `broadcast.stranded` warnings in one day on production, about the same rows
+ * — and their broadcast could never finish, because `closeFinishedBroadcasts`
+ * counts SENDING as outstanding.
+ *
+ * The age matters: a row claimed a minute ago belongs to the sweep that is
+ * running right now.
+ */
+export async function failStrandedSends(
   db: D1Database,
-  olderThanMs = 10 * 60 * 1000,
+  olderThanMs: number = STRANDED_AFTER_MS,
   now: number = Date.now(),
 ): Promise<number> {
-  const row = await db
+  const done = await db
     .prepare(
-      `SELECT count(*)::int AS n FROM broadcast_recipients
+      `UPDATE broadcast_recipients
+          SET status = 'FAILED', error = 'stranded: delivery unknown'
         WHERE status = 'SENDING' AND claimed_at < to_timestamp(?1 / 1000.0)`,
     )
     .bind(now - olderThanMs)
-    .first<{ n: number }>();
-  return row?.n ?? 0;
+    .run();
+  return done.meta.changes ?? 0;
 }
 
 /**
