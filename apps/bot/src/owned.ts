@@ -479,3 +479,75 @@ export async function hideDeadServiceForUser(
     .run();
   return true;
 }
+
+/**
+ * A reseller's franchise (#474) — the row that makes somebody the owner of a
+ * PasarGuard admin on one of our panels, with what the panel screen and the
+ * sale need to know about that panel.
+ *
+ * Here for the reason this file exists: «🏢 پنل نمایندگی» carries the row's id
+ * in `callback_data`, which anybody can post, and the id of another reseller's
+ * row must find nothing. CLOSED rows are over and find nothing either.
+ */
+export interface OwnedResellerAccount {
+  id: number;
+  name: string;
+  /** PENDING (no panel admin yet), ACTIVE or SUSPENDED — never CLOSED. */
+  status: string;
+  panel_admin_username: string;
+  /** Our ledger of what they bought, bytes. NULL: not bought through us yet. */
+  data_limit_bytes: string | number | null;
+  expires_at: string | null;
+  provider_id: number;
+  provider_code: string;
+  provider_name: string;
+  provider_kind: string;
+  provider_base_url: string | null;
+  provider_secret_ref: string | null;
+  provider_sealed: string | null;
+  provider_config: Record<string, unknown> | null;
+  /** The meter's latest reading of the panel's own counter, and when. */
+  used_bytes: string | number | null;
+  read_at: string | null;
+}
+
+const RESELLER_ACCOUNT_SELECT = `
+  SELECT ra.id, ra.name, ra.status, ra.panel_admin_username, ra.data_limit_bytes,
+         ra.expires_at::text AS expires_at,
+         pv.id AS provider_id, pv.code AS provider_code, pv.name AS provider_name,
+         pv.kind AS provider_kind, pv.base_url AS provider_base_url,
+         pv.secret_ref AS provider_secret_ref, ps.sealed AS provider_sealed,
+         pv.config AS provider_config,
+         snap.used_bytes, snap.taken_at::text AS read_at
+    FROM reseller_accounts ra
+    JOIN provisioning_providers pv ON pv.id = ra.provider_id
+    LEFT JOIN provider_secrets ps ON ps.provider_id = pv.id
+    LEFT JOIN LATERAL (
+      SELECT s.used_bytes, s.taken_at FROM reseller_usage_snapshots s
+       WHERE s.reseller_id = ra.id
+       ORDER BY s.taken_at DESC, s.id DESC
+       LIMIT 1
+    ) snap ON TRUE
+   WHERE ra.user_id = ?1 AND ra.status <> 'CLOSED'`;
+
+export async function resellerAccountsForUser(
+  db: Db,
+  userId: number,
+): Promise<OwnedResellerAccount[]> {
+  const { results } = await db
+    .prepare(`${RESELLER_ACCOUNT_SELECT} ORDER BY ra.id`)
+    .bind(userId)
+    .all<OwnedResellerAccount>();
+  return results ?? [];
+}
+
+export async function resellerAccountForUser(
+  db: Db,
+  userId: number,
+  accountId: number,
+): Promise<OwnedResellerAccount | null> {
+  return db
+    .prepare(`${RESELLER_ACCOUNT_SELECT} AND ra.id = ?2`)
+    .bind(userId, accountId)
+    .first<OwnedResellerAccount>();
+}

@@ -156,7 +156,7 @@ describe('a customer sending their receipt', () => {
     expect(out.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
     expect(out.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
     expect(out.replies.at(-1)?.keyboard).toEqual(
-      menu.mainMenu({ is_reseller: false, is_admin: false }),
+      menu.mainMenu({ is_reseller: false, is_admin: false, has_reseller_account: false }),
     );
 
     const row = await claimRow(sale.claimId);

@@ -41,6 +41,12 @@ import {
   deliverableTrialFor,
   usernameShapeFor,
   splitCredential,
+  generatePanelPassword,
+  RESELLER_MAX_TOTAL_BYTES,
+  resellerNote,
+  resellerSaleFor,
+  TIB,
+  type PanelAdminWriteResult,
   type ProviderContext,
   type ProvisionRequest,
   wireguardConfsFromLinks,
@@ -56,6 +62,7 @@ import { balanceFor, creditRenewalCashback, refundOrder, walletPaidOnOrder } fro
 import { loadShopSettings } from './settings.js';
 import { payReferralCommission, type CommissionRates } from './referral.js';
 import { report } from './reports.js';
+import { ownsPanelAdmin, panelLoginUrl, resellerAdapterFor } from './resellerPanel.js';
 import { createLogger } from '@shikoo/domain';
 
 const log = createLogger('bot');
@@ -122,6 +129,10 @@ interface PendingOrder {
    */
   plan_provider_name: string | null;
   plan_provider_id: number | null;
+  /** RESELLER_VOLUME: the franchise it adds terabytes to (0104). */
+  target_reseller_id: number | null;
+  /** RESELLER_VOLUME: the ledger total once this order was applied; NULL until then. */
+  reseller_target_limit_bytes: string | number | null;
 }
 
 /**
@@ -502,6 +513,10 @@ async function untoldNote(
     return say(menu.serviceNeedsHelp(row.order_public_id, back ? Number(back.amount_irr) : null));
   }
 
+  // COMPLETED, and a reseller's terabytes: there is no subscription to draw,
+  // so without this the screen below would tell them a person is finishing it.
+  if (row.order_kind === 'RESELLER_VOLUME') return say(await resellerVolumeNote(db, row, false));
+
   // COMPLETED. A shelved ACCOUNT has to be answered before the screen below,
   // for the reason `stockedScreen` exists: the card is drawn from the
   // subscription row and never renders `remote_ref`, so recovering a lost
@@ -648,9 +663,10 @@ export async function provisionPaidOrders(
               o.bonus_volume_gb AS bonus_volume_gb,
               pr.name         AS product_name,
               -- The order's OWN panel is last, and last is what makes it safe to
-              -- add: a trial is the only kind that sets orders.provider_id, and
-              -- for every other kind the column is NULL, so no existing row can
-              -- change which panel it resolves to.
+              -- add: only a trial and a reseller's volume (0104) set
+              -- orders.provider_id, neither has a plan or a service to resolve
+              -- a panel through, and for every other kind the column is NULL,
+              -- so no existing row can change which panel it resolves to.
               COALESCE(spv.id, pv.id, opv.id)                     AS provider_id,
               COALESCE(spv.code, pv.code, opv.code)               AS provider_code,
               COALESCE(spv.name, pv.name, opv.name)               AS provider_name,
@@ -663,7 +679,9 @@ export async function provisionPaidOrders(
               COALESCE(sps.sealed, ps.sealed, ops.sealed) AS provider_sealed,
               COALESCE(spv.config, pv.config, opv.config)         AS provider_config,
               pv.name                                             AS plan_provider_name,
-              pv.id                                               AS plan_provider_id
+              pv.id                                               AS plan_provider_id,
+              o.target_reseller_id                                AS target_reseller_id,
+              o.reseller_target_limit_bytes                       AS reseller_target_limit_bytes
          FROM orders o
          JOIN users u              ON u.id = o.user_id
          LEFT JOIN product_plans pl ON pl.id = o.plan_id
@@ -878,6 +896,10 @@ async function deliver(
   fetchImpl: typeof globalThis.fetch,
   now: number,
 ): Promise<Delivered | null> {
+  // A reseller's terabytes have no plan and no service either — they are more
+  // `data_limit` on a panel ADMIN (#474) — so they are routed first too.
+  if (row.order_kind === 'RESELLER_VOLUME') return deliverResellerVolume(db, row, fetchImpl, now);
+
   // An add-on carries no plan on purpose — it is gigabytes or days on an
   // account that already exists — so it is routed before the plan check below.
   if (row.order_kind === 'ADD_VOLUME' || row.order_kind === 'ADD_TIME') {
@@ -1374,6 +1396,263 @@ async function restoreGroups(
     )
     .bind(row.target_subscription_id)
     .run();
+}
+
+/**
+ * A reseller's terabytes onto their panel admin (#474).
+ *
+ * ## Our row is the ledger, the panel is its mirror
+ *
+ * `reseller_accounts.data_limit_bytes` says what this reseller has bought, and
+ * the order adds to it ONCE: under the row's lock, in the transaction that
+ * stamps `orders.reseller_target_limit_bytes`, guarded on that stamp still
+ * being NULL. Then the panel is told the ledger's CURRENT total — never the
+ * number this order stamped.
+ *
+ * That is what makes every retry harmless. The first design read the panel's
+ * limit, added the order and wrote the sum back; a FAILED order retried from
+ * the dashboard after a newer order had landed would then have written its old
+ * sum over the newer one and taken back volume that was paid for. Sending the
+ * ledger's total instead means a retry can only ever repeat the latest figure.
+ * A retryable failure keeps the stamp and the next attempt only mirrors; a
+ * definite one goes through `fail()`, which gives the terabytes back to the
+ * ledger in the same transaction and clears the stamp, so a retry applies
+ * them afresh.
+ *
+ * ## A reseller with no panel yet
+ *
+ * PENDING: the first paid order creates the admin, under the name the
+ * operator chose, with a random password nobody is shown — the reseller asks
+ * for one with «🔑 رمز جدید». A 409 on a retried create is accepted only when
+ * the admin carries this reseller's note AND Telegram id, i.e. only when it is
+ * the one an earlier attempt made.
+ *
+ * Every check `checkReady` made before the order existed is made again here:
+ * that one spared the reseller a transfer, this one is the guard.
+ */
+async function deliverResellerVolume(
+  db: D1Database,
+  row: PendingOrder,
+  fetchImpl: typeof globalThis.fetch,
+  now: number,
+): Promise<Delivered | null> {
+  const give = async (reason: string): Promise<Delivered> => {
+    const refunded = await fail(db, row.order_id, reason);
+    log.error('provision.failed', { ref: row.order_public_id, reason, refunded });
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
+  };
+  const retryLater = async (reason: string): Promise<null> => {
+    await release(db, row, now);
+    log.warn('provision.will_retry', { ref: row.order_public_id, reason });
+    return null;
+  };
+  const refused = (result: { reason: string; retryable: boolean }) =>
+    result.retryable ? retryLater(result.reason) : give(result.reason);
+
+  if (row.provider_id === null || row.provider_kind === null || row.target_reseller_id === null) {
+    return give('the reseller order names no panel');
+  }
+  if (row.telegram_id === null) return give('the reseller has no Telegram id');
+  const adapter = resellerAdapterFor(row.provider_kind);
+  const sale = resellerSaleFor(row.provider_config ?? {});
+  if (adapter === null) return give('this panel kind cannot sell reseller volume');
+  if (sale === null) return give('this panel no longer sells to resellers');
+
+  // The commission rates `complete()` needs, read before anything irreversible
+  // for the same reason `deliver` reads them first. A reseller order pays no
+  // commission (`referral.ts` pays on NEW_PURCHASE and RENEWAL only), but the
+  // one function every COMPLETED passes through takes the rates.
+  const shop = await loadShopSettings(db);
+  if (!shop.fromDatabase) return retryLater('the commission rate could not be read');
+
+  const account = await db
+    .prepare(
+      `SELECT id, status, panel_admin_username FROM reseller_accounts
+        WHERE id = ?1 AND user_id = ?2`,
+    )
+    .bind(row.target_reseller_id, row.user_id)
+    .first<{ id: number; status: string; panel_admin_username: string }>();
+  if (!account || account.status === 'CLOSED') return give('the reseller account is closed');
+
+  const provider: ProviderContext = {
+    id: row.provider_id,
+    code: row.provider_code ?? String(row.provider_id),
+    name: row.provider_name ?? 'panel',
+    baseUrl: row.provider_base_url,
+    credentials: credentialsFor(row.provider_secret_ref, row.provider_sealed),
+    config: row.provider_config ?? {},
+    fetch: fetchImpl,
+  };
+  const username = account.panel_admin_username;
+  const botLogin = provider.credentials?.username ?? null;
+
+  // An admin that already exists is checked before its ledger moves, and its
+  // own limit is what an unseeded ledger starts from.
+  let seed: number | null = null;
+  if (account.status !== 'PENDING') {
+    const found = await adapter.getPanelAdmin(provider, username);
+    if (!found.ok) return refused(found);
+    if (found.admin === null) return give(`the panel has no admin named ${username}`);
+    if (!ownsPanelAdmin(found.admin, row.telegram_id, sale, botLogin)) {
+      return give(`admin ${username} is not provably this reseller's`);
+    }
+    if (found.admin.dataLimitBytes === null || found.admin.dataLimitBytes <= 0) {
+      return give(`admin ${username} is unlimited on the panel`);
+    }
+    seed = found.admin.dataLimitBytes;
+  } else if (sale.roleId === null) {
+    return give('no reseller role is configured on this panel');
+  }
+
+  if (row.reseller_target_limit_bytes === null) {
+    const bytes = Number(row.quantity) * TIB;
+    const applied = await db.withSession(async (tx) => {
+      if (seed !== null) {
+        await tx
+          .prepare(
+            `UPDATE reseller_accounts SET data_limit_bytes = ?2, updated_at = now()
+              WHERE id = ?1 AND data_limit_bytes IS NULL`,
+          )
+          .bind(account.id, seed)
+          .run();
+      }
+      // The row lock this UPDATE takes is what puts two orders for one
+      // reseller one behind the other. The ceiling keeps the total a number
+      // JavaScript still reads back exactly.
+      const total = await tx
+        .prepare(
+          `UPDATE reseller_accounts
+              SET data_limit_bytes = COALESCE(data_limit_bytes, 0) + ?2, updated_at = now()
+            WHERE id = ?1 AND COALESCE(data_limit_bytes, 0) + ?2 <= ?3
+          RETURNING data_limit_bytes`,
+        )
+        .bind(account.id, bytes, RESELLER_MAX_TOTAL_BYTES)
+        .first<{ data_limit_bytes: string | number }>();
+      if (!total) return false;
+      const stamped = await tx
+        .prepare(
+          `UPDATE orders SET reseller_target_limit_bytes = ?2, updated_at = now()
+            WHERE id = ?1 AND status = 'PROVISIONING' AND reseller_target_limit_bytes IS NULL`,
+        )
+        .bind(row.order_id, total.data_limit_bytes)
+        .run();
+      // Another sweep owns this order now; everything above rolls back.
+      if (stamped.meta.changes !== 1) throw new LostTheClaim(row.order_id);
+      return true;
+    });
+    if (!applied) return give('the reseller total would pass the largest exact byte count');
+  }
+
+  // The mirror. Read back after every write, and sent again when the ledger
+  // moved meanwhile — so a slow PUT from this order can never land after a
+  // newer order's and leave the panel behind what was sold. Three rounds is
+  // generous: a change here needs two sweeps delivering one reseller at once.
+  let created = false;
+  for (let round = 0; round < 3; round++) {
+    const ledger = await db
+      .prepare(`SELECT status, data_limit_bytes FROM reseller_accounts WHERE id = ?1`)
+      .bind(account.id)
+      .first<{ status: string; data_limit_bytes: string | number | null }>();
+    const total = Number(ledger?.data_limit_bytes ?? NaN);
+    if (!ledger || !Number.isSafeInteger(total) || total <= 0) {
+      return give('the reseller ledger holds no volume to send');
+    }
+    let write: PanelAdminWriteResult;
+    if (ledger.status === 'PENDING') {
+      write = await adapter.createPanelAdmin(provider, {
+        username,
+        password: generatePanelPassword(),
+        roleId: sale.roleId!,
+        dataLimitBytes: total,
+        telegramId: row.telegram_id,
+        note: resellerNote(account.id),
+      });
+      if (!write.ok && write.conflict) {
+        // Ours from an earlier attempt, or somebody else's — only the note and
+        // the Telegram id together can tell.
+        const found = await adapter.getPanelAdmin(provider, username);
+        if (!found.ok) return refused(found);
+        const mine =
+          found.admin !== null &&
+          found.admin.note === resellerNote(account.id) &&
+          found.admin.telegramId === row.telegram_id;
+        if (!mine) {
+          return give(
+            found.admin === null
+              ? 'the panel refused the new admin (409) and has none by that name'
+              : `the panel already has an admin named ${username}`,
+          );
+        }
+        write = await adapter.setPanelAdmin(provider, username, { dataLimitBytes: total });
+      }
+      if (!write.ok) return refused(write);
+      // Read back: a panel on SQLite creates an admin with NO role when the id
+      // is wrong, and «created» would then hand a reseller an admin nobody can
+      // check again.
+      const back = await adapter.getPanelAdmin(provider, username);
+      if (!back.ok) return refused(back);
+      if (back.admin === null || !ownsPanelAdmin(back.admin, row.telegram_id, sale, botLogin)) {
+        return give(`the admin created for ${username} does not carry the reseller role`);
+      }
+      await db
+        .prepare(
+          `UPDATE reseller_accounts
+              SET status = 'ACTIVE',
+                  expires_at = COALESCE(expires_at,
+                    CASE WHEN ?2::int IS NULL THEN NULL ELSE now() + make_interval(days => ?2::int) END),
+                  updated_at = now()
+            WHERE id = ?1 AND status = 'PENDING'`,
+        )
+        .bind(account.id, sale.termDays)
+        .run();
+      created = true;
+    } else {
+      write = await adapter.setPanelAdmin(provider, username, { dataLimitBytes: total });
+      if (!write.ok) return refused(write);
+    }
+    const after = await db
+      .prepare(`SELECT data_limit_bytes FROM reseller_accounts WHERE id = ?1`)
+      .bind(account.id)
+      .first<{ data_limit_bytes: string | number | null }>();
+    if (Number(after?.data_limit_bytes ?? NaN) === total) break;
+  }
+
+  await complete(db, row.order_id, referralRates(shop));
+  return say(await resellerVolumeNote(db, row, created));
+}
+
+/**
+ * What a delivered reseller order tells the reseller — read from the rows, so
+ * the sweep that finds a delivery nobody heard about says the same thing.
+ */
+async function resellerVolumeNote(
+  db: D1Database,
+  row: PendingOrder,
+  created: boolean,
+): Promise<string> {
+  const account = await db
+    .prepare(
+      `SELECT ra.panel_admin_username, ra.data_limit_bytes,
+              pv.base_url AS provider_base_url, pv.config AS provider_config
+         FROM reseller_accounts ra
+         JOIN provisioning_providers pv ON pv.id = ra.provider_id
+        WHERE ra.id = ?1`,
+    )
+    .bind(row.target_reseller_id)
+    .first<{
+      panel_admin_username: string;
+      data_limit_bytes: string | number | null;
+      provider_base_url: string | null;
+      provider_config: Record<string, unknown> | null;
+    }>();
+  return menu.resellerVolumeDone({
+    publicId: row.order_public_id,
+    username: account?.panel_admin_username ?? '',
+    addedTb: Number(row.quantity),
+    totalBytes: account?.data_limit_bytes === null ? null : Number(account?.data_limit_bytes),
+    created,
+    loginUrl: account ? panelLoginUrl(account) : null,
+  });
 }
 
 /**
@@ -1971,7 +2250,8 @@ async function reportFor(
       const earlier = await db
         .prepare(
           `SELECT count(*)::int AS n FROM orders
-            WHERE user_id = ?1 AND id <> ?2 AND kind NOT IN ('WALLET_TOPUP', 'TRIAL')
+            WHERE user_id = ?1 AND id <> ?2
+              AND kind NOT IN ('WALLET_TOPUP', 'TRIAL', 'RESELLER_VOLUME')
               AND status IN ('PAID', 'PROVISIONING', 'COMPLETED')
               AND NOT ${legacyTrialSql('orders')}`,
         )
@@ -2009,6 +2289,32 @@ async function reportFor(
           balanceBeforeIrr: balanceBefore,
         }),
       ];
+    case 'RESELLER_VOLUME': {
+      // «Renewals and add-ons on a service that already exists» is the topic
+      // it fits: a panel admin getting more of what it already has. Not a
+      // topic of its own — the group is laid out exactly as mirzabot's.
+      const account = await db
+        .prepare(
+          `SELECT name, panel_admin_username, data_limit_bytes FROM reseller_accounts WHERE id = ?1`,
+        )
+        .bind(row.target_reseller_id)
+        .first<{ name: string; panel_admin_username: string; data_limit_bytes: string | number | null }>();
+      return [
+        'otherservice',
+        menu.resellerVolumeReport({
+          telegramId,
+          username: row.telegram_username,
+          name: account?.name ?? '',
+          panelAdmin: account?.panel_admin_username ?? '',
+          panel,
+          addedTb: Number(row.quantity),
+          totalBytes: account?.data_limit_bytes == null ? null : Number(account.data_limit_bytes),
+          priceIrr: totalIrr,
+          tracking: row.order_public_id,
+          atMs: now,
+        }),
+      ];
+    }
     case 'ADD_TIME':
       return [
         'otherservice',
@@ -2151,6 +2457,42 @@ async function fail(db: D1Database, orderId: number, reason: string): Promise<nu
             SET test_quota_used = GREATEST(u.test_quota_used - 1, 0), updated_at = now()
            FROM orders o
           WHERE o.id = ?1 AND o.user_id = u.id AND o.kind = 'TRIAL'`,
+      )
+      .bind(orderId)
+      .run();
+
+    /*
+     * A reseller order that failed gives its terabytes back to the ledger, and
+     * forgets it ever applied them (#474).
+     *
+     * Same shape as the trial above: one statement joined on the order, so it
+     * moves nothing for any other kind, and only when the stamp says the
+     * terabytes were added. Clearing the stamp in the same transaction is what
+     * lets the dashboard's retry (FAILED → PAID) apply them again from
+     * scratch instead of mirroring a total that no longer includes them.
+     *
+     * A ledger that falls back to nothing is NULL rather than zero — the
+     * column's CHECK is `> 0`, and a PENDING reseller with nothing bought has
+     * no volume, not a volume of zero.
+     */
+    await tx
+      .prepare(
+        `UPDATE reseller_accounts ra
+            SET data_limit_bytes = CASE
+                  WHEN ra.data_limit_bytes - o.quantity::bigint * ?2 > 0
+                  THEN ra.data_limit_bytes - o.quantity::bigint * ?2 END,
+                updated_at = now()
+           FROM orders o
+          WHERE o.id = ?1 AND o.kind = 'RESELLER_VOLUME'
+            AND o.reseller_target_limit_bytes IS NOT NULL
+            AND ra.id = o.target_reseller_id`,
+      )
+      .bind(orderId, TIB)
+      .run();
+    await tx
+      .prepare(
+        `UPDATE orders SET reseller_target_limit_bytes = NULL
+          WHERE id = ?1 AND kind = 'RESELLER_VOLUME'`,
       )
       .bind(orderId)
       .run();

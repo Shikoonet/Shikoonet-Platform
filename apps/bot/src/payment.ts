@@ -27,9 +27,12 @@ import {
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import {
   CARD_HELD_UNTIL_SQL,
+  cardAudienceFor,
+  CUSTOMER_CARDS,
   fulfilMirzabotClaimWithoutPayment,
   NO_TRANSFER_REASONS,
   readContinuityMode,
+  type CardAudience,
 } from '@shikoo/domain';
 import { newPublicId } from './order.js';
 import type { OwnedOrder } from './owned.js';
@@ -95,7 +98,16 @@ export interface RotatedCard {
   busy: boolean;
 }
 
-export async function rotateCard(tx: D1DatabaseSession, now: number): Promise<RotatedCard | null> {
+export async function rotateCard(
+  tx: D1DatabaseSession,
+  now: number,
+  /**
+   * Which line to draw from — 0104's audience (#474). Required, not defaulted:
+   * a caller that forgot it would hand a reseller's card to a customer or the
+   * other way round, and neither is a mistake anybody would see on a screen.
+   */
+  audience: CardAudience,
+): Promise<RotatedCard | null> {
   return tx
     .prepare(
       `UPDATE payment_cards pc
@@ -128,7 +140,12 @@ export async function rotateCard(tx: D1DatabaseSession, now: number): Promise<Ro
              -- alone. Sam, 2026-09-20 — accounts whose texts must reach the
              -- ledger but whose cards no customer may see. active could not
              -- say it, because off takes the books down too.
-             AND fa.customer_visible = 1
+             --
+             -- 0104 made it an audience (#474): 1 is the shop's customers, 2
+             -- the accounts kept for resellers. An invoice draws from exactly
+             -- one of the two, so a reseller card never reaches a customer and
+             -- a customer card never reaches a reseller's invoice.
+             AND fa.customer_visible = ?2
            -- Free cards first (COALESCE: a NULL hold is "free", and a bare
            -- boolean would sort NULL after true). Among the busy, the one that
            -- frees soonest. Then the line itself.
@@ -143,7 +160,7 @@ export async function rotateCard(tx: D1DatabaseSession, now: number): Promise<Ro
                   -- cannot reach here.
                   COALESCE(${CARD_HELD_UNTIL_SQL} > ?1, false) AS busy`,
     )
-    .bind(now)
+    .bind(now, audience)
     .first<RotatedCard>();
 }
 
@@ -197,6 +214,18 @@ export async function checkoutFor(
 ): Promise<CheckoutPayment | null> {
   if (!Number.isSafeInteger(totalIrr) || totalIrr <= 0) return null;
 
+  // Asked of the order rather than taken from the caller, so none of the four
+  // places that draw an invoice can forget it (#474). A reseller's volume is
+  // paid into the reseller cards and never out of the wallet: a shortfall paid
+  // from the balance would put a customer-card deposit under a reseller sale.
+  const order = await tx
+    .prepare(`SELECT kind FROM orders WHERE id = ?1 AND user_id = ?2`)
+    .bind(orderId, userId)
+    .first<{ kind: string }>();
+  if (!order) return null;
+  const audience = cardAudienceFor(order.kind);
+  const useWallet = fromWallet && audience === CUSTOMER_CARDS;
+
   const existing = await tx
     .prepare(
       `SELECT public_id, amount_irr, assigned_card_number, assigned_card_name, status
@@ -225,7 +254,7 @@ export async function checkoutFor(
     };
   }
 
-  const card = await rotateCard(tx, now);
+  const card = await rotateCard(tx, now, audience);
   if (!card) return null;
 
   // The balance's share comes off the card amount here, in the transaction
@@ -233,7 +262,7 @@ export async function checkoutFor(
   // checkouts racing for one order the second sees the balance the first
   // already took and reserves nothing; its insert then loses below and it
   // reads the winner's amount.
-  const walletIrr = fromWallet ? await reserveForOrder(tx, userId, orderId, totalIrr) : 0;
+  const walletIrr = useWallet ? await reserveForOrder(tx, userId, orderId, totalIrr) : 0;
 
   // `ON CONFLICT DO NOTHING` against `idx_payments_one_open_per_order` (0022).
   //
@@ -706,8 +735,20 @@ export async function recordReceipt(
    * `fulfilMirzabotClaimWithoutPayment` treats a claim already fulfilled as
    * an idempotent success, preserving the first actor, reason and timestamp.
    */
-  const mode = await readContinuityMode(tx, now);
-  if (mode.mode === 'CONTINUITY') {
+  // Never for a reseller's volume (#474). Continuity trades a screenshot for
+  // bank evidence to keep a shop selling through an SMS outage, and that trade
+  // is sized for a customer's service. One reseller order is up to the whole
+  // card ceiling and orders repeat; on a picture alone that is a panel's worth
+  // of traffic handed out before anybody has seen the money. The claim stays
+  // in review, where a person or the late SMS settles it.
+  const kind = await tx
+    .prepare(
+      `SELECT o.kind FROM payments p JOIN orders o ON o.id = p.order_id WHERE p.public_id = ?1`,
+    )
+    .bind(claim.public_id)
+    .first<{ kind: string }>();
+  const mode = kind?.kind === 'RESELLER_VOLUME' ? null : await readContinuityMode(tx, now);
+  if (mode?.mode === 'CONTINUITY') {
     const fulfilled = await fulfilMirzabotClaimWithoutPayment(tx, {
       claimId: claim.id,
       actorEmail: mode.activatedBy ?? 'continuity',

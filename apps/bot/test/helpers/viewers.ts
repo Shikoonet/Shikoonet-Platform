@@ -8,8 +8,27 @@
 import type { MenuViewer } from '../../src/keyboard.js';
 
 /** The ordinary case: not a reseller, not an admin. */
-export const CUSTOMER: MenuViewer = { is_reseller: false, is_admin: false };
+export const CUSTOMER: MenuViewer = {
+  is_reseller: false,
+  is_admin: false,
+  has_reseller_account: false,
+};
 
-export const RESELLER: MenuViewer = { is_reseller: true, is_admin: false };
+export const RESELLER: MenuViewer = {
+  is_reseller: true,
+  is_admin: false,
+  has_reseller_account: false,
+};
 
-export const ADMIN: MenuViewer = { is_reseller: false, is_admin: true };
+/** Owns a panel admin on one of our panels (#474) — sees «🏢 پنل نمایندگی». */
+export const PANEL_OWNER: MenuViewer = {
+  is_reseller: true,
+  is_admin: false,
+  has_reseller_account: true,
+};
+
+export const ADMIN: MenuViewer = {
+  is_reseller: false,
+  is_admin: true,
+  has_reseller_account: false,
+};

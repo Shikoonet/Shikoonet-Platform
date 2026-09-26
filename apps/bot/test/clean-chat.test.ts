@@ -192,7 +192,7 @@ describe('the navigation bar installed by /start', () => {
     expect(first.replies[0]?.keyboard).toBeUndefined();
     expect(first.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
     expect(first.replies.at(-1)?.keyboard).toEqual(
-      menu.mainMenu({ is_reseller: false, is_admin: false }),
+      menu.mainMenu({ is_reseller: false, is_admin: false, has_reseller_account: false }),
     );
 
     const again = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));

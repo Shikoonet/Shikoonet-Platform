@@ -43,7 +43,8 @@ import {
 } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
-import type { RenewMode } from '@shikoo/domain';
+import { TIB, type RenewMode, type ResellerTier } from '@shikoo/domain';
+import type { OwnedResellerAccount } from './owned.js';
 import {
   actionForLabel,
   MAX_LABEL_LENGTH,
@@ -609,7 +610,15 @@ export function catalogEmojiRefused(reason: 'TOO_LONG' | 'GONE' | 'BAD_EMOJI', l
 }
 
 export function mainMenu(viewer: MenuViewer): InlineKeyboard {
-  return buildMainMenu(layout('main'), viewer);
+  const drawn = buildMainMenu(layout('main'), viewer);
+  // «🏢 پنل نمایندگی» is the one way a reseller reaches their panel (#474).
+  // A layout saved before it existed, or one an operator hid it in, would
+  // strand them — so an owner always gets it, last, when the layout did not
+  // draw it. Everybody else's menu is exactly the saved one.
+  if (!viewer.has_reseller_account) return drawn;
+  if (drawn.some((row) => row.some((b) => b.callback_data === encode('rsp')))) return drawn;
+  const label = MENUS.main.buttons.find((b) => b.action === 'rsp')?.label ?? '🏢 پنل نمایندگی';
+  return [...drawn, [{ text: label, callback_data: encode('rsp') }]];
 }
 
 /**
@@ -3821,4 +3830,287 @@ export function walletPaid(publicId: string, remainingIrr: number): string {
     '',
     t.raw('WALLET_PAID_FOOTER'),
   ].join('\n');
+}
+
+// ── the reseller panel (#474) ───────────────────────────────────────────────
+//
+// «🏢 پنل نمایندگی»: a reseller's own PasarGuard admin, its volume and its
+// deadline, and the two things they can do from here — buy more terabytes and
+// get a new password. The sentences are the shop's (`botTexts.ts`, screen
+// «نمایندگی»); the three buttons are not a layout an operator edits, because
+// which of them appear is the whole content of the screen.
+
+/** Bytes as terabytes, «12» or «2.5» — what a reseller buys in. */
+function tbShown(bytes: number): string {
+  return (bytes / TIB).toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+function bytesOf(value: string | number | null): number | null {
+  if (value === null) return null;
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** «۱۲ مهر ۱۴۰۵» and whole days left, rounded up — 0 once it has passed. */
+function deadlineParts(expiresAt: string, nowMs: number): { date: string; days: number } {
+  const at = Date.parse(expiresAt);
+  return {
+    date: formatTehranDate(new Date(at)),
+    days: Math.max(0, Math.ceil((at - nowMs) / 86_400_000)),
+  };
+}
+
+export function resellerPanelsText(): string {
+  return TEXTS_NOW.raw('RESELLER_PANELS_CHOOSE');
+}
+
+export function resellerPanelsMenu(accounts: readonly OwnedResellerAccount[]): InlineKeyboard {
+  return [
+    ...accounts.map((a) => [
+      { text: `${a.name} — ${a.panel_admin_username}`, callback_data: encode('rsp', a.id) },
+    ]),
+    [{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }],
+  ];
+}
+
+export function resellerPanelScreen(
+  a: OwnedResellerAccount,
+  loginUrl: string | null,
+  nowMs: number,
+): string {
+  const t = TEXTS_NOW;
+  const lines = [
+    t.render('RESELLER_PANEL_TITLE', { name: a.name }),
+    '',
+    t.render('RESELLER_PANEL_USERNAME', { username: `<code>${a.panel_admin_username}</code>` }),
+  ];
+  if (a.status === 'PENDING') {
+    lines.push('', t.raw('RESELLER_PANEL_PENDING'));
+    return lines.join('\n');
+  }
+  if (loginUrl !== null) lines.push(t.render('RESELLER_PANEL_LOGIN', { url: loginUrl }));
+  const total = bytesOf(a.data_limit_bytes);
+  if (total !== null) lines.push(t.render('RESELLER_PANEL_VOLUME', { total: tbShown(total) }));
+  const used = bytesOf(a.used_bytes);
+  if (used !== null && a.read_at !== null) {
+    lines.push(
+      t.render('RESELLER_PANEL_USED', {
+        used: (used / 1024 ** 3).toLocaleString('en-US', { maximumFractionDigits: 1 }),
+        time: jalaliStamp(Date.parse(a.read_at)),
+      }),
+    );
+  }
+  if (a.expires_at !== null) {
+    const { date, days } = deadlineParts(a.expires_at, nowMs);
+    lines.push(
+      days > 0
+        ? t.render('RESELLER_PANEL_DEADLINE', { date, days })
+        : t.render('RESELLER_PANEL_DEADLINE_PASSED', { date }),
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The panel's buttons: buy (or create, for a panel that does not exist yet),
+ * a new password once there is an admin to set it on, and the way back.
+ * `canSell` is «this panel has a price table and an adapter that can do it»;
+ * whether a sale would go through right now is asked when «buy» is pressed.
+ */
+export function resellerPanelMenu(
+  a: OwnedResellerAccount,
+  canSell: boolean,
+  several: boolean,
+): InlineKeyboard {
+  const rows: InlineKeyboard = [];
+  if (canSell) {
+    rows.push([
+      {
+        text: a.status === 'PENDING' ? '🆕 ساخت پنل' : '➕ خرید حجم',
+        callback_data: encode('rsb', a.id),
+        style: 'success',
+      },
+    ]);
+  }
+  if (canSell && a.status !== 'PENDING') {
+    rows.push([{ text: '🔑 رمز جدید', callback_data: encode('rspw', a.id) }]);
+  }
+  rows.push([
+    several
+      ? { text: 'بازگشت ⬅️', callback_data: encode('rsp') }
+      : { text: '🏠 بازگشت به منو', callback_data: encode('menu') },
+  ]);
+  return rows;
+}
+
+/** One button back to a panel — every refusal and every question ends here. */
+export function resellerBackMenu(accountId: number): InlineKeyboard {
+  return [[{ text: 'بازگشت ⬅️', callback_data: encode('rsp', accountId) }]];
+}
+
+export function resellerNotReady(): string {
+  return TEXTS_NOW.raw('RESELLER_NOT_READY');
+}
+
+export function resellerPanelGone(): string {
+  return TEXTS_NOW.raw('RESELLER_PANEL_GONE');
+}
+
+export function resellerAskTb(
+  username: string,
+  tiers: readonly ResellerTier[],
+  minTb: number,
+  maxTb: number,
+): string {
+  const t = TEXTS_NOW;
+  return t.render('RESELLER_ASK_TB', {
+    username,
+    tiers: tiers
+      .map((tier) =>
+        t.render('RESELLER_TIER_LINE', { from: tier.fromTb, price: tomanDigits(tier.pricePerTbIrr) }),
+      )
+      .join('\n'),
+    min: minTb,
+    max: maxTb,
+  });
+}
+
+export function resellerTbNotANumber(): string {
+  return TEXTS_NOW.raw('RESELLER_TB_NOT_A_NUMBER');
+}
+
+export function resellerTbTooLittle(min: number): string {
+  return TEXTS_NOW.render('RESELLER_TB_TOO_LITTLE', { min });
+}
+
+export function resellerTbTooMuch(max: number): string {
+  return TEXTS_NOW.render('RESELLER_TB_TOO_MUCH', { max });
+}
+
+/** The invoice: the same frame as every other checkout, one item line. */
+export function resellerCheckout(
+  publicId: string,
+  tb: number,
+  username: string,
+  totalIrr: number,
+  cardDigits: string,
+  cardHolder: string | null,
+  validUntil?: string | null,
+): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('CHECKOUT_INTRO'),
+    '',
+    t.render('CHECKOUT_ORDER_ID', { id: publicId }),
+    t.render('CHECKOUT_RESELLER_ITEM', { tb, username }),
+    '',
+    // Nothing from the wallet: a reseller's volume is paid into a reseller card
+    // in full (#474).
+    ...checkoutTail(totalIrr, 0, cardDigits, cardHolder, validUntil),
+  ].join('\n');
+}
+
+export function resellerVolumeDone(f: {
+  publicId: string;
+  username: string;
+  addedTb: number;
+  totalBytes: number | null;
+  created: boolean;
+  loginUrl: string | null;
+}): string {
+  const t = TEXTS_NOW;
+  const total = f.totalBytes === null ? '—' : tbShown(f.totalBytes);
+  const body = f.created
+    ? t.render('RESELLER_PANEL_CREATED', {
+        username: `<code>${f.username}</code>`,
+        total,
+        login: f.loginUrl === null ? '' : t.render('RESELLER_PANEL_LOGIN', { url: f.loginUrl }),
+      })
+    : t.render('RESELLER_VOLUME_ADDED', { tb: f.addedTb, username: f.username, total });
+  return [body, '', t.render('SERVICE_FAILED_TRACKING_ID', { id: f.publicId })].join('\n');
+}
+
+export function resellerPasswordConfirm(username: string): string {
+  return TEXTS_NOW.render('RESELLER_PASSWORD_CONFIRM', { username });
+}
+
+export function resellerPasswordConfirmMenu(accountId: number): InlineKeyboard {
+  return [
+    [{ text: '✅ بله، رمز جدید بساز', callback_data: encode('rspw2', accountId), style: 'danger' }],
+    [{ text: 'بازگشت ⬅️', callback_data: encode('rsp', accountId) }],
+  ];
+}
+
+/**
+ * The password, in a message of its own. `<code>` so one tap copies it; the
+ * alphabet `generatePanelPassword` draws from has no `<`, `>`, `&` or quote,
+ * so it needs no escaping inside the tag.
+ */
+export function resellerPasswordMessage(username: string, password: string): string {
+  return TEXTS_NOW.render('RESELLER_PASSWORD_NEW', { username, password: `<code>${password}</code>` });
+}
+
+export function resellerPasswordFailed(): string {
+  return TEXTS_NOW.raw('RESELLER_PASSWORD_FAILED');
+}
+
+export function resellerDeadlineWarning(username: string, expiresAt: string, nowMs: number): string {
+  const { date, days } = deadlineParts(expiresAt, nowMs);
+  return TEXTS_NOW.render('RESELLER_DEADLINE_WARNING', { username, date, days });
+}
+
+/** «🏢 خرید حجم نمایندگی» — the reports group, in the services topic. */
+export function resellerVolumeReport(f: {
+  telegramId: number;
+  username: string | null;
+  name: string;
+  panelAdmin: string;
+  panel: string;
+  addedTb: number;
+  totalBytes: number | null;
+  priceIrr: number;
+  tracking: string;
+  atMs: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_RESELLER_VOLUME', {
+    telegramId: f.telegramId,
+    username: handle(f.username),
+    name: f.name,
+    panelAdmin: f.panelAdmin,
+    panel: f.panel,
+    tb: f.addedTb,
+    total: f.totalBytes === null ? '—' : tbShown(f.totalBytes),
+    price: tomanDigits(f.priceIrr),
+    tracking: f.tracking,
+    time: jalaliStamp(f.atMs),
+  });
+}
+
+export function resellerRefusedReport(f: {
+  telegramId: number;
+  name: string;
+  panelAdmin: string;
+  reason: string;
+}): string {
+  return TEXTS_NOW.render('REPORT_RESELLER_REFUSED', f);
+}
+
+export function resellerPasswordReport(f: {
+  telegramId: number;
+  panelAdmin: string;
+  atMs: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_RESELLER_PASSWORD', {
+    telegramId: f.telegramId,
+    panelAdmin: f.panelAdmin,
+    time: jalaliStamp(f.atMs),
+  });
+}
+
+export function resellerDeadlineReport(f: { name: string; panelAdmin: string; expiresAt: string }): string {
+  return TEXTS_NOW.render('REPORT_RESELLER_DEADLINE', {
+    name: f.name,
+    panelAdmin: f.panelAdmin,
+    date: formatTehranDate(new Date(Date.parse(f.expiresAt))),
+  });
 }

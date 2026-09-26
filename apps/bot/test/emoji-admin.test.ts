@@ -547,7 +547,7 @@ describe('putting it on a button', () => {
     });
     expect(started.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
     const labels = menu
-      .mainMenu({ is_reseller: false, is_admin: true })
+      .mainMenu({ is_reseller: false, is_admin: true, has_reseller_account: false })
       .flat()
       .map((b) => b.text);
     expect(labels.some((l) => l.includes('خرید'))).toBe(true);

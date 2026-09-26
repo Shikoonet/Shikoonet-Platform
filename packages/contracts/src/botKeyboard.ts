@@ -143,6 +143,16 @@ export const MENUS = {
         label: '👨‍💻 درخواست نمایندگی',
         hint: 'فقط به کاربران غیرنماینده نشان داده می‌شود',
       },
+      {
+        action: 'rsp',
+        label: '🏢 پنل نمایندگی',
+        hint: 'فقط به کسی که پنل نمایندگی دارد نشان داده می‌شود — خرید حجم، ساخت پنل و رمز جدید',
+        // Not `required`: that would make every shop keep it in every saved
+        // main menu, resellers or none. The bot adds it back for an owner
+        // whose saved layout hid or dropped it (`mainMenu` in the bot), so an
+        // operator may move and rename it and a reseller never loses the way
+        // to their panel.
+      },
     ],
   },
   gateChannels: {
@@ -523,8 +533,22 @@ export const RESELLER_ONLY_HIDDEN: ReadonlySet<string> = new Set(['agr']);
  */
 export const ADMIN_ONLY: ReadonlySet<string> = new Set(['emj']);
 
+/**
+ * Buttons only the owner of a reseller account sees — «🏢 پنل نمایندگی»
+ * (#474). Not `is_reseller`: that flag is the reseller PRICE tier on a
+ * customer's own purchases, and plenty of tiered customers have no panel.
+ *
+ * Hiding is not the guard here either: every `rsp` handler re-reads the row
+ * with the caller's id (`resellerAccountForUser`).
+ */
+export const RESELLER_ACCOUNT_ONLY: ReadonlySet<string> = new Set(['rsp']);
+
 /** Buttons that some viewers never see, whoever they are. */
-const AUDIENCE_LIMITED: ReadonlySet<string> = new Set([...RESELLER_ONLY_HIDDEN, ...ADMIN_ONLY]);
+const AUDIENCE_LIMITED: ReadonlySet<string> = new Set([
+  ...RESELLER_ONLY_HIDDEN,
+  ...ADMIN_ONLY,
+  ...RESELLER_ACCOUNT_ONLY,
+]);
 
 export interface ButtonPlacement {
   action: string;
@@ -615,6 +639,12 @@ const DEFAULT_CELLS: Record<
      * theirs did not appear on staging.
      */
     ['tar', 6, 0],
+    /*
+     * Last, for `emj`'s reason: only the people who own a reseller account ever
+     * see it (`RESELLER_ACCOUNT_ONLY`), and `buildMenu` closes the row up for
+     * everybody else. A shop that saved its layout gets it from 0104.
+     */
+    ['rsp', 7, 0],
   ],
   gateChannels: [['chk', 0, 0]],
   gateRules: [['acc', 0, 0]],
