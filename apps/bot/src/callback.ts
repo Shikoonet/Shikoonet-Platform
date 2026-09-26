@@ -133,6 +133,8 @@ export const CALLBACK_ACTIONS = [
   //        panel, or the list when there are several
   'rsb', // <resellerAccountId> — buy volume (or the first panel): the panel is
   //        asked whether a sale can go through, THEN the terabytes are asked
+  'rsbt', // <resellerAccountId>:<terabytes> — a size button under that question.
+  //         The size only: the price is the panel's table, read at the press
   'rspw', // <resellerAccountId> — ask before replacing the panel password
   'rspw2', // <resellerAccountId> — do it. Separate action, like `rvk2`: the old
   //         password stops working the moment this runs
@@ -174,7 +176,15 @@ const ActionSchema = z.enum(CALLBACK_ACTIONS);
  * yet" is not a property anybody can rely on, and an action's arity is part of
  * its shape in the same way its name is.
  */
-const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord', 'emjb', 'emjs', 'emjp', 'rnwl', 'rnwp']);
+const TWO_ID_ACTIONS = new Set<CallbackAction>([
+  'rord',
+  'emjb',
+  'emjs',
+  'emjp',
+  'rnwl',
+  'rnwp',
+  'rsbt',
+]);
 
 /**
  * Telegram's limit is 64 bytes. Our longest is `order:<bigint>` — well inside

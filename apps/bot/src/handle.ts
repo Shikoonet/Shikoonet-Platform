@@ -31,6 +31,7 @@ import {
   resellerPrice,
   resellerSaleFor,
   sanitiseUsernamePart,
+  type ResellerTier,
 } from '@shikoo/domain';
 import { actOnService, withLinkFromPanel } from './actions.js';
 import { decode, encode } from './callback.js';
@@ -1514,6 +1515,7 @@ function navigationParent(raw: string | undefined): string | null {
     case 'unpd2':
     case 'rord':
     case 'wpay':
+    case 'rsbt':
       // Once an order exists, going back into its construction screen can
       // create a second checkout. The ordinary menu is the safe way out.
       return 'menu';
@@ -2354,6 +2356,24 @@ async function heldRenewalName(
 
 /** The text of a reseller application. */
 /**
+ * The sizes the picker offers, with the price each is sold at: from the
+ * smallest tier, one terabyte apart, up to ten buttons or the largest order
+ * one transfer can pay. Priced by the same `resellerPrice` the sale uses.
+ */
+function resellerSizes(
+  tiers: readonly ResellerTier[],
+  minTb: number,
+  maxTb: number,
+): { tb: number; totalIrr: number }[] {
+  const sizes: { tb: number; totalIrr: number }[] = [];
+  for (let tb = minTb; tb <= maxTb && sizes.length < 10; tb++) {
+    const price = resellerPrice(tiers, tb);
+    if (price !== null) sizes.push({ tb, totalIrr: price.totalIrr });
+  }
+  return sizes;
+}
+
+/**
  * A refusal the reseller was told about in one sentence, and the operator in
  * full (#474) — the reason names what to fix on the panel or the dashboard.
  * Once an hour per reseller and reason, so a reseller tapping «buy» again and
@@ -2414,9 +2434,25 @@ async function handleResellerVolume(
   if (!/^[0-9]{1,4}$/.test(typed) || Number(typed) <= 0) {
     return reply(menu.resellerTbNotANumber(), back);
   }
-  const tb = Number(typed);
+  return sellResellerVolume(tx, user, account, Number(typed), message.from!.id, fetchImpl, reply);
+}
 
-  const telegramId = message.from!.id;
+/**
+ * The sale itself, for a size typed or a size pressed (#474): the panel asked
+ * again, the price read from its table now, the order placed, the reseller
+ * invoice drawn. Nothing about the size is trusted but the number — a button
+ * carries a size, never a price.
+ */
+async function sellResellerVolume(
+  tx: D1DatabaseSession,
+  user: Caller,
+  account: OwnedResellerAccount,
+  tb: number,
+  telegramId: number,
+  fetchImpl: typeof globalThis.fetch,
+  reply: (text: string, keyboard: InlineKeyboard) => HandleOutcome,
+): Promise<HandleOutcome> {
+  const back = menu.promptMenu(encode('rsp', account.id));
   const ready = await checkReady(tx, account, telegramId, SHOP.topupMaxIrr, fetchImpl);
   if (!ready.ok) {
     await clearSession(tx, user.id);
@@ -2771,16 +2807,15 @@ async function handleCallback(
     replies: [reply(chatId, text, keyboard, editId)],
   });
   /** «🏢 پنل نمایندگی» for one account (#474). Buy and password need a panel that can sell. */
-  const resellerPanel = (account: OwnedResellerAccount, several: boolean): HandleOutcome =>
-    screen(
-      menu.resellerPanelScreen(account, panelLoginUrl(account), Date.now()),
-      menu.resellerPanelMenu(
-        account,
+  const resellerPanel = (account: OwnedResellerAccount, several: boolean): HandleOutcome => {
+      const canSell =
         resellerAdapterFor(account.provider_kind) !== null &&
-          resellerSaleFor(account.provider_config ?? {}) !== null,
-        several,
-      ),
-    );
+        resellerSaleFor(account.provider_config ?? {}) !== null;
+      return screen(
+        menu.resellerPanelScreen(account, panelLoginUrl(account), Date.now(), canSell),
+        menu.resellerPanelMenu(account, canSell, several),
+      );
+  };
 
   const user = await tx
     .prepare(
@@ -3109,10 +3144,29 @@ async function handleCallback(
         await reportResellerRefusal(tx, query.from.id, account, ready.reason);
         return screen(menu.resellerNotReady(), menu.resellerBackMenu(account.id));
       }
+      // A button for each size a reseller can pay in one transfer — the
+      // smallest tier up to ten of them (Sam, 2026-09-26: «یک، دو، سه … ده»).
+      // Typing a number still works: the question stays open for it.
       await ask(tx, user.id, 'rsvol', { resellerAccountId: account.id }, editId);
       return screen(
         menu.resellerAskTb(account.panel_admin_username, ready.sale.tiers, ready.minTb, ready.maxTb),
-        menu.promptMenu(encode('rsp', account.id)),
+        menu.resellerTbMenu(account.id, resellerSizes(ready.sale.tiers, ready.minTb, ready.maxTb)),
+      );
+    }
+
+    case 'rsbt': {
+      // <resellerAccountId>:<terabytes> — one of the size buttons above.
+      if (action.id === undefined || action.id2 === undefined) return IGNORED;
+      const account = await resellerAccountForUser(tx, user.id, action.id);
+      if (!account) return screen(menu.resellerPanelGone(), menu.mainMenu(user));
+      return sellResellerVolume(
+        tx,
+        user,
+        account,
+        action.id2,
+        query.from.id,
+        fetchImpl,
+        (text, keyboard) => screen(text, keyboard),
       );
     }
 

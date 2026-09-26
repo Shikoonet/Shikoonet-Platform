@@ -22,6 +22,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_TEXTS } from '@shikoo/contracts';
 import { activateContinuityMode, deactivateContinuityMode } from '@shikoo/domain';
 import { DEFAULT_CONTENT } from '../src/botContent.js';
 import { handleUpdate } from '../src/handle.js';
@@ -360,6 +361,77 @@ describe('buying — asked of the panel before anything is paid', () => {
       expect(out.replies[0]?.text).toBe(menu.ORDER_GONE);
     }
     expect((await lastOrder(userId))?.status).toBe('AWAITING_PAYMENT');
+  });
+});
+
+describe('the size buttons (Sam, 2026-09-26)', () => {
+  it('offers each size one transfer can pay, with its price', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const account = await makeAccount(userId, { status: 'PENDING', username: `pick${telegramId}` });
+    const asked = await handleUpdate(db, press(updateId, telegramId, `rsb:${account}`), adminPanel().fetchImpl);
+    const buttons = (asked.replies[0]!.keyboard ?? []).flat();
+    const sizes = buttons
+      .map((b) => b.callback_data)
+      .filter((d): d is string => d !== undefined && d.startsWith('rsbt:'));
+    // 1…5: six terabytes is 12,000,000 Toman, over one card-to-card transfer.
+    expect(sizes).toEqual([1, 2, 3, 4, 5].map((tb) => `rsbt:${account}:${tb}`));
+    // The price is on the button — the whole order at its tier.
+    expect(buttons.find((b) => b.callback_data === `rsbt:${account}:3`)?.text).toContain('6,000,000');
+    expect(buttons.find((b) => b.callback_data === `rsbt:${account}:1`)?.text).toContain('3,000,000');
+  });
+
+  it('a pressed size is priced from the panel’s table and invoiced on a reseller card', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const account = await makeAccount(userId, { status: 'PENDING', username: `press${telegramId}` });
+    const panel = adminPanel();
+    await handleUpdate(db, press(updateId, telegramId, `rsb:${account}`), panel.fetchImpl);
+    const invoice = await handleUpdate(db, press(updateId + 1, telegramId, `rsbt:${account}:4`), panel.fetchImpl);
+    expect(await lastOrder(userId)).toMatchObject({
+      kind: 'RESELLER_VOLUME',
+      quantity: 4,
+      unit_price_irr: 20_000_000,
+      total_irr: 80_000_000,
+      target_reseller_id: account,
+    });
+    expect(invoice.replies[0]!.text.replace(/\D/g, '')).toContain(RESELLER_CARD);
+    // Written onto the question's own message, as every other screen is.
+    expect(invoice.replies[0]!.editMessageId).toBe(5);
+  });
+
+  it('refuses a forged size over the cap, and somebody else’s account', async () => {
+    const a = ids();
+    const b = ids();
+    const ua = await makeCustomer(a.telegramId);
+    await makeCustomer(b.telegramId);
+    const account = await makeAccount(ua, { status: 'PENDING', username: `forge${a.telegramId}` });
+    const panel = adminPanel();
+    const over = await handleUpdate(db, press(a.updateId, a.telegramId, `rsbt:${account}:6`), panel.fetchImpl);
+    expect(over.replies[0]?.text).toBe(menu.resellerTbTooMuch(5));
+    const other = await handleUpdate(db, press(b.updateId, b.telegramId, `rsbt:${account}:1`), panel.fetchImpl);
+    expect(other.replies[0]?.text).toBe(menu.resellerPanelGone());
+    expect(await lastOrder(ua)).toBeNull();
+  });
+
+  it('says so, rather than showing no button, when the panel sells nothing yet', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const account = await makeAccount(userId, { status: 'ACTIVE', username: `off${telegramId}` });
+    await db
+      .prepare(`UPDATE provisioning_providers SET config = config - 'reseller_sale' WHERE id = ?1`)
+      .bind(providerId)
+      .run();
+    try {
+      const out = await handleUpdate(db, press(updateId, telegramId, `rsp:${account}`));
+      expect(out.replies[0]?.text).toContain(DEFAULT_TEXTS.raw('RESELLER_SALE_OFF'));
+      expect(JSON.stringify(out.replies[0]?.keyboard)).not.toContain('rsb:');
+    } finally {
+      await db
+        .prepare(`UPDATE provisioning_providers SET config = config || ?2::jsonb WHERE id = ?1`)
+        .bind(providerId, JSON.stringify({ reseller_sale: SALE }))
+        .run();
+    }
   });
 });
 
