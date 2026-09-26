@@ -12,7 +12,7 @@
  * The telegram id is the SENDER of the message, taken by n8n from Telegram's
  * update; the model only ever chooses a panel from the options list.
  */
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
@@ -23,7 +23,6 @@ import {
   clientIp,
   createLogger,
   MEMBERSHIP_TTL_MS,
-  readTrialQuota,
   requiredChannels,
   trialPanels,
 } from '@shikoo/domain';
@@ -177,63 +176,109 @@ async function jsonOf(c: { req: { json: () => Promise<unknown> } }): Promise<unk
 }
 
 /**
- * Which trials this person may have, and through which door.
+ * A support trial is for someone new, and once (Sam, 2026-09-26: «اکانت تست
+ * فقط و فقط برای افرادی هست که تازه به مجموعه اضافه شدن و هیچ سرویسی از ما
+ * ندارن»).
  *
- * Each panel appears once: through the shop bot when its own trial is on
- * (the customer is sent there), otherwise through the support door when
- * «تست از پشتیبانی» is on. `quota_left` is the shared allowance: a trial
- * taken in the shop bot has already spent it.
+ * «Had a trial» is the shared counter OR a TRIAL order that did not fail: a
+ * counter the dashboard reset forgets the trial, the order does not. «Had a
+ * service» is any subscription that was delivered — an imported PHP trial is
+ * one; an unpaid or failed one is not — or a sale paid for and not yet
+ * delivered. A wallet top-up alone is not a service.
+ */
+async function newcomerRefusal(db: Db, userId: number): Promise<'already_used' | 'not_new' | null> {
+  const row = await db
+    .prepare(
+      `SELECT u.test_quota_used > 0
+                OR EXISTS (SELECT 1 FROM orders o
+                            WHERE o.user_id = u.id AND o.kind = 'TRIAL'
+                              AND o.status NOT IN ('FAILED', 'CANCELLED')) AS had_trial,
+              EXISTS (SELECT 1 FROM subscriptions s
+                       WHERE s.user_id = u.id AND s.status NOT IN ('PENDING_PAYMENT', 'FAILED'))
+                OR EXISTS (SELECT 1 FROM orders o
+                            WHERE o.user_id = u.id AND o.kind NOT IN ('TRIAL', 'WALLET_TOPUP')
+                              AND o.status IN ('PAID', 'PROVISIONING', 'COMPLETED')) AS had_service
+         FROM users u WHERE u.id = ?1`,
+    )
+    .bind(userId)
+    .first<{ had_trial: boolean; had_service: boolean }>();
+  if (row?.had_trial) return 'already_used';
+  if (row?.had_service) return 'not_new';
+  return null;
+}
+
+/**
+ * The shop's own words for each panel's products — what the plan screen shows
+ * under its title, edited in «محصولات» — so the bot explains the difference
+ * between two services in the shop's words, never its own.
+ */
+async function productWords(db: Db): Promise<Map<number, string[]>> {
+  const { results } = await db
+    .prepare(
+      `SELECT provider_id::int AS provider_id, btrim(description) AS description FROM products
+        WHERE status = 'ACTIVE' AND NOT resellers_only AND provider_id IS NOT NULL
+          AND NULLIF(btrim(description), '') IS NOT NULL
+        ORDER BY sort_order, id`,
+    )
+    .all<{ provider_id: number; description: string }>();
+  const out = new Map<number, string[]>();
+  for (const r of results ?? []) out.set(r.provider_id, [...(out.get(r.provider_id) ?? []), r.description]);
+  return out;
+}
+
+/**
+ * Whether this person may have a support trial, and on which services.
+ *
+ * Only «تست از پشتیبانی» decides the list. The shop bot's own trial switch is
+ * not asked: it is often off, and this door exists to give a newcomer a trial
+ * exactly then (Sam, 2026-09-26). The newcomer rule comes before the channel
+ * and the rules, so nobody is sent to join a channel for a trial they cannot
+ * have.
  */
 support.post('/trial/options', async (c) => {
   const who = WhoBody.safeParse(await jsonOf(c));
   if (!who.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
   const db = c.env.DB;
   const user = await customerOf(db, who.data.telegram_id);
-  if (user === null) {
-    return c.json({ ok: true, customer: 'not_started', quota_left: 0, services: [] });
-  }
-  if (user.status === 'BLOCKED') {
-    return c.json({ ok: true, customer: 'blocked', quota_left: 0, services: [] });
-  }
+  if (user === null) return c.json({ ok: true, customer: 'not_started', services: [] });
+  if (user.status === 'BLOCKED') return c.json({ ok: true, customer: 'blocked', services: [] });
+  const refused = await newcomerRefusal(db, user.id);
+  if (refused !== null) return c.json({ ok: true, customer: refused, services: [] });
   const gated = await shopGateFor(db, user.id);
   if (gated !== null) {
     const { gate, ...rest } = gated;
-    return c.json({ ok: true, customer: gate, ...rest, quota_left: 0, services: [] });
+    return c.json({ ok: true, customer: gate, ...rest, services: [] });
   }
-  const quota = await readTrialQuota(db);
-  const services = (await trialPanels(db, user.id)).flatMap((p) => {
-    const door = p.shop.enabled ? ('shop_bot' as const) : p.support.enabled ? ('support' as const) : null;
-    if (door === null) return [];
-    const t = door === 'shop_bot' ? p.shop : p.support;
-    return [
-      {
-        panel_id: p.providerId,
-        name: p.name,
-        via: door,
-        volume_gb: t.volumeGb,
-        duration_hours: t.durationHours,
-      },
-    ];
-  });
+  const panels = (await trialPanels(db, user.id)).filter((p) => p.support.enabled);
+  const words = panels.length > 0 ? await productWords(db) : new Map<number, string[]>();
   return c.json({
     ok: true,
     customer: 'ok',
-    // Zero means «no trials anywhere», whatever a migrated counter says — the
-    // same answer `/trial` gives (final review, 2026-09-26).
-    quota_left: quota === 0 ? 0 : Math.max(0, quota - user.testQuotaUsed),
-    services,
+    services: panels.map((p) => ({
+      panel_id: p.providerId,
+      name: p.name,
+      about: words.get(p.providerId) ?? [],
+      volume_gb: p.support.volumeGb,
+      duration_hours: p.support.durationHours,
+    })),
   });
 });
 
 type TrialResult =
-  | { result: 'on_the_way' | 'use_shop_bot' | 'already_on_the_way'; service: string }
+  | { result: 'on_the_way'; service: string; ref: string }
+  | { result: 'already_on_the_way'; service: string }
   | { result: 'join_channels'; channels: { title: string; join_link: string }[] }
-  | { result: 'accept_rules' | 'already_used' | 'not_started' | 'blocked' | 'not_available' };
+  | {
+      result: 'accept_rules' | 'already_used' | 'not_new' | 'not_started' | 'blocked' | 'not_available';
+    };
 
 /**
  * Orders a trial through the shop bot's own path: a PAID TRIAL order that the
  * bot's provisioning sweep builds on the panel and delivers in the shop bot.
  * Nothing here talks to the panel.
+ *
+ * `ref` is the order's public id, so whoever reads the support chat can find
+ * the order; `audit_logs` keeps which door it came through.
  */
 support.post('/trial', async (c) => {
   const body = TrialBody.safeParse(await jsonOf(c));
@@ -249,6 +294,24 @@ support.post('/trial', async (c) => {
       .first<{ id: number; status: string }>();
     if (!user) return { result: 'not_started' };
     if (user.status === 'BLOCKED') return { result: 'blocked' };
+
+    // Before the newcomer rule: the first of two requests has just made this
+    // person «had a trial», and the second must hear «on the way», not «used».
+    // A trial the panel refused is not «on the way»: `fail()` has already
+    // given the quota back and told the customer (final review, 2026-09-26).
+    const recent = await tx
+      .prepare(
+        `SELECT pr.name FROM orders o JOIN provisioning_providers pr ON pr.id = o.provider_id
+          WHERE o.user_id = ?1 AND o.kind = 'TRIAL' AND o.status <> 'FAILED'
+            AND o.created_at > now() - interval '2 minutes'
+          ORDER BY o.id DESC LIMIT 1`,
+      )
+      .bind(user.id)
+      .first<{ name: string }>();
+    if (recent) return { result: 'already_on_the_way', service: recent.name };
+
+    const refused = await newcomerRefusal(tx, user.id);
+    if (refused !== null) return { result: refused };
     const gated = await shopGateFor(tx, user.id);
     if (gated !== null) {
       return gated.gate === 'join_channels'
@@ -257,28 +320,32 @@ support.post('/trial', async (c) => {
     }
 
     // Re-derived for THIS customer; the number from the request is only looked up.
-    const panel = (await trialPanels(tx, user.id)).find((p) => p.providerId === panelId);
+    const panel = (await trialPanels(tx, user.id)).find(
+      (p) => p.providerId === panelId && p.support.enabled,
+    );
     if (!panel) return { result: 'not_available' };
-    if (panel.shop.enabled) return { result: 'use_shop_bot', service: panel.name };
-    if (!panel.support.enabled) return { result: 'not_available' };
 
-    // A trial the panel refused is not «on the way»: `fail()` has already
-    // given the quota back and told the customer (final review, 2026-09-26).
-    const recent = await tx
-      .prepare(
-        `SELECT 1 AS x FROM orders
-          WHERE user_id = ?1 AND kind = 'TRIAL' AND status <> 'FAILED'
-            AND created_at > now() - interval '2 minutes'
-          LIMIT 1`,
-      )
-      .bind(user.id)
-      .first<{ x: number }>();
-    if (recent) return { result: 'already_on_the_way', service: panel.name };
-
-    const claimed = await claimTrial(tx, user.id, panel.providerId, await readTrialQuota(tx));
+    // One per person whatever the shop's own allowance is — the shop may close
+    // its trials while this door stays open. The newcomer rule above is the
+    // rule; the 1 keeps the counter's guard inside the UPDATE.
+    const claimed = await claimTrial(tx, user.id, panel.providerId, 1);
     if (claimed === null) return { result: 'already_used' };
+    await tx
+      .prepare(
+        `INSERT INTO audit_logs
+           (id, actor_email, actor_role, action, entity_type, entity_id, after_json, reason, created_at)
+         VALUES (?1, NULL, 'SYSTEM', 'support.trial_ordered', 'ORDER', ?2, ?3,
+                 'the support bot gave a newcomer a trial', ?4)`,
+      )
+      .bind(
+        randomUUID(),
+        claimed.publicId,
+        JSON.stringify({ telegram_id: telegramId, panel_id: panel.providerId, service: panel.name }),
+        Date.now(),
+      )
+      .run();
     log.info('support.trial_ordered', { ref: claimed.publicId, panel: panel.providerId });
-    return { result: 'on_the_way', service: panel.name };
+    return { result: 'on_the_way', service: panel.name, ref: claimed.publicId };
   });
   return c.json({ ok: true, ...out });
 });
