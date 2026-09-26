@@ -2359,16 +2359,23 @@ async function heldRenewalName(
  * The sizes the picker offers, with the price each is sold at: from the
  * smallest tier, one terabyte apart, up to ten buttons or the largest order
  * one transfer can pay. Priced by the same `resellerPrice` the sale uses.
+ *
+ * Each size is held to the cap itself, not only the largest: whole-order
+ * pricing is not monotonic, so a size BELOW the largest affordable one can
+ * cost more than the cap (from 1 TB at 5M and from 3 TB at 1M under a 4M cap,
+ * 1 and 2 TB are over it while 3 and 4 fit) — and a button the sale would
+ * refuse is not one to draw.
  */
 function resellerSizes(
   tiers: readonly ResellerTier[],
   minTb: number,
   maxTb: number,
+  capIrr: number,
 ): { tb: number; totalIrr: number }[] {
   const sizes: { tb: number; totalIrr: number }[] = [];
   for (let tb = minTb; tb <= maxTb && sizes.length < 10; tb++) {
     const price = resellerPrice(tiers, tb);
-    if (price !== null) sizes.push({ tb, totalIrr: price.totalIrr });
+    if (price !== null && price.totalIrr <= capIrr) sizes.push({ tb, totalIrr: price.totalIrr });
   }
   return sizes;
 }
@@ -3150,7 +3157,10 @@ async function handleCallback(
       await ask(tx, user.id, 'rsvol', { resellerAccountId: account.id }, editId);
       return screen(
         menu.resellerAskTb(account.panel_admin_username, ready.sale.tiers, ready.minTb, ready.maxTb),
-        menu.resellerTbMenu(account.id, resellerSizes(ready.sale.tiers, ready.minTb, ready.maxTb)),
+        menu.resellerTbMenu(
+          account.id,
+          resellerSizes(ready.sale.tiers, ready.minTb, ready.maxTb, ready.capIrr),
+        ),
       );
     }
 

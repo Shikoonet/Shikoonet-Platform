@@ -381,6 +381,40 @@ describe('the size buttons (Sam, 2026-09-26)', () => {
     expect(buttons.find((b) => b.callback_data === `rsbt:${account}:1`)?.text).toContain('3,000,000');
   });
 
+  it('leaves out a size the cap refuses even below the largest that fits', async () => {
+    // Whole-order pricing is not monotonic: from 1 TB at 5,000,000 Toman and
+    // from 3 TB at 1,000,000, under a 4,000,000 cap, 1 and 2 TB cost more than
+    // one transfer may while 3 and 4 fit.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const account = await makeAccount(userId, { status: 'PENDING', username: `mono${telegramId}` });
+    const odd = {
+      ...SALE,
+      tiers: [
+        { from_tb: 1, price_per_tb_irr: 50_000_000 },
+        { from_tb: 3, price_per_tb_irr: 10_000_000 },
+      ],
+      max_order_irr: 40_000_000,
+    };
+    await db
+      .prepare(`UPDATE provisioning_providers SET config = config || ?2::jsonb WHERE id = ?1`)
+      .bind(providerId, JSON.stringify({ reseller_sale: odd }))
+      .run();
+    try {
+      const asked = await handleUpdate(db, press(updateId, telegramId, `rsb:${account}`), adminPanel().fetchImpl);
+      const sizes = (asked.replies[0]!.keyboard ?? [])
+        .flat()
+        .map((b) => b.callback_data)
+        .filter((d): d is string => d !== undefined && d.startsWith('rsbt:'));
+      expect(sizes).toEqual([`rsbt:${account}:3`, `rsbt:${account}:4`]);
+    } finally {
+      await db
+        .prepare(`UPDATE provisioning_providers SET config = config || ?2::jsonb WHERE id = ?1`)
+        .bind(providerId, JSON.stringify({ reseller_sale: SALE }))
+        .run();
+    }
+  });
+
   it('a pressed size is priced from the panel’s table and invoiced on a reseller card', async () => {
     const { updateId, telegramId } = ids();
     const userId = await makeCustomer(telegramId);
