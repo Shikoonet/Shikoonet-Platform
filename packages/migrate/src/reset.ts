@@ -125,6 +125,11 @@ export const RESET_KEEP: readonly string[] = [
   // that must survive. `product_categories` stays out — the import writes it
   // whole and the re-import restored it exactly.
   'settings',
+  // «کمپین‌ها» (#471). Typed in by an admin and printed on ads; no import
+  // re-supplies them, and a slug that vanished would silently stop counting
+  // every link already out there. Their starts are not kept: they hang off
+  // `users`, which the import rebuilds.
+  'campaigns',
 ];
 
 /** A table and how many rows it holds. */

@@ -585,6 +585,15 @@ describe('every write route, asked directly', () => {
     // so ADMIN-only in the handler like the send itself, and audited as
     // `customers.broadcast_cancelled`; `broadcast-queue.test.ts` pins the
     // REVIEWER 403.
-    expect(writeRoutes().length).toBe(187);
+    //
+    // 188–189, 2026-09-26: «کمپین‌ها» (#471, 0103). `POST /admin/campaigns`
+    // creates a campaign — a slug printed on ads that the bot then counts
+    // starts against — and `PUT /admin/campaigns/:id` renames or archives one;
+    // the slug itself has no route that changes it. Neither moves money or
+    // touches a customer, but a campaign is what the shop's marketing spend is
+    // judged by, so ADMIN-only in the handler and audited as
+    // `campaign.created` / `campaign.updated`. `campaigns.test.ts` pins the
+    // REVIEWER 403 on both.
+    expect(writeRoutes().length).toBe(189);
   });
 });

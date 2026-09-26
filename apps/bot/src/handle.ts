@@ -962,6 +962,22 @@ async function handleStart(
       : /^rnw_([1-9][0-9]{0,18})$/.test(payload ?? '')
         ? encode('rnw', Number(payload!.slice(4)))
         : null;
+  // `/start c_spring-ads` is somebody arriving on a campaign link (#471). The
+  // slug is untrusted and only ever a lookup key: one that names no campaign
+  // inserts nothing. Once per campaign and customer — the same link pressed
+  // again changes nothing — and before the gate below, because a customer who
+  // arrives from an ad is exactly the one not yet in the channel.
+  const campaign = /^c_([a-z0-9][a-z0-9-]{2,61})$/.exec(payload ?? '')?.[1];
+  if (campaign !== undefined) {
+    await tx
+      .prepare(
+        `INSERT INTO campaign_starts (campaign_id, user_id, is_new_user)
+         SELECT id, ?2, ?3 FROM campaigns WHERE slug = ?1
+         ON CONFLICT (campaign_id, user_id) DO NOTHING`,
+      )
+      .bind(campaign, user.id, user.is_new)
+      .run();
+  }
 
   // «🎉یک کاربر جدید ربات را استارت کرد» — `index.php:68`, into «سایر
   // گزارشات». Once, on the /start that made the row; the dedupe key is the
