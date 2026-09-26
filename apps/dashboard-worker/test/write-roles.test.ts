@@ -615,6 +615,15 @@ describe('every write route, asked directly', () => {
     // channels as the bot, so ADMIN-only in every handler, each step audited as
     // its own `channel_post.*` action. `channel-posts.test.ts` pins the
     // REVIEWER 403.
-    expect(writeRoutes().length).toBe(198);
+    //
+    // 199–201, 2026-09-26: «محدودیت‌های ربات پشتیبانی» (#489). `POST /admin/
+    // support-bot/release` and `…/release-all` give chats back to the support
+    // bot — one, or every chat the bot limited (attackers only when asked) —
+    // and `POST …/cap` sets how many AI replies a customer gets a day. They
+    // change the live bot's state in n8n, so ADMIN-only in each handler and
+    // audited after n8n confirms (`support_bot.chats_released`,
+    // `support_bot.all_released`, `support_bot.cap_set`).
+    // `support-bot-routes.test.ts` pins the REVIEWER 403.
+    expect(writeRoutes().length).toBe(201);
   });
 });

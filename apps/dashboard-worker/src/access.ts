@@ -77,6 +77,10 @@ const PERSONAL_DATA_PREFIXES = [
   // route under it checks ADMIN again; this entry is what keeps «ایمپورت» out
   // of a reader's sidebar to begin with.
   '/api/v1/admin/import',
+  // Who the support bot stopped answering, by name and Telegram id, and what
+  // an attacker wrote. The page is ADMIN's and REVIEWER's; a reader's sidebar
+  // does not draw it.
+  '/api/v1/admin/support-bot',
 ];
 
 /**

@@ -158,6 +158,9 @@ describe('navigation', () => {
       // discount code, what text. Its own screen rather than a block on
       // «کرون‌جاب‌ها», because a list that grows is not a row of switches.
       'retention',
+      // «محدودیت‌های ربات پشتیبانی», 2026-09-26 (#489) — who the support bot
+      // stopped answering (daily cap, attack guard), release, and the counts.
+      'supportBot',
       // «نمایندگان» — a franchise, which is a business rather than a customer.
       // The screen shows what one bought and what the PANEL's meter says they
       // used; none of their own customers is on it, and none can be, because

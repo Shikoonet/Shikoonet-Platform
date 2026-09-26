@@ -68,6 +68,9 @@ const PERSONAL = [
   '/api/v1/admin/bot-admins',
   // Diagnostics: a stack trace and a `ref` that names an order.
   '/api/v1/admin/events',
+  // Who the support bot stopped answering, by name, and what attackers wrote.
+  '/api/v1/admin/support-bot',
+  '/api/v1/admin/support-bot/release',
 ];
 
 const OPERATIONAL = [

@@ -1286,6 +1286,74 @@ export interface HelpArticleBody {
 }
 
 /** «پرسش و پاسخ پشتیبانی»: what the support bot may say (0105). */
+/** «محدودیت‌های ربات پشتیبانی»: why the support bot is quiet in a chat. */
+export type SupportBotStatus = 'attack' | 'limit' | 'human' | 'ok';
+export type SupportBotSort =
+  | 'last_seen'
+  | 'first_seen'
+  | 'msg_count'
+  | 'bot_replies'
+  | 'ai_count'
+  | 'human_until'
+  | 'ticket_count';
+
+export interface SupportBotChatRow {
+  chatId: number;
+  /** `users.id` when this chat is a shop customer, so the row can open their card. */
+  userId: number | null;
+  name: string;
+  username: string;
+  status: SupportBotStatus;
+  heldUntil: string | null;
+  messages: number;
+  botReplies: number;
+  aiToday: number;
+  tickets: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+}
+
+export interface SupportBotAttacker {
+  chatId: number;
+  userId: number | null;
+  name: string;
+  username: string;
+  attempts: number;
+  lastAt: string;
+  lastText: string;
+  blockedNow: boolean;
+}
+
+export interface SupportBotStats {
+  today: string;
+  contacts: number;
+  messages: number;
+  botReplies: number;
+  limitedNow: number;
+  attackBlockedNow: number;
+  withPersonNow: number;
+  limitedToday: number;
+  attacksToday: number;
+  attacksTotal: number;
+  attackersTotal: number;
+  byDay: { day: string; limited: number; attacks: number; attackers: number }[];
+}
+
+export type SupportBotPage =
+  | { ok: boolean; configured: false }
+  | {
+      ok: boolean;
+      configured: true;
+      cap: number;
+      total: number;
+      page: number;
+      pageSize: number;
+      pages: number;
+      items: SupportBotChatRow[];
+      stats: SupportBotStats;
+      attackers: SupportBotAttacker[];
+    };
+
 export interface SupportAnswerRow {
   id: number;
   question: string;
@@ -3191,6 +3259,40 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ items }),
     });
+  },
+
+  supportBot(params: {
+    page: number;
+    pageSize: number;
+    status?: 'all' | 'limited' | SupportBotStatus;
+    q?: string;
+    sort?: SupportBotSort;
+    dir?: 'asc' | 'desc';
+  }) {
+    const qs = new URLSearchParams({ page: String(params.page), pageSize: String(params.pageSize) });
+    if (params.status && params.status !== 'all') qs.set('status', params.status);
+    if (params.q) qs.set('q', params.q);
+    if (params.sort) qs.set('sort', params.sort);
+    if (params.dir) qs.set('dir', params.dir);
+    return req<SupportBotPage>(`/support-bot?${qs.toString()}`);
+  },
+
+  releaseSupportBotChats(chatIds: number[]) {
+    return req<{ ok: boolean; released: number; chatIds: number[] }>('/support-bot/release', {
+      method: 'POST',
+      body: JSON.stringify({ chatIds }),
+    });
+  },
+
+  releaseAllSupportBotChats(includeAttackers: boolean) {
+    return req<{ ok: boolean; released: number; chatIds: number[] }>('/support-bot/release-all', {
+      method: 'POST',
+      body: JSON.stringify({ includeAttackers }),
+    });
+  },
+
+  setSupportBotDailyCap(cap: number) {
+    return req<{ ok: boolean; cap: number }>('/support-bot/cap', { method: 'POST', body: JSON.stringify({ cap }) });
   },
 
   clientApps() {

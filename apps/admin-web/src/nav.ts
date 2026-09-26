@@ -51,6 +51,7 @@ export type PageId =
   | 'campaigns'
   | 'customers'
   | 'referrals'
+  | 'supportBot'
   | 'bulk'
   | 'posts'
   | 'orders'
@@ -199,6 +200,10 @@ export const NAV: NavGroup[] = [
       { id: 'cron', label: 'کرون‌جاب‌ها', icon: 'list' },
       // The one sweep the operator writes rules for, so it has its own screen.
       { id: 'retention', label: 'یادآوری تمدید', icon: 'ticket' },
+      // Who the support bot stopped answering — the daily AI cap, the attack
+      // guard — and the button that gives a chat back. Names people, so a
+      // READ_ONLY operator is not offered it (access.ts says the same).
+      { id: 'supportBot', label: 'محدودیت‌های ربات پشتیبانی', icon: 'users' },
     ],
   },
   {

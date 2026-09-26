@@ -76,6 +76,10 @@ const PASSTHROUGH = [
   // image draws their name. See `brand.ts` for why it is not a build-time
   // variable.
   'BRAND_NAME',
+  // The support bot's n8n admin webhook and its key. Absent, «محدودیت‌های ربات
+  // پشتیبانی» says the bot is not connected; nothing else reads them.
+  'SUPPORT_BOT_ADMIN_URL',
+  'SUPPORT_BOT_ADMIN_SECRET',
 ] as const satisfies readonly (keyof Env)[];
 
 export function buildEnv(db: Env['DB']): Env {
