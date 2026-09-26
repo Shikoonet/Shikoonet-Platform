@@ -1596,14 +1596,18 @@ async function deliverResellerVolume(
       }
       await db
         .prepare(
+          // The term from the sweep's own clock, not the database's: the
+          // meter compares `expires_at` with ITS bound `now`, and two clocks
+          // on one deadline is the drift `resellerMeter.ts` documents.
           `UPDATE reseller_accounts
               SET status = 'ACTIVE',
                   expires_at = COALESCE(expires_at,
-                    CASE WHEN ?2::int IS NULL THEN NULL ELSE now() + make_interval(days => ?2::int) END),
+                    CASE WHEN ?2::int IS NULL THEN NULL
+                         ELSE to_timestamp(?3 / 1000.0) + make_interval(days => ?2::int) END),
                   updated_at = now()
             WHERE id = ?1 AND status = 'PENDING'`,
         )
-        .bind(account.id, sale.termDays)
+        .bind(account.id, sale.termDays, now)
         .run();
       created = true;
     } else {

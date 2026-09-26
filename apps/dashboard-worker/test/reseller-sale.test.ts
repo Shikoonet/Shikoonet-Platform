@@ -58,9 +58,11 @@ async function configOf(): Promise<Record<string, unknown>> {
   return row!.config;
 }
 
+/** A fixed instant for the fixtures, so nothing here reads the live clock. */
+const FIXTURE_MS = Date.UTC(2026, 8, 26, 9, 0, 0);
+
 beforeAll(async () => {
   await applySchema();
-  const now = Date.now();
   for (const [email, role] of [
     [ADMIN, 'ADMIN'],
     [REVIEWER, 'REVIEWER'],
@@ -69,7 +71,7 @@ beforeAll(async () => {
       `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at)
        VALUES (?1, ?2, ?3, 1, ?4, ?4)`,
     )
-      .bind(crypto.randomUUID(), email, role, now)
+      .bind(`rsale-fixture-${role.toLowerCase()}`, email, role, FIXTURE_MS)
       .run();
   }
   const panel = await baseEnv.DB.prepare(

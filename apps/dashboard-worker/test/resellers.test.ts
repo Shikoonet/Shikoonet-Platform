@@ -476,6 +476,43 @@ describe('the bot sells to it now (#474)', () => {
     expect(Number((await row(id))!.data_limit_bytes)).toBe(200 * GIB);
   });
 
+  it('puts no volume on a panel that does not exist yet', async () => {
+    const created = await post({ panelAdminUsername: 'no_volume_yet', status: 'PENDING' });
+    const { id } = (await created.json()) as { id: number };
+    // The operator's edit would reach the panel with the first sale, as
+    // terabytes nobody paid for.
+    const res = await patch(id, { dataLimitBytes: 1024 * GIB, expectedDataLimitBytes: null });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'pending_has_no_volume', status: 'PENDING' });
+    expect((await row(id))!.data_limit_bytes).toBeNull();
+  });
+
+  it('does not close a reseller while an order of theirs is on its way', async () => {
+    const id = await makeReseller('in_flight');
+    const order = await baseEnv.DB.prepare(
+      `INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, discount_irr,
+                           total_irr, status, provider_id, target_reseller_id)
+       VALUES ('rs-inflight', ?1, 'RESELLER_VOLUME', 1, 30000000, 0, 30000000,
+               'AWAITING_PAYMENT', ?2, ?3)
+       RETURNING id`,
+    )
+      .bind(userId, providerId, id)
+      .first<{ id: number }>();
+    try {
+      const refused = await status(id, 'CLOSED');
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ error: 'orders_in_flight' });
+      expect((await row(id))!.status).toBe('ACTIVE');
+      // Once it has ended, the reseller can be closed.
+      await baseEnv.DB.prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?1`)
+        .bind(order!.id)
+        .run();
+      expect((await status(id, 'CLOSED')).status).toBe(200);
+    } finally {
+      await baseEnv.DB.prepare(`DELETE FROM orders WHERE id = ?1`).bind(order!.id).run();
+    }
+  });
+
   it('never makes a PENDING panel ACTIVE by hand, and never reopens a CLOSED one', async () => {
     const created = await post({ panelAdminUsername: 'pending_one', status: 'PENDING' });
     const { id } = (await created.json()) as { id: number };

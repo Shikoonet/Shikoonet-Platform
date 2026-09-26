@@ -172,6 +172,9 @@ describe('isSafeResellerRole — who the bot may write to', () => {
     ).toBe(false);
     expect(isSafeResellerRole({ isOwner: false, permissions: { users: 'all' } })).toBe(false);
     expect(isSafeResellerRole(null)).toBe(false);
+    // No permission tree at all is unreadable, not empty.
+    expect(isSafeResellerRole({ isOwner: false, permissions: null })).toBe(false);
+    expect(isSafeResellerRole({ isOwner: false, permissions: undefined })).toBe(false);
   });
 });
 

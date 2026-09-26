@@ -155,7 +155,9 @@ export function isSafeResellerRole(
 ): boolean {
   if (role === null || role.isOwner) return false;
   const permissions = role.permissions;
-  if (permissions === null || permissions === undefined) return true;
+  // A tree the panel did not send is not an empty one: refused, because
+  // «could not read what it may do» must never read as «may do nothing».
+  if (permissions === null || permissions === undefined) return false;
   if (typeof permissions !== 'object' || Array.isArray(permissions)) return false;
   for (const [resource, actions] of Object.entries(permissions as Record<string, unknown>)) {
     if (actions === null || actions === undefined) continue;

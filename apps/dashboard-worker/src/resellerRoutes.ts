@@ -339,7 +339,11 @@ export function registerResellerRoutes(
               note             = CASE WHEN ?11::boolean THEN ?12 ELSE note END,
               updated_at = now()
         WHERE id = ?1
-          AND (NOT ?4::boolean OR data_limit_bytes IS NOT DISTINCT FROM ?6::bigint)`,
+          -- A PENDING row has bought nothing (the rule NewReseller states):
+          -- volume written onto it would reach the panel with the first sale
+          -- as terabytes nobody paid for.
+          AND (NOT ?4::boolean
+               OR (status <> 'PENDING' AND data_limit_bytes IS NOT DISTINCT FROM ?6::bigint))`,
     )
       .bind(
         id,
@@ -358,14 +362,15 @@ export function registerResellerRoutes(
       .run();
     if (changed.meta.changes === 0) {
       const now = await c.env.DB.prepare(
-        `SELECT data_limit_bytes FROM reseller_accounts WHERE id = ?1`,
+        `SELECT status, data_limit_bytes FROM reseller_accounts WHERE id = ?1`,
       )
         .bind(id)
-        .first<{ data_limit_bytes: string | number | null }>();
+        .first<{ status: string; data_limit_bytes: string | number | null }>();
       return c.json(
         {
           ok: false,
-          error: 'volume_moved',
+          error: now?.status === 'PENDING' ? 'pending_has_no_volume' : 'volume_moved',
+          status: now?.status ?? null,
           currentDataLimitBytes: asNumber(now?.data_limit_bytes ?? null),
         },
         409,
@@ -406,14 +411,34 @@ export function registerResellerRoutes(
     // The allowed «from» is in the WHERE, not only in the check above it: a
     // row the bot activates between the read and this write is not then
     // flipped by a button drawn for the old status.
+    // Not CLOSED while an order of theirs is still on its way: delivery
+    // fails a closed account, and card money cannot be given back by the
+    // bot — it would sit in the bank against a sale that never happened.
+    // Asked in the same statement, so an order placed in between is seen.
     const moved = await c.env.DB.prepare(
       `UPDATE reseller_accounts SET status = ?2, updated_at = now()
-        WHERE id = ?1 AND status = ANY(?3::text[])`,
+        WHERE id = ?1 AND status = ANY(?3::text[])
+          AND (?2 <> 'CLOSED' OR NOT EXISTS (
+                SELECT 1 FROM orders o
+                 WHERE o.target_reseller_id = ?1
+                   AND o.status IN ('AWAITING_PAYMENT', 'PAID', 'PROVISIONING')))`,
     )
       .bind(id, parsed.data.status, REACHABLE_FROM[parsed.data.status])
       .run();
     if (moved.meta.changes === 0) {
-      return c.json({ ok: false, error: 'transition_refused', from: before.status }, 409);
+      const inFlight =
+        parsed.data.status === 'CLOSED' &&
+        (await c.env.DB.prepare(
+          `SELECT 1 AS n FROM orders
+            WHERE target_reseller_id = ?1 AND status IN ('AWAITING_PAYMENT', 'PAID', 'PROVISIONING')
+            LIMIT 1`,
+        )
+          .bind(id)
+          .first<{ n: number }>()) !== null;
+      return c.json(
+        { ok: false, error: inFlight ? 'orders_in_flight' : 'transition_refused', from: before.status },
+        409,
+      );
     }
 
     await audit(

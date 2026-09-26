@@ -479,6 +479,9 @@ export const ORDER_PRODUCT_JOINS = `
 /** The name the page gives the one bucket of orders that name no service. */
 export const LEGACY_SERVICE_NAME = 'سفارش‌های قدیمی';
 
+/** The row a reseller's panel volume gets (#474): it is no service's, and not legacy either. */
+export const RESELLER_SERVICE_NAME = 'حجم نمایندگی';
+
 /**
  * The same money as `earnedIrr`, one row per service.
  *
@@ -544,7 +547,7 @@ export async function salesByService(
       addon_count: number;
       irr: string | number;
     }>();
-  return (rows.results ?? []).map((s) => ({
+  const services: ServiceTotal[] = (rows.results ?? []).map((s) => ({
     productId: s.product_id === null ? null : Number(s.product_id),
     name: s.name ?? LEGACY_SERVICE_NAME,
     newCount: s.new_count,
@@ -552,4 +555,29 @@ export async function salesByService(
     addonCount: s.addon_count,
     irr: Number(s.irr),
   }));
+
+  // A reseller's terabytes (#474) are in `earnedIrr` and name no service, so
+  // they get a row of their own — without it the table stops summing to the
+  // «درآمد» it says it sums to. Not in the query above: its orders have no
+  // product, and would fall into the legacy bucket.
+  const reseller = await db
+    .prepare(
+      `SELECT count(*)::int AS n, COALESCE(sum(o.total_irr), 0) AS irr
+         FROM orders o
+        WHERE o.status = 'COMPLETED' AND o.kind = 'RESELLER_VOLUME'${orders.sql}`,
+    )
+    .bind(...orders.binds)
+    .first<{ n: number; irr: string | number }>();
+  if ((reseller?.n ?? 0) > 0) {
+    services.push({
+      productId: null,
+      name: RESELLER_SERVICE_NAME,
+      newCount: reseller!.n,
+      renewalCount: 0,
+      addonCount: 0,
+      irr: Number(reseller!.irr),
+    });
+    services.sort((a, b) => b.irr - a.irr);
+  }
+  return services;
 }

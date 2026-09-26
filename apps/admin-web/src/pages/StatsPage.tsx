@@ -512,7 +512,7 @@ export function StatsPage() {
                   </thead>
                   <tbody>
                     {data.byService.map((s) => (
-                      <tr key={s.productId ?? 'legacy'}>
+                      <tr key={s.productId ?? s.name}>
                         {/* The imported bucket is a heap of old orders, not a
                             service anybody can sell today, so it reads as the
                             aside it is. */}

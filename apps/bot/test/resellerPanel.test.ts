@@ -382,8 +382,8 @@ describe('delivery — our ledger, the panel its mirror', () => {
     const row = await ledger(account);
     expect(row).toMatchObject({ status: 'ACTIVE' });
     expect(Number(row!.data_limit_bytes)).toBe(2 * TIB);
-    // The term starts when the panel does: 90 days from delivery.
-    expect(Date.parse(row!.expires_at!)).toBeGreaterThanOrEqual(NOW_MS + 89 * DAY);
+    // The term starts when the panel does: 90 days from the sweep's own clock.
+    expect(Date.parse(row!.expires_at!)).toBe(NOW_MS + 90 * DAY);
     expect((await lastOrder(userId))?.status).toBe('COMPLETED');
     // Nothing on the wire or in the database holds a password beyond the create.
     const creates = panel.calls.filter((c) => c.method === 'POST' && c.path === '/api/admin');

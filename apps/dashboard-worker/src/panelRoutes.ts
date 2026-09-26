@@ -2555,6 +2555,9 @@ export function registerPanelRoutes(
         base_url: before.base_url,
         renew_mode: renewModeFor(before.config ?? {}),
         renew_enabled: renewAllowed(before.config ?? {}),
+        // Tier prices, role and cap are money settings (#474); audit_logs is
+        // the only append-only record of who changed them.
+        reseller_sale: resellerSaleFormOf(before.config ?? {}),
       },
       {
         name: after.name,
@@ -2564,6 +2567,7 @@ export function registerPanelRoutes(
         base_url: after.base_url,
         renew_mode: renewModeFor(after.config ?? {}),
         renew_enabled: renewAllowed(after.config ?? {}),
+        reseller_sale: resellerSaleFormOf(after.config ?? {}),
       },
       null,
     );
