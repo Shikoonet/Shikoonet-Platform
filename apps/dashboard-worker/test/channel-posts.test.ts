@@ -192,6 +192,12 @@ afterEach(() => {
 
 afterAll(async () => {
   await baseEnv.DB.prepare(`DELETE FROM channel_posts`).run();
+  await baseEnv.DB.prepare(
+    `DELETE FROM campaigns WHERE slug LIKE 'post-%' OR slug = 'zz-cp-ads'`,
+  ).run();
+  await baseEnv.DB.prepare(
+    `DELETE FROM required_channels WHERE join_link = 'https://t.me/zzcp'`,
+  ).run();
   await baseEnv.DB.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = ANY(?1)`)
     .bind(SHARED_SETTINGS)
     .run();
@@ -212,6 +218,13 @@ describe('the channel', () => {
       chat_title: 'کانال شیکو',
       status: 'DRAFT',
     });
+  });
+
+  it('says Telegram did not answer, not that the bot lacks rights, when getMe fails', async () => {
+    refuse = { getMe: 'Too Many Requests: retry after 5' };
+    const res = await req('POST', '/api/v1/admin/channel-posts', { chat: '@shikoonet' });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { error: string }).error).toBe('telegram_refused');
   });
 
   it('is refused when the bot cannot post there, or does not exist, or is a link', async () => {
@@ -381,6 +394,15 @@ describe('preview, then schedule', () => {
     expect(await row(id)).toMatchObject({ status: 'SENDING', text: '<b>سلام</b>' });
   });
 
+  it('refuses a time already gone — never quietly turns it into «now»', async () => {
+    const id = await draft();
+    await req('POST', `/api/v1/admin/channel-posts/${id}/preview`);
+    const gone = new Date(Date.now() - 2 * 3_600_000).toISOString();
+
+    expect((await patch(id, { op: 'schedule', sendAt: gone })).status).toBe(400);
+    expect((await row(id))?.status).toBe('DRAFT');
+  });
+
   it('refuses a schedule past 90 days, and cancels one back to a draft', async () => {
     const id = await draft();
     await req('POST', `/api/v1/admin/channel-posts/${id}/preview`);
@@ -459,6 +481,13 @@ describe('a post in the channel', () => {
     expect(of('unpinChatMessage')).toEqual([{ chat_id: CHANNEL, message_id: 9001 }]);
   });
 
+  it('is deleted when the channel says the message is already gone', async () => {
+    const id = await sent();
+    refuse = { deleteMessage: 'Bad Request: message to delete not found' };
+    expect((await req('DELETE', `/api/v1/admin/channel-posts/${id}`)).status).toBe(200);
+    expect(await row(id)).toBeNull();
+  });
+
   it('is deleted from the channel first, and kept if the channel refuses', async () => {
     const id = await sent();
     refuse = { deleteMessage: "Bad Request: message can't be deleted" };
@@ -517,6 +546,9 @@ describe('the post’s own campaign', () => {
 describe('sending again', () => {
   it('makes a new draft with the same channel, words, picture and buttons — and no preview', async () => {
     const first = await sent('PHOTO');
+    await baseEnv.DB.prepare(`UPDATE channel_posts SET campaign_slug = 'post-1' WHERE id = ?1`)
+      .bind(first)
+      .run();
     const res = await req('POST', '/api/v1/admin/channel-posts', { copyOf: first });
     const { id } = (await res.json()) as { id: number };
 
@@ -528,6 +560,8 @@ describe('sending again', () => {
       status: 'DRAFT',
       preview_message_id: null,
       message_id: null,
+      // A new post, which may want its own campaign.
+      campaign_slug: null,
     });
   });
 });
@@ -557,6 +591,21 @@ describe('who may', () => {
     };
     expect(list.items[0]).toMatchObject({ chatId: CHANNEL, status: 'DRAFT', previewed: false });
     expect(list.chats).toContainEqual({ ref: String(CHANNEL), title: 'کانال شیکو' });
+
+    // A required channel stored by the same id is the same channel: offered once.
+    await baseEnv.DB.prepare(
+      `INSERT INTO required_channels (title, chat_ref, join_link, active)
+       VALUES ('کانال اجباری', ?1, 'https://t.me/zzcp', false)`,
+    )
+      .bind(String(CHANNEL))
+      .run();
+    const again = (await (await req('GET', '/api/v1/admin/channel-posts')).json()) as {
+      chats: Array<{ ref: string }>;
+    };
+    expect(again.chats.filter((c) => c.ref === String(CHANNEL))).toHaveLength(1);
+    await baseEnv.DB.prepare(
+      `DELETE FROM required_channels WHERE join_link = 'https://t.me/zzcp'`,
+    ).run();
     expect(list.botUsername).toBe('shikoonet_bot');
   });
 });

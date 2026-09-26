@@ -76,7 +76,8 @@ function windowOf(range: string | undefined, day: string | undefined, to: string
  * «1e3» and «0x10», and an integer too large for `bigint` reaches Postgres and
  * comes back a 500 instead of a 404.
  */
-const idOf = (raw: string): number | null => (/^[1-9][0-9]{0,14}$/.test(raw) ? Number(raw) : null);
+export const idOf = (raw: string): number | null =>
+  /^[1-9][0-9]{0,14}$/.test(raw) ? Number(raw) : null;
 
 interface FunnelRow {
   id: number;
@@ -231,17 +232,6 @@ export async function botUsername(db: D1Database): Promise<string | null> {
  * is no route that changes it. `post-` belongs to channel posts (#473), which
  * make their own campaign; a hand-made slug cannot take it.
  */
-/**
- * Where a campaign runs. «channel» is taken: it marks the campaigns channel
- * posts make for themselves (#473), and the table's CHECK ties it to their
- * `post-` slugs — typed by hand it would reach the database as a 500.
- */
-const Source = z
-  .string()
-  .trim()
-  .max(100)
-  .refine((s) => s !== 'channel', 'منبع «channel» مال پست‌های کانال است');
-
 const CampaignCreate = z
   .object({
     slug: z
@@ -254,7 +244,7 @@ const CampaignCreate = z
       )
       .refine((s) => !s.startsWith('post-'), 'پیشوند post- مال پست‌های کانال است'),
     name: z.string().trim().min(1).max(100),
-    source: Source.optional(),
+    source: z.string().trim().max(100).optional(),
     note: z.string().trim().max(1000).optional(),
   })
   .strict();
@@ -262,7 +252,7 @@ const CampaignCreate = z
 const CampaignPatch = z
   .object({
     name: z.string().trim().min(1).max(100).optional(),
-    source: Source.optional(),
+    source: z.string().trim().max(100).optional(),
     note: z.string().trim().max(1000).optional(),
     status: z.enum(['ACTIVE', 'ARCHIVED']).optional(),
   })

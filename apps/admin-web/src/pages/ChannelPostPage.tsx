@@ -64,6 +64,8 @@ export function ChannelPostPage() {
   const [done, setDone] = useState<string | null>(null);
   const [openId, setOpenId] = useState<number | 'new' | null>(null);
   const [reload, setReload] = useState(0);
+  const [campaignsReload, setCampaignsReload] = useState(0);
+  const [busy, setBusy] = useState(false);
   const write = useAdminWriteProps();
 
   useEffect(() => {
@@ -72,7 +74,16 @@ export function ChannelPostPage() {
       .channelPosts()
       .then((d) => alive && setData(d))
       .catch((e: unknown) => alive && setErr(message(e)));
-    // For the buy button's campaign list. Its failure only empties that list.
+    return () => {
+      alive = false;
+    };
+  }, [reload]);
+
+  // For the buy button's campaign list — once, and again only when a post
+  // made its own; not on every refresh of the list below. Its failure only
+  // empties that list.
+  useEffect(() => {
+    let alive = true;
     api
       .campaigns('all')
       .then((d) => alive && setCampaigns(d.items))
@@ -80,12 +91,16 @@ export function ChannelPostPage() {
     return () => {
       alive = false;
     };
-  }, [reload]);
+  }, [campaignsReload]);
 
   // While something is on its way, the list follows it: «الان» becomes «در
   // کانال» within seconds, and nobody should have to press refresh to see it.
+  // Only for what is due soon — a post a month away is not worth a poll a
+  // minute for a month.
   const moving = data?.items.some(
-    (p) => p.status === 'SCHEDULED' || (p.status === 'SENDING' && !p.stuck),
+    (p) =>
+      (p.status === 'SENDING' && !p.stuck) ||
+      (p.status === 'SCHEDULED' && p.sendAt !== null && p.sendAt - Date.now() < 10 * 60_000),
   );
   useEffect(() => {
     if (!moving) return;
@@ -95,7 +110,10 @@ export function ChannelPostPage() {
 
   const refresh = () => setReload((n) => n + 1);
 
+  /** One row action at a time: a double-click must not copy a post twice. */
   async function act(run: () => Promise<unknown>, ok: string) {
+    if (busy) return;
+    setBusy(true);
     try {
       await run();
       setErr(null);
@@ -104,6 +122,8 @@ export function ChannelPostPage() {
     } catch (e) {
       setDone(null);
       setErr(message(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -142,6 +162,7 @@ export function ChannelPostPage() {
             setOpenId(id);
             refresh();
           }}
+          onCampaign={() => setCampaignsReload((n) => n + 1)}
           onChanged={(msg) => {
             setErr(null);
             setDone(msg);
@@ -232,6 +253,7 @@ export function ChannelPostPage() {
                       {p.status === 'SCHEDULED' && (
                         <button
                           type="button"
+                          disabled={busy}
                           className="btn"
                           onClick={() =>
                             void act(
@@ -248,6 +270,7 @@ export function ChannelPostPage() {
                         <>
                           <button
                             type="button"
+                            disabled={busy}
                             className="btn"
                             onClick={() =>
                               void act(
@@ -261,6 +284,7 @@ export function ChannelPostPage() {
                           </button>
                           <button
                             type="button"
+                            disabled={busy}
                             className="btn"
                             onClick={() =>
                               void act(
@@ -278,6 +302,7 @@ export function ChannelPostPage() {
                         <>
                           <button
                             type="button"
+                            disabled={busy}
                             className="btn"
                             onClick={() =>
                               void act(
@@ -291,6 +316,7 @@ export function ChannelPostPage() {
                           </button>
                           <button
                             type="button"
+                            disabled={busy}
                             className="btn"
                             onClick={() =>
                               void act(
@@ -307,6 +333,7 @@ export function ChannelPostPage() {
                       {(p.status === 'SENT' || p.status === 'FAILED') && (
                         <button
                           type="button"
+                          disabled={busy}
                           className="btn"
                           onClick={() =>
                             void act(async () => {
@@ -323,6 +350,7 @@ export function ChannelPostPage() {
                         <button
                           type="button"
                           className="btn"
+                          disabled={busy}
                           onClick={() => {
                             const where = p.status === 'SENT' && p.inChannel ? ' از کانال هم' : '';
                             if (!window.confirm(`این پست${where} حذف شود؟`)) return;
@@ -351,6 +379,7 @@ function Composer({
   campaigns,
   onClose,
   onCreated,
+  onCampaign,
   onChanged,
   onError,
 }: {
@@ -360,6 +389,8 @@ function Composer({
   campaigns: CampaignFunnel[];
   onClose: () => void;
   onCreated: (id: number) => void;
+  /** A campaign was made here; the buy button's list should know it. */
+  onCampaign: () => void;
   onChanged: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
@@ -371,8 +402,17 @@ function Composer({
   const [dirty, setDirty] = useState(post === null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
-  const [jDay, setJDay] = useState<JalaliDate>(() => toJalali(Date.now()));
-  const [time, setTime] = useState('20:00');
+  // The next full hour, in Tehran: a default that is already past would be
+  // refused, and one that is «20:00» at 21:30 would be refused too.
+  const [jDay, setJDay] = useState<JalaliDate>(() => toJalali(Date.now() + 3_600_000));
+  const [time, setTime] = useState(() => {
+    const hour = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Tehran',
+      hour: '2-digit',
+      hourCycle: 'h23',
+    }).format(Date.now() + 3_600_000);
+    return `${hour}:00`;
+  });
   const write = useAdminWriteProps();
 
   const inChannel = post?.status === 'SENT';
@@ -580,6 +620,7 @@ function Composer({
               void run(async () => {
                 const r = await api.channelPostOp(post.id, { op: 'track' });
                 if (r.campaign) {
+                  onCampaign();
                   setRows([
                     ...rows,
                     [{ text: '🛒 خرید سرویس', campaign: r.campaign, style: 'success' }],

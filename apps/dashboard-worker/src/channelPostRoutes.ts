@@ -34,7 +34,7 @@ import { z } from 'zod';
 import type { EnvName } from '@shikoo/contracts';
 import type { D1Database } from '@shikoo/database';
 import { audit, type Ident } from './adminAudit.js';
-import { botUsername } from './campaignRoutes.js';
+import { botUsername, idOf } from './campaignRoutes.js';
 import { CHAT_REF } from './channelRoutes.js';
 import {
   attachmentOf,
@@ -198,8 +198,6 @@ const shape = (r: PostRow) => ({
   stuck: r.stuck,
 });
 
-const idOf = (raw: string): number | null => (/^[1-9][0-9]{0,14}$/.test(raw) ? Number(raw) : null);
-
 async function load(db: D1Database, id: number): Promise<PostRow | null> {
   return db.prepare(`SELECT ${COLUMNS} FROM channel_posts WHERE id = ?1`).bind(id).first<PostRow>();
 }
@@ -256,8 +254,14 @@ async function resolveChat(call: TelegramCall, ref: string): Promise<Resolved> {
     };
   }
   const found = chat.result as unknown as { id: number; title?: string; type?: string };
-  const me = (await call('getMe', {})).result as unknown as { id?: number } | undefined;
-  const member = await call('getChatMember', { chat_id: found.id, user_id: me?.id });
+  const me = await call('getMe', {});
+  const botId = (me.result as unknown as { id?: number } | undefined)?.id;
+  // Asked before «can it post?», or a Telegram having a bad minute would be
+  // reported as the bot lacking rights it has.
+  if (me.ok !== true || botId === undefined) {
+    return { error: 'telegram_refused', detail: `تلگرام جواب نداد: ${me.description ?? 'getMe'}` };
+  }
+  const member = await call('getChatMember', { chat_id: found.id, user_id: botId });
   const role = member.result as unknown as { status?: string; can_post_messages?: boolean };
   const canPost =
     member.ok === true &&
@@ -338,8 +342,12 @@ export function registerChannelPostRoutes(app: Hono<PostEnv>) {
       // What the channel picker offers: channels posted to before, and the
       // shop's own required channels. Anything else can be typed.
       chats: [
-        ...(chats.results ?? []).map((r) => ({ ref: String(r.chat_id), title: r.chat_title })),
-        ...(required.results ?? []).map((r) => ({ ref: r.chat_ref, title: r.title })),
+        ...new Map(
+          [
+            ...(chats.results ?? []).map((r) => ({ ref: String(r.chat_id), title: r.chat_title })),
+            ...(required.results ?? []).map((r) => ({ ref: r.chat_ref, title: r.title })),
+          ].map((c) => [c.ref, c]),
+        ).values(),
       ],
     });
   });
@@ -360,8 +368,10 @@ export function registerChannelPostRoutes(app: Hono<PostEnv>) {
         const made = await tx
           .prepare(
             `INSERT INTO channel_posts
-               (chat_id, chat_title, text, media_kind, media_file_id, buttons, campaign_slug, created_by)
-             SELECT chat_id, chat_title, text, media_kind, media_file_id, buttons, campaign_slug, ?2
+               (chat_id, chat_title, text, media_kind, media_file_id, buttons, created_by)
+             -- Not the campaign: a resend is a new post and may want its own.
+             -- Its buttons still point where the original's did until edited.
+             SELECT chat_id, chat_title, text, media_kind, media_file_id, buttons, ?2
                FROM channel_posts WHERE id = ?1
              RETURNING id`,
           )
@@ -449,7 +459,19 @@ export function registerChannelPostRoutes(app: Hono<PostEnv>) {
 
       case 'schedule': {
         const now = Date.now();
-        const at = op.sendAt === null ? now : Math.max(Date.parse(op.sendAt), now);
+        const at = op.sendAt === null ? now : Date.parse(op.sendAt);
+        // A time already gone is a mistake to show, not «now»: moving it to
+        // now would put a post meant for tomorrow into the channel this second.
+        if (at < now - 60_000) {
+          return c.json(
+            {
+              ok: false,
+              error: 'in_the_past',
+              detail: 'این زمان گذشته — برای همین حالا «ارسال الان» را بزن.',
+            },
+            400,
+          );
+        }
         if (at - now > MAX_SCHEDULE_AHEAD_MS) {
           return c.json(
             { ok: false, error: 'too_far', detail: 'بیشتر از ۹۰ روز جلوتر نمی‌شود.' },
@@ -851,14 +873,19 @@ export function registerChannelPostRoutes(app: Hono<PostEnv>) {
         call('deleteMessage', { chat_id: post.chat_id, message_id: post.message_id }),
       );
       if (!reply.ok) return reply.response;
-      if (reply.value.ok !== true) return refused(c, reply.value.description);
+      // Already gone from the channel — deleted there by hand, or by a delete
+      // whose answer was lost — is what was asked for.
+      const gone = /message to delete not found/i.test(reply.value.description ?? '');
+      if (reply.value.ok !== true && !gone) return refused(c, reply.value.description);
     }
-    const gone = await c.env.DB.prepare(
-      `DELETE FROM channel_posts WHERE id = ?1 AND status <> 'SENDING' RETURNING id`,
+    // Only in the state it was read in: a post the bot sent meanwhile is in
+    // the channel now, and dropping its row would leave it there unreachable.
+    const removed = await c.env.DB.prepare(
+      `DELETE FROM channel_posts WHERE id = ?1 AND status = ?2 RETURNING id`,
     )
-      .bind(id)
+      .bind(id, post.status)
       .first();
-    if (!gone) return conflict(c, 'sending', 'پست همین الان به ارسال رفت.');
+    if (!removed) return conflict(c, 'changed', 'پست همین الان عوض شد — فهرست را تازه کن.');
     // After Telegram, on the bare connection: the message is already gone from
     // the channel, and a failed audit row must not bring the post back.
     await audit(

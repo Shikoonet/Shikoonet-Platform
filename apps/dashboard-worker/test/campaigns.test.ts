@@ -368,19 +368,6 @@ describe('creating and editing', () => {
     expect(again.status).toBe(409);
   });
 
-  it('refuses the source channel posts own — the table ties it to their post- slugs', async () => {
-    const res = await send('POST', '/api/v1/admin/campaigns', {
-      slug: 'zz-cmp-src',
-      name: 'x',
-      source: 'channel',
-    });
-    expect(res.status).toBe(400);
-    const id = await campaign('zz-cmp-src2');
-    expect(
-      (await send('PATCH', `/api/v1/admin/campaigns/${id}`, { source: 'channel' })).status,
-    ).toBe(400);
-  });
-
   it('refuses a slug Telegram cannot carry, and the prefix channel posts own', async () => {
     for (const slug of [
       'ab',

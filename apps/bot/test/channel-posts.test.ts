@@ -48,8 +48,10 @@ const rowOf = (id: number) =>
       send_at: string;
     }>();
 
+// The whole table, not only this file's rows: the sweep claims whichever due
+// post is oldest, so a stranger's due row would be the one it sends.
 beforeEach(async () => {
-  await db.prepare(`DELETE FROM channel_posts WHERE created_by = ?1`).bind(BY).run();
+  await db.prepare(`DELETE FROM channel_posts`).run();
 });
 
 afterEach(async () => {
@@ -58,7 +60,7 @@ afterEach(async () => {
   await db
     .prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'telegram_pause_until'`)
     .run();
-  await db.prepare(`DELETE FROM channel_posts WHERE created_by = ?1`).bind(BY).run();
+  await db.prepare(`DELETE FROM channel_posts`).run();
 });
 
 describe('a scheduled channel post', () => {
