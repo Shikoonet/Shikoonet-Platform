@@ -8,6 +8,25 @@
 set -eu
 
 # ---------------------------------------------------------------------------
+# Patient connects.
+#
+# The box has no IPv6 route out, but Coolify's docker network gives every
+# container an IPv6 address, so Node tries both of Telegram's addresses — and
+# by default abandons each attempt after 250 ms. An IPv4 connect that takes
+# 300 ms is dropped, IPv6 then fails at once with ENETUNREACH, and the request
+# dies as `fetch failed (cause: AggregateError [ETIMEDOUT])` without ever
+# reaching Telegram. Production logged 35 of those in a day on
+# answerCallbackQuery alone (2026-09-26); every other call to Telegram and to
+# the panels goes out the same way.
+#
+# 2.5 s covers a lost SYN's one-second retransmit. Nothing waits on IPv6 for
+# it: that attempt fails immediately. Here, like the gate below, because this
+# is the one place every service passes through; appended, so a NODE_OPTIONS
+# set in Coolify still applies.
+# ---------------------------------------------------------------------------
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--network-family-autoselection-attempt-timeout=2500"
+
+# ---------------------------------------------------------------------------
 # The schema gate.
 #
 # On 2026-08-17 the dashboard was deployed with the operator-login code while
