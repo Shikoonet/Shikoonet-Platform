@@ -74,6 +74,7 @@ import { registerChannelPostRoutes } from './channelPostRoutes.js';
 import { registerEventRoutes } from './eventRoutes.js';
 import { registerReceiptRoutes } from './receiptRoutes.js';
 import { registerBotRoutes } from './botRoutes.js';
+import { registerSupportBotRoutes } from './supportBotRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
 /**
@@ -219,6 +220,13 @@ export interface Env {
    * legacy copy is read from, and `loadDump` drops its database on every run.
    */
   IMPORT_MYSQL_URL?: string;
+  /**
+   * The n8n «ShikooSup admin API» webhook URL, and the key it wants in `x-shikoo-admin-key`.
+   * «محدودیت‌های ربات پشتیبانی» reads and changes the support bot's own state through it.
+   * The key is a credential: never rendered or logged. Unset, the page says it is not connected.
+   */
+  SUPPORT_BOT_ADMIN_URL?: string;
+  SUPPORT_BOT_ADMIN_SECRET?: string;
 }
 
 type DB = D1Database;
@@ -5421,6 +5429,7 @@ registerChannelPostRoutes(app);
 registerEventRoutes(app);
 registerReceiptRoutes(app);
 registerBotRoutes(app);
+registerSupportBotRoutes(app);
 
 // No default export: it was `export default { fetch }`'s descendant, from when
 // this ran as a Worker. Nothing has imported it since — `server.ts` and every

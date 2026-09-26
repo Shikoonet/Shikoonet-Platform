@@ -223,6 +223,8 @@ environment without one is deployed without one.
 | `ADMIN_DIST` | where the built SPA is | no | optional | build | baked into the image |
 | `TEST_ACCESS_USER` | **skips login entirely.** Refused twice when `ENV_NAME` is not `local`/`test` | **yes** | never in a deployment | runtime | correctly absent |
 | `APP_VERSION` / `SOURCE_COMMIT` | version reporting | no | automatic | runtime | PRESENT (automatic) |
+| `SUPPORT_BOT_ADMIN_URL` | the n8n «ShikooSup admin API» webhook that «محدودیت‌های ربات پشتیبانی» reads and changes the support bot through (#489) | no | optional — unset, the page says the bot is not connected | runtime | not set until the owner adds it |
+| `SUPPORT_BOT_ADMIN_SECRET` | the `x-shikoo-admin-key` that webhook wants; the copy of record is in `.notes/support-bot.env` | **yes** | with the URL | runtime | not set until the owner adds it |
 
 Operator passwords, TOTP secrets and session material are **not** environment
 variables — scrypt hashes and TOTP secrets live in the database

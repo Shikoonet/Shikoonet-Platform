@@ -97,7 +97,9 @@ test('every section opens without a failed request, a thrown render or an error 
   // and what they bought. A new section, so the number moved.
   // 35 -> 36 on 2026-09-26: «انتشار در کانال» (#473) — posts for the shop's
   // channels, beside «ارسال گروهی». A new section, so the number moved.
-  expect(labels.length).toBe(36);
+  // 36 -> 37 on 2026-09-26: «محدودیت‌های ربات پشتیبانی» (#489) — who the
+  // support bot limited, and the button that gives a chat back. A new section.
+  expect(labels.length).toBe(37);
 
   for (const label of labels) {
     section = label;

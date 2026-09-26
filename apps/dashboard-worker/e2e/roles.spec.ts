@@ -66,6 +66,11 @@ const WITHHELD = [
   // that EMPTIES the shop's data. `READABLE_BY_READER` never held it — the
   // hole was in the test, not in the panel.
   'ایمپورت میرزابات',
+  // 2026-09-26 (#489): who the support bot stopped answering, by name and
+  // Telegram id, and what attackers wrote. `/api/v1/admin/support-bot` is on
+  // `PERSONAL_DATA_PREFIXES`, and a section a reader is refused is one their
+  // sidebar does not draw.
+  'محدودیت‌های ربات پشتیبانی',
 ];
 
 /**
