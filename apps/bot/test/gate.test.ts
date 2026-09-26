@@ -253,6 +253,8 @@ afterAll(async () => {
       .bind(borrowed)
       .run();
   }
+  // After the customers: their starts went with them, so the campaign is free.
+  await db.prepare(`DELETE FROM campaigns WHERE slug = 'zz-gate-ad'`).run();
 });
 
 describe('the channel gate', () => {
@@ -293,6 +295,37 @@ describe('the channel gate', () => {
     const drawn = buttons(out.replies[0]!.keyboard);
     expect(drawn[0]).toEqual({ text: CHANNEL.title, url: CHANNEL.link });
     expect(drawn.at(-1)!.callback_data).toBe('chk');
+  });
+
+  it('still records the campaign a gated newcomer arrived from (#471)', async () => {
+    // An ad brings exactly the people who are not in the channel yet. The start
+    // is recorded before the gate, like the referrer is, or the campaign loses
+    // the very customers it was paid to bring.
+    const campaign = await db
+      .prepare(
+        `INSERT INTO campaigns (slug, name) VALUES ('zz-gate-ad', 'zz-gate-ad')
+         ON CONFLICT (slug) DO UPDATE SET status = 'ACTIVE' RETURNING id`,
+      )
+      .first<{ id: number }>();
+    await addChannel();
+    const { updateId, telegramId } = ids();
+
+    const out = await handleUpdate(
+      db,
+      startUpdate(updateId, telegramId, 'c_zz-gate-ad'),
+      globalThis.fetch,
+      membership('left'),
+    );
+
+    expect(out.replies[0]!.text).toBe(menu.gateChannels());
+    const row = await db
+      .prepare(
+        `SELECT s.is_new_user FROM campaign_starts s JOIN users u ON u.id = s.user_id
+          WHERE u.telegram_id = ?1 AND s.campaign_id = ?2`,
+      )
+      .bind(telegramId, campaign!.id)
+      .first<{ is_new_user: boolean }>();
+    expect(row?.is_new_user).toBe(true);
   });
 
   it('cannot be walked past with a button press', async () => {

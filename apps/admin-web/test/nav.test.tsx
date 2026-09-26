@@ -71,6 +71,7 @@ describe('navigation', () => {
     // the only «آمار» left since «آمار مالی» went on 2026-09-21.
     expect(groupOf('stats')).toBe(groupOf('dashboard'));
     expect(groupOf('profit')).toBe(groupOf('dashboard'));
+    expect(groupOf('campaigns')).toBe(groupOf('dashboard'));
 
     // داشبورد still opens the panel.
     expect(NAV[0]!.items[0]!.id).toBe('dashboard');
@@ -166,6 +167,9 @@ describe('navigation', () => {
       // each service and each partner made. Sam: «من چقدر گرفتم؟».
       'parties',
       'profit',
+      // «کمپین‌ها», 2026-09-26 (#471) — which link brought a customer and what
+      // they bought, counted from the bot's own starts.
+      'campaigns',
     ];
     expect([...ALL].sort()).toEqual([...implemented].sort());
   });

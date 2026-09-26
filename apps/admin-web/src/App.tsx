@@ -52,6 +52,7 @@ import {
 import { BroadcastProgress } from './hub/BroadcastProgress.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { StatsPage } from './pages/StatsPage.js';
+import { CampaignsPage } from './pages/CampaignsPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
 import { ReferralsPage } from './pages/ReferralsPage.js';
 import { BulkPage } from './pages/BulkPage.js';
@@ -119,6 +120,8 @@ function Body({
       return <DashboardPage onGo={go} />;
     case 'stats':
       return <StatsPage />;
+    case 'campaigns':
+      return <CampaignsPage />;
     case 'customers':
       return <CustomersPage />;
     case 'referrals':
