@@ -52,8 +52,13 @@ import type {
   RemoteAccount,
   RenewRequest,
   GroupsResult,
+  NewPanelAdmin,
   PanelAdmin,
+  PanelAdminLookup,
+  PanelAdminRole,
   PanelAdminsResult,
+  PanelAdminWriteResult,
+  PanelRoleLookup,
   GroupDeleteResult,
   GroupMoveResult,
   GroupWriteResult,
@@ -98,6 +103,10 @@ interface MarzbanAdmin {
   status?: unknown;
   is_disabled?: unknown;
   is_limited?: unknown;
+  note?: unknown;
+  telegram_id?: unknown;
+  /** `{ id, is_owner, permissions, … }` on 5.2.1 — there is no top-level `role_id`. */
+  role?: unknown;
 }
 
 interface MarzbanUser {
@@ -162,6 +171,71 @@ function asByteCount(value: unknown): number | null {
   const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
   if (!Number.isFinite(n) || n < 0) return null;
   return Math.floor(n);
+}
+
+/** Zero is «unlimited» to PasarGuard, so a limit that is not positive never leaves. */
+const UNLIMITED_REFUSED: PanelAdminWriteResult = {
+  ok: false,
+  reason: 'refusing a data_limit the panel reads as unlimited',
+  retryable: false,
+  conflict: false,
+};
+
+function unreachable(reason: string): PanelAdminWriteResult {
+  return {
+    ok: false,
+    reason: `could not reach the panel: ${reason}`,
+    retryable: true,
+    conflict: false,
+  };
+}
+
+/** The role nested in an admin row, or null when the panel sent none it could read. */
+function roleOf(value: unknown): PanelAdminRole | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const role = value as { id?: unknown; is_owner?: unknown; permissions?: unknown };
+  if (typeof role.id !== 'number' || !Number.isSafeInteger(role.id)) return null;
+  return { id: role.id, isOwner: role.is_owner === true, permissions: role.permissions ?? null };
+}
+
+/**
+ * One row of `GET /api/admins`, read the one way both the meter's listing and
+ * the reseller sale's exact lookup read it. Null for a row with no name, which
+ * cannot be matched to anything.
+ */
+function toPanelAdmin(admin: MarzbanAdmin): PanelAdmin | null {
+  const username = asString(admin.username);
+  if (username === null) return null;
+  return {
+    username,
+    // Null rather than zero when the panel's number is unreadable.
+    // `asByteCount` already refuses a negative or non-finite counter, which a
+    // panel mid-restart has been seen to report, and the meter skips such a
+    // reading rather than recording «used nothing».
+    usedBytes: asByteCount(admin.used_traffic),
+    lifetimeUsedBytes: asByteCount(admin.lifetime_used_traffic),
+    // The cap is read directly rather than through `asByteCount`, because for a
+    // cap the two nulls mean opposite things: an unreadable usage figure is a
+    // gap, an absent `data_limit` is «unlimited», and the panel really does
+    // send `null` for it.
+    dataLimitBytes:
+      typeof admin.data_limit === 'number' && Number.isFinite(admin.data_limit)
+        ? Math.max(0, Math.trunc(admin.data_limit))
+        : null,
+    totalUsers:
+      typeof admin.total_users === 'number' && Number.isFinite(admin.total_users)
+        ? Math.max(0, Math.trunc(admin.total_users))
+        : 0,
+    status: asString(admin.status)?.toLowerCase() ?? null,
+    disabled: admin.is_disabled === true,
+    limited: admin.is_limited === true,
+    note: asString(admin.note),
+    telegramId:
+      typeof admin.telegram_id === 'number' && Number.isSafeInteger(admin.telegram_id)
+        ? admin.telegram_id
+        : null,
+    role: roleOf(admin.role),
+  };
 }
 
 /**
@@ -1396,35 +1470,11 @@ export const marzbanAdapter: ProvisioningAdapter = {
 
         const json = (await res.json()) as { admins?: unknown };
         const page = Array.isArray(json.admins) ? (json.admins as MarzbanAdmin[]) : [];
-        for (const admin of page) {
-          const username = asString(admin.username);
+        for (const row of page) {
           // An admin with no name cannot be matched to a reseller row, so it is
           // not an admin as far as this sweep is concerned.
-          if (username === null) continue;
-          admins.push({
-            username,
-            // Null rather than zero when the panel's number is unreadable.
-            // `asByteCount` already refuses a negative or non-finite counter,
-            // which a panel mid-restart has been seen to report, and the sweep
-            // below skips such a reading rather than recording «used nothing».
-            usedBytes: asByteCount(admin.used_traffic),
-            lifetimeUsedBytes: asByteCount(admin.lifetime_used_traffic),
-            // The cap is read directly rather than through `asByteCount`,
-            // because for a cap the two nulls mean opposite things: an
-            // unreadable usage figure is a gap, an absent `data_limit` is
-            // «unlimited», and the panel really does send `null` for it.
-            dataLimitBytes:
-              typeof admin.data_limit === 'number' && Number.isFinite(admin.data_limit)
-                ? Math.max(0, Math.trunc(admin.data_limit))
-                : null,
-            totalUsers:
-              typeof admin.total_users === 'number' && Number.isFinite(admin.total_users)
-                ? Math.max(0, Math.trunc(admin.total_users))
-                : 0,
-            status: asString(admin.status)?.toLowerCase() ?? null,
-            disabled: admin.is_disabled === true,
-            limited: admin.is_limited === true,
-          });
+          const admin = toPanelAdmin(row);
+          if (admin !== null) admins.push(admin);
         }
         // A short page is the last page — the rule `listAccounts` below uses,
         // and for the same reason: trusting `total` would be trusting a number
@@ -1438,6 +1488,192 @@ export const marzbanAdapter: ProvisioningAdapter = {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return { ok: false, reason: `could not reach the panel: ${reason}` };
+    }
+  },
+
+  /**
+   * One admin, by its EXACT name (#474).
+   *
+   * `usernames=` and not `username=`, and the difference is the whole point.
+   * On PasarGuard 5.2.1 `username=` is a case-insensitive substring match —
+   * `ilike('%x%')`, with `_` a wildcard too — so asking for `ali` returns
+   * `alireza` and `mali` as well, and a guard that approved the first row would
+   * be approving somebody else's admin. `usernames=` is an exact `IN`. The
+   * name is compared again here, byte for byte, because a panel version that
+   * ever widened that filter must not widen what the bot writes to.
+   *
+   * `admin: null` is «no such admin», which a PENDING reseller wants to hear
+   * and an ACTIVE one must not; «could not ask» is `ok: false`.
+   */
+  async getPanelAdmin(provider: ProviderContext, username: string): Promise<PanelAdminLookup> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error, retryable: auth.retryable };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        provider.fetch(`${base}/api/admins?usernames=${encodeURIComponent(username)}&limit=10`, {
+          method: 'GET',
+          headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+          signal,
+        }),
+      );
+      if (!res.ok) {
+        return {
+          ok: false,
+          reason: `panel would not list admins (HTTP ${res.status})`,
+          retryable: isPanelFault(res.status),
+        };
+      }
+      const json = (await res.json()) as { admins?: unknown };
+      const rows = Array.isArray(json.admins) ? (json.admins as MarzbanAdmin[]) : [];
+      const exact = rows
+        .map(toPanelAdmin)
+        .filter((a): a is PanelAdmin => a !== null && a.username === username);
+      if (exact.length > 1) {
+        return { ok: false, reason: 'panel reported two admins by one name', retryable: false };
+      }
+      return { ok: true, admin: exact[0] ?? null };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}`, retryable: true };
+    }
+  },
+
+  /**
+   * One role, so the bot can check the role it is about to give a new admin
+   * before the reseller pays for it. A 5.2.1 panel on SQLite accepts a
+   * `role_id` that does not exist and creates an admin with no role at all
+   * (#474 probe), so «the create succeeded» proves nothing about the role.
+   */
+  async getPanelRole(provider: ProviderContext, roleId: number): Promise<PanelRoleLookup> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error, retryable: auth.retryable };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        provider.fetch(`${base}/api/admin-role/${roleId}`, {
+          method: 'GET',
+          headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+          signal,
+        }),
+      );
+      if (res.status === 404) return { ok: true, role: null };
+      if (!res.ok) {
+        return {
+          ok: false,
+          reason: `panel would not read the role (HTTP ${res.status})`,
+          retryable: isPanelFault(res.status),
+        };
+      }
+      return { ok: true, role: roleOf(await res.json()) };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}`, retryable: true };
+    }
+  },
+
+  /**
+   * A reseller's admin, created on their first paid order.
+   *
+   * The password travels in the body and nowhere else: every failure below
+   * reports the HTTP status only, because a panel's error body may echo the
+   * request back, and a reason string ends up in `failure_reason` and the logs.
+   */
+  async createPanelAdmin(
+    provider: ProviderContext,
+    admin: NewPanelAdmin,
+  ): Promise<PanelAdminWriteResult> {
+    if (!Number.isSafeInteger(admin.dataLimitBytes) || admin.dataLimitBytes <= 0) {
+      // Zero is «unlimited» to PasarGuard. Refused here, before the request.
+      return UNLIMITED_REFUSED;
+    }
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) {
+        return { ok: false, reason: auth.error, retryable: auth.retryable, conflict: false };
+      }
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        provider.fetch(`${base}/api/admin`, {
+          method: 'POST',
+          headers: {
+            accept: 'application/json',
+            'content-type': 'application/json',
+            authorization: `Bearer ${auth.token}`,
+          },
+          body: JSON.stringify({
+            username: admin.username,
+            password: admin.password,
+            role_id: admin.roleId,
+            data_limit: admin.dataLimitBytes,
+            telegram_id: admin.telegramId,
+            note: admin.note,
+          }),
+          signal,
+        }),
+      );
+      if (res.ok) return { ok: true };
+      return {
+        ok: false,
+        reason: `panel refused to create the admin (HTTP ${res.status})`,
+        retryable: isPanelFault(res.status),
+        conflict: res.status === 409,
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return unreachable(reason);
+    }
+  },
+
+  /**
+   * An admin's limit, or its password. `PUT /api/admin/{username}` applies only
+   * the fields it is sent, so the note, the role and the Telegram id stay as
+   * they are (5.2.1 `update_admin`, confirmed live in the #474 probe) — and
+   * raising `data_limit` above `used_traffic` is what moves a limited admin
+   * back to active, with the panel re-syncing its users itself.
+   */
+  async setPanelAdmin(
+    provider: ProviderContext,
+    username: string,
+    change: { dataLimitBytes?: number; password?: string },
+  ): Promise<PanelAdminWriteResult> {
+    const body: Record<string, unknown> = {};
+    if (change.dataLimitBytes !== undefined) {
+      if (!Number.isSafeInteger(change.dataLimitBytes) || change.dataLimitBytes <= 0) {
+        return UNLIMITED_REFUSED;
+      }
+      body['data_limit'] = change.dataLimitBytes;
+    }
+    if (change.password !== undefined) body['password'] = change.password;
+    if (Object.keys(body).length === 0) return { ok: true };
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) {
+        return { ok: false, reason: auth.error, retryable: auth.retryable, conflict: false };
+      }
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        provider.fetch(`${base}/api/admin/${encodeURIComponent(username)}`, {
+          method: 'PUT',
+          headers: {
+            accept: 'application/json',
+            'content-type': 'application/json',
+            authorization: `Bearer ${auth.token}`,
+          },
+          body: JSON.stringify(body),
+          signal,
+        }),
+      );
+      if (res.ok) return { ok: true };
+      return {
+        ok: false,
+        reason: `panel refused to change the admin (HTTP ${res.status})`,
+        retryable: isPanelFault(res.status),
+        conflict: res.status === 409,
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return unreachable(reason);
     }
   },
 

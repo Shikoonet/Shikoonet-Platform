@@ -105,6 +105,14 @@ export interface ShopReport {
    */
   addonsCount: number;
   addonsIrr: number;
+  /**
+   * Terabytes sold to resellers for their own panels (#474) — the fourth term
+   * of «درآمد». Its own line for the reason add-ons got theirs: counted in
+   * `earnedIrr` and shown nowhere, the parts on the screen would stop adding
+   * up to the total beside them.
+   */
+  resellerCount: number;
+  resellerIrr: number;
   topupsIrr: number;
   /**
    * The three above, together: what the shop earned in this window.
@@ -233,6 +241,9 @@ export async function shopReport(
            count(*) FILTER (WHERE o.kind IN ('ADD_VOLUME','ADD_TIME'))::int   AS addons_count,
            COALESCE(sum(o.total_irr) FILTER (
              WHERE o.kind IN ('ADD_VOLUME','ADD_TIME')), 0)                     AS addons_irr,
+           count(*) FILTER (WHERE o.kind = 'RESELLER_VOLUME')::int            AS reseller_count,
+           COALESCE(sum(o.total_irr) FILTER (
+             WHERE o.kind = 'RESELLER_VOLUME'), 0)                              AS reseller_irr,
            -- Everything sold, which is every kind except the two that sell
            -- nothing: a top-up is money moved, and a TRANSFER is always zero.
            COALESCE(sum(o.total_irr) FILTER (
@@ -255,6 +266,8 @@ export async function shopReport(
         renewals_irr: string | number;
         addons_count: number;
         addons_irr: string | number;
+        reseller_count: number;
+        reseller_irr: string | number;
         earned_irr: string | number;
         topups_irr: string | number;
         buyers: number;
@@ -403,6 +416,8 @@ export async function shopReport(
     renewalsIrr,
     addonsCount: flows?.addons_count ?? 0,
     addonsIrr: Number(flows?.addons_irr ?? 0),
+    resellerCount: flows?.reseller_count ?? 0,
+    resellerIrr: Number(flows?.reseller_irr ?? 0),
     earnedIrr: Number(flows?.earned_irr ?? 0),
     topupsIrr: Number(flows?.topups_irr ?? 0),
 

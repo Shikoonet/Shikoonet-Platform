@@ -73,14 +73,37 @@ export const CARD_HELD_UNTIL_SQL = `(
      AND p.status IN ('PENDING', 'AWAITING_REVIEW'))`;
 
 /**
+ * Whose invoices a card is shown on — `financial_accounts.customer_visible`,
+ * which 0104 widened from a switch into an audience: 0 nobody (books only),
+ * 1 customers, 2 resellers (#474). Two lines, not one: a reseller's invoice
+ * draws only from the second, an ordinary one only from the first, and a card
+ * is never in both.
+ */
+export const CUSTOMER_CARDS = 1;
+export const RESELLER_CARDS = 2;
+export type CardAudience = typeof CUSTOMER_CARDS | typeof RESELLER_CARDS;
+
+/** Which line an order's invoice draws from. The order's kind decides, not the buyer. */
+export function cardAudienceFor(orderKind: string): CardAudience {
+  return orderKind === 'RESELLER_VOLUME' ? RESELLER_CARDS : CUSTOMER_CARDS;
+}
+
+/**
  * Where the outer `pc` stands in the line, 1-based, among every card in
- * service — across accounts, which is why nothing here is scoped. The order is
- * the picker's own last tie-break, `(rotation_cursor, id)`; the hold is not
- * folded in because the dashboard shows it as its own badge beside this one.
+ * service in ITS line — across accounts, but within the audience its account
+ * serves. The order is the picker's own last tie-break, `(rotation_cursor, id)`;
+ * the hold is not folded in because the dashboard shows it as its own badge
+ * beside this one.
+ *
+ * A card on a books-only account (0) is placed in the customers' line, as it
+ * was before 0104 — the only line it could join by being switched on.
  */
 export const CARD_QUEUE_POSITION_SQL = `(
   SELECT COUNT(*)::int + 1 FROM payment_cards o
     JOIN financial_accounts ofa ON ofa.id = o.financial_account_id
    WHERE o.status = 'ACTIVE' AND ofa.active = 1 AND ofa.status = 'ACTIVE'
-     AND ofa.customer_visible = 1
+     AND ofa.customer_visible = (
+       SELECT CASE WHEN pfa.customer_visible = ${RESELLER_CARDS} THEN ${RESELLER_CARDS}
+                   ELSE ${CUSTOMER_CARDS} END
+         FROM financial_accounts pfa WHERE pfa.id = pc.financial_account_id)
      AND (o.rotation_cursor, o.id) < (pc.rotation_cursor, pc.id))`;
