@@ -15,7 +15,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { removeFinishedServices } from '../src/remove.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { invalidateShopSettings } from '../src/settings.js';
-import { ensureCatalog, makeCustomer } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer, reserveRenewalFor } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 8, 6, 12, 0, 0);
 const DAY = 86_400_000;
@@ -227,6 +227,22 @@ describe('removing a service the panel calls finished', () => {
     // The number of days is in the message. A removal with no reason is the
     // one that produces a support ticket.
     expect(note?.text).toContain('45');
+  });
+
+  it('leaves it alone when a renewal is reserved for it — on either sweep', async () => {
+    // The row «deletes it, marks the row…» deletes, and the one the volume
+    // sweep below deletes — each with a renewal already bought for it.
+    const userId = await makeCustomer(nextTelegramId());
+    const expired = await makeService(userId, { publicId: 'rm-rsv-e', expiredDaysAgo: 45 });
+    const limited = await makeService(userId, { publicId: 'rm-rsv-v', expiredDaysAgo: null, onlineDaysAgo: 30 });
+    await reserveRenewalFor(expired);
+    await reserveRenewalFor(limited);
+
+    expect((await removeFinishedServices(db, 'expired', fakePanel(), NOW_MS)).due).toBe(0);
+    expect((await removeFinishedServices(db, 'volume', fakePanel(), NOW_MS)).due).toBe(0);
+    expect(deleted).toEqual([]);
+    expect(await statusOf(expired)).toBe('ACTIVE');
+    expect(await statusOf(limited)).toBe('ACTIVE');
   });
 
   it('leaves it alone before the threshold', async () => {

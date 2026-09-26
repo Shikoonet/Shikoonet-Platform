@@ -19,7 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { AUTOMATED_KINDS_SQL } from '@shikoo/domain';
+import { AUTOMATED_KINDS_SQL, WAITING_RESERVE_SQL } from '@shikoo/domain';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -227,6 +227,8 @@ export interface RenewableSubscription {
   provider_name: string;
   provider_kind: string;
   provider_config: Record<string, unknown> | null;
+  /** A renewal already waits for this service (0107): one active, one reserved. */
+  reserved: boolean;
 }
 
 /**
@@ -295,7 +297,8 @@ const RENEWABLE_COLUMNS = `
     CASE WHEN pv.kind IN ('ai_account', 'spotify', 'manual') THEN pv.kind ELSE 'vpn' END
   ) AS family,
   pv.id AS provider_id, pv.name AS provider_name, pv.kind AS provider_kind,
-  pv.config AS provider_config
+  pv.config AS provider_config,
+  ${WAITING_RESERVE_SQL} AS reserved
 `;
 
 export async function renewableForUser(
@@ -378,6 +381,8 @@ export interface OwnedSubscriptionOnPanel extends OwnedSubscription {
   provider_secret_ref: string | null;
   provider_sealed: string | null;
   provider_config: Record<string, unknown> | null;
+  /** A renewal waits for this service's current period to end (0107). */
+  reserved: boolean;
 }
 
 /**
@@ -414,7 +419,8 @@ export async function subscriptionOnPanelForUser(
               -- SQL comment that lives inside a template literal: they end
               -- the string, which is exactly what happened writing this.)
               ps.sealed     AS provider_sealed,
-              pv.config     AS provider_config
+              pv.config     AS provider_config,
+              ${WAITING_RESERVE_SQL} AS reserved
          FROM subscriptions s
          LEFT JOIN provisioning_providers pv ON pv.id = s.provider_id
          LEFT JOIN provider_secrets ps ON ps.provider_id = pv.id

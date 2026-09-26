@@ -2066,6 +2066,10 @@ async function renewPlansScreen(
   /** One tier's plans («rnwp»): the switch the customer asked to see. */
   productId: number | null = null,
 ): Promise<HandleOutcome> {
+  // One active, one reserved (Sam, 2026-09-26): a service with a renewal
+  // already waiting is offered no plans. `rord` asks again, for the button
+  // that is not from this screen.
+  if (service.reserved) return screen(menu.serviceReserved(), menu.afterPaidMenu());
   // Same panel AND same kind. The panel keeps the account; the kind keeps a
   // VPN renewal out of the Spotify shelf if one panel ever sells both. «Same
   // panel» is by address, not by row: in production each tier is another
@@ -2079,8 +2083,11 @@ async function renewPlansScreen(
   if (plans.length === 0) {
     return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
   }
-  const mode = renewModeFor(service.provider_config ?? {});
   const now = Date.now();
+  // Both volume and time still left: whatever the panel's mode, the renewal
+  // waits for this period to end (Sam, 2026-09-26), and the intro says that.
+  const reserving = menu.hasBothLeft(service, now);
+  const mode = reserving ? 'RESERVE' : renewModeFor(service.provider_config ?? {});
   const heldName = await heldRenewalName(tx, user.id, service.id);
   // The tiers: every product these plans belong to, in the admin's order.
   // Built from the list already fetched rather than from `productsForUser`,
@@ -2110,8 +2117,9 @@ async function renewPlansScreen(
     const inTier = plans.filter((p) => p.productId === productId);
     if (inTier.length === 0) return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
     // A tier on a sibling row is delivered RESET whatever this row's mode
-    // says (`provision.ts`), so the promise above the list must say so too.
-    const tierMode = inTier[0]!.providerId === service.provider_id ? mode : 'RESET';
+    // says (`provision.ts`), so the promise above the list must say so too —
+    // unless it is reserved, which burns nothing on any row.
+    const tierMode = reserving || inTier[0]!.providerId === service.provider_id ? mode : 'RESET';
     return screen(
       menu.renewIntro(service, tierMode, now),
       menu.renewPlanMenu(service.id, inTier, user.discount_percent, heldName, false, null),
@@ -3553,6 +3561,10 @@ async function handleCallback(
       if (!renewAllowed(service.provider_config ?? {})) {
         return screen(menu.RENEWAL_CLOSED, menu.afterPaidMenu());
       }
+      // Asked here too, before an order exists: a stale plan button would
+      // otherwise take the money and then be refused at delivery. The
+      // database has the last word (the partial unique index in 0107).
+      if (service.reserved) return screen(menu.serviceReserved(), menu.afterPaidMenu());
       // `forRenewal`, so a panel that has hit its new-account cap can still
       // extend what it already sold. The cap counts accounts being created and
       // a renewal creates none; leaving it in this gate refused at the last
@@ -3611,7 +3623,8 @@ async function handleCallback(
             checkout.cardHolder,
             held ? appliedOf(held, plan) : null,
             placed.expiresAt,
-            plan.providerId !== service.provider_id,
+            // «the remainder burns» is not true of a reserve: it burns nothing.
+            plan.providerId !== service.provider_id && !menu.hasBothLeft(service, Date.now()),
             checkout.walletIrr,
           ),
           menu.checkoutMenu(placed.id, checkout.amountIrr, checkout.cardDigits, {

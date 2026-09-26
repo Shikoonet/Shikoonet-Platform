@@ -46,9 +46,12 @@ import {
   resellerNote,
   resellerSaleFor,
   TIB,
+  type AccountState,
   type PanelAdminWriteResult,
   type ProviderContext,
+  type ProvisionOk,
   type ProvisionRequest,
+  type ProvisionResult,
   wireguardConfsFromLinks,
 } from '@shikoo/domain';
 import { renewalPanelsFor } from './catalog.js';
@@ -101,6 +104,9 @@ interface PendingOrder {
   target_plan_id: number | null;
   target_volume_gb: number | null;
   target_expires_at: string | null;
+  target_status: string | null;
+  target_used_bytes: string | number | null;
+  target_duration_days: number | null;
   plan_name: string | null;
   plan_attrs: Record<string, unknown> | null;
   product_attrs: Record<string, unknown> | null;
@@ -517,6 +523,17 @@ async function untoldNote(
   // so without this the screen below would tell them a person is finishing it.
   if (row.order_kind === 'RESELLER_VOLUME') return say(await resellerVolumeNote(db, row, false));
 
+  // COMPLETED as a reserve (0107): the service has not been touched, so its
+  // card below would show the old period as if it were the renewal. The
+  // sentence this order owed is the reserve's; its activation has its own.
+  if (row.order_kind === 'RENEWAL') {
+    const reserve = await db
+      .prepare(`SELECT 1 AS reserved FROM renewal_reserves WHERE order_id = ?1`)
+      .bind(row.order_id)
+      .first<{ reserved: number }>();
+    if (reserve) return say(menu.renewReserved(row.plan_name ?? row.product_name ?? row.target_name ?? 'سرویس'));
+  }
+
   // COMPLETED. A shelved ACCOUNT has to be answered before the screen below,
   // for the reason `stockedScreen` exists: the card is drawn from the
   // subscription row and never renders `remote_ref`, so recovering a lost
@@ -585,20 +602,17 @@ function planAttrsFor(row: {
   return { ...(row.product_attrs ?? {}), ...(row.plan_attrs ?? {}) };
 }
 
-export async function provisionPaidOrders(
-  db: D1Database,
-  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
-  now: number = Date.now(),
-): Promise<number> {
-  await reclaimStalled(db);
-
-  const { results } = await db
-    .prepare(
-      // A renewal's panel is the one the ACCOUNT lives on, not the one the
-      // plan's product points at. They agree — the handler checks it before
-      // writing the order — but the account is the thing being changed, so it
-      // is the account's panel that decides where the call goes.
-      `SELECT o.id            AS order_id,
+/**
+ * What a `PendingOrder` is read with — shared by the delivery sweep and the
+ * sweep that applies reserved renewals, so the two cannot disagree about which
+ * panel an account lives on.
+ *
+ * A renewal's panel is the one the ACCOUNT lives on, not the one the plan's
+ * product points at. They agree — the handler checks it before writing the
+ * order — but the account is the thing being changed, so it is the account's
+ * panel that decides where the call goes.
+ */
+const PENDING_COLUMNS = `o.id            AS order_id,
               o.public_id     AS order_public_id,
               o.status        AS order_status,
               o.user_id       AS user_id,
@@ -651,6 +665,10 @@ export async function provisionPaidOrders(
               s.plan_id       AS target_plan_id,
               s.volume_gb     AS target_volume_gb,
               s.expires_at    AS target_expires_at,
+              -- What «both volume and time left» is judged on (hasBothLeft).
+              s.status        AS target_status,
+              s.used_bytes    AS target_used_bytes,
+              s.duration_days AS target_duration_days,
               s.downgraded_at AS target_downgraded_at,
               s.groups_before_downgrade AS target_groups_before,
               pl.name         AS plan_name,
@@ -681,8 +699,9 @@ export async function provisionPaidOrders(
               pv.name                                             AS plan_provider_name,
               pv.id                                               AS plan_provider_id,
               o.target_reseller_id                                AS target_reseller_id,
-              o.reseller_target_limit_bytes                       AS reseller_target_limit_bytes
-         FROM orders o
+              o.reseller_target_limit_bytes                       AS reseller_target_limit_bytes`;
+
+const PENDING_FROM = `FROM orders o
          JOIN users u              ON u.id = o.user_id
          LEFT JOIN product_plans pl ON pl.id = o.plan_id
          LEFT JOIN products pr      ON pr.id = pl.product_id
@@ -693,7 +712,19 @@ export async function provisionPaidOrders(
          LEFT JOIN provisioning_providers spv ON spv.id = s.provider_id
          LEFT JOIN provider_secrets sps ON sps.provider_id = spv.id
          LEFT JOIN provisioning_providers opv ON opv.id = o.provider_id
-         LEFT JOIN provider_secrets ops ON ops.provider_id = opv.id
+         LEFT JOIN provider_secrets ops ON ops.provider_id = opv.id`;
+
+export async function provisionPaidOrders(
+  db: D1Database,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  now: number = Date.now(),
+): Promise<number> {
+  await reclaimStalled(db);
+
+  const { results } = await db
+    .prepare(
+      `SELECT ${PENDING_COLUMNS}
+         ${PENDING_FROM}
         WHERE
           -- A deposit is money in, not a thing out: it has no plan, so the
           -- plan_id IS NULL guard below would fail it and tell the customer
@@ -1765,77 +1796,18 @@ async function renew(
     return say(menu.serviceBeingPrepared(row.order_public_id));
   }
 
-  /*
-   * The groups this renewal will actually send, computed once so two decisions
-   * can be made from the same answer: what goes in the PUT, and whether
-   * `restoreGroups` still has work to do afterwards.
-   *
-   * `renew` omits the key entirely when this is empty, because an empty array
-   * tells PasarGuard the account belongs to no group. So «it is a renewal» is
-   * not the same statement as «the groups were sent», and reading it as if it
-   * were is what stranded a downgraded account on a paid renewal.
-   */
-  const rawGroupIds = groupIdsFor({
-    planAttrs: planAttrsFor(row),
-    providerConfig: row.provider_config ?? {},
-  });
-  const renewalGroupIds = addon === null ? rawGroupIds : undefined;
-  const renewalCarriedGroups =
-    addon === null && Array.isArray(rawGroupIds) && rawGroupIds.length > 0;
+  // Sam, 2026-09-26: «تمدید موقعی معنی پیدا می‌کنه که یا حجم تموم شده یا
+  // زمان». With both still left, the renewal waits for this period to end
+  // instead of burning what is left of it. Judged on our row, not the panel:
+  // reserving then needs no panel at all, and a row the sync has not caught up
+  // with yet corrects itself — `activateReserves` asks the panel within its
+  // next round and applies it. Only where that sweep can see a quota run out
+  // (`accountStates`); elsewhere a reserve would wait for the date alone.
+  if (addon === null && adapter.accountStates && menu.hasBothLeft(targetOf(row), now)) {
+    return reserveRenewal(db, row, shop, renewCashbackPercent, row.plan_name ?? row.product_name ?? serviceName);
+  }
 
-  const result = await adapter.renew(
-    {
-      username: row.target_username,
-      // Zero on the dimension not being bought. In ADD mode zero means "add
-      // nothing here" while null means "no limit" — the difference is what
-      // stops an extra-volume purchase from removing an account's expiry.
-      // A plain renewal carries the plan's volume plus what a volume code
-      // added. An add-on never reads the plan (and its order holds 0 anyway).
-      volumeGb:
-        addon === null
-          ? withBonus(toNumber(row.volume_gb), row.bonus_volume_gb)
-          : addon.kind === 'ADD_VOLUME'
-            ? addon.quantity
-            : 0,
-      durationDays:
-        addon === null ? row.duration_days : addon.kind === 'ADD_TIME' ? addon.quantity : 0,
-      // The order id stays in the note: the adapter reads it back to know this
-      // extension was already applied (`marzban.ts`, `renew`).
-      note: panelNoteFor(
-        row.telegram_id ?? row.user_id,
-        row.telegram_username,
-        `${addon === null ? 'renew' : 'extra'} ${row.order_public_id}`,
-      ),
-      providerConfig: row.provider_config ?? {},
-      planAttrs: planAttrsFor(row),
-      /*
-       * The tier being renewed into — for a renewal, and never for an add-on.
-       *
-       * Renewing from a DIFFERENT service is already legal (`handle.ts` only
-       * requires the same panel), and for a first-timers-only tier it is the
-       * only way out: that service disappears from its own renewal list the
-       * moment the customer owns anything. The panel account kept whatever
-       * groups it was created with, so the customer paid the new tier's price
-       * and went on receiving the old tier's inbounds. Nothing said so.
-       *
-       * An add-on buys quota or days, not a tier, and `mode` cannot make the
-       * distinction — `renewModeFor` answers 'ADD' for ordinary renewals in
-       * some shops. So the caller, which knows, decides.
-       */
-      ...(addon === null ? { groupIds: renewalGroupIds } : {}),
-      mode,
-      renewFrom: new Date(now),
-    },
-    {
-      id: row.provider_id!,
-      code: row.provider_code ?? String(row.provider_id),
-      name: row.provider_name ?? 'panel',
-      baseUrl: row.provider_base_url,
-      credentials: credentialsFor(row.provider_secret_ref, row.provider_sealed),
-      config: row.provider_config ?? {},
-      fetch: fetchImpl,
-    },
-  );
+  const result = await applyOnPanel(db, row, fetchImpl, now, mode, addon);
 
   if (!result.ok) {
     if (result.retryable) {
@@ -1860,11 +1832,6 @@ async function renew(
     });
     return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
-
-  // The service is live again, so it must not still be sitting on the groups
-  // it was moved to when it ended. A renewal has already been sent the plan's
-  // groups by the adapter; an add-on has not, and needs the call.
-  await restoreGroups(db, row, fetchImpl, renewalCarriedGroups);
 
   const expiresAt = result.expiresAt ?? null;
   if (addon !== null) {
@@ -1930,58 +1897,7 @@ async function renew(
   let cashbackIrr: number | null = null;
 
   await db.withSession(async (tx) => {
-    // Before the UPDATE below overwrites the row it falls back on.
-    await snapshotRenewal(tx, row.order_id, row.target_subscription_id!, mode, result.before, now);
-    await tx
-      .prepare(
-        `UPDATE subscriptions
-            SET plan_id           = ?2,
-                plan_name_at_sale = ?3,
-                -- The name of the row the plan lives on, for the «لوکیشن»
-                -- line and the dashboard's «پنل» column: on a sibling row's
-                -- plan (issue #271) the account stays under its own admin but
-                -- was sold as the other tier, and both screens should say so.
-                -- On the account's own row it is that row's current name —
-                -- which an imported service never had: its text is the legacy
-                -- location, and a renewal is the sale that brings it up to
-                -- date (Sam, 2026-09-20).
-                provider_name_at_sale = COALESCE(?8, provider_name_at_sale),
-                duration_days     = ?4,
-                volume_gb         = ?5,
-                expires_at        = ?6,
-                -- RESET zeroed the counter on the panel, so the stored figure
-                -- must go with it or the service reads as exhausted until the
-                -- next sync. ADD leaves it alone: the quota grew, the usage
-                -- did not.
-                --
-                -- ADD_VOLUME_RESET_TIME is in the second group even though it
-                -- restarts the clock, and it has to be: the adapter issues no
-                -- POST /reset for it, for the reason spelled out there. This
-                -- condition and that one are the same decision, and they must
-                -- keep agreeing or our used_bytes and the panel's disagree
-                -- until the next sync.
-                used_bytes        = CASE WHEN ?7 THEN 0 ELSE used_bytes END,
-                -- The warning sweep has already told this customer their
-                -- service was running out. It is not, any more.
-                notify            = '{}'::jsonb,
-                -- Ask the panel again sooner rather than trusting the figures
-                -- above until the interval is up.
-                last_synced_at    = NULL,
-                status            = 'ACTIVE',
-                updated_at        = now()
-          WHERE id = ?1`,
-      )
-      .bind(
-        row.target_subscription_id,
-        row.plan_id,
-        row.plan_name ?? row.product_name ?? serviceName,
-        row.duration_days,
-        result.volumeGb ?? null,
-        expiresAt === null ? null : expiresAt.toISOString(),
-        mode === 'RESET',
-        row.plan_provider_name,
-      )
-      .run();
+    await writeRenewal(tx, row, mode, result, now, serviceName);
     await complete(tx, row.order_id, referralRates(shop));
     // In the same transaction as COMPLETED, so a renewal that ends up rolled
     // back cannot leave a customer credited for a service they did not get.
@@ -1996,6 +1912,413 @@ async function renew(
   return say(
     menu.serviceRenewed(row.plan_name ?? row.product_name ?? serviceName, expiresAt, cashbackIrr, changed),
   );
+}
+
+/** The service a renewal points at, in the shape `menu.hasBothLeft` reads. */
+function targetOf(row: PendingOrder) {
+  return {
+    status: row.target_status ?? '',
+    volume_gb: toNumber(row.target_volume_gb),
+    used_bytes: toNumber(row.target_used_bytes),
+    expires_at: row.target_expires_at,
+    duration_days: row.target_duration_days,
+  };
+}
+
+/**
+ * The panel half of a renewal, shared by a renewal applied now and a reserve
+ * applied later (`activateReserves`): the request, the call, and — once it
+ * landed — putting a downgraded account back on its groups. Nothing here
+ * touches an order or money.
+ */
+async function applyOnPanel(
+  db: D1Database,
+  row: PendingOrder,
+  fetchImpl: typeof globalThis.fetch,
+  now: number,
+  mode: ReturnType<typeof renewModeFor>,
+  addon: Addon | null,
+): Promise<ProvisionResult> {
+  const adapter = adapterFor(row.provider_kind!);
+  /*
+   * The groups this renewal will actually send, computed once so two decisions
+   * can be made from the same answer: what goes in the PUT, and whether
+   * `restoreGroups` still has work to do afterwards.
+   *
+   * `renew` omits the key entirely when this is empty, because an empty array
+   * tells PasarGuard the account belongs to no group. So «it is a renewal» is
+   * not the same statement as «the groups were sent», and reading it as if it
+   * were is what stranded a downgraded account on a paid renewal.
+   */
+  const rawGroupIds = groupIdsFor({
+    planAttrs: planAttrsFor(row),
+    providerConfig: row.provider_config ?? {},
+  });
+  const renewalGroupIds = addon === null ? rawGroupIds : undefined;
+  const renewalCarriedGroups =
+    addon === null && Array.isArray(rawGroupIds) && rawGroupIds.length > 0;
+
+  const result = await adapter.renew!(
+    {
+      // Both callers have already refused a renewal with no account to point at.
+      username: row.target_username!,
+      // Zero on the dimension not being bought. In ADD mode zero means "add
+      // nothing here" while null means "no limit" — the difference is what
+      // stops an extra-volume purchase from removing an account's expiry.
+      // A plain renewal carries the plan's volume plus what a volume code
+      // added. An add-on never reads the plan (and its order holds 0 anyway).
+      volumeGb:
+        addon === null
+          ? withBonus(toNumber(row.volume_gb), row.bonus_volume_gb)
+          : addon.kind === 'ADD_VOLUME'
+            ? addon.quantity
+            : 0,
+      durationDays:
+        addon === null ? row.duration_days : addon.kind === 'ADD_TIME' ? addon.quantity : 0,
+      // The order id stays in the note: the adapter reads it back to know this
+      // extension was already applied (`marzban.ts`, `renew`).
+      note: panelNoteFor(
+        row.telegram_id ?? row.user_id,
+        row.telegram_username,
+        `${addon === null ? 'renew' : 'extra'} ${row.order_public_id}`,
+      ),
+      providerConfig: row.provider_config ?? {},
+      planAttrs: planAttrsFor(row),
+      /*
+       * The tier being renewed into — for a renewal, and never for an add-on.
+       *
+       * Renewing from a DIFFERENT service is already legal (`handle.ts` only
+       * requires the same panel), and for a first-timers-only tier it is the
+       * only way out: that service disappears from its own renewal list the
+       * moment the customer owns anything. The panel account kept whatever
+       * groups it was created with, so the customer paid the new tier's price
+       * and went on receiving the old tier's inbounds. Nothing said so.
+       *
+       * An add-on buys quota or days, not a tier, and `mode` cannot make the
+       * distinction — `renewModeFor` answers 'ADD' for ordinary renewals in
+       * some shops. So the caller, which knows, decides.
+       */
+      ...(addon === null ? { groupIds: renewalGroupIds } : {}),
+      mode,
+      renewFrom: new Date(now),
+    },
+    providerContextOf(row, fetchImpl),
+  );
+
+  // The service is live again, so it must not still be sitting on the groups
+  // it was moved to when it ended. A renewal has already been sent the plan's
+  // groups by the adapter; an add-on has not, and needs the call.
+  if (result.ok) await restoreGroups(db, row, fetchImpl, renewalCarriedGroups);
+  return result;
+}
+
+/**
+ * The service row once a renewal has landed on the panel, and the snapshot of
+ * what it was — written first, because the UPDATE overwrites what it falls
+ * back on. Shared by a renewal applied now and a reserve applied later; no
+ * order and no money, so each caller decides what else its transaction holds.
+ */
+async function writeRenewal(
+  tx: D1DatabaseSession,
+  row: PendingOrder,
+  mode: ReturnType<typeof renewModeFor>,
+  result: ProvisionOk,
+  now: number,
+  serviceName: string,
+): Promise<void> {
+  const expiresAt = result.expiresAt ?? null;
+  await snapshotRenewal(tx, row.order_id, row.target_subscription_id!, mode, result.before, now);
+  await tx
+    .prepare(
+      `UPDATE subscriptions
+          SET plan_id           = ?2,
+              plan_name_at_sale = ?3,
+              -- The name of the row the plan lives on, for the «لوکیشن»
+              -- line and the dashboard's «پنل» column: on a sibling row's
+              -- plan (issue #271) the account stays under its own admin but
+              -- was sold as the other tier, and both screens should say so.
+              -- On the account's own row it is that row's current name —
+              -- which an imported service never had: its text is the legacy
+              -- location, and a renewal is the sale that brings it up to
+              -- date (Sam, 2026-09-20).
+              provider_name_at_sale = COALESCE(?8, provider_name_at_sale),
+              duration_days     = ?4,
+              volume_gb         = ?5,
+              expires_at        = ?6,
+              -- RESET zeroed the counter on the panel, so the stored figure
+              -- must go with it or the service reads as exhausted until the
+              -- next sync. ADD leaves it alone: the quota grew, the usage
+              -- did not.
+              --
+              -- ADD_VOLUME_RESET_TIME is in the second group even though it
+              -- restarts the clock, and it has to be: the adapter issues no
+              -- POST /reset for it, for the reason spelled out there. This
+              -- condition and that one are the same decision, and they must
+              -- keep agreeing or our used_bytes and the panel's disagree
+              -- until the next sync.
+              used_bytes        = CASE WHEN ?7 THEN 0 ELSE used_bytes END,
+              -- The warning sweep has already told this customer their
+              -- service was running out. It is not, any more.
+              notify            = '{}'::jsonb,
+              -- Ask the panel again sooner rather than trusting the figures
+              -- above until the interval is up.
+              last_synced_at    = NULL,
+              status            = 'ACTIVE',
+              updated_at        = now()
+        WHERE id = ?1`,
+    )
+    .bind(
+      row.target_subscription_id,
+      row.plan_id,
+      row.plan_name ?? row.product_name ?? serviceName,
+      row.duration_days,
+      result.volumeGb ?? null,
+      expiresAt === null ? null : expiresAt.toISOString(),
+      mode === 'RESET',
+      row.plan_provider_name,
+    )
+    .run();
+}
+
+/**
+ * Paid for while the service still had both volume and time (Sam,
+ * 2026-09-26): the order becomes a sale now — COMPLETED, because the money
+ * arrived now and every report counts a sale by `completed_at` — with its
+ * referral commission and cashback, and the panel is left alone until
+ * `activateReserves` finds the current period over.
+ *
+ * The insert is the guard. One waiting reserve per service is the partial
+ * unique index in 0107, so a second renewal paid for the same service in the
+ * same minute inserts nothing, and is failed and refunded here.
+ */
+async function reserveRenewal(
+  db: D1Database,
+  row: PendingOrder,
+  shop: Parameters<typeof referralRates>[0],
+  cashbackPercent: number,
+  serviceName: string,
+): Promise<Delivered> {
+  let cashbackIrr: number | null = null;
+  const reserved = await db.withSession(async (tx) => {
+    const inserted = await tx
+      .prepare(
+        // The plan as it is sold today, frozen: the reserve may wait weeks,
+        // and the plan can be edited from the dashboard meanwhile.
+        `INSERT INTO renewal_reserves (order_id, subscription_id, volume_gb, duration_days)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT DO NOTHING
+         RETURNING order_id`,
+      )
+      .bind(row.order_id, row.target_subscription_id, toNumber(row.volume_gb), row.duration_days)
+      .first<{ order_id: number }>();
+    if (!inserted) return false;
+    await complete(tx, row.order_id, referralRates(shop));
+    cashbackIrr = await creditRenewalCashback(tx, row.order_id, cashbackPercent);
+    return true;
+  });
+  if (!reserved) {
+    const refunded = await fail(db, row.order_id, 'this service already has a renewal waiting');
+    log.warn('provision.reserve_taken', { ref: row.order_public_id, refunded });
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
+  }
+  log.info('provision.reserved', { ref: row.order_public_id });
+  return say(menu.renewReserved(serviceName, cashbackIrr));
+}
+
+/** How often `activateReserves` runs. Sam: «سریع», whether time or volume runs out. */
+export const RESERVE_CHECK_MS = 30_000;
+
+/**
+ * The share of its quota a waiting service must have used, by the last sync,
+ * before the sweep asks the panel about it directly.
+ *
+ * ponytail: a customer who burns through more than the last fifth of their
+ * quota inside one sync interval is caught by the sync instead, up to ten
+ * minutes late. Lower this and the panel is asked about more accounts.
+ */
+const RESERVE_NEAR_SHARE = 0.8;
+
+/** Reserves looked at per round. */
+const RESERVE_BATCH = 50;
+
+type ReservedOrder = PendingOrder & {
+  reserve_volume_gb: string | number | null;
+  reserve_duration_days: number | null;
+};
+
+/** The panel's word that this account's period is over. */
+function ranOut(state: AccountState, now: number): boolean {
+  return (
+    state.status === 'limited' ||
+    state.status === 'expired' ||
+    (state.limitBytes !== null && state.usedBytes !== null && state.usedBytes >= state.limitBytes) ||
+    (state.expiresAtMs !== null && state.expiresAtMs <= now)
+  );
+}
+
+/**
+ * Applies every reserved renewal whose service has run out — volume or time,
+ * whichever came first — as the plan was sold, from now (RESET, whatever the
+ * panel's mode: Sam's decision 2).
+ *
+ * «Run out» is our own row first: the date is exact, and the synced usage is
+ * at most one sync old. A service close to its quota by that usage, or never
+ * synced, is read off the panel as it is now (`accountStates`), so a quota
+ * that runs out between two syncs is seen within one round of this sweep.
+ *
+ * The order was COMPLETED when the reserve was made, so nothing here touches
+ * money: no commission, no cashback, no second sale. `status = 'WAITING'` in
+ * the UPDATE is the claim — a second pass over the same reserve changes
+ * nothing, and a panel write retried after a crash is recognised by the
+ * adapter from the order id in the account's note.
+ */
+export async function activateReserves(
+  db: D1Database,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  now: number = Date.now(),
+): Promise<number> {
+  const { results } = await db
+    .prepare(
+      `SELECT ${PENDING_COLUMNS},
+              rr.volume_gb     AS reserve_volume_gb,
+              rr.duration_days AS reserve_duration_days
+         ${PENDING_FROM}
+         JOIN renewal_reserves rr ON rr.order_id = o.id
+        WHERE rr.status = 'WAITING'
+          AND (
+                -- Out of time by our own date: nothing to ask.
+                (s.expires_at IS NOT NULL AND s.expires_at <= to_timestamp(?1 / 1000.0))
+                -- No longer a service that could be running.
+             OR s.status NOT IN ('ACTIVE', 'ON_HOLD', 'DISABLED')
+                -- Out of volume by the last sync, close to it, or never synced.
+             OR (s.volume_gb > 0
+                 AND (s.used_bytes IS NULL OR s.used_bytes >= s.volume_gb * ?2::numeric * ?3::numeric))
+          )
+        ORDER BY rr.created_at
+        LIMIT ?4`,
+    )
+    .bind(now, GB, RESERVE_NEAR_SHARE, RESERVE_BATCH)
+    .all<ReservedOrder>();
+
+  const due: ReservedOrder[] = [];
+  const ask = new Map<number, ReservedOrder[]>();
+  for (const row of results ?? []) {
+    if (!menu.hasBothLeft(targetOf(row), now)) due.push(row);
+    else if (row.provider_id !== null) ask.set(row.provider_id, [...(ask.get(row.provider_id) ?? []), row]);
+  }
+  for (const group of ask.values()) {
+    const first = group[0]!;
+    try {
+      const states = await adapterFor(first.provider_kind!).accountStates?.(
+        providerContextOf(first, fetchImpl),
+        group.map((row) => row.target_username!),
+      );
+      for (const row of group) {
+        const state = states?.get(row.target_username!);
+        if (state && ranOut(state, now)) due.push(row);
+      }
+    } catch (err) {
+      // A sealed credential that will not open. The next round asks again.
+      log.error('reserve.check_failed', { panel: first.provider_code }, err);
+    }
+  }
+
+  let applied = 0;
+  // A panel that is not answering is not asked again this round: every
+  // reserve on it would wait out the same timeout, inside the poll loop.
+  const down = new Set<number | null>();
+  for (const reserved of due) {
+    if (down.has(reserved.provider_id)) continue;
+    // The plan as it was sold, not as it reads today.
+    const row: PendingOrder = {
+      ...reserved,
+      volume_gb: reserved.reserve_volume_gb,
+      duration_days: reserved.reserve_duration_days,
+    };
+    const serviceName = row.plan_name ?? row.product_name ?? row.target_name ?? 'سرویس';
+    let result: ProvisionResult;
+    try {
+      result =
+        row.provider_kind === null || row.target_username === null
+          ? { ok: false, reason: 'the service this reserve points at is no longer on a panel', retryable: false }
+          : await applyOnPanel(db, row, fetchImpl, now, 'RESET', null);
+    } catch (err) {
+      log.error('reserve.failed', { ref: row.order_public_id, stage: 'panel' }, err);
+      down.add(row.provider_id);
+      continue;
+    }
+    if (!result.ok) {
+      if (result.retryable) {
+        down.add(row.provider_id);
+        log.warn('reserve.will_retry', { ref: row.order_public_id, reason: result.reason });
+        continue;
+      }
+      if (result.applied !== undefined && result.applied.length > 0) {
+        await recordPartialRenewal(db, row, result.applied, result.reason);
+      }
+      const reason = result.reason;
+      // The money stays a sale: the customer paid and is owed the renewal, by
+      // a person now. FAILED is what a support search finds them by.
+      await db.withSession(async (tx) => {
+        const ended = await tx
+          .prepare(
+            `UPDATE renewal_reserves SET status = 'FAILED', failure_reason = ?2
+              WHERE order_id = ?1 AND status = 'WAITING'`,
+          )
+          .bind(row.order_id, reason)
+          .run();
+        if (ended.meta.changes === 0 || row.telegram_id === null) return;
+        await enqueue(tx, {
+          dedupeKey: `reserve:${row.order_public_id}`,
+          chatId: row.telegram_id,
+          text: menu.serviceNeedsHelp(row.order_public_id),
+        });
+      });
+      log.error('reserve.failed', { ref: row.order_public_id, reason });
+      continue;
+    }
+    const landed: ProvisionOk = result;
+    const done = await db.withSession(async (tx) => {
+      const claimed = await tx
+        .prepare(
+          `UPDATE renewal_reserves SET status = 'APPLIED', applied_at = now()
+            WHERE order_id = ?1 AND status = 'WAITING'`,
+        )
+        .bind(row.order_id)
+        .run();
+      if (claimed.meta.changes === 0) return false;
+      await writeRenewal(tx, row, 'RESET', landed, now, serviceName);
+      if (row.telegram_id !== null) {
+        // The «خبرتان می‌کنیم» the reserve promised: the ordinary renewal
+        // message, since this is the moment it became one.
+        const changed = row.target_plan_id !== null && row.target_plan_id !== row.plan_id;
+        await enqueue(tx, {
+          dedupeKey: `reserve:${row.order_public_id}`,
+          chatId: row.telegram_id,
+          text: menu.serviceRenewed(serviceName, landed.expiresAt ?? null, null, changed),
+        });
+      }
+      return true;
+    });
+    if (done) {
+      applied += 1;
+      log.info('reserve.applied', { ref: row.order_public_id });
+    }
+  }
+  return applied;
+}
+
+/** The panel a `PendingOrder` resolves to, as the adapter is handed it. */
+function providerContextOf(row: PendingOrder, fetchImpl: typeof globalThis.fetch): ProviderContext {
+  return {
+    id: row.provider_id!,
+    code: row.provider_code ?? String(row.provider_id),
+    name: row.provider_name ?? 'panel',
+    baseUrl: row.provider_base_url,
+    credentials: credentialsFor(row.provider_secret_ref, row.provider_sealed),
+    config: row.provider_config ?? {},
+    fetch: fetchImpl,
+  };
 }
 
 const GB = 1024 ** 3;

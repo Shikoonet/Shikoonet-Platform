@@ -1022,6 +1022,13 @@ export const TEXTS = {
     screen: 'serviceDetail',
     hint: 'سرویس منقضی یا تمام‌شده — {renewButton} نام زندهٔ دکمهٔ تمدید است',
   },
+  SERVICE_RESERVED: {
+    default:
+      '📦 یک تمدید رزروشده برای این سرویس منتظر است و به‌محض تمام شدن حجم یا زمان فعلی فعال می‌شود. هر سرویس فقط یک رزرو می‌تواند داشته باشد.',
+    placeholders: [],
+    screen: 'serviceDetail',
+    hint: 'جزئیات سرویسی که تمدید رزروشده دارد، و جواب تمدید دوم روی همان سرویس',
+  },
   STATE_ACTIVE: {
     default: 'فعال',
     placeholders: [],
@@ -1335,6 +1342,13 @@ export const TEXTS = {
     screen: 'renew',
     hint: 'پنلی که زمان را ریست می‌کند ولی حجم را نگه می‌دارد',
   },
+  RENEW_MODE_RESERVE: {
+    default:
+      '📦 این سرویس هنوز حجم و زمان دارد، پس تمدید رزرو می‌شود و به‌محض تمام شدن حجم یا زمان فعلی، خودکار فعال می‌گردد.',
+    placeholders: [],
+    screen: 'renew',
+    hint: 'وقتی سرویس هنوز هم حجم دارد هم زمان — تمدید جای این‌که فوری اعمال شود رزرو می‌شود',
+  },
   RENEW_CHOOSE_PLAN: {
     default: '🛍 پلن تمدید را انتخاب کنید:',
     placeholders: [],
@@ -1394,6 +1408,13 @@ export const TEXTS = {
     placeholders: [],
     screen: 'renew',
     hint: 'خط آخر بعد از تمدید',
+  },
+  RENEW_RESERVED: {
+    default:
+      '📦 تمدید شما رزرو شد.\n\n🔐 {service}\n\nبه‌محض این‌که حجم یا زمان سرویس فعلی تمام شود، سرویس رزروشده خودکار فعال می‌شود و خبرتان می‌کنیم.',
+    placeholders: ['service'],
+    screen: 'renew',
+    hint: 'بعد از پرداخت تمدیدی که رزرو شد (سرویس هنوز حجم و زمان داشت)',
   },
   RENEWAL_GONE: {
     default: 'این سرویس قابل تمدید نیست. لطفاً از فهرست تمدید دوباره انتخاب کنید.',

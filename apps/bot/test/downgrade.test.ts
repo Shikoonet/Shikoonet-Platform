@@ -16,7 +16,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { downgradeExpired } from '../src/downgrade.js';
 import { db } from './helpers/env.js';
-import { makeCustomer } from './helpers/shop.js';
+import { makeCustomer, reserveRenewalFor } from './helpers/shop.js';
 
 const CUSTOMER = 952_000_001;
 const PANEL_CODE = 'sim-downgrade-fixture';
@@ -162,6 +162,17 @@ describe('downgradeExpired', () => {
     const summary = await downgradeExpired(db, fetchImpl);
 
     expect(summary.moved).toBe(0);
+    expect(calls).toEqual([]);
+    expect((await readMarker(id))?.downgraded_at).toBeNull();
+  });
+
+  it('leaves an ended service alone when its renewal is reserved — that renews it this round', async () => {
+    await setGroups([3, 4]);
+    const id = await giveService('dg-reserved', -1);
+    await reserveRenewalFor(id);
+    const { calls, fetchImpl } = fakePanel({ groups: [7, 8] });
+
+    expect((await downgradeExpired(db, fetchImpl)).moved).toBe(0);
     expect(calls).toEqual([]);
     expect((await readMarker(id))?.downgraded_at).toBeNull();
   });

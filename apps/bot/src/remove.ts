@@ -49,7 +49,7 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { adapterFor, createLogger, type ProviderContext } from '@shikoo/domain';
+import { adapterFor, createLogger, WAITING_RESERVE_SQL, type ProviderContext } from '@shikoo/domain';
 import { credentialsFor } from './provision.js';
 import { enqueue } from './notify.js';
 import { report } from './reports.js';
@@ -172,6 +172,8 @@ const EXPIRED_DUE = `
        -- verdict, in which case the removal happens a few minutes later, or it
        -- does not, in which case there was never anything to remove.
        AND s.last_synced_at IS NOT NULL
+       -- Renewed already, and waiting for this very moment (0107).
+       AND NOT ${WAITING_RESERVE_SQL}
        AND s.panel_status IN ('limited', 'expired')
        AND s.expires_at IS NOT NULL
        AND s.expires_at <= to_timestamp(?1 / 1000.0) - make_interval(days => ?2)
@@ -198,6 +200,7 @@ const VOLUME_DUE = `
        -- the sweep it was found on: an ADD_VOLUME is exactly the purchase that
        -- makes 'limited' stale.
        AND s.last_synced_at IS NOT NULL
+       AND NOT ${WAITING_RESERVE_SQL}
        -- Only limited. The PHP's two overlapping lists leave exactly this one
        -- word; see the file header. An expired account is the other sweep's.
        AND s.panel_status = 'limited'

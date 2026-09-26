@@ -15,7 +15,7 @@ import * as menu from '../src/menu.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { invalidateShopSettings, loadShopSettings, setReportChatIdFallback } from '../src/settings.js';
 import { buildDailyReport } from '../src/report.js';
-import { ensureCatalog, makeCustomer, providerId } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer, providerId, reserveRenewalFor } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 8, 20, 12, 0, 0);
 const DAY = 86_400_000;
@@ -253,6 +253,18 @@ describe('who is due', () => {
     await db.prepare(`DELETE FROM bot_notifications`).run();
     await setRules([{ onlyService: false }]);
     expect(await remindToRenew(db)).toBe(3);
+  });
+
+  it('reminds nobody to renew a service that is already renewed and waiting', async () => {
+    // «the window before expiry» sends to exactly this service; here the
+    // customer has bought the renewal already (0107).
+    const tg = nextTelegramId();
+    const sub = await makeService(await makeCustomer(tg), { expiresInDays: 0.5 });
+    await reserveRenewalFor(sub, `zz-ret-rsv-${sub}`);
+    await setRules([{ daysBefore: 1, admin: 'firstbuy' }]);
+
+    expect(await remindToRenew(db)).toBe(0);
+    expect(await messagesTo(tg)).toHaveLength(0);
   });
 
   it('respects the customer\'s own notify switch', async () => {

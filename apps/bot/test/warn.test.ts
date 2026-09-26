@@ -14,7 +14,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { DAYS_WARN, VOLUME_WARN_BYTES, warnExpiringServices } from '../src/warn.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { DEFAULT_SHOP_SETTINGS, invalidateShopSettings } from '../src/settings.js';
-import { ensureCatalog, makeCustomer, providerId } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer, providerId, reserveRenewalFor } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 7, 13, 12, 0, 0);
 const DAY = 86_400_000;
@@ -324,6 +324,24 @@ describe('who is not told', () => {
     const telegramId = nextTelegramId();
     const userId = await makeCustomer(telegramId);
     await makeService(userId, { publicId: 'w-off-3', expiresInDays: 1, status: 'DISABLED' });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+  });
+
+  it('does not warn about a service whose renewal is already reserved, on time or on volume', async () => {
+    // The same two services «warns inside the window» and «warns at half a
+    // gigabyte left» warn about — but renewed already, waiting for this.
+    const telegramId = nextTelegramId();
+    const userId = await makeCustomer(telegramId);
+    await reserveRenewalFor(await makeService(userId, { publicId: 'w-rsv-t', expiresInDays: 1 }));
+    await reserveRenewalFor(
+      await makeService(userId, {
+        publicId: 'w-rsv-v',
+        volumeGb: 50,
+        usedBytes: 50 * GIB - GIB / 2,
+        expiresInDays: 20,
+      }),
+    );
 
     expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });

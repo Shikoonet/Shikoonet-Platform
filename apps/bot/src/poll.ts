@@ -16,7 +16,7 @@ import { handleUpdate, refreshShopContent, type HandleStatus, type Reply } from 
 import { rememberInvoiceMessage } from './payment.js';
 import * as notify from './notify.js';
 import { settleVerifiedPayments } from './settle.js';
-import { provisionPaidOrders } from './provision.js';
+import { activateReserves, provisionPaidOrders, RESERVE_CHECK_MS } from './provision.js';
 import { syncSubscriptions, SYNC_INTERVAL_MS } from './sync.js';
 import { meterResellers, METER_INTERVAL_MS } from './resellerMeter.js';
 import { downgradeExpired } from './downgrade.js';
@@ -971,6 +971,7 @@ interface SweepClocks {
   sync: number;
   meter: number;
   prune: number;
+  reserve: number;
 }
 
 /**
@@ -1001,6 +1002,13 @@ async function sweepAll(db: D1Database, api: TelegramApi, clocks: SweepClocks): 
   // problem, a panel that will not answer is not — and a panel being down
   // must never hold up telling a customer their payment was confirmed.
   await sweep('provisioning paid orders', () => provisionPaidOrders(db));
+  // Renewals bought early, applied the moment the service runs out (0107).
+  // Before the sync, which can take over a minute, and before the sweeps
+  // below that act on a service that ran out: this one is what renews it.
+  if (Date.now() - clocks.reserve >= RESERVE_CHECK_MS) {
+    clocks.reserve = Date.now();
+    await sweep('applying reserved renewals', () => activateReserves(db));
+  }
   // Refreshing what «سرویس های من» shows. Produces no messages.
   //
   // The cadence is owned HERE and not left to the sweep's own gate. That
@@ -1131,7 +1139,7 @@ export async function run(
   // above: a restart is a legitimate second chance, and an update that only
   // fails because of the state a crashed process left behind deserves one.
   const attempts = new Map<number, Attempt>();
-  const clocks: SweepClocks = { sync: 0, meter: 0, prune: Date.now() };
+  const clocks: SweepClocks = { sync: 0, meter: 0, prune: Date.now(), reserve: 0 };
   // When `getUpdates` started failing, or null while it answers. One failed
   // read is a network blip the next cycle recovers from, and it was paging
   // the alert channel; Telegram gone for minutes is the incident.

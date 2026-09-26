@@ -2202,9 +2202,14 @@ export interface ServiceView extends ServiceListItem {
   provider_name_at_sale: string | null;
   remote_username: string | null;
   subscription_url: string | null;
+  /** A renewal is reserved for this service and waits its turn. */
+  reserved?: boolean;
 }
 
-export function serviceState(service: ServiceListItem, now: number): ServiceState {
+export function serviceState(
+  service: Pick<ServiceListItem, 'status' | 'volume_gb' | 'used_bytes' | 'expires_at'>,
+  now: number,
+): ServiceState {
   if (service.status !== 'ACTIVE') {
     switch (service.status) {
       case 'ON_HOLD':
@@ -2230,6 +2235,27 @@ export function serviceState(service: ServiceListItem, now: number): ServiceStat
     return 'EXHAUSTED';
   }
   return 'ACTIVE';
+}
+
+/**
+ * Whether a renewal now would come too early: the service still has BOTH
+ * volume and time. Sam, 2026-09-26: «تمدید موقعی معنی پیدا می‌کنه که یا حجم
+ * تموم شده یا زمان» — such a renewal is reserved, not applied.
+ *
+ * Judged on the numbers, so a held service (Sam: reserved like any other) and
+ * one the customer switched off count by what they have left. One that can
+ * never run out — no date, no quota, and no held days waiting to become a
+ * date — is not reserved: nothing would ever apply it.
+ */
+export function hasBothLeft(
+  service: Pick<ServiceListItem, 'status' | 'volume_gb' | 'used_bytes' | 'expires_at' | 'duration_days'>,
+  now: number,
+): boolean {
+  if (!['ACTIVE', 'ON_HOLD', 'DISABLED'].includes(service.status)) return false;
+  if (serviceState({ ...service, status: 'ACTIVE' }, now) !== 'ACTIVE') return false;
+  const metered = service.volume_gb !== null && service.volume_gb > 0;
+  const heldDays = service.status === 'ON_HOLD' && (service.duration_days ?? 0) > 0;
+  return service.expires_at !== null || metered || heldDays;
 }
 
 const STATE_GLYPH: Record<ServiceState, string> = {
@@ -2427,18 +2453,27 @@ export function serviceDetail(service: ServiceView, now: number): string {
     // has not reached yet. Saying so beats an empty space where a link goes.
     lines.push('', t.raw('SERVICE_DETAIL_NO_LINK'));
   } else if (
-    state === 'EXPIRED' ||
-    state === 'EXHAUSTED' ||
-    // Switched off by the customer AND run out underneath (#366): the switch
-    // alone will not bring it back, the renewal will.
-    (state === 'DISABLED' && serviceState({ ...service, status: 'ACTIVE' }, now) !== 'ACTIVE')
+    // A reserve is already on its way: telling them to renew would sell a
+    // second one the service is not allowed to hold.
+    !service.reserved &&
+    (state === 'EXPIRED' ||
+      state === 'EXHAUSTED' ||
+      // Switched off by the customer AND run out underneath (#366): the switch
+      // alone will not bring it back, the renewal will.
+      (state === 'DISABLED' && serviceState({ ...service, status: 'ACTIVE' }, now) !== 'ACTIVE'))
   ) {
     // Seen on the real screen: a dead service showed its status, withheld its
     // link, and then said nothing at all — leaving the customer on a screen
     // with no way forward. This is the one thing they can do about it.
     lines.push('', t.render('SERVICE_DETAIL_DEAD_HINT', { renewButton: renewButtonLabel() }));
   }
+  if (service.reserved) lines.push('', serviceReserved());
   return lines.join('\n');
+}
+
+/** A renewal waits for this service's current period to run out (Sam, 2026-09-26). */
+export function serviceReserved(): string {
+  return TEXTS_NOW.raw('SERVICE_RESERVED');
 }
 
 /**
@@ -2790,7 +2825,8 @@ export function renewMenu(
  */
 export function renewIntro(
   service: { plan_name_at_sale: string; public_id: string; expires_at: string | null },
-  mode: RenewMode,
+  /** 'RESERVE': both volume and time are left, so the renewal waits (`hasBothLeft`). */
+  mode: RenewMode | 'RESERVE',
   now: number,
   /**
    * The line that closes the intro: «choose a plan» over a list, «the matching
@@ -2806,7 +2842,11 @@ export function renewIntro(
   // catching up with what it does.
   const somethingLeft = service.expires_at !== null && Date.parse(service.expires_at) > now;
   const promise =
-    mode === 'ADD' && somethingLeft
+    mode === 'RESERVE'
+      ? // Nothing is burned, whatever the panel's mode: the plan starts when
+        // this one ends. So no mode sentence, and no «مصرف قبلی صفر می‌گردد».
+        t.raw('RENEW_MODE_RESERVE')
+      : mode === 'ADD' && somethingLeft
       ? t.raw('RENEW_MODE_ADD')
       : mode === 'ADD'
         ? t.raw('RENEW_MODE_ADD_EXPIRED')
@@ -2859,7 +2899,7 @@ export function renewIntro(
  */
 export function renewMatched(
   service: { plan_name_at_sale: string; public_id: string; expires_at: string | null },
-  mode: RenewMode,
+  mode: RenewMode | 'RESERVE',
   now: number,
   plan: CatalogPlan,
   price: Price,
@@ -3103,6 +3143,21 @@ export function serviceRenewed(
     lines.push('', t.render('SERVICE_RENEWED_CASHBACK', { amount: formatToman(cashbackIrr) }));
   }
   lines.push('', t.raw('SERVICE_RENEWED_LINK_NOTE'));
+  return lines.join('\n');
+}
+
+/**
+ * Paid, and reserved rather than applied: the service still had both volume
+ * and time. When it runs out the renewal is applied and `serviceRenewed` says
+ * so — that is the «خبرتان می‌کنیم» this message promises.
+ */
+export function renewReserved(serviceName: string, cashbackIrr: number | null = null): string {
+  const t = TEXTS_NOW;
+  const lines = [t.render('RENEW_RESERVED', { service: serviceName })];
+  // Paid now, with the renewal it rewards, not weeks later when it activates.
+  if (cashbackIrr !== null && cashbackIrr > 0) {
+    lines.push('', t.render('SERVICE_RENEWED_CASHBACK', { amount: formatToman(cashbackIrr) }));
+  }
   return lines.join('\n');
 }
 

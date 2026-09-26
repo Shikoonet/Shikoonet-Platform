@@ -214,3 +214,28 @@ export async function giveSubscription(userId: number, publicId: string): Promis
     .bind(publicId, userId)
     .run();
 }
+
+/**
+ * A renewal already bought for this service and waiting its turn (0107): the
+ * COMPLETED order it was sold as, and its WAITING reserve. For the sweeps that
+ * must leave such a service alone.
+ */
+export async function reserveRenewalFor(
+  subscriptionId: number,
+  /** The order's public id — a file that cleans up by prefix passes its own. */
+  orderPublicId = `rsv-${subscriptionId}`,
+): Promise<void> {
+  await db
+    .prepare(
+      `WITH o AS (
+         INSERT INTO orders (public_id, user_id, kind, target_subscription_id, quantity,
+                             unit_price_irr, total_irr, status)
+         SELECT ?2, s.user_id, 'RENEWAL', s.id, 1, 1000, 1000, 'COMPLETED'
+           FROM subscriptions s WHERE s.id = ?1
+         RETURNING id, target_subscription_id)
+       INSERT INTO renewal_reserves (order_id, subscription_id, volume_gb, duration_days)
+       SELECT id, target_subscription_id, 50, 30 FROM o`,
+    )
+    .bind(subscriptionId, orderPublicId)
+    .run();
+}

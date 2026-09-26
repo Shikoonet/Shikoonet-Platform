@@ -440,12 +440,14 @@ describe('a preparation that failed for want of configuration', () => {
       .first<{ id: number }>();
 
     const username = `u_${telegramId}`;
+    // The volume used up with days left: renewed at once. With both left it
+    // would be reserved (0107) and never reach the panel to fail.
     const sub = await db
       .prepare(
         `INSERT INTO subscriptions
            (public_id, user_id, provider_id, plan_name_at_sale, price_irr, remote_username,
-            subscription_url, volume_gb, status, purchased_at, expires_at, notify)
-         VALUES (?1, ?2, ?3, 'سرویس قدیمی', 1950000, ?4, ?5, 50, 'ACTIVE', now(),
+            subscription_url, volume_gb, used_bytes, status, purchased_at, expires_at, notify)
+         VALUES (?1, ?2, ?3, 'سرویس قدیمی', 1950000, ?4, ?5, 50, 50 * 1073741824::bigint, 'ACTIVE', now(),
                  now() + interval '5 days', '{"time":true}'::jsonb)
          RETURNING id`,
       )
