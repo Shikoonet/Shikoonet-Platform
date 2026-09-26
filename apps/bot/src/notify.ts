@@ -32,8 +32,10 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { stripMarkup } from '@shikoo/contracts';
 import {
   isPermanentRejection,
+  MAX_CAPTION_LENGTH,
   rateLimitedForMs,
   TelegramRejection,
   type InlineKeyboard,
@@ -76,6 +78,9 @@ export interface PendingNotification {
    * subscription link. The customer's next step after buying is to get the
    * config into an app on a phone, and a photo they point a camera at beats a
    * long URL they have to select without a keyboard.
+   *
+   * The text goes as the picture's caption when it fits — one message — and
+   * as a second message under it when it does not.
    */
   qrPayload?: string | null;
   /**
@@ -283,6 +288,25 @@ async function deliver(db: D1Database, api: TelegramApi, row: DueRow): Promise<v
 }
 
 /**
+ * Whether a row's text can go as its QR picture's caption instead of as a
+ * second message.
+ *
+ * Only a plain new message — a file, an edit or a topic is a different send —
+ * and only one Telegram will take whole as a caption: a card past the limit
+ * keeps the two-message form rather than lose its tail. Measured without the
+ * markup, because Telegram counts the caption after parsing it.
+ */
+function fitsUnderPicture(row: DueRow): boolean {
+  return (
+    row.file_id === null &&
+    row.doc_name === null &&
+    row.edit_message_id === null &&
+    row.message_thread_id === null &&
+    stripMarkup(row.body).length <= MAX_CAPTION_LENGTH
+  );
+}
+
+/**
  * Send everything that is due, and write down what happened to each.
  *
  * Rows are claimed by the statement that reads them: `next_attempt_at` moves
@@ -382,23 +406,36 @@ export async function flush(
       // the text should carry the picture again. What is given up is the
       // picture on the attempt that succeeds afterwards, and the text under it
       // carries the same link in full.
+      //
+      // When the text fits under the picture it IS the caption, and the row is
+      // one message rather than two (Sam, 2026-09-26). A failure there falls
+      // back to the text alone, for the same reason as above.
+      let delivered = false;
       if (row.qr_payload !== null && row.qr_sent_at === null) {
         try {
-          // A config's picture says what it is and offers no «copy link»:
-          // it is not a link, and the file under it is the thing to keep.
-          const config = row.doc_name !== null;
-          await api.sendPhotoBytes(
-            row.chat_id,
-            await qrPng(row.qr_payload),
-            config ? wireguardConfigCaption() : row.qr_payload,
-            config ? undefined : copyLinkMenu(row.qr_payload),
-          );
-          await markQrSent(db, row.id);
+          const png = await qrPng(row.qr_payload);
+          if (fitsUnderPicture(row)) {
+            // «Copy link» on top, next to the link; the card's own buttons under it.
+            const keys = [...(copyLinkMenu(row.qr_payload) ?? []), ...(keyboardOf(row) ?? [])];
+            await api.sendPhotoBytes(row.chat_id, png, row.body, keys.length > 0 ? keys : undefined);
+            delivered = true;
+          } else {
+            // A config's picture says what it is and offers no «copy link»:
+            // it is not a link, and the file under it is the thing to keep.
+            const config = row.doc_name !== null;
+            await api.sendPhotoBytes(
+              row.chat_id,
+              png,
+              config ? wireguardConfigCaption() : row.qr_payload,
+              config ? undefined : copyLinkMenu(row.qr_payload),
+            );
+            await markQrSent(db, row.id);
+          }
         } catch (err) {
           log.warn('notify.qr_failed', { ref: String(row.id), fallback: 'text only' }, err);
         }
       }
-      await deliver(db, api, row);
+      if (!delivered) await deliver(db, api, row);
       // This message took the broadcast's next slot. The outbox is not paced
       // — a customer's receipt does not wait two seconds behind an
       // announcement — but it is COUNTED, so the bot's rate stays the rate

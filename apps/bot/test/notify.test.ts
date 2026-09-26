@@ -17,7 +17,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setEventSink, type LogRecord } from '@shikoo/domain';
 import { enqueue, flush, LEASE_MS, MAX_ATTEMPTS, nextAttemptDelayMs } from '../src/notify.js';
-import { MAX_COPY_TEXT_LENGTH, TelegramRejection, type TelegramApi } from '../src/telegram.js';
+import {
+  MAX_CAPTION_LENGTH,
+  MAX_COPY_TEXT_LENGTH,
+  TelegramRejection,
+  type TelegramApi,
+} from '../src/telegram.js';
 import * as menu from '../src/menu.js';
 import { db } from './helpers/env.js';
 import { resetPace } from '../src/pace.js';
@@ -463,10 +468,10 @@ describe('what a message carries besides its text', () => {
         sent.push({ kind: 'text', body: text, keyboard });
         if (opts.textFails) throw new Error('telegram sendMessage failed: boom');
       },
-      sendPhotoBytes: async (_chat: number, png: Uint8Array) => {
+      sendPhotoBytes: async (_chat: number, _png: Uint8Array, caption?: string, keyboard?: unknown) => {
         if (opts.photoFails)
           throw new Error('telegram sendPhoto failed: 400 PHOTO_INVALID_DIMENSIONS');
-        sent.push({ kind: 'photo', body: `png:${png.byteLength}` });
+        sent.push({ kind: 'photo', body: caption ?? '', keyboard });
       },
     } as unknown as TelegramApi;
     return { api, sent };
@@ -474,7 +479,12 @@ describe('what a message carries besides its text', () => {
 
   const KEYBOARD = [[{ text: '📷 دریافت QR Code', callback_data: 'qr:7' }]];
 
-  it('sends the picture first, then the text with its buttons', async () => {
+  // A text past this cannot be a caption, so its row keeps the two messages.
+  const LONG = 'x'.repeat(MAX_CAPTION_LENGTH + 1);
+
+  it('sends ONE message: the picture, the text as its caption, and every button', async () => {
+    // Sam, 2026-09-26: a purchase answered with a QR and its link, and then the
+    // service card under it — two messages for one order.
     await db.withSession((tx) =>
       enqueue(tx, {
         dedupeKey: 'q1',
@@ -487,9 +497,46 @@ describe('what a message carries besides its text', () => {
     const { api, sent } = recorder();
     expect((await flush(db, api, { now: NOW })).sent).toBe(1);
 
-    expect(sent.map((s) => s.kind)).toEqual(['photo', 'text']);
-    expect(sent[1]?.keyboard).toEqual(KEYBOARD);
+    expect(sent).toEqual([
+      {
+        kind: 'photo',
+        body: 'service',
+        keyboard: [...menu.copyLinkMenu('https://panel.example/sub/abc')!, ...KEYBOARD],
+      },
+    ]);
     expect(await rowOf('q1')).toMatchObject({ status: 'SENT' });
+  });
+
+  it('keeps the picture and the text apart when the text is too long for a caption', async () => {
+    // Cut to fit, the card would lose its tail — the delivery note, the link.
+    await db.withSession((tx) =>
+      enqueue(tx, {
+        dedupeKey: 'q-long',
+        chatId: CHAT,
+        text: LONG,
+        keyboard: KEYBOARD,
+        qrPayload: 'https://panel.example/sub/abc',
+      }),
+    );
+    const { api, sent } = recorder();
+    await flush(db, api, { now: NOW });
+
+    expect(sent.map((s) => s.kind)).toEqual(['photo', 'text']);
+    expect(sent[0]?.body).toBe('https://panel.example/sub/abc');
+    expect(sent[1]).toEqual({ kind: 'text', body: LONG, keyboard: KEYBOARD });
+  });
+
+  it('measures the caption without its markup, the way Telegram counts it', async () => {
+    const emoji = '<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji>';
+    const text = emoji.repeat(40); // 2,000+ characters written, 80 drawn
+    await db.withSession((tx) =>
+      enqueue(tx, { dedupeKey: 'q-markup', chatId: CHAT, text, qrPayload: 'https://panel.example/sub/abc' }),
+    );
+    const { api, sent } = recorder();
+    await flush(db, api, { now: NOW });
+
+    expect(sent.map((s) => s.kind)).toEqual(['photo']);
+    expect(sent[0]?.body).toBe(text);
   });
 
   it('sends the text even when the picture cannot be sent', async () => {
@@ -530,7 +577,7 @@ describe('what a message carries besides its text', () => {
 
     const retry = recorder();
     await flush(db, retry.api, { now: NOW + LEASE_MS + nextAttemptDelayMs(1) });
-    expect(retry.sent.map((s) => s.kind)).toEqual(['photo', 'text']);
+    expect(retry.sent.map((s) => s.kind)).toEqual(['photo']);
   });
 
   it('does not send the picture again when the text has to be retried', async () => {
@@ -541,7 +588,7 @@ describe('what a message carries besides its text', () => {
       enqueue(tx, {
         dedupeKey: 'q2',
         chatId: CHAT,
-        text: 'service',
+        text: LONG,
         qrPayload: 'https://panel.example/sub/abc',
       }),
     );
