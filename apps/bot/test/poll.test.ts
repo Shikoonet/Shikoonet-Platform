@@ -36,6 +36,18 @@ function startUpdate(updateId: number, telegramId: number, text = '/start'): Tel
   };
 }
 
+function press(updateId: number, telegramId: number, data: string): TelegramUpdate {
+  return {
+    update_id: updateId,
+    callback_query: {
+      id: `cq-${updateId}`,
+      from: { id: telegramId },
+      message: { message_id: 77, chat: { id: telegramId } },
+      data,
+    },
+  };
+}
+
 function fakeApi(updates: TelegramUpdate[], opts: { sendFails?: boolean } = {}) {
   const sent: { chatId: number; text: string }[] = [];
   const api = stubApi({
@@ -643,18 +655,6 @@ describe('pollOnce', () => {
 });
 
 describe('button presses', () => {
-  function press(updateId: number, telegramId: number, data: string): TelegramUpdate {
-    return {
-      update_id: updateId,
-      callback_query: {
-        id: `cq-${updateId}`,
-        from: { id: telegramId },
-        message: { message_id: 77, chat: { id: telegramId } },
-        data,
-      },
-    };
-  }
-
   it('stops the spinner', async () => {
     const { updateId, telegramId } = ids();
     const answered: string[] = [];
@@ -808,6 +808,102 @@ describe('button presses', () => {
 });
 
 describe('run', () => {
+  it('answers a press while a sweep is still running', async () => {
+    // Production, 2026-09-26: the panel sync took over a minute, and it ran in
+    // the same loop as `getUpdates`, so nothing pressed during it was even
+    // read. 174 presses in a day came back «query is too old», nine of them in
+    // one burst the moment a sync finished. The sweeps have their own loop now;
+    // the one that reads Telegram waits for nothing but Telegram.
+    //
+    // The press arrives only once the sync has started and while it is still
+    // hanging, which is exactly the window the old shape could not serve.
+    const controller = new AbortController();
+    let release: (() => void) | undefined;
+    let syncing!: () => void;
+    const syncStarted = new Promise<void>((resolve) => {
+      syncing = resolve;
+    });
+    const sync = vi.spyOn(syncModule, 'syncSubscriptions').mockImplementation(async () => {
+      syncing();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { panels: 0, updated: 0, failed: 0, linked: 0 };
+    });
+    const { updateId, telegramId } = ids();
+    let reads = 0;
+    let answered = false;
+    const api = stubApi({
+      getUpdates: async () => {
+        reads++;
+        if (reads === 2) {
+          await syncStarted;
+          return [press(updateId, telegramId, 'menu')];
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return [];
+      },
+      answerCallbackQuery: async () => {
+        answered = true;
+      },
+    });
+
+    const finished = run(db, api, { signal: controller.signal, timeoutSec: 1 });
+    try {
+      await vi.waitFor(() => expect(answered, 'the press was answered').toBe(true), {
+        timeout: 3_000,
+      });
+      expect(release, 'the sync was still hanging when the press was answered').toBeDefined();
+    } finally {
+      controller.abort();
+      release?.();
+      await finished;
+      sync.mockRestore();
+    }
+  });
+
+  it('starts the sweeps at once after a press that did something', async () => {
+    // A wallet purchase leaves an order in PAID for the delivery sweep. When
+    // the sweeps ran straight behind each batch that was immediate, and a loop
+    // of their own must not make it wait out the rest between rounds.
+    const controller = new AbortController();
+    let rounds = 0;
+    const provision = vi
+      .spyOn(provisionModule, 'provisionPaidOrders')
+      .mockImplementation(async () => {
+        rounds++;
+        return 0;
+      });
+    const { updateId, telegramId } = ids();
+    let reads = 0;
+    const api = stubApi({
+      getUpdates: async () => {
+        reads++;
+        // A `/start`, because it is `processed`: a press from somebody the shop
+        // has never seen is `ignored`, and an ignored update leaves no work.
+        if (reads === 2) return [startUpdate(updateId, telegramId)];
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return [];
+      },
+    });
+
+    const finished = run(db, api, {
+      signal: controller.signal,
+      timeoutSec: 1,
+      backoffMs: 60_000,
+      sweepGapMs: 60_000,
+    });
+    try {
+      await vi.waitFor(() => expect(rounds, 'a second round, well inside the gap').toBe(2), {
+        timeout: 3_000,
+      });
+    } finally {
+      controller.abort();
+      await finished;
+      provision.mockRestore();
+    }
+  });
+
   it('polls until aborted, carrying the offset forward', async () => {
     const controller = new AbortController();
     const offsets: number[] = [];
@@ -953,51 +1049,59 @@ describe('run', () => {
     expect(calls).toBe(2);
   });
 
-  it('does not re-run the panel sync every cycle when the panel is down', async () => {
+  it('does not re-run the panel sync every round when the panel is down', async () => {
     /**
      * The sync gates itself on `MAX(last_synced_at)`, which only moves when a
      * panel ANSWERS. So a panel that cannot be reached is never satisfied and
-     * the sweep runs again on every cycle — each run paying a full adapter
-     * timeout, in the middle of the loop that reads Telegram.
+     * the sweep runs again on every round — each run paying a full adapter
+     * timeout.
      *
      * Measured on the practice server 2026-08-23:
      * `sync.panel_skipped — could not reach the panel: terminated` every 98
      * seconds, which is the 60-second long poll plus ~38 seconds of timing out.
-     * All of that sits between a customer pressing a button and the bot reading
-     * it, so Telegram's callback window closed first and every tap in the shop
-     * came back `query is too old`. A slow panel made paths that never touch
-     * that panel unusable.
+     * The sweeps shared a loop with `getUpdates` then, so all of it sat between
+     * a customer pressing a button and the bot reading it. They have their own
+     * loop now, and this still matters: a round spent timing out is a round in
+     * which no verified payment is settled.
      *
-     * Three cycles, one sync. Not "the sync is skipped" — the first cycle after
+     * Three rounds, one sync. Not "the sync is skipped" — the first round after
      * a start must still run, because a deploy is a reason to look again.
      */
     const controller = new AbortController();
-    let cycles = 0;
+    let rounds = 0;
     let syncs = 0;
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const sync = vi.spyOn(syncModule, 'syncSubscriptions').mockImplementation(async () => {
       syncs++;
       // What the real one does against an unreachable panel: it takes a long
       // time and then fails. The failure is the part that matters — a throw
-      // must not exempt it from the next cycle's rate limit either.
+      // must not exempt it from the next round's rate limit either.
       throw new Error('could not reach the panel: terminated');
     });
+    // Delivery runs once per round, which makes it the round counter.
+    const provision = vi
+      .spyOn(provisionModule, 'provisionPaidOrders')
+      .mockImplementation(async () => {
+        rounds++;
+        if (rounds >= 3) controller.abort();
+        return 0;
+      });
 
     const api = stubApi({
       getUpdates: async () => {
-        cycles++;
-        if (cycles >= 3) controller.abort();
+        await new Promise((resolve) => setTimeout(resolve, 5));
         return [];
       },
       sendMessage: async () => ({ messageId: null }),
     });
 
-    await run(db, api, { signal: controller.signal, backoffMs: 1 });
+    await run(db, api, { signal: controller.signal, backoffMs: 1, sweepGapMs: 1 });
     sync.mockRestore();
+    provision.mockRestore();
     errors.mockRestore();
 
-    expect(cycles, 'the loop really did go round three times').toBeGreaterThanOrEqual(3);
-    expect(syncs, 'once, on the first cycle — not once per cycle').toBe(1);
+    expect(rounds, 'the sweeps really did go round three times').toBeGreaterThanOrEqual(3);
+    expect(syncs, 'once, on the first round — not once per round').toBe(1);
   });
 
   it('still delivers a paid order when Telegram will not answer', async () => {

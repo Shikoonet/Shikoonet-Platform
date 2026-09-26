@@ -13,7 +13,7 @@
  * `backup.failed`. Not from memory: a poller restarted every two hours would
  * otherwise never back up, and one restarted every two minutes would back up
  * every two minutes. A failure counts as a run so a broken `pg_dump` is one
- * message per three hours, not one per 25-second cycle.
+ * message per three hours, not one per sweep round.
  *
  * ## What it does not do
  *

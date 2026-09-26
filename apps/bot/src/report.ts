@@ -257,8 +257,8 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
 /**
  * Queues yesterday's report, once — and any night before it that was missed.
  *
- * Called from the poll loop, so it is asked roughly every twenty-five seconds
- * and must be cheap when there is nothing to do — which is why the dedupe keys
+ * Called from the sweep loop, so it is asked every few seconds and must be
+ * cheap when there is nothing to do — which is why the dedupe keys
  * are checked before any report is built rather than after. Building one is
  * six aggregate queries; asking which of seven exist is one index read.
  *
