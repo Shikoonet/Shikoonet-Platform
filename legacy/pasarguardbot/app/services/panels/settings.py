@@ -52,6 +52,9 @@ DEFAULT_SUBSCRIPTION_SETTINGS: dict[str, Any] = {
 }
 
 DEFAULT_TEST_SETTINGS: dict[str, Any] = {
+    # Each panel decides for itself whether it hands out trials, so a shop with
+    # a normal panel and a premium one can offer a trial of each.
+    "enabled": False,
     "volume_gb": 2.0,
     "duration_days": 3,
 }
@@ -117,6 +120,7 @@ LEGACY_FIELD_TO_JSON: dict[str, tuple[str, str]] = {
     "subscription_link_mode": ("subscription_settings", "link_mode"),
     "single_config_link_indexes": ("subscription_settings", "single_config_link_indexes"),
     "admin_login_path": ("subscription_settings", "admin_login_path"),
+    "test_enabled": ("test_settings", "enabled"),
     "test_volume_gb": ("test_settings", "volume_gb"),
     "test_duration_days": ("test_settings", "duration_days"),
     "webhook_notifications_enabled": ("renewal_settings", "webhook_notifications_enabled"),
@@ -402,6 +406,27 @@ def panel_sales_settings_from_feature(settings: dict[str, Any]) -> dict[str, boo
         **DEFAULT_FEATURE_SALES,
         **{flag: bool(raw.get(flag, default)) for flag, default in DEFAULT_FEATURE_SALES.items()},
     }
+
+
+def apply_feature_settings_patch(
+    panel,
+    *,
+    sales: dict[str, Any] | None = None,
+    custom_buy: dict[str, Any] | None = None,
+    reseller_capacity: dict[str, Any] | None = None,
+    reseller_buttons: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+
+    feature = feature_settings(panel)
+    if sales:
+        feature[FEATURE_SALES] = {**panel_sales_settings_from_feature(feature), **sales}
+    if custom_buy:
+        update_custom_buy_in_feature_settings(feature, **custom_buy)
+    if reseller_capacity:
+        update_reseller_capacity_in_feature_settings(feature, **reseller_capacity)
+    if reseller_buttons:
+        feature[FEATURE_RESELLER_BUTTONS] = {**panel_reseller_button_settings_from_feature(feature), **reseller_buttons}
+    return feature
 
 
 def _compact_volume_plan(plan: dict[str, Any]) -> dict[str, Any]:
@@ -840,6 +865,14 @@ def panel_single_config_link_indexes(panel) -> str:
 
 def panel_show_prefixes_in_locations(panel) -> bool:
     return bool(subscription_settings(panel).get("show_prefixes_in_locations", True))
+
+
+def panel_test_flag(panel) -> bool:
+    return bool(test_settings(panel).get("enabled", False))
+
+
+def panel_test_enabled(panel) -> bool:
+    return bool(panel and panel.enable and panel_test_flag(panel))
 
 
 def panel_test_volume_gb(panel) -> float:

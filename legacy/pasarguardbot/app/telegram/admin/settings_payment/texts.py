@@ -47,9 +47,11 @@ SETTINGS_SAVED = "وضعیت جدید ذخیره شد"
 
 MANUAL_BONUS_PERCENT_PROMPT = "درصد بونوس کارت دستی را وارد کنید (0-100):"
 CRYPTO_BONUS_PERCENT_PROMPT = "درصد بونوس ارزی را وارد کنید (0-100):"
+STARS_BONUS_PERCENT_PROMPT = "درصد بونوس استارز را وارد کنید (0-100):"
 
 MANUAL_BONUS_SET_TEMPLATE = "✅ درصد بونوس کارت دستی روی {percent}% تنظیم شد\n\n{bonus_text}"
 CRYPTO_BONUS_SET_TEMPLATE = "✅ درصد بونوس ارزی روی {percent}% تنظیم شد\n\n{bonus_text}"
+STARS_BONUS_SET_TEMPLATE = "✅ درصد بونوس استارز روی {percent}% تنظیم شد\n\n{bonus_text}"
 
 MAAR_EDIT_VALUE_PROMPT = "مقدار جدید را بفرستید:"
 
@@ -62,11 +64,34 @@ TX_REJECTED_ADMIN_HEADER = "❌ تراکنش رد شد."
 TX_APPROVED_ADMIN_BUTTON = "🌟 تراکنش توسط ادمین تایید شده"
 TX_REJECTED_ADMIN_BUTTON = "⛔️ تراکنش توسط ادمین رد شد ⛔️"
 
+TX_APPROVED_USER_MESSAGE = (
+    "✅ تراکنش کارت به کارت (دستی) شما تایید شد\n\n"
+    "👤 شناسه شما: `{user_id}`\n"
+    "💰 مبلغ `{amount}` تومان به حساب شما اضافه شد.\n"
+    "{bonus_line}"
+    "👜 موجودی شما به کیف پولتون در بات اضافه شده\n"
+    "💳 اکنون می‌توانید از ربات خرید کنید."
+)
+
 TX_REJECT_USER_MESSAGE = (
     "#اطلاعیه\n"
     "🚫 کاربر گرامی تراکنش کارت به کارت شما توسط پشتیبانی رد شد.\n\n"
     "❕لطفا به مبلغی که وارد میکنید دقت کنید و حتما به هزارتومان تایپ کنید. برای مثال جهت تایید مبلغ 50,000 تومان باید عدد 50000 را به ربات ارسال کنید.\n\n"
     "⚠️ لطفا مراحلی که رفته بودید را یکبار چک کنید سپس دوباره از ابتدا سعی کنید تا بررسی شود."
+)
+
+TX_REJECTED_USER_MESSAGE = f"{TX_REJECT_USER_MESSAGE}\nمبلغ: `{{amount}}` تومان"
+
+TX_RECEIPT_FIX_USER_MESSAGE = (
+    "#اطلاعیه\n"
+    "♻️ رسید شما برای بررسی دوباره نیاز به اصلاح مبلغ دارد.\n\n"
+    "لطفا مبلغ را به تومان دوباره وارد کنید و سپس رسید را مجددا ارسال کنید.\n"
+)
+
+TX_CARD_MISMATCH_USER_MESSAGE = (
+    "#اطلاعیه\n"
+    "💳 شماره کارت واریزی شما با شماره کارت فعلی ربات تطابق ندارد.\n\n"
+    "لطفا در دفعات بعد حتما به شماره کارت جدید واریز انجام دهید؛ در غیر این صورت تراکنش شما تایید نخواهد شد.\n"
 )
 
 
@@ -157,7 +182,8 @@ def bonus_settings_header(settings) -> str:
     return (
         "🎁 **تنظیمات بونوس درصدی**\n\n"
         f"💳 **کارت دستی**: {settings.manual_bonus_percent}% {'✅ فعال' if settings.manual_bonus_enabled else '❌ غیرفعال'}\n"
-        f"💵 **ارزی**: {settings.crypto_bonus_percent}% {'✅ فعال' if settings.crypto_bonus_enabled else '❌ غیرفعال'}\n\n"
+        f"💵 **ارزی**: {settings.crypto_bonus_percent}% {'✅ فعال' if settings.crypto_bonus_enabled else '❌ غیرفعال'}\n"
+        f"⭐ **استارز**: {settings.stars_bonus_percent}% {'✅ فعال' if settings.stars_bonus_enabled else '❌ غیرفعال'}\n\n"
         "روی گزینه‌های زیر کلیک کنید:"
     )
 
@@ -184,16 +210,3 @@ def maar_rule_detail(rule_id: int, rule) -> str:
         f"قانون #{rule_id}\nحداقل: {rule.min_successful_tx}\nحداکثر: {max_value}\nزمان: {maar_delay(rule)}\n"
         f"وضعیت: {'فعال' if rule.is_active else 'غیرفعال'}"
     )
-
-
-def tx_approved_user_message(user_id, amount: int, bonus: int, bonus_percent: int, total: int) -> str:
-    message = (
-        f"**✅ تراکنش کارت به کارت (دستی) شما تایید شد**\n\n"
-        f"👤 **شناسه شما:** `{user_id}`\n"
-        f"💰 مبلغ `{amount:,}` تومان به حساب شما اضافه شد.\n"
-    )
-    if bonus > 0:
-        message += f"🎁 بونوس: +{bonus:,} ({bonus_percent}%)\n"
-        message += f"💰 مجموع: {total:,} تومان\n"
-    message += "👜 موجودی شما به کیف پولتون در بات اضافه شده\n💡 اکنون می‌توانید از ربات خرید کنید."
-    return message

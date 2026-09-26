@@ -35,6 +35,7 @@ TEXT_SECTIONS = {
 TEXT_KEYS_CONFIG = {
     "start": [
         {"key": "start_message", "title": "پیام استارت", "placeholders": {}},
+        {"key": "miniapp_only_message", "title": "پیام حالت فقط مینی‌اپ", "placeholders": {}},
     ],
     "my_services": [
         {"key": "my_services_intro", "title": "متن معرفی سرویس‌های من", "placeholders": {}},
@@ -288,6 +289,44 @@ TEXT_KEYS_CONFIG = {
             "title": "خطای ورودی غیرعددی",
             "placeholders": {},
         },
+        {
+            "key": "manual_card_approved_message",
+            "title": "پیام تایید تراکنش",
+            "placeholders": {
+                "user_id": "شناسه کاربر",
+                "amount": "مبلغ (تومان)",
+                "bonus_line": "خط بونوس (خودکار خالی می‌ماند اگر بونوسی نباشد)",
+            },
+        },
+        {
+            "key": "manual_card_rejected_message",
+            "title": "پیام رد تراکنش",
+            "placeholders": {
+                "amount": "مبلغ (تومان)",
+            },
+        },
+        {
+            "key": "manual_card_receipt_fix_message",
+            "title": "پیام درخواست اصلاح مبلغ رسید",
+            "placeholders": {
+                "amount": "مبلغ (تومان)",
+                "amount_toman": "مبلغ (تومان)",
+                "amount_rial": "مبلغ (ریال)",
+                "current_card_name": "نام صاحب کارت فعال",
+                "current_card_number": "شماره کارت فعال",
+            },
+        },
+        {
+            "key": "manual_card_card_mismatch_message",
+            "title": "پیام عدم تطابق شماره کارت",
+            "placeholders": {
+                "current_card_name": "نام دارنده کارت فعلی",
+                "current_card_number": "شماره کارت فعلی",
+                "amount": "مبلغ (تومان)",
+                "amount_toman": "مبلغ (تومان)",
+                "amount_rial": "مبلغ (ریال)",
+            },
+        },
     ],
     "crypto_payment": [
         {
@@ -348,6 +387,19 @@ TEXT_KEYS_CONFIG = {
         {"key": "help_message", "title": "متن راهنما", "placeholders": {}},
         {"key": "support_message", "title": "متن پشتیبانی", "placeholders": {}},
         {"key": "advanced_settings_intro", "title": "متن تنظیمات پیشرفته", "placeholders": {}},
+        {
+            "key": "purchase_report_message",
+            "title": "متن گزارش خرید در کانال",
+            "placeholders": {
+                "user": "آیدی کاربر (ارقام پایانی پنهان)",
+                "panel": "نام پنل",
+                "plan": "دسته‌بندی (مثلاً ۳۰ روزه)",
+                "service": "حجم یا نوع سرویس",
+                "price": "مبلغ پرداختی",
+                "date": "تاریخ شمسی",
+                "time": "ساعت",
+            },
+        },
     ],
     "reserved_1": [],
     "reserved_2": [],

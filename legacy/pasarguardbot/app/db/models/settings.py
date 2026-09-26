@@ -20,6 +20,14 @@ DEFAULT_CORE_SETTINGS: dict[str, Any] = {
     "sale_mode": False,
     "single_panel_buy_mode": False,
     "channel_lock": False,
+    # Hide the bot's own menu and send everyone into the mini app instead.
+    "miniapp_only_mode": False,
+    # Draw every home button with the glassy brackets, without touching colours.
+    "glass_buttons_mode": False,
+    # The reaction the bot leaves on /start, and the effect it sends the welcome
+    # message with. Empty or 0 turns each one off on its own.
+    "start_reaction_emoji": "🔥",
+    "start_effect_id": 5046509860389126442,
     "backup_interval_hours": 24,
     **DEFAULT_HOME_MENU_SETTINGS,
 }
@@ -28,6 +36,7 @@ DEFAULT_PAYMENT_SETTINGS: dict[str, Any] = {
     "pay_mode": False,
     "pay_phone_verify": True,
     "arz_mode": False,
+    "cart_sta": False,
     "manual_card_visibility": None,
     "manual_auto_confirm": False,
     "manual_card_random_mode": False,
@@ -39,9 +48,12 @@ DEFAULT_PAYMENT_SETTINGS: dict[str, Any] = {
     "manual_bonus_percent": 0,
     "crypto_bonus_enabled": False,
     "crypto_bonus_percent": 0,
+    "stars_bonus_enabled": False,
+    "stars_bonus_percent": 0,
     "arz_usd": 0,
     "arz_trx": 0,
     "arz_ton": 0,
+    "arz_pol": 0,
 }
 
 DEFAULT_PURCHASE_SETTINGS: dict[str, Any] = {

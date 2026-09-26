@@ -16,6 +16,7 @@ from app.services.billing.direct_pay_fulfillment import (
 )
 from app.telegram.admin.settings_payment import keyboards, texts
 from app.telegram.state import set_data, set_step
+from app.utils.text.bot_texts import get_bot_text
 from config import ADMIN_ID
 
 _maar_crud = ManualAutoApproveRuleCRUD()
@@ -36,8 +37,10 @@ _SETTINGS_PAYMENT_EXACT_CALLBACKS = frozenset(
         "bonus_settings_menu",
         "toggle_manual_bonus",
         "toggle_crypto_bonus",
+        "toggle_stars_bonus",
         "set_manual_bonus_percent",
         "set_crypto_bonus_percent",
+        "set_stars_bonus_percent",
     }
 )
 
@@ -91,6 +94,11 @@ async def _maar_show_rule(event, rule_id: int):
         texts.maar_rule_detail(rule_id, rule),
         buttons=keyboards.maar_show_rule_buttons(rule_id, rules),
     )
+
+
+async def _get_manual_card_custom_text(key: str, default: str, **placeholders) -> str:
+    template = await get_bot_text(key=key, default=default, lang="fa")
+    return template.format(**placeholders)
 
 
 def _settings_payment_callback_filter(event: events.CallbackQuery.Event) -> bool:
@@ -246,6 +254,14 @@ async def callback_settings_payment(event: events.CallbackQuery.Event):
         bonus_text, buttons = await keyboards.get_bonus_settings_menu(settings)
         await event.edit(bonus_text, buttons=buttons)
 
+    elif data == "toggle_stars_bonus":
+        settings = await SettingsManager().get_settings()
+        new_status = not settings.stars_bonus_enabled
+        await SettingsManager().update_setting(settings.id, stars_bonus_enabled=new_status)
+        settings = await SettingsManager().get_settings()
+        bonus_text, buttons = await keyboards.get_bonus_settings_menu(settings)
+        await event.edit(bonus_text, buttons=buttons)
+
     elif data == "set_manual_bonus_percent":
         await set_step(event.sender_id, "set_manual_bonus_percent")
         await event.edit(texts.MANUAL_BONUS_PERCENT_PROMPT, buttons=keyboards.back_to_bonus_menu_button())
@@ -253,6 +269,10 @@ async def callback_settings_payment(event: events.CallbackQuery.Event):
     elif data == "set_crypto_bonus_percent":
         await set_step(event.sender_id, "set_crypto_bonus_percent")
         await event.edit(texts.CRYPTO_BONUS_PERCENT_PROMPT, buttons=keyboards.back_to_bonus_menu_button())
+
+    elif data == "set_stars_bonus_percent":
+        await set_step(event.sender_id, "set_stars_bonus_percent")
+        await event.edit(texts.STARS_BONUS_PERCENT_PROMPT, buttons=keyboards.back_to_bonus_menu_button())
 
     elif data.startswith("BackTOSettingsCardToCard"):
         await set_step(user_id=event.sender_id, step="SettingsCardToCard")
@@ -290,15 +310,22 @@ async def callback_transaction_review(event: events.CallbackQuery.Event):
         await event.edit(admin_message, buttons=keyboards.tx_review_result_button(approved=True))
         fulfilled = await try_fulfill_after_manual_credit(tx_id)
         if not fulfilled:
+            bonus = result["bonus"]
+            bonus_line = (
+                f"🎁 بونوس: +{bonus:,} ({settings.manual_bonus_percent}%)\n💰 مجموع: {result['total']:,} تومان\n"
+                if bonus > 0
+                else ""
+            )
+            user_message = await _get_manual_card_custom_text(
+                "manual_card_approved_message",
+                texts.TX_APPROVED_USER_MESSAGE,
+                user_id=tx.user_id,
+                amount=f"{int(tx.amount):,}",
+                bonus_line=bonus_line,
+            )
             await Kenzo.send_message(
                 entity=int(tx.user_id),
-                message=texts.tx_approved_user_message(
-                    tx.user_id,
-                    int(tx.amount),
-                    result["bonus"],
-                    settings.manual_bonus_percent,
-                    result["total"],
-                ),
+                message=user_message,
                 buttons=keyboards.no_action_balance_button(result["new_balance"]),
             )
 
@@ -322,9 +349,14 @@ async def callback_transaction_review(event: events.CallbackQuery.Event):
             completed_at=completed_at,
         )
         await event.edit(admin_message, buttons=keyboards.tx_review_result_button(approved=False))
+        user_message = await _get_manual_card_custom_text(
+            "manual_card_rejected_message",
+            texts.TX_REJECTED_USER_MESSAGE,
+            amount=f"{int(tx.amount):,}",
+        )
         await Kenzo.send_message(
             entity=int(tx.user_id),
-            message=f"{texts.TX_REJECT_USER_MESSAGE}\nمبلغ: `{int(tx.amount):,}` تومان",
+            message=user_message,
             buttons=keyboards.tx_reject_user_balance_button(await get_Money(tx.user_id)),
         )
 
