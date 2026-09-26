@@ -851,13 +851,25 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
    * refused send per deploy for as long as the badge stays wrong.
    */
   const unknownEmoji = new Set<string>();
+  /** Ids a lookup is already out for, so a burst of refusals — a broadcast — asks once. */
+  const askingAbout = new Set<string>();
 
   /**
    * Asks `getCustomEmojiStickers` about these ids and remembers the ones it
    * does not return. Never throws, and learns nothing it could not ask about.
    */
-  async function learnUnknownEmoji(ids: string[]): Promise<void> {
+  async function learnUnknownEmoji(all: string[]): Promise<void> {
+    const ids = all.filter((id) => !unknownEmoji.has(id) && !askingAbout.has(id));
     if (ids.length === 0) return;
+    for (const id of ids) askingAbout.add(id);
+    try {
+      await learnAbout(ids);
+    } finally {
+      for (const id of ids) askingAbout.delete(id);
+    }
+  }
+
+  async function learnAbout(ids: string[]): Promise<void> {
     // A set of the ids Telegram returned; 'refused' for a 400; null when it
     // could not be asked at all.
     const ask = async (asked: string[]): Promise<Set<string> | 'refused' | null> => {
@@ -870,10 +882,10 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       }
     };
     const unknown: string[] = [];
-    const all = await ask(ids);
-    if (all === null) return;
-    if (all !== 'refused') {
-      unknown.push(...ids.filter((id) => !all.has(id)));
+    const answer = await ask(ids);
+    if (answer === null) return;
+    if (answer !== 'refused') {
+      unknown.push(...ids.filter((id) => !answer.has(id)));
     } else {
       // Whether one bad id refuses the whole list or is only left out of the
       // answer is not documented, so a refused list is asked about one by one.
@@ -982,7 +994,12 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     // invalid — typed by hand into a badge — is what `learnUnknownEmoji` is
     // for: Telegram says it does not know it, and it stops being sent.
     if (isDocumentInvalid(richError)) {
-      await learnUnknownEmoji(ids);
+      // Not awaited (CodeRabbit on #484): the screen has landed, and a lookup
+      // that stalls must not hold up the loop that sends the next one. A
+      // screen sent before it answers is refused once more, and that is all.
+      void learnUnknownEmoji(ids).catch((err: unknown) => {
+        log.warn('telegram.custom_emoji_lookup_failed', {}, err);
+      });
       return landed;
     }
     await options.onCustomEmojiRefused?.();

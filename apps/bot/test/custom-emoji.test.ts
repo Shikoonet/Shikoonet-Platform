@@ -657,6 +657,9 @@ describe('sending it, and being refused', () => {
       const api = createTelegramApi({ token: 't', baseUrl: 'http://fake', fetch: fetchImpl });
       try {
         await api.sendMessage(1, `سلام ${BAD} ${FIRE}`);
+        // The lookup runs behind the send rather than inside it, so the next
+        // screen is compared once it has answered.
+        await vi.waitFor(() => expect(learned).toHaveLength(1));
         const before = calls.length;
         await api.sendMessage(1, `دوباره ${BAD} ${FIRE}`, [[{ text: `${BAD} خرید`, callback_data: 'buy' }]]);
         const again = calls.slice(before);
