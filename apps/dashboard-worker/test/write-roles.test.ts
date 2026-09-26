@@ -605,6 +605,16 @@ describe('every write route, asked directly', () => {
     // 193, 2026-09-26: `POST /admin/support-answers/import` (0106) — the support-chat
     // dataset from a file on the admin's machine; ADMIN-only, rows land hidden, one
     // audit row names every key; `content.test.ts` pins the REVIEWER 403.
-    expect(writeRoutes().length).toBe(193);
+    //
+    // 194–198, 2026-09-26: «انتشار در کانال» (#473, 0107). `POST /admin/channel-posts`
+    // starts a draft (or copies one), `PATCH …/:id` edits it and carries its
+    // other steps as an `op` — schedule, cancel, pin, settle a stuck send, give
+    // it a campaign — `POST …/:id/media` takes its picture or video,
+    // `POST …/:id/preview` posts it to the reports group, and `DELETE …/:id`
+    // removes it, from the channel too. They speak to the shop's public
+    // channels as the bot, so ADMIN-only in every handler, each step audited as
+    // its own `channel_post.*` action. `channel-posts.test.ts` pins the
+    // REVIEWER 403.
+    expect(writeRoutes().length).toBe(198);
   });
 });

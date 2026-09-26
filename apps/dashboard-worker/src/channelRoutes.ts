@@ -43,7 +43,7 @@ import { audit, type Ident } from './adminAudit.js';
  * inert. It is the single most likely thing to be pasted into this field,
  * because it is what the admin has in their clipboard.
  */
-const CHAT_REF = /^(@[A-Za-z0-9_]{4,32}|-100\d{5,17})$/;
+export const CHAT_REF = /^(@[A-Za-z0-9_]{4,32}|-100\d{5,17})$/;
 
 const ChannelBody = z
   .object({

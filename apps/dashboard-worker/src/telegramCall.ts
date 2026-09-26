@@ -75,6 +75,7 @@ export interface TelegramReply {
 
 /** A sent or forwarded message, narrowed to the file it may carry. */
 export interface TelegramMessage {
+  message_id?: number;
   is_forum?: boolean;
   message_thread_id?: number;
   chat?: { is_forum?: boolean };
@@ -150,6 +151,27 @@ export async function reportsGroup(
 }
 
 export type TelegramCall = (method: string, payload: unknown) => Promise<TelegramReply>;
+
+/**
+ * An upload's body, read as it streams and refused past `maxBytes` — never
+ * judged by a `content-length` the client chose. Held in memory: every caller
+ * sends it straight back out to Telegram. A shelf's file and a channel post's
+ * picture both arrive this way.
+ */
+export async function readCappedBody(
+  body: ReadableStream<Uint8Array> | null,
+  maxBytes: number,
+): Promise<Uint8Array[] | 'empty' | 'too_large'> {
+  if (body === null) return 'empty';
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+    bytes += chunk.byteLength;
+    if (bytes > maxBytes) return 'too_large';
+    chunks.push(chunk);
+  }
+  return bytes === 0 ? 'empty' : chunks;
+}
 
 export type BotCall =
   | { ok: true; call: TelegramCall }

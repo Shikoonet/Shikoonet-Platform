@@ -218,7 +218,7 @@ async function byDay(
 }
 
 /** `bot/username`, which the link on the screen is built from. Null says so. */
-async function botUsername(db: D1Database): Promise<string | null> {
+export async function botUsername(db: D1Database): Promise<string | null> {
   const row = await db
     .prepare(`SELECT value FROM settings WHERE scope = 'bot' AND key = 'username'`)
     .first<{ value: unknown }>();
@@ -231,6 +231,17 @@ async function botUsername(db: D1Database): Promise<string | null> {
  * is no route that changes it. `post-` belongs to channel posts (#473), which
  * make their own campaign; a hand-made slug cannot take it.
  */
+/**
+ * Where a campaign runs. «channel» is taken: it marks the campaigns channel
+ * posts make for themselves (#473), and the table's CHECK ties it to their
+ * `post-` slugs — typed by hand it would reach the database as a 500.
+ */
+const Source = z
+  .string()
+  .trim()
+  .max(100)
+  .refine((s) => s !== 'channel', 'منبع «channel» مال پست‌های کانال است');
+
 const CampaignCreate = z
   .object({
     slug: z
@@ -243,7 +254,7 @@ const CampaignCreate = z
       )
       .refine((s) => !s.startsWith('post-'), 'پیشوند post- مال پست‌های کانال است'),
     name: z.string().trim().min(1).max(100),
-    source: z.string().trim().max(100).optional(),
+    source: Source.optional(),
     note: z.string().trim().max(1000).optional(),
   })
   .strict();
@@ -251,7 +262,7 @@ const CampaignCreate = z
 const CampaignPatch = z
   .object({
     name: z.string().trim().min(1).max(100).optional(),
-    source: z.string().trim().max(100).optional(),
+    source: Source.optional(),
     note: z.string().trim().max(1000).optional(),
     status: z.enum(['ACTIVE', 'ARCHIVED']).optional(),
   })
