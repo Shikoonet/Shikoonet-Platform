@@ -536,6 +536,48 @@ export type StatsRange =
   | 'day'
   | 'between';
 
+/** A button under a channel post: a link, or a campaign whose link the server builds. */
+export interface PostButton {
+  text: string;
+  url?: string;
+  campaign?: string;
+  style?: 'primary' | 'success' | 'danger';
+  /** A premium emoji's id, drawn before the text. */
+  emoji?: string;
+}
+
+export type PostStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'FAILED';
+
+/** One channel post — `channelPostRoutes.ts`. */
+export interface ChannelPost {
+  id: number;
+  chatId: number;
+  chatTitle: string;
+  status: PostStatus;
+  text: string;
+  mediaKind: 'NONE' | 'PHOTO' | 'VIDEO';
+  buttons: PostButton[][];
+  previewed: boolean;
+  sendAt: number | null;
+  sentAt: number | null;
+  /** In the channel with a known message id — what editing, pinning and deleting there need. */
+  inChannel: boolean;
+  error: string | null;
+  campaignSlug: string | null;
+  createdBy: string;
+  createdAt: number;
+  /** «در حال ارسال» for long enough that a person has to say how it ended. */
+  stuck: boolean;
+}
+
+export type ChannelPostOp =
+  | { op: 'edit'; chat?: string; text?: string; buttons?: PostButton[][]; removeMedia?: true }
+  | { op: 'schedule'; sendAt: string | null }
+  | { op: 'cancel' }
+  | { op: 'pin'; pinned: boolean }
+  | { op: 'resolve'; inChannel: boolean }
+  | { op: 'track' };
+
 /** One campaign and its funnel in the chosen range — `campaignRoutes.ts`. */
 export interface CampaignFunnel {
   id: number;
@@ -3881,6 +3923,49 @@ export const api = {
    */
   stats(range: StatsRange, day?: string, to?: string) {
     return req<ShopStatsResponse>(`/stats?${rangeQuery(range, day, to)}`);
+  },
+
+  channelPosts() {
+    return req<{
+      ok: boolean;
+      botUsername: string | null;
+      items: ChannelPost[];
+      /** Channels posted to before, and the shop's required channels. */
+      chats: Array<{ ref: string; title: string }>;
+    }>('/channel-posts');
+  },
+
+  addChannelPost(
+    body: { chat: string; text?: string; buttons?: PostButton[][] } | { copyOf: number },
+  ) {
+    return req<{ ok: boolean; id: number }>('/channel-posts', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  channelPostOp(id: number, op: ChannelPostOp) {
+    return req<{ ok: boolean; campaign?: string }>(`/channel-posts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(op),
+    });
+  },
+
+  uploadChannelPostMedia(id: number, file: File, onProgress: (fraction: number) => void) {
+    const kind = file.type.startsWith('video/') ? 'video' : 'photo';
+    return uploadRaw<{ kind: string }>(
+      `/channel-posts/${id}/media?kind=${kind}&name=${encodeURIComponent(file.name)}`,
+      file,
+      onProgress,
+    );
+  },
+
+  previewChannelPost(id: number) {
+    return req<{ ok: boolean }>(`/channel-posts/${id}/preview`, { method: 'POST' });
+  },
+
+  deleteChannelPost(id: number) {
+    return req<{ ok: boolean }>(`/channel-posts/${id}`, { method: 'DELETE' });
   },
 
   campaigns(range: StatsRange, day?: string, to?: string) {

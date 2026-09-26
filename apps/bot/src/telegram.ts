@@ -385,6 +385,22 @@ export interface TelegramApi {
    */
   forwardMessage(chatId: number, fromChatId: string | number, messageId: number): Promise<void>;
   /**
+   * A channel post (#473): the preview the operator looked at in the reports
+   * group, copied into the channel with its keyboard, and the new message's
+   * id back — the id is what edits, pins and deletes it later.
+   *
+   * Raw on purpose, like `forwardMessage`: nothing here passes through the
+   * customer-message path (`withEmojiFallback`, `keyboardFor`), because that
+   * path rewrites text, retries a refusal as plain text, and would send the
+   * channel something other than what was previewed. A refusal is thrown.
+   */
+  copyMessage(
+    chatId: number,
+    fromChatId: number,
+    messageId: number,
+    replyMarkup: unknown,
+  ): Promise<number>;
+  /**
    * Sends an image we generated ourselves, as bytes.
    *
    * Distinct from `sendPhoto` because there is no `file_id` to send: a QR code
@@ -1098,6 +1114,20 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
         { chat_id: chatId, from_chat_id: fromChatId, message_id: messageId },
         15_000,
       );
+    },
+
+    async copyMessage(chatId, fromChatId, messageId, replyMarkup) {
+      const result = await call(
+        'copyMessage',
+        {
+          chat_id: chatId,
+          from_chat_id: fromChatId,
+          message_id: messageId,
+          ...(replyMarkup === null || replyMarkup === undefined ? {} : { reply_markup: replyMarkup }),
+        },
+        15_000,
+      );
+      return SentMessageSchema.parse(result).message_id;
     },
 
     async sendPhoto(chatId, fileId, caption) {
