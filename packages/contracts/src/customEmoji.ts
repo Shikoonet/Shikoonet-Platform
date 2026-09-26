@@ -172,6 +172,22 @@ export function stripCustomEmoji(text: string): string {
   return text.replace(TAG, (_whole, _id: string, fallback: string) => fallback);
 }
 
+/** Every custom emoji id the text carries, each once. */
+export function customEmojiIds(text: string): string[] {
+  return [...new Set(Array.from(text.matchAll(TAG), (m) => m[1] as string))];
+}
+
+/**
+ * The text with the NAMED custom emoji replaced by their own fallback, and the
+ * rest left as markup — the landing for ids Telegram has said it does not know.
+ */
+export function stripCustomEmojiIds(text: string, ids: ReadonlySet<string>): string {
+  if (ids.size === 0) return text;
+  return text.replace(TAG, (whole: string, id: string, fallback: string) =>
+    ids.has(id) ? fallback : whole,
+  );
+}
+
 /** The same landing for a message the bot formatted: the words stay, the tags go. */
 export function stripMarkup(text: string): string {
   return stripCustomEmoji(text).replace(FORMAT_TAGS, '');

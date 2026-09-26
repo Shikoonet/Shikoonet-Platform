@@ -18,10 +18,12 @@
 
 import { z } from 'zod';
 import {
+  customEmojiIds,
   hasCustomEmoji,
   hasMarkup,
   splitCustomEmojiLabel,
   stripCustomEmoji,
+  stripCustomEmojiIds,
   stripMarkup,
   toTelegramHtml,
 } from '@shikoo/contracts';
@@ -835,6 +837,57 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
   }
 
   /**
+   * Custom emoji ids Telegram has said it does not know.
+   *
+   * `DOCUMENT_INVALID` rests nothing — see `withEmojiFallback` — and rightly for
+   * the ids it was first seen on: valid ones, refused for a moment. But an id
+   * nobody can draw, typed by hand into a badge, was refused on every screen
+   * that carried it: 135 times in one day on production (2026-09-26), each a
+   * doubled send, and the warning never said which id it was. So a
+   * DOCUMENT_INVALID asks Telegram which of the message's ids exist, and one it
+   * does not return is drawn as its own fallback glyph from then on.
+   *
+   * ponytail: in memory, per process. A restart asks again, which costs one
+   * refused send per deploy for as long as the badge stays wrong.
+   */
+  const unknownEmoji = new Set<string>();
+
+  /**
+   * Asks `getCustomEmojiStickers` about these ids and remembers the ones it
+   * does not return. Never throws, and learns nothing it could not ask about.
+   */
+  async function learnUnknownEmoji(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    // A set of the ids Telegram returned; 'refused' for a 400; null when it
+    // could not be asked at all.
+    const ask = async (asked: string[]): Promise<Set<string> | 'refused' | null> => {
+      try {
+        const result = await call('getCustomEmojiStickers', { custom_emoji_ids: asked }, 10_000);
+        if (!Array.isArray(result)) return null;
+        return new Set(result.map((s) => String((s as { custom_emoji_id?: unknown }).custom_emoji_id)));
+      } catch (err) {
+        return err instanceof TelegramRejection && err.code === 400 ? 'refused' : null;
+      }
+    };
+    const unknown: string[] = [];
+    const all = await ask(ids);
+    if (all === null) return;
+    if (all !== 'refused') {
+      unknown.push(...ids.filter((id) => !all.has(id)));
+    } else {
+      // Whether one bad id refuses the whole list or is only left out of the
+      // answer is not documented, so a refused list is asked about one by one.
+      for (const id of ids) {
+        const one = await ask([id]);
+        if (one === 'refused' || (one !== null && !one.has(id))) unknown.push(id);
+      }
+    }
+    if (unknown.length === 0) return;
+    for (const id of unknown) unknownEmoji.add(id);
+    log.warn('telegram.custom_emoji_unknown', { ids: unknown, consequence: 'drawn as its fallback glyph' });
+  }
+
+  /**
    * Sends a body, and lands safely if it carried custom emoji Telegram refused.
    *
    * Plain text is the ordinary path and is untouched — `parse_mode` is still set
@@ -861,7 +914,17 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     send: (body: Record<string, unknown>) => Promise<unknown>,
     replyKeyboard?: ReplyKeyboard,
   ): Promise<unknown> {
-    const clamped = clamp(text);
+    // Ids Telegram does not know leave as their glyph before anything is
+    // decided, labels included — a send with nothing else rich in it is then
+    // simply plain.
+    const known = (s: string): string => stripCustomEmojiIds(s, unknownEmoji);
+    const clamped = known(clamp(text));
+    if (unknownEmoji.size > 0) {
+      keyboard = keyboard?.map((row) => row.map((b) => ({ ...b, text: known(b.text) })));
+      if (replyKeyboard !== undefined && replyKeyboard !== 'remove') {
+        replyKeyboard = replyKeyboard.map((row) => row.map((b) => ({ ...b, text: known(b.text) })));
+      }
+    }
     // The KEYBOARD is built in here rather than by the caller, and that is the
     // point of the second parameter. While the caller spread its own
     // `markup(keyboard)` into the body, the retry below re-sent the identical
@@ -899,17 +962,29 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       log.warn('telegram.markup_refused', {}, richError);
       return landed;
     }
-    log.warn('telegram.custom_emoji_refused', {}, richError);
+    const ids = [
+      ...new Set(
+        [
+          clamped,
+          ...(keyboard ?? []).flat().map((b) => b.text),
+          ...(replyKeyboard === undefined || replyKeyboard === 'remove' ? [] : replyKeyboard.flat().map((b) => b.text)),
+        ].flatMap(customEmojiIds),
+      ),
+    ];
+    log.warn('telegram.custom_emoji_refused', { ids }, richError);
     // `DOCUMENT_INVALID` names the emoji, not the bot's entitlement — and on
     // staging it named emoji that were valid. Three refusals (2026-09-07, -08,
     // -12), all `editMessageText`, every id on the box answered by
     // `getCustomEmojiStickers`, and the same ids drawn fine before and after.
     // That is Telegram being transient about a document, so the screen has
     // landed plain and the next one simply asks again. Resting on it turned a
-    // one-screen blip into a shop-wide outage. Ceiling: an id that is
-    // PERSISTENTLY invalid — typed by hand into a badge — costs its screen a
-    // doubled send and one warning per draw, with no rest to cap it.
-    if (isDocumentInvalid(richError)) return landed;
+    // one-screen blip into a shop-wide outage. An id that is PERSISTENTLY
+    // invalid — typed by hand into a badge — is what `learnUnknownEmoji` is
+    // for: Telegram says it does not know it, and it stops being sent.
+    if (isDocumentInvalid(richError)) {
+      await learnUnknownEmoji(ids);
+      return landed;
+    }
     await options.onCustomEmojiRefused?.();
     return landed;
   }

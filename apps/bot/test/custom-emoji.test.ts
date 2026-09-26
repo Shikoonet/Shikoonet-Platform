@@ -601,11 +601,79 @@ describe('sending it, and being refused', () => {
       onCustomEmojiRefused: refused,
     });
     await api.editMessageText(1, 2, `سلام ${FIRE}`, [[{ text: 'x', callback_data: 'y' }]]);
-    expect(bodies).toHaveLength(2);
+    // Rich, plain, and then the question `learnUnknownEmoji` asks — which this
+    // fake answers with something that is not a list, so nothing is learned.
+    expect(bodies).toHaveLength(3);
     expect(bodies[1]?.['text']).toBe('سلام 🔥');
     expect(bodies[1]?.['parse_mode']).toBeUndefined();
+    expect(bodies[2]?.['custom_emoji_ids']).toEqual(['5368324170671202286']);
     expect(refused).not.toHaveBeenCalled();
+
+    await api.editMessageText(1, 2, `دوباره ${FIRE}`, [[{ text: 'x', callback_data: 'y' }]]);
+    expect(bodies[3]?.['parse_mode'], 'the next screen asks for the emoji again').toBe('HTML');
   });
+
+  /** A Telegram that knows every emoji but one, and says so the way `known` decides. */
+  function telegramWithout(unknownId: string, known: 'omitted' | 'list refused') {
+    const calls: { method: string; body: Record<string, unknown> }[] = [];
+    const answer = (value: unknown, status = 200) =>
+      new Response(JSON.stringify(value), { status });
+    const fetchImpl = (async (url: string, init: { body: string }) => {
+      const method = String(url).split('/').pop() as string;
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      calls.push({ method, body });
+      if (method === 'getCustomEmojiStickers') {
+        const asked = body['custom_emoji_ids'] as string[];
+        if (known === 'list refused' && asked.includes(unknownId)) {
+          return asked.length > 1
+            ? answer({ ok: false, error_code: 400, description: 'Bad Request: invalid custom emoji identifier specified' }, 400)
+            : answer({ ok: true, result: [] });
+        }
+        return answer({
+          ok: true,
+          result: asked.filter((id) => id !== unknownId).map((id) => ({ custom_emoji_id: id })),
+        });
+      }
+      const rich = body['parse_mode'] === 'HTML' && String(body['text']).includes(unknownId);
+      return rich
+        ? answer({ ok: false, error_code: 400, description: 'Bad Request: DOCUMENT_INVALID' }, 400)
+        : answer({ ok: true, result: { message_id: 42 } });
+    }) as unknown as typeof globalThis.fetch;
+    return { calls, fetchImpl };
+  }
+
+  for (const known of ['omitted', 'list refused'] as const) {
+    it(`stops sending an emoji Telegram does not know — unknown ids ${known}`, async () => {
+      // Production, 2026-09-26: 135 `custom_emoji_refused` in a day and not one
+      // rest, so every one was DOCUMENT_INVALID — each screen carrying the id
+      // went out twice, and the warning never said which id it was.
+      const BAD_ID = '1111111111111111111';
+      const BAD = `<tg-emoji emoji-id="${BAD_ID}">⭐</tg-emoji>`;
+      const { calls, fetchImpl } = telegramWithout(BAD_ID, known);
+      const learned: LogRecord[] = [];
+      setEventSink((record) => {
+        if (record.evt === 'telegram.custom_emoji_unknown') learned.push(record);
+      });
+      const api = createTelegramApi({ token: 't', baseUrl: 'http://fake', fetch: fetchImpl });
+      try {
+        await api.sendMessage(1, `سلام ${BAD} ${FIRE}`);
+        const before = calls.length;
+        await api.sendMessage(1, `دوباره ${BAD} ${FIRE}`, [[{ text: `${BAD} خرید`, callback_data: 'buy' }]]);
+        const again = calls.slice(before);
+
+        expect(again, 'one send, not a refused one and its landing').toHaveLength(1);
+        const body = again[0]!.body;
+        expect(body['parse_mode'], 'the emoji Telegram knows is still asked for').toBe('HTML');
+        expect(String(body['text'])).toContain('5368324170671202286');
+        expect(String(body['text'])).not.toContain(BAD_ID);
+        expect(String(body['text'])).toContain('⭐');
+        expect(JSON.stringify(body['reply_markup'])).not.toContain(BAD_ID);
+        expect(learned.map((r) => r.fields['ids'])).toEqual([[BAD_ID]]);
+      } finally {
+        setEventSink(null);
+      }
+    });
+  }
 
   it('does not classify a dead destination as a custom-emoji refusal', async () => {
     // Both are Telegram 400 responses, but only CUSTOM_EMOJI_INVALID says
