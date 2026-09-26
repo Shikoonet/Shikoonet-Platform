@@ -315,6 +315,7 @@ describe('a sweep that runs on a bot nobody is talking to', () => {
       getMe: async () => ({ username: null }),
       deleteWebhook: async () => undefined,
       forwardMessage: async () => undefined,
+      copyMessage: async () => 1,
       // One cycle, and never a single update — which is the whole point.
       getUpdates: async () => {
         controller.abort();

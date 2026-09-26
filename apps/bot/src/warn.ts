@@ -137,7 +137,7 @@ const TIME_BRANCH = `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_
         WHERE s.status = 'ACTIVE'
           AND u.notify_enabled
           AND s.notify->>'time' IS DISTINCT FROM 'true'
-          -- Renewed already: the reserve starts when this runs out (0107).
+          -- Renewed already: the reserve starts when this runs out (0108).
           AND NOT ${WAITING_RESERVE_SQL}
           AND NOT (${STILL_A_TRIAL})
           AND s.expires_at IS NOT NULL

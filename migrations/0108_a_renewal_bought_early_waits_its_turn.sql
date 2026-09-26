@@ -1,4 +1,4 @@
--- 0107 — a renewal bought early waits its turn.
+-- 0108 — a renewal bought early waits its turn.
 --
 -- Sam, 2026-09-26: «تمدید موقعی معنی پیدا می‌کنه که یا حجم تموم شده یا زمان».
 -- A customer who renews while the service still has BOTH volume and time left

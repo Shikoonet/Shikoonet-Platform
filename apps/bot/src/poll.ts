@@ -15,6 +15,7 @@ import type { D1Database } from '@shikoo/database';
 import { handleUpdate, refreshShopContent, type HandleStatus, type Reply } from './handle.js';
 import { rememberInvoiceMessage } from './payment.js';
 import * as notify from './notify.js';
+import { sendDueChannelPost } from './channelPosts.js';
 import { settleVerifiedPayments } from './settle.js';
 import { activateReserves, provisionPaidOrders, RESERVE_CHECK_MS } from './provision.js';
 import { syncSubscriptions, SYNC_INTERVAL_MS } from './sync.js';
@@ -854,11 +855,19 @@ export async function drainNotifications(
   await loadPause(db);
   while (!signal?.aborted) {
     let handled = 0;
+    // A scheduled channel post first (#473), one per pass: the outbox is
+    // unpaced and quick, so a post waits a pass at most — and never behind a
+    // 200-row broadcast batch, which is why it is not in `drainBroadcasts`.
+    try {
+      handled += await sendDueChannelPost(db, api);
+    } catch (err) {
+      log.error('channel_post.sweep_failed', { will_retry: true }, err);
+    }
     try {
       const r = await notify.flush(db, api, options.limit === undefined ? {} : { limit: options.limit });
       // Dead and failed rows count as work done: a batch that all died must
       // not be followed by a second's sleep while the next batch waits.
-      handled = r.sent + r.failed + r.dead;
+      handled += r.sent + r.failed + r.dead;
     } catch (err) {
       log.error('notify.drain_failed', { will_retry: true }, err);
     }
@@ -1002,7 +1011,7 @@ async function sweepAll(db: D1Database, api: TelegramApi, clocks: SweepClocks): 
   // problem, a panel that will not answer is not — and a panel being down
   // must never hold up telling a customer their payment was confirmed.
   await sweep('provisioning paid orders', () => provisionPaidOrders(db));
-  // Renewals bought early, applied the moment the service runs out (0107).
+  // Renewals bought early, applied the moment the service runs out (0108).
   // Before the sync, which can take over a minute, and before the sweeps
   // below that act on a service that ran out: this one is what renews it.
   if (Date.now() - clocks.reserve >= RESERVE_CHECK_MS) {

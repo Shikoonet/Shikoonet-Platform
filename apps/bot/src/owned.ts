@@ -227,7 +227,7 @@ export interface RenewableSubscription {
   provider_name: string;
   provider_kind: string;
   provider_config: Record<string, unknown> | null;
-  /** A renewal already waits for this service (0107): one active, one reserved. */
+  /** A renewal already waits for this service (0108): one active, one reserved. */
   reserved: boolean;
 }
 
@@ -381,7 +381,7 @@ export interface OwnedSubscriptionOnPanel extends OwnedSubscription {
   provider_secret_ref: string | null;
   provider_sealed: string | null;
   provider_config: Record<string, unknown> | null;
-  /** A renewal waits for this service's current period to end (0107). */
+  /** A renewal waits for this service's current period to end (0108). */
   reserved: boolean;
 }
 

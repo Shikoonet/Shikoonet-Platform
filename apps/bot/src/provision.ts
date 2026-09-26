@@ -523,7 +523,7 @@ async function untoldNote(
   // so without this the screen below would tell them a person is finishing it.
   if (row.order_kind === 'RESELLER_VOLUME') return say(await resellerVolumeNote(db, row, false));
 
-  // COMPLETED as a reserve (0107): the service has not been touched, so its
+  // COMPLETED as a reserve (0108): the service has not been touched, so its
   // card below would show the old period as if it were the renewal. The
   // sentence this order owed is the reserve's; its activation has its own.
   if (row.order_kind === 'RENEWAL') {
@@ -2088,7 +2088,7 @@ async function writeRenewal(
  * `activateReserves` finds the current period over.
  *
  * The insert is the guard. One waiting reserve per service is the partial
- * unique index in 0107, so a second renewal paid for the same service in the
+ * unique index in 0108, so a second renewal paid for the same service in the
  * same minute inserts nothing, and is failed and refunded here.
  */
 async function reserveRenewal(

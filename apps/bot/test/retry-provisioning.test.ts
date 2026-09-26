@@ -441,7 +441,7 @@ describe('a preparation that failed for want of configuration', () => {
 
     const username = `u_${telegramId}`;
     // The volume used up with days left: renewed at once. With both left it
-    // would be reserved (0107) and never reach the panel to fail.
+    // would be reserved (0108) and never reach the panel to fail.
     const sub = await db
       .prepare(
         `INSERT INTO subscriptions

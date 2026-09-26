@@ -172,7 +172,7 @@ const EXPIRED_DUE = `
        -- verdict, in which case the removal happens a few minutes later, or it
        -- does not, in which case there was never anything to remove.
        AND s.last_synced_at IS NOT NULL
-       -- Renewed already, and waiting for this very moment (0107).
+       -- Renewed already, and waiting for this very moment (0108).
        AND NOT ${WAITING_RESERVE_SQL}
        AND s.panel_status IN ('limited', 'expired')
        AND s.expires_at IS NOT NULL

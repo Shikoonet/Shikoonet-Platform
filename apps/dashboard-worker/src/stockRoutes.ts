@@ -40,6 +40,7 @@ import {
   attachmentOf,
   botTelegram,
   openProductTopic,
+  readCappedBody,
   reportsGroup,
   type TelegramCall,
   type TelegramReply,
@@ -926,26 +927,19 @@ export function registerStockRoutes(app: Hono<StockEnv>) {
 
     // The body is the file, raw, as `import/upload` takes a dump — and capped
     // the same way, as it streams in, not from a `content-length` the client
-    // chose. Held in memory: it is going straight back out to Telegram.
-    const body = c.req.raw.body;
-    if (body === null) return c.json({ ok: false, error: 'empty_upload', detail: 'فایلی فرستاده نشد.' }, 400);
-    const chunks: Uint8Array[] = [];
-    let bytes = 0;
-    for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
-      bytes += chunk.byteLength;
-      if (bytes > MAX_ATTACHMENT_BYTES) {
-        return c.json(
-          {
-            ok: false,
-            error: 'attachment_too_large',
-            detail: `فایل نباید از ${MAX_ATTACHMENT_BYTES / 1024 / 1024} مگابایت بزرگ‌تر باشد — بزرگ‌تر را با لینک پست کانال اضافه کن.`,
-          },
-          413,
-        );
-      }
-      chunks.push(chunk);
+    // chose.
+    const chunks = await readCappedBody(c.req.raw.body, MAX_ATTACHMENT_BYTES);
+    if (chunks === 'too_large') {
+      return c.json(
+        {
+          ok: false,
+          error: 'attachment_too_large',
+          detail: `فایل نباید از ${MAX_ATTACHMENT_BYTES / 1024 / 1024} مگابایت بزرگ‌تر باشد — بزرگ‌تر را با لینک پست کانال اضافه کن.`,
+        },
+        413,
+      );
     }
-    if (bytes === 0) return c.json({ ok: false, error: 'empty_upload', detail: 'فایلی فرستاده نشد.' }, 400);
+    if (chunks === 'empty') return c.json({ ok: false, error: 'empty_upload', detail: 'فایلی فرستاده نشد.' }, 400);
 
     const { name, kind } = q.data;
     return fileAttachment(c, planId, 'upload', (call, group) => {

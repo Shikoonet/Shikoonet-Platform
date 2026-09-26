@@ -216,7 +216,7 @@ export async function giveSubscription(userId: number, publicId: string): Promis
 }
 
 /**
- * A renewal already bought for this service and waiting its turn (0107): the
+ * A renewal already bought for this service and waiting its turn (0108): the
  * COMPLETED order it was sold as, and its WAITING reserve. For the sweeps that
  * must leave such a service alone.
  */

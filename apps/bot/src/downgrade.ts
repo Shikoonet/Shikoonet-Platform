@@ -118,7 +118,7 @@ export async function downgradeExpired(
         WHERE s.status = 'ACTIVE'
           AND s.downgraded_at IS NULL
           -- A renewal waits for this moment and applies within the round
-          -- (0107); moving the account first would only be undone again.
+          -- (0108); moving the account first would only be undone again.
           AND NOT ${WAITING_RESERVE_SQL}
           AND s.remote_username IS NOT NULL
           AND s.expires_at IS NOT NULL

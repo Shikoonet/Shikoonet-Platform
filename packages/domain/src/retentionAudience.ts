@@ -17,7 +17,7 @@ import type { D1Database } from '@shikoo/database';
 import { paidServiceSql } from './bought.js';
 
 /**
- * The service `s` has a renewal reserved and waiting (migration 0107).
+ * The service `s` has a renewal reserved and waiting (migration 0108).
  *
  * Every sweep that acts on «this service is running out, or has» asks this
  * first: the customer already renewed. A reminder to renew would sell them a

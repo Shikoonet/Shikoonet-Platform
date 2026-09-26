@@ -134,6 +134,9 @@ export const RESET_KEEP: readonly string[] = [
   // bot on every message; no import re-supplies them, and an empty list would
   // send every customer question to a person.
   'support_answers',
+  // «پست کانال» (#473): what the shop posted to its channels, and what is
+  // scheduled to go. An admin wrote every row; no import brings them back.
+  'channel_posts',
 ];
 
 /** A table and how many rows it holds. */

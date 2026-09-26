@@ -76,7 +76,8 @@ function windowOf(range: string | undefined, day: string | undefined, to: string
  * «1e3» and «0x10», and an integer too large for `bigint` reaches Postgres and
  * comes back a 500 instead of a 404.
  */
-const idOf = (raw: string): number | null => (/^[1-9][0-9]{0,14}$/.test(raw) ? Number(raw) : null);
+export const idOf = (raw: string): number | null =>
+  /^[1-9][0-9]{0,14}$/.test(raw) ? Number(raw) : null;
 
 interface FunnelRow {
   id: number;
@@ -218,7 +219,7 @@ async function byDay(
 }
 
 /** `bot/username`, which the link on the screen is built from. Null says so. */
-async function botUsername(db: D1Database): Promise<string | null> {
+export async function botUsername(db: D1Database): Promise<string | null> {
   const row = await db
     .prepare(`SELECT value FROM settings WHERE scope = 'bot' AND key = 'username'`)
     .first<{ value: unknown }>();

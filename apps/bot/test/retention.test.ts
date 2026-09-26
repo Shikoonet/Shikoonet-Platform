@@ -257,7 +257,7 @@ describe('who is due', () => {
 
   it('reminds nobody to renew a service that is already renewed and waiting', async () => {
     // «the window before expiry» sends to exactly this service; here the
-    // customer has bought the renewal already (0107).
+    // customer has bought the renewal already (0108).
     const tg = nextTelegramId();
     const sub = await makeService(await makeCustomer(tg), { expiresInDays: 0.5 });
     await reserveRenewalFor(sub, `zz-ret-rsv-${sub}`);

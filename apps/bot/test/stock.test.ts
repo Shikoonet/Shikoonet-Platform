@@ -64,7 +64,7 @@ async function paidRenewal(): Promise<{
   // the renewal resolves against the account's panel exactly as production does.
   const provider = await providerId('sim-vip');
   // The volume used up, one day left: renewed at once. With both left it
-  // would be reserved (0107) and never reach the panel this file waits on.
+  // would be reserved (0108) and never reach the panel this file waits on.
   const sub = await db
     .prepare(
       `INSERT INTO subscriptions

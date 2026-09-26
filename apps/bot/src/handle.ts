@@ -3563,7 +3563,7 @@ async function handleCallback(
       }
       // Asked here too, before an order exists: a stale plan button would
       // otherwise take the money and then be refused at delivery. The
-      // database has the last word (the partial unique index in 0107).
+      // database has the last word (the partial unique index in 0108).
       if (service.reserved) return screen(menu.serviceReserved(), menu.afterPaidMenu());
       // `forRenewal`, so a panel that has hit its new-account cap can still
       // extend what it already sold. The cap counts accounts being created and
