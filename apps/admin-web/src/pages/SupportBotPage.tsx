@@ -96,6 +96,7 @@ export function SupportBotPage() {
       if (mine !== seq.current) return;
       if (!d.configured) {
         setConfigured(false);
+        setCap(null);
         return;
       }
       setConfigured(true);

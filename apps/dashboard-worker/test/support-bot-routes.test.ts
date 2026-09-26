@@ -178,6 +178,27 @@ describe('giving chats back to the bot', () => {
     expect(calls[1]?.body).toEqual({ action: 'release', chat_ids: [SHOP_TG, 7700000002] });
   });
 
+  it('audits the batches n8n confirmed before a later one failed, and says so', async () => {
+    let calls = 0;
+    fakeN8n({
+      release: () => {
+        calls += 1;
+        return calls === 1 ? json({ ok: true, released: 1, chat_ids: [SHOP_TG] }) : json({ ok: false }, 500);
+      },
+    });
+    // 600 ids go out as two batches of at most 500.
+    const ids = [SHOP_TG, ...Array.from({ length: 599 }, (_, i) => 7710000000 + i)];
+    const res = await post('release', { chatIds: ids });
+    const body = (await res.json()) as { error: string; detail: string };
+    expect([res.status, body.error]).toEqual([502, 'support_bot_unreachable']);
+    expect(body.detail).toContain('1 چت پیش از خطا آزاد شده بود');
+    const [row] = (await auditRows('support_bot.chats_released')).slice(-1);
+    expect([row?.entity_id, JSON.parse(row!.after_json)]).toEqual([
+      String(SHOP_TG),
+      { chatIds: [SHOP_TG], incomplete: true },
+    ]);
+  });
+
   it('audits nothing when n8n did not confirm', async () => {
     const before = (await auditRows('support_bot.chats_released')).length;
     fakeN8n({ release: () => json({ ok: false }, 500) });

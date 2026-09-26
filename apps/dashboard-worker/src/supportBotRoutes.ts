@@ -18,6 +18,7 @@ import {
   releaseSupportBotChats,
   setSupportBotDailyCap,
   SupportBotAdminError,
+  SupportBotPartialRelease,
   type SupportBotAdminConfig,
 } from './supportBotAdmin.js';
 import { BOT_SORTS, botStats, limitedChatIds, listContacts } from './supportBotLimits.js';
@@ -39,7 +40,11 @@ const DETAIL: Record<SupportBotAdminError['code'], string> = {
 function failed(e: unknown) {
   if (!(e instanceof SupportBotAdminError)) throw e;
   const status = e.code === 'not_configured' ? 503 : 502;
-  return { body: { ok: false as const, error: `support_bot_${e.code}`, detail: DETAIL[e.code] }, status } as const;
+  const detail =
+    e instanceof SupportBotPartialRelease
+      ? `${DETAIL[e.code]} ${e.released.length} چت پیش از خطا آزاد شده بود.`
+      : DETAIL[e.code];
+  return { body: { ok: false as const, error: `support_bot_${e.code}`, detail }, status } as const;
 }
 
 const ListQuery = z.object({
@@ -70,6 +75,40 @@ export function registerSupportBotRoutes(app: Hono<{ Bindings: Bindings; Variabl
       .bind(chatIds)
       .all<{ id: number; telegram_id: number }>();
     return new Map((results ?? []).map((r) => [Number(r.telegram_id), Number(r.id)]));
+  }
+
+  /**
+   * Gives chats back and audits exactly what n8n confirmed — including the batches that went
+   * through before a later one failed. Nothing confirmed, nothing audited.
+   */
+  async function releaseAndAudit(
+    env: Bindings,
+    ident: Ident,
+    chatIds: number[],
+    action: string,
+    after: Record<string, unknown>,
+  ): Promise<number[]> {
+    let released: number[];
+    let failure: SupportBotPartialRelease | null = null;
+    try {
+      released = await releaseSupportBotChats(config(env), chatIds);
+    } catch (e) {
+      if (!(e instanceof SupportBotPartialRelease)) throw e;
+      released = e.released;
+      failure = e;
+    }
+    await audit(
+      env.DB,
+      ident,
+      action,
+      'SUPPORT_BOT_CHAT',
+      released.length === 1 ? String(released[0]) : 'many',
+      null,
+      { ...after, chatIds: released, ...(failure ? { incomplete: true } : {}) },
+      null,
+    );
+    if (failure) throw failure;
+    return released;
   }
 
   app.get('/api/v1/admin/support-bot', async (c) => {
@@ -148,17 +187,7 @@ export function registerSupportBotRoutes(app: Hono<{ Bindings: Bindings; Variabl
     const body = ReleaseBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return c.json({ ok: false, error: 'bad_body' }, 400);
     try {
-      const ids = await releaseSupportBotChats(config(c.env), [...new Set(body.data.chatIds)]);
-      await audit(
-        c.env.DB,
-        ident,
-        'support_bot.chats_released',
-        'SUPPORT_BOT_CHAT',
-        ids.length === 1 ? String(ids[0]) : 'many',
-        null,
-        { chatIds: ids },
-        null,
-      );
+      const ids = await releaseAndAudit(c.env, ident, [...new Set(body.data.chatIds)], 'support_bot.chats_released', {});
       return c.json({ ok: true, released: ids.length, chatIds: ids });
     } catch (e) {
       const f = failed(e);
@@ -175,17 +204,9 @@ export function registerSupportBotRoutes(app: Hono<{ Bindings: Bindings; Variabl
       const cfg = config(c.env);
       // Decided from a fresh read, not from the page the admin was looking at.
       const wanted = limitedChatIds(await readSupportBot(cfg), Date.now(), body.data.includeAttackers);
-      const ids = await releaseSupportBotChats(cfg, wanted);
-      await audit(
-        c.env.DB,
-        ident,
-        'support_bot.all_released',
-        'SUPPORT_BOT_CHAT',
-        'many',
-        null,
-        { includeAttackers: body.data.includeAttackers, chatIds: ids },
-        null,
-      );
+      const ids = await releaseAndAudit(c.env, ident, wanted, 'support_bot.all_released', {
+        includeAttackers: body.data.includeAttackers,
+      });
       return c.json({ ok: true, released: ids.length, chatIds: ids });
     } catch (e) {
       const f = failed(e);

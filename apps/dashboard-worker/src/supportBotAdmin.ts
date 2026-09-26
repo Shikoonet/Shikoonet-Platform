@@ -22,6 +22,19 @@ export class SupportBotAdminError extends Error {
   }
 }
 
+/**
+ * A later batch failed after earlier ones were applied. `released` really are back with the bot,
+ * so the caller audits them before it reports the failure.
+ */
+export class SupportBotPartialRelease extends SupportBotAdminError {
+  constructor(
+    code: SupportBotAdminError['code'],
+    readonly released: number[],
+  ) {
+    super(code);
+  }
+}
+
 const TIMEOUT_MS = 20_000;
 
 const str = z.string().nullish().transform((v) => v ?? '');
@@ -98,7 +111,12 @@ export async function releaseSupportBotChats(cfg: SupportBotAdminConfig, chatIds
   const out: number[] = [];
   for (let i = 0; i < chatIds.length; i += 500) {
     const part = chatIds.slice(i, i + 500);
-    out.push(...parse(ReleaseAnswer, await call(cfg, { action: 'release', chat_ids: part })).chat_ids);
+    try {
+      out.push(...parse(ReleaseAnswer, await call(cfg, { action: 'release', chat_ids: part })).chat_ids);
+    } catch (e) {
+      if (out.length > 0 && e instanceof SupportBotAdminError) throw new SupportBotPartialRelease(e.code, out);
+      throw e;
+    }
   }
   return out;
 }
