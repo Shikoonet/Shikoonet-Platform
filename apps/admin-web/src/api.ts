@@ -1248,6 +1248,14 @@ export interface SupportAnswerRow {
   id: number;
   question: string;
   answer: string;
+  /** How customers asked it, one per line. */
+  variants: string;
+  category: string;
+  /** The right reply is a person; the bot passes these on. */
+  handOff: boolean;
+  note: string;
+  /** The dataset id it was imported under, or null if typed here. */
+  sourceKey: string | null;
   sortOrder: number;
   active: boolean;
   /** Counts edits; each edit's before and after text is in the audit log. */
@@ -1258,11 +1266,17 @@ export interface SupportAnswerRow {
 export interface SupportAnswerBody {
   question: string;
   answer: string;
+  variants?: string;
+  category?: string;
+  handOff?: boolean;
+  note?: string;
   sortOrder?: number;
   active?: boolean;
   /** On an edit, the version the form opened; a save made since is refused. */
   version?: number;
 }
+
+export type SupportAnswerImportItem = Omit<SupportAnswerBody, 'version'> & { sourceKey: string };
 
 export interface ClientAppRow {
   id: number;
@@ -3128,6 +3142,13 @@ export const api = {
 
   deleteSupportAnswer(id: number) {
     return req<{ ok: boolean }>(`/support-answers/${id}`, { method: 'DELETE' });
+  },
+
+  importSupportAnswers(items: SupportAnswerImportItem[]) {
+    return req<{ ok: boolean; added: number; skipped: number }>('/support-answers/import', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    });
   },
 
   clientApps() {

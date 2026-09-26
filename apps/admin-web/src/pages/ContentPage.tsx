@@ -31,6 +31,7 @@ import {
   type SupportAnswerRow,
 } from '../api.js';
 import { RequiredChannelsPanel } from '../hub/RequiredChannelsPanel.js';
+import { parseAnswerFile } from '../supportAnswerImport.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -317,7 +318,11 @@ function SupportAnswers() {
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<number | 'new' | null>(null);
+  const [query, setQuery] = useState('');
+  const [show, setShow] = useState<'all' | 'active' | 'hidden' | 'handoff'>('all');
+  const [activateOnImport, setActivateOnImport] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -348,9 +353,56 @@ function SupportAnswers() {
     }
   }
 
+  /**
+   * «وارد کردن از فایل». Read on this machine, sent in slices the server
+   * accepts (500 a request); rows already imported are skipped by their key.
+   */
+  async function importFile(file: File, activate: boolean): Promise<void> {
+    setErr(null);
+    setDone(null);
+    const parsed = parseAnswerFile(await file.text());
+    if (!parsed.ok) {
+      setErr(parsed.error);
+      return;
+    }
+    const n = parsed.items.length;
+    const how = activate ? 'روشن' : 'پنهان';
+    if (!window.confirm(`${count(n)} پرسش و پاسخ در فایل هست. ${how} وارد شوند؟`)) return;
+    setBusy(true);
+    try {
+      let added = 0;
+      let skipped = 0;
+      for (let i = 0; i < n; i += 200) {
+        const slice = parsed.items.slice(i, i + 200).map((it) => ({ ...it, active: activate }));
+        const r = await api.importSupportAnswers(slice);
+        added += r.added;
+        skipped += r.skipped;
+      }
+      setDone(`${count(added)} پرسش و پاسخ تازه وارد شد؛ ${count(skipped)} تا از قبل بود و دست نخورد.`);
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const current = typeof editing === 'number' ? (items.find((i) => i.id === editing) ?? null) : null;
   const visible = items.filter((i) => i.active).length;
+  const handOff = items.filter((i) => i.handOff).length;
   const nextSort = items.reduce((m, i) => Math.max(m, i.sortOrder), 0) + 10;
+  const needle = query.trim();
+  const shown = items.filter(
+    (a) =>
+      (show === 'all' ||
+        (show === 'active' && a.active) ||
+        (show === 'hidden' && !a.active) ||
+        (show === 'handoff' && a.handOff)) &&
+      (needle === '' ||
+        [a.question, a.answer, a.variants, a.category, a.sourceKey ?? ''].some((f) =>
+          f.includes(needle),
+        )),
+  );
 
   return (
     <>
@@ -359,8 +411,30 @@ function SupportAnswers() {
 
       <div className="filters">
         <span className="grow muted">
-          {count(visible)} فعال · {count(items.length - visible)} پنهان
+          {count(visible)} فعال · {count(items.length - visible)} پنهان · {count(handOff)} با همکار
         </span>
+        <label className="btn btn-sm" aria-disabled={busy || w.disabled}>
+          وارد کردن از فایل
+          <input
+            type="file"
+            accept=".jsonl,.json,application/json"
+            hidden
+            disabled={busy || w.disabled}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (f) void importFile(f, activateOnImport);
+            }}
+          />
+        </label>
+        <label className="muted">
+          <input
+            type="checkbox"
+            checked={activateOnImport}
+            onChange={(e) => setActivateOnImport(e.target.checked)}
+          />{' '}
+          روشن وارد شوند
+        </label>
         <button
           type="button"
           className="btn btn-primary btn-sm"
@@ -374,36 +448,69 @@ function SupportAnswers() {
         </button>
       </div>
 
+      <div className="filters">
+        <input
+          className="form-control grow"
+          type="search"
+          placeholder="جست‌وجو در پرسش، جواب، جمله‌های مشتری یا دسته"
+          aria-label="جست‌وجو در پرسش و پاسخ‌ها"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <select
+          className="form-control"
+          aria-label="کدام‌ها"
+          value={show}
+          onChange={(e) => setShow(e.target.value as typeof show)}
+        >
+          <option value="all">همه</option>
+          <option value="active">فعال</option>
+          <option value="hidden">پنهان</option>
+          <option value="handoff">با همکار</option>
+        </select>
+        <span className="muted">{count(shown.length)} ردیف</span>
+      </div>
+
       <div className="table-wrap">
         <table className="app-table">
           <thead>
             <tr>
               <th>پرسش</th>
               <th>جواب</th>
-              <th>ترتیب</th>
+              <th>دسته</th>
               <th>نسخه</th>
               <th>وضعیت</th>
               <th />
             </tr>
           </thead>
           <tbody>
-            {items.length === 0 && !loading && (
+            {shown.length === 0 && !loading && (
               <tr>
                 <td className="empty" colSpan={6}>
-                  هیچ پرسش و پاسخی ثبت نشده است؛ ربات همهٔ سؤال‌ها را به اپراتور می‌سپارد.
+                  {items.length === 0
+                    ? 'هیچ پرسش و پاسخی ثبت نشده است؛ ربات همهٔ سؤال‌ها را به اپراتور می‌سپارد.'
+                    : 'چیزی با این جست‌وجو پیدا نشد.'}
                 </td>
               </tr>
             )}
-            {items.map((a) => (
+            {shown.map((a) => (
               <tr key={a.id}>
                 <td>{a.question}</td>
                 <td>{a.answer.length > 90 ? `${a.answer.slice(0, 90)}…` : a.answer}</td>
-                <td>{count(a.sortOrder)}</td>
+                <td>{a.category || '—'}</td>
                 <td>{count(a.version)}</td>
                 <td>
                   <span className={a.active ? 'badge badge-active' : 'badge badge-block'}>
                     {a.active ? 'فعال' : 'پنهان'}
                   </span>
+                  {a.handOff && (
+                    <>
+                      {' '}
+                      <span className="badge" title="ربات این را به اپراتور می‌سپارد">
+                        با همکار
+                      </span>
+                    </>
+                  )}
                 </td>
                 <td>
                   <button
@@ -476,6 +583,10 @@ function AnswerEditor({
   const [text, setText] = useState(answer?.answer ?? '');
   const [sortOrder, setSortOrder] = useState(String(answer?.sortOrder ?? firstSort));
   const [active, setActive] = useState(answer?.active ?? true);
+  const [variants, setVariants] = useState(answer?.variants ?? '');
+  const [category, setCategory] = useState(answer?.category ?? '');
+  const [handOff, setHandOff] = useState(answer?.handOff ?? false);
+  const [note, setNote] = useState(answer?.note ?? '');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // The form opens under a list that is usually longer than the screen. A block
@@ -493,6 +604,10 @@ function AnswerEditor({
       await api.saveSupportAnswer(answer?.id ?? null, {
         question: question.trim(),
         answer: text.trim(),
+        variants,
+        category: category.trim(),
+        handOff,
+        note,
         sortOrder: Number(sortOrder) || 0,
         active,
         ...(answer ? { version: answer.version } : {}),
@@ -558,7 +673,52 @@ function AnswerEditor({
         onChange={(e) => setText(e.target.value)}
       />
 
+      <label className="form-label" htmlFor="kb-variants" style={{ marginBlockStart: 12 }}>
+        جمله‌هایی که مشتری‌ها این را با آن پرسیده‌اند — هر خط یکی؛ ربات سؤال را با این‌ها می‌شناسد
+      </label>
+      <textarea
+        id="kb-variants"
+        className="form-control"
+        rows={4}
+        maxLength={4000}
+        value={variants}
+        onChange={(e) => setVariants(e.target.value)}
+      />
+
+      <div className="filters" style={{ marginBlockStart: 12 }}>
+        <div>
+          <label className="form-label" htmlFor="kb-category">
+            دسته
+          </label>
+          <input
+            id="kb-category"
+            className="form-control"
+            type="text"
+            maxLength={60}
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+          />
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="kb-note">
+            یادداشت برای بازبین — مشتری این را نمی‌بیند
+          </label>
+          <textarea
+            id="kb-note"
+            className="form-control"
+            rows={2}
+            maxLength={1000}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </div>
+      </div>
+
       <label className="form-label" style={{ display: 'block', marginBlockStart: 12 }}>
+        <input type="checkbox" checked={handOff} onChange={(e) => setHandOff(e.target.checked)} />{' '}
+        جواب این را همکار می‌دهد — ربات فقط پیام را به اپراتور می‌سپارد
+      </label>
+      <label className="form-label" style={{ display: 'block', marginBlockStart: 6 }}>
         <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />{' '}
         ربات از این جواب استفاده کند
       </label>

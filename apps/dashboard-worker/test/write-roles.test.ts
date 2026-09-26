@@ -601,6 +601,10 @@ describe('every write route, asked directly', () => {
     // customer, live on the next message. ADMIN-only in the handler like
     // «آموزش», and audited with the whole text before and after
     // (`content.support_answer_*`); `content.test.ts` pins the REVIEWER 403.
-    expect(writeRoutes().length).toBe(192);
+    //
+    // 193, 2026-09-26: `POST /admin/support-answers/import` (0106) — the support-chat
+    // dataset from a file on the admin's machine; ADMIN-only, rows land hidden, one
+    // audit row names every key; `content.test.ts` pins the REVIEWER 403.
+    expect(writeRoutes().length).toBe(193);
   });
 });
